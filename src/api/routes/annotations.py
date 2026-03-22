@@ -5,15 +5,15 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from financebot.api.deps import get_db
-from financebot.config import settings
-from financebot.db.queries.annotations import (
+from src.api.deps import get_db
+from src.config import settings
+from src.db.queries.annotations import (
     get_annotation,
     insert_annotation,
     list_review_queue,
     update_annotation,
 )
-from financebot.models.annotation import Annotation, AnnotationCreate, AnnotationPatch
+from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch
 
 router = APIRouter()
 

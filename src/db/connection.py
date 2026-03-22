@@ -7,7 +7,7 @@ from pathlib import Path
 
 def get_connection(db_path: str | None = None) -> sqlite3.Connection:
     """Open a SQLite connection, load sqlite-vec, enable WAL and foreign keys."""
-    from financebot.config import settings
+    from src.config import settings
 
     path = db_path or settings.db_path
     Path(path).parent.mkdir(parents=True, exist_ok=True)

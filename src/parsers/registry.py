@@ -1,8 +1,8 @@
 """Maps bank_name (and/or detect()) to concrete StatementParser implementations."""
 from __future__ import annotations
 
-from financebot.parsers.base import StatementParser
-from financebot.parsers.banks.kotak import KotakParser
+from src.parsers.base import StatementParser
+from src.parsers.banks.kotak import KotakParser
 
 # Ordered list — detect() is tried in this order; first match wins.
 _PARSERS: list[type[StatementParser]] = [

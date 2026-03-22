@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from financebot.models.annotation import Annotation
+from src.models.annotation import Annotation
 
 
 def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:

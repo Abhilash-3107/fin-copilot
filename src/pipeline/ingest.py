@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from financebot.db.connection import get_db
-from financebot.db.queries.transactions import insert_statement, insert_transaction
-from financebot.models.transaction import Statement
-from financebot.parsers.registry import detect_parser
+from src.db.connection import get_db
+from src.db.queries.transactions import insert_statement, insert_transaction
+from src.models.transaction import Statement
+from src.parsers.registry import detect_parser
 
 
 def ingest_pdf(

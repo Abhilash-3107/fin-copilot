@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from financebot.models.transaction import Transaction
-from financebot.parsers.banks.kotak import KotakParser
-from financebot.parsers.registry import detect_parser, get_parser
+from src.models.transaction import Transaction
+from src.parsers.banks.kotak import KotakParser
+from src.parsers.registry import detect_parser, get_parser
 
 REAL_PDF = Path("/Users/abhilashbora/Projects/finance-copilot/data/26356222-XXXXXXX-400097.pdf")
 _PASSWORD = os.environ.get("KOTAK_PDF_PASSWORD")

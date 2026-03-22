@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from financebot.models.transaction import Transaction
+from src.models.transaction import Transaction
 
 
 class StatementParser(ABC):

@@ -7,10 +7,10 @@ from datetime import date, datetime
 
 import pdfplumber
 
-from financebot.config import settings
-from financebot.models.transaction import Transaction
-from financebot.parsers.base import StatementParser
-from financebot.parsers.upi import parse_upi_description
+from src.config import settings
+from src.models.transaction import Transaction
+from src.parsers.base import StatementParser
+from src.parsers.upi import parse_upi_description
 
 DATE_PATTERN = re.compile(r"^\d{1,2}\s+\w{3},\s+\d{4}$")
 DATE_FORMAT = "%d %b, %Y"

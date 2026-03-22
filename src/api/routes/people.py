@@ -7,8 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from financebot.api.deps import get_db
-from financebot.db.queries.people import (
+from src.api.deps import get_db
+from src.db.queries.people import (
     create_person,
     delete_person,
     list_people,

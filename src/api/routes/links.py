@@ -7,8 +7,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from financebot.api.deps import get_db
-from financebot.db.queries.links import delete_link, insert_link, list_links_for_transaction
+from src.api.deps import get_db
+from src.db.queries.links import delete_link, insert_link, list_links_for_transaction
 
 router = APIRouter()
 

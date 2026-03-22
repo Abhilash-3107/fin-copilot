@@ -8,8 +8,8 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from financebot.db.connection import get_db
-from financebot.api.routes import annotations, groups, people, statements, transactions
+from src.db.connection import get_db
+from src.api.routes import annotations, groups, people, statements, transactions
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 

@@ -6,8 +6,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from financebot.api.deps import get_db
-from financebot.db.queries.transactions import list_transactions
+from src.api.deps import get_db
+from src.db.queries.transactions import list_transactions
 
 router = APIRouter()
 

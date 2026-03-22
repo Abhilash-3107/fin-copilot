@@ -7,8 +7,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from financebot.api.deps import get_db
-from financebot.db.queries.groups import (
+from src.api.deps import get_db
+from src.db.queries.groups import (
     add_member,
     create_group,
     delete_group,
@@ -55,7 +55,7 @@ def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
 @router.get("")
 def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
     """List groups, optionally filtered by name search."""
-    from financebot.db.queries.groups import list_groups
+    from src.db.queries.groups import list_groups
     return search_groups(conn, q) if q else list_groups(conn)
 
 

@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from financebot.config import settings
+from src.config import settings
 
 app = typer.Typer(help="Finance Copilot CLI", no_args_is_help=True)
 console = Console()

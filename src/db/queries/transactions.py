@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from financebot.models.transaction import Statement, Transaction
+from src.models.transaction import Statement, Transaction
 
 
 def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:

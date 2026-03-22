@@ -8,9 +8,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
-from financebot.api.deps import get_db
-from financebot.db.queries.transactions import list_transactions
-from financebot.pipeline.ingest import ingest_pdf
+from src.api.deps import get_db
+from src.db.queries.transactions import list_transactions
+from src.pipeline.ingest import ingest_pdf
 
 router = APIRouter()
 
