@@ -1,0 +1,2 @@
+-- Initial migration: statements, transactions, annotations, categories, embedding_meta,
+-- and sqlite-vec virtual table vec_items. Implement DDL exactly as specified in plan.md.
