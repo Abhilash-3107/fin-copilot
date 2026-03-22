@@ -15,6 +15,7 @@ class Transaction(BaseModel):
     debit_credit: Literal["debit", "credit"]
     raw_description: str
     running_balance: Optional[float] = None
+    upi_meta: Optional[str] = None      # JSON string {"note": str|null}, set for UPI transactions
 
 
 class Statement(BaseModel):

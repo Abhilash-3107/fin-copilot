@@ -7,8 +7,10 @@ from datetime import date, datetime
 
 import pdfplumber
 
+from financebot.config import settings
 from financebot.models.transaction import Transaction
 from financebot.parsers.base import StatementParser
+from financebot.parsers.upi import parse_upi_description
 
 DATE_PATTERN = re.compile(r"^\d{1,2}\s+\w{3},\s+\d{4}$")
 DATE_FORMAT = "%d %b, %Y"
@@ -83,10 +85,12 @@ class KotakParser(StatementParser):
         else:
             raise ValueError("Row has neither debit nor credit amount")
 
+        raw_description = self._clean_text(row[COL_DESC])
         return Transaction(
             txn_date=self._parse_date(row[COL_DATE]),
             amount=amount,
             debit_credit=debit_credit,
-            raw_description=self._clean_text(row[COL_DESC]),
+            raw_description=raw_description,
             running_balance=self._parse_balance(row[COL_BALANCE]),
+            upi_meta=parse_upi_description(raw_description, settings.upi_noise_keywords),
         )

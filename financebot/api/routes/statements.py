@@ -1,1 +1,53 @@
 """Statement routes: upload PDF, list statements, list transactions for a statement."""
+from __future__ import annotations
+
+import os
+import sqlite3
+import tempfile
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+
+from financebot.api.deps import get_db
+from financebot.db.queries.transactions import list_transactions
+from financebot.pipeline.ingest import ingest_pdf
+
+router = APIRouter()
+
+
+@router.post("/upload")
+def upload_statement(
+    file: UploadFile,
+    password: Annotated[str | None, Form()] = None,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file.file.read())
+        tmp_path = tmp.name
+
+    try:
+        try:
+            statement = ingest_pdf(tmp_path, password=password, conn=conn)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        os.unlink(tmp_path)
+
+    return statement.model_dump()
+
+
+@router.get("")
+def list_statements(conn: sqlite3.Connection = Depends(get_db)):
+    rows = conn.execute(
+        "SELECT * FROM statements ORDER BY uploaded_at DESC"
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@router.get("/{statement_id}/transactions")
+def get_statement_transactions(
+    statement_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    return list_transactions(conn, statement_id=statement_id)
