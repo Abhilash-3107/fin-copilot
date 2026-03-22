@@ -1,1 +1,7 @@
 plans/
+
+__pycache__/
+
+.env
+
+data/
