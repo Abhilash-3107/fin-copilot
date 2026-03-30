@@ -36,3 +36,12 @@ class AnnotationPatch(BaseModel):
     subcategory: Optional[str] = None
     tags: Optional[list[str]] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class AutoAnnotateResult(BaseModel):
+    total_processed: int
+    rule_matched: int
+    llm_annotated: int
+    llm_failed: int
+    low_confidence: int       # annotations below settings.confidence_threshold
+    already_annotated: int    # transactions skipped because already annotated

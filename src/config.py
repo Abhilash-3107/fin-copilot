@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     db_path: str = str(Path(__file__).parent.parent / "data" / "finance.db")
     ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3.5:7b"
     confidence_threshold: float = 0.85
     api_base_url: str = "http://localhost:8000"
 

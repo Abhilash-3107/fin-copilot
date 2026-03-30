@@ -54,7 +54,10 @@ def init_db(conn: sqlite3.Connection) -> None:
                     # Ignore idempotent ALTER TABLE re-runs:
                     # - "duplicate column" when ADD COLUMN already applied
                     # - "no such column" when DROP COLUMN already applied
-                    if "duplicate column" in err or "no such column" in err:
+                    # - "no such table" when ALTER precedes CREATE in migration (fresh DB)
+                    if "duplicate column" in err or "no such column" in err or (
+                        stmt.upper().startswith("ALTER TABLE") and "no such table" in err
+                    ):
                         pass
                     else:
                         raise

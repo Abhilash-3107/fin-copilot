@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from src.api.deps import get_db
 from src.config import settings
@@ -13,9 +14,23 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
-from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch
+from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
+from src.pipeline.annotate import auto_annotate
 
 router = APIRouter()
+
+
+class AutoAnnotateRequest(BaseModel):
+    statement_id: str | None = None
+    transaction_ids: list[str] | None = None
+
+
+@router.post("/auto-annotate", response_model=AutoAnnotateResult)
+def auto_annotate_endpoint(
+    body: AutoAnnotateRequest,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    return auto_annotate(conn, body.statement_id, body.transaction_ids)
 
 
 @router.post("", status_code=201)

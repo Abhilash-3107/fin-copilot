@@ -608,11 +608,14 @@ async function apiFetch(path, opts = {}) {
 }
 
 // ── Load data ────────────────────────────────────────────────────────
+const stmtMonthMap = {};
+
 async function loadStatements() {
   try {
     const stmts = await apiFetch('/statements');
     const sel = document.getElementById('stmt-select');
     for (const s of stmts) {
+      stmtMonthMap[s.id] = s.statement_month;
       const opt = document.createElement('option');
       opt.value = s.id;
       opt.textContent = `${s.bank_name} — ${s.statement_month}`;
@@ -1280,7 +1283,12 @@ function bindEvents() {
   document.getElementById('panel-cancel-btn').addEventListener('click', closePanel);
   document.getElementById('panel-save-btn').addEventListener('click', saveAnnotation);
   document.getElementById('refresh-btn').addEventListener('click', loadTransactions);
-  document.getElementById('stmt-select').addEventListener('change', loadTransactions);
+  document.getElementById('stmt-select').addEventListener('change', () => {
+    const stmtId = document.getElementById('stmt-select').value;
+    const monthInput = document.getElementById('month-filter');
+    monthInput.value = stmtId ? (stmtMonthMap[stmtId] || '') : '';
+    loadTransactions();
+  });
   document.getElementById('month-filter').addEventListener('change', loadTransactions);
   document.getElementById('unannotated-only').addEventListener('change', loadTransactions);
 
