@@ -26,6 +26,34 @@
     header h1 { font-size: 16px; font-weight: 600; color: #a5b4fc; }
     header .meta { font-size: 12px; color: #64748b; margin-left: auto; }
 
+    .model-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+    }
+    .model-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: #1e2235;
+      border: 1px solid #2d3148;
+      border-radius: 20px;
+      padding: 3px 9px;
+      color: #94a3b8;
+      white-space: nowrap;
+    }
+    .model-pill .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-running  { background: #22c55e; box-shadow: 0 0 4px #22c55e; }
+    .dot-available { background: #f59e0b; }
+    .dot-not_pulled { background: #ef4444; }
+    .dot-unknown  { background: #64748b; }
+
     .toolbar {
       display: flex;
       align-items: center;
@@ -115,8 +143,15 @@
       font-size: 11px;
       font-weight: 500;
     }
-    .pill-pending  { background: #292524; color: #a8a29e; }
+    .pill-pending   { background: #292524; color: #a8a29e; }
     .pill-annotated { background: #14532d; color: #86efac; }
+    .pill-source-manual   { background: #14532d; color: #86efac; }
+    .pill-source-rule     { background: #1e3a5f; color: #7dd3fc; }
+    .pill-source-llm      { background: #3b1f5e; color: #c4b5fd; }
+    .pill-source-model    { background: #3b1f5e; color: #c4b5fd; }
+    .pill-source-rag_direct   { background: #1e3a5f; color: #93c5fd; }
+    .pill-source-rag_prompted { background: #1e3a5f; color: #93c5fd; }
+    .pill-source-imported { background: #292524; color: #d6d3d1; }
     .pill-cat {
       background: #1e1b4b;
       color: #a5b4fc;
@@ -254,6 +289,53 @@
     .btn:hover { opacity: 0.85; }
     .btn-primary { background: #6366f1; color: #fff; flex: 1; }
     .btn-ghost { background: #1e2235; color: #94a3b8; }
+
+    /* Ingest modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      width: 400px;
+      max-width: 90vw;
+      padding: 24px;
+    }
+    .modal h3 { font-size: 15px; font-weight: 600; color: #a5b4fc; margin-bottom: 16px; }
+    .modal .field { margin-bottom: 14px; }
+    .modal .field label { display: block; font-size: 12px; color: #64748b; margin-bottom: 5px; }
+    .modal .field input[type="text"],
+    .modal .field input[type="password"] {
+      width: 100%;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .modal .field input[type="file"] {
+      width: 100%;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #94a3b8;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
+    .modal-status { font-size: 12px; color: #64748b; margin-top: 10px; min-height: 18px; }
+    .modal-status.running { color: #a5b4fc; }
+    .modal-status.success { color: #86efac; }
+    .modal-status.error   { color: #fca5a5; }
 
     .toast {
       position: fixed;
@@ -417,6 +499,16 @@
 <header>
   <h1>Finance Copilot</h1>
   <span>/ Annotate</span>
+  <div class="model-status" id="model-status">
+    <div class="model-pill" id="pill-chat">
+      <span class="dot dot-unknown"></span>
+      <span id="pill-chat-label">chat</span>
+    </div>
+    <div class="model-pill" id="pill-embed">
+      <span class="dot dot-unknown"></span>
+      <span id="pill-embed-label">embed</span>
+    </div>
+  </div>
   <span class="meta" id="progress-label"></span>
 </header>
 
@@ -438,9 +530,19 @@
     Unannotated only
   </label>
 
-  <button class="btn btn-ghost" id="refresh-btn" style="margin-left:auto">
+  <button class="btn btn-ghost" id="delete-stmt-btn" style="color:#ef4444;border-color:#7f1d1d;display:none" title="Delete selected statement">Delete statement</button>
+
+  <button class="btn btn-ghost" id="annotate-btn" style="display:none;margin-left:auto">Annotate</button>
+  <button class="btn btn-ghost" id="ingest-btn">Ingest</button>
+
+  <button class="btn btn-ghost" id="refresh-btn">
     Refresh
   </button>
+
+  <button class="btn btn-ghost" id="embed-btn" onclick="generateEmbeddings()">
+    Embed
+  </button>
+  <span class="badge" id="embed-status" style="display:none"></span>
 
   <span class="badge" id="count-badge">0</span>
 </div>
@@ -531,6 +633,26 @@
   </div>
 </div>
 
+<!-- Ingest modal -->
+<div class="modal-backdrop" id="ingest-modal">
+  <div class="modal">
+    <h3>Ingest document</h3>
+    <div class="field">
+      <label>PDF file <span style="color:#ef4444">*</span></label>
+      <input type="file" id="ingest-file" accept=".pdf" />
+    </div>
+    <div class="field">
+      <label>Password (if encrypted)</label>
+      <input type="password" id="ingest-password" placeholder="leave blank if none" />
+    </div>
+    <div class="modal-status" id="ingest-status"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="ingest-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="ingest-upload-btn" style="flex:1">Upload</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -562,9 +684,40 @@ let editTags = [];
 let allPeople = [];     // loaded once on init, updated when new person created
 let allLabels = new Set(); // accumulated from all membership labels seen
 
+// ── Model status ─────────────────────────────────────────────────────
+let lastHealthStatus = { chat: 'unknown', embed: 'unknown' };
+
+async function pollModelStatus() {
+  try {
+    const h = await apiFetch('/health');
+    lastHealthStatus = { chat: h.chat_model.status, embed: h.embedding_model.status };
+    _updateModelPill('pill-chat', 'pill-chat-label', h.chat_model);
+    _updateModelPill('pill-embed', 'pill-embed-label', h.embedding_model);
+  } catch (_) {
+    lastHealthStatus = { chat: 'unknown', embed: 'unknown' };
+    _setDot('pill-chat', 'unknown');
+    _setDot('pill-embed', 'unknown');
+  }
+}
+
+function _updateModelPill(pillId, labelId, model) {
+  const label = model.name.split(':')[0]; // strip tag, e.g. "qwen3.5:7b" → "qwen3.5"
+  document.getElementById(labelId).textContent = label;
+  _setDot(pillId, model.status);
+  const titles = { running: 'Running', available: 'Pulled, not loaded', not_pulled: 'Not pulled' };
+  document.getElementById(pillId).title = titles[model.status] || model.status;
+}
+
+function _setDot(pillId, status) {
+  const dot = document.querySelector(`#${pillId} .dot`);
+  dot.className = `dot dot-${status}`;
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────
 async function init() {
   populateCategoryDropdown();
+  pollModelStatus();
+  setInterval(pollModelStatus, 15000); // refresh every 15s
   await loadStatements();
   await loadTransactions();
   allPeople = await apiFetch('/people').catch(() => []);
@@ -614,15 +767,42 @@ async function loadStatements() {
   try {
     const stmts = await apiFetch('/statements');
     const sel = document.getElementById('stmt-select');
+    // Clear existing options except the "All statements" placeholder
+    while (sel.options.length > 1) sel.remove(1);
     for (const s of stmts) {
       stmtMonthMap[s.id] = s.statement_month;
       const opt = document.createElement('option');
       opt.value = s.id;
       opt.textContent = `${s.bank_name} — ${s.statement_month}`;
       sel.appendChild(opt);
+      // Fetch embedding stats async and update option text when ready
+      apiFetch(`/embeddings/stats/${s.id}`).then(stats => {
+        opt.textContent = `${s.bank_name} — ${s.statement_month} [${stats.embedded}/${stats.annotated} embedded]`;
+      }).catch(() => {});
     }
   } catch (e) {
     console.error('Could not load statements', e);
+  }
+}
+
+async function generateEmbeddings() {
+  const stmt = document.getElementById('stmt-select').value;
+  const statusEl = document.getElementById('embed-status');
+  statusEl.style.display = '';
+  statusEl.className = 'badge';
+  statusEl.textContent = 'Generating…';
+  try {
+    const body = stmt ? { statement_id: stmt } : {};
+    const result = await apiFetch('/embeddings/generate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    statusEl.textContent = `${result.embedded} embedded, ${result.skipped} skipped`;
+    statusEl.className = 'badge green';
+    await loadStatements();
+  } catch (e) {
+    statusEl.textContent = 'Error';
+    console.error('generateEmbeddings failed', e);
   }
 }
 
@@ -705,8 +885,10 @@ function renderTable() {
     const catHtml  = ann
       ? `<span class="pill pill-cat">${ann.category}</span>${ann.subcategory ? `<span class="pill pill-cat">${ann.subcategory}</span>` : ''}`
       : '—';
+    const sourceLabel = { manual: 'manual', rule: 'rule', llm: 'llm', model: 'llm',
+                           rag_direct: 'rag', rag_prompted: 'rag', imported: 'imported' };
     const statusHtml = ann
-      ? `<span class="pill pill-annotated">annotated</span>`
+      ? `<span class="pill pill-source-${ann.source}">${sourceLabel[ann.source] ?? ann.source}</span>`
       : `<span class="pill pill-pending">pending</span>`;
 
     tr.innerHTML = `
@@ -755,6 +937,7 @@ function openPanel(txn) {
       ${txn.debit_credit === 'debit' ? '−' : '+'} ₹${txn.amount.toLocaleString('en-IN', {minimumFractionDigits:2})}
       <small style="color:#64748b">(${txn.debit_credit})</small>
     </span></div>
+    ${ann ? `<div class="row"><span class="label">Source</span><span class="val"><span class="pill pill-source-${ann.source}">${ann.source}</span></span></div>` : ''}
     <div class="row" style="margin-top:8px"><span class="label">Description</span></div>
     <div style="margin-top:4px;color:#cbd5e1;font-size:13px;word-break:break-word">${escHtml(txn.raw_description)}</div>
     ${noteHtml}
@@ -1276,8 +1459,119 @@ async function saveAnnotation() {
   }
 }
 
+// ── Ingest ───────────────────────────────────────────────────────────
+let ingestedStatement = null;
+
+function openIngestModal() {
+  document.getElementById('ingest-file').value = '';
+  document.getElementById('ingest-password').value = '';
+  document.getElementById('ingest-status').textContent = '';
+  document.getElementById('ingest-status').className = 'modal-status';
+  document.getElementById('ingest-upload-btn').disabled = false;
+  ingestedStatement = null;
+  document.getElementById('ingest-modal').classList.add('open');
+}
+
+function closeIngestModal() {
+  document.getElementById('ingest-modal').classList.remove('open');
+}
+
+async function runUpload() {
+  const fileInput = document.getElementById('ingest-file');
+  const password = document.getElementById('ingest-password').value.trim();
+  const statusEl = document.getElementById('ingest-status');
+  const uploadBtn = document.getElementById('ingest-upload-btn');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = 'Please select a PDF file.';
+    statusEl.className = 'modal-status error';
+    return;
+  }
+
+  uploadBtn.disabled = true;
+  statusEl.textContent = 'Uploading…';
+  statusEl.className = 'modal-status running';
+
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    if (password) form.append('password', password);
+
+    const res = await fetch(API + '/statements/upload', { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(body);
+    }
+    ingestedStatement = await res.json();
+  } catch (e) {
+    statusEl.textContent = `Upload failed: ${e.message}`;
+    statusEl.className = 'modal-status error';
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  statusEl.textContent = `Uploaded successfully.`;
+  statusEl.className = 'modal-status success';
+
+  // Reload statements and select the new one
+  await loadStatements();
+  const sel = document.getElementById('stmt-select');
+  sel.value = ingestedStatement.id;
+  document.getElementById('delete-stmt-btn').style.display = '';
+  document.getElementById('annotate-btn').style.display = '';
+  const monthInput = document.getElementById('month-filter');
+  monthInput.value = ingestedStatement.statement_month || '';
+  await loadTransactions();
+
+  setTimeout(closeIngestModal, 1000);
+}
+
+async function runAnnotate() {
+  const stmtId = document.getElementById('stmt-select').value;
+  if (!stmtId) return;
+
+  const notRunning = [];
+  if (lastHealthStatus.chat !== 'running') notRunning.push('LLM (chat)');
+  if (lastHealthStatus.embed !== 'running') notRunning.push('embedding');
+  if (notRunning.length > 0) {
+    const names = notRunning.join(' and ');
+    if (!confirm(`${names} model${notRunning.length > 1 ? 's are' : ' is'} not running. Annotation may be incomplete or fail. Continue anyway?`)) return;
+  }
+
+  const btn = document.getElementById('annotate-btn');
+  btn.disabled = true;
+  btn.textContent = 'Annotating…';
+
+  let result;
+  try {
+    result = await apiFetch('/annotations/auto-annotate', {
+      method: 'POST',
+      body: JSON.stringify({ statement_id: stmtId }),
+    });
+  } catch (e) {
+    showToast('Annotation failed: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Annotate';
+    return;
+  }
+
+  const { total_processed, rule_matched, rag_direct, rag_prompted, llm, failed } = result;
+  showToast(`Done — ${total_processed} txns: ${rule_matched} rules, ${rag_direct} RAG direct, ${rag_prompted} RAG prompted, ${llm} LLM, ${failed} failed.`, 'success');
+  btn.disabled = false;
+  btn.textContent = 'Annotate';
+  document.getElementById('unannotated-only').checked = false;
+  await loadTransactions();
+}
+
 // ── Bindings ─────────────────────────────────────────────────────────
 function bindEvents() {
+  document.getElementById('ingest-btn').addEventListener('click', openIngestModal);
+  document.getElementById('ingest-cancel-btn').addEventListener('click', closeIngestModal);
+  document.getElementById('ingest-upload-btn').addEventListener('click', runUpload);
+  document.getElementById('ingest-modal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('ingest-modal')) closeIngestModal();
+  });
+
   document.getElementById('overlay').addEventListener('click', closePanel);
   document.getElementById('panel-close-btn').addEventListener('click', closePanel);
   document.getElementById('panel-cancel-btn').addEventListener('click', closePanel);
@@ -1287,7 +1581,30 @@ function bindEvents() {
     const stmtId = document.getElementById('stmt-select').value;
     const monthInput = document.getElementById('month-filter');
     monthInput.value = stmtId ? (stmtMonthMap[stmtId] || '') : '';
+    document.getElementById('delete-stmt-btn').style.display = stmtId ? '' : 'none';
+    document.getElementById('annotate-btn').style.display = stmtId ? '' : 'none';
     loadTransactions();
+  });
+
+  document.getElementById('annotate-btn').addEventListener('click', runAnnotate);
+
+  document.getElementById('delete-stmt-btn').addEventListener('click', async () => {
+    const sel = document.getElementById('stmt-select');
+    const stmtId = sel.value;
+    if (!stmtId) return;
+    const label = sel.options[sel.selectedIndex]?.text ?? stmtId;
+    if (!confirm(`Delete "${label}" and all its transactions, annotations, and embeddings?`)) return;
+    try {
+      await apiFetch(`/statements/${stmtId}`, { method: 'DELETE' });
+      showToast('Statement deleted', 'success');
+    } catch (e) {
+      showToast('Delete failed: ' + e.message, 'error');
+      return;
+    }
+    document.getElementById('delete-stmt-btn').style.display = 'none';
+    await loadStatements();
+    document.getElementById('month-filter').value = '';
+    await loadTransactions();
   });
   document.getElementById('month-filter').addEventListener('change', loadTransactions);
   document.getElementById('unannotated-only').addEventListener('change', loadTransactions);

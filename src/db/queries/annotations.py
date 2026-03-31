@@ -64,7 +64,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
         SELECT a.*, t.txn_date, t.amount, t.debit_credit, t.raw_description
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE a.source = 'model' AND a.confidence < ?
+        WHERE a.source IN ('model','rule','rag_direct','rag_prompted','llm') AND a.confidence < ?
         ORDER BY a.confidence ASC, a.annotated_at ASC
         """,
         (threshold,),

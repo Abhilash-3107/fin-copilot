@@ -139,7 +139,7 @@ def apply_rules(txn: dict) -> AnnotationCreate | None:
                     subcategory=rule.subcategory,
                     tags=rule.tags,
                     confidence=0.95,
-                    source="model",
+                    source="rule",
                 )
 
     return None

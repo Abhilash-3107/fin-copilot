@@ -103,11 +103,11 @@ class TestRuleEngine:
         assert result is not None
         assert result.confidence == 0.95
 
-    def test_source_is_model(self):
+    def test_source_is_rule(self):
         txn = {"id": "t7", "raw_description": "Uber ride payment", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
-        assert result.source == "model"
+        assert result.source == "rule"
 
     def test_irctc_maps_to_travel(self):
         txn = {"id": "t8", "raw_description": "IRCTC ticket booking", "upi_meta": None}
@@ -252,7 +252,9 @@ class TestAutoAnnotatePipeline:
             confidence=0.7,
         )
 
-        with patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+        # RAG embedding unavailable → falls through to plain LLM
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
             result = auto_annotate(self.conn)
 
         assert result.llm_annotated == 1
@@ -266,7 +268,8 @@ class TestAutoAnnotatePipeline:
 
         _insert_txn(self.conn, "t4", "completely unknown merchant 99999")
 
-        with patch("src.pipeline.annotate.annotate_transaction_llm", return_value=None):
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=None):
             result = auto_annotate(self.conn)
 
         assert result.llm_failed == 1
@@ -304,7 +307,8 @@ class TestAutoAnnotatePipeline:
             confidence=0.3,  # below default threshold of 0.85
         )
 
-        with patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
             result = auto_annotate(self.conn)
 
         assert result.low_confidence == 1
@@ -356,7 +360,8 @@ class TestAutoAnnotateEndpoint:
         response = self.client.post("/annotations/auto-annotate", json={})
         assert response.status_code == 200
         data = response.json()
-        for key in ("total_processed", "rule_matched", "llm_annotated",
+        for key in ("total_processed", "rule_matched", "rag_direct_annotated",
+                    "rag_prompted_annotated", "llm_annotated",
                     "llm_failed", "low_confidence", "already_annotated"):
             assert key in data, f"missing key: {key}"
 
@@ -368,3 +373,251 @@ class TestAutoAnnotateEndpoint:
         data = response.json()
         assert data["rule_matched"] == 1
         assert data["total_processed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Embed text builder tests
+# ---------------------------------------------------------------------------
+
+class TestBuildEmbedText:
+    def test_basic(self):
+        from src.pipeline.embed import build_embed_text
+        txn = {"debit_credit": "debit", "amount": 500.0,
+               "raw_description": "SWIGGY ORDER", "upi_meta": None}
+        result = build_embed_text(txn)
+        assert result == "debit 500.0 SWIGGY ORDER"
+
+    def test_with_upi_note(self):
+        from src.pipeline.embed import build_embed_text
+        txn = {"debit_credit": "debit", "amount": 500.0,
+               "raw_description": "UPI TRANSFER",
+               "upi_meta": json.dumps({"note": "food order"})}
+        result = build_embed_text(txn)
+        assert "food order" in result
+        assert "500.0" in result
+
+    def test_missing_upi_note_key(self):
+        from src.pipeline.embed import build_embed_text
+        txn = {"debit_credit": "credit", "amount": 10000.0,
+               "raw_description": "SALARY CREDIT",
+               "upi_meta": json.dumps({"note": None})}
+        result = build_embed_text(txn)
+        assert result == "credit 10000.0 SALARY CREDIT"
+
+
+# ---------------------------------------------------------------------------
+# Few-shot prompt builder tests
+# ---------------------------------------------------------------------------
+
+class TestFewShotPrompt:
+    def test_prompt_includes_examples(self):
+        from src.pipeline.llm import _build_fewshot_user_prompt
+        txn = {"id": "t1", "raw_description": "food delivery", "upi_meta": None,
+               "amount": 500, "debit_credit": "debit", "txn_date": "2026-01-15"}
+        examples = [{
+            "raw_description": "Swiggy order", "upi_note": "",
+            "amount": 450, "debit_credit": "debit",
+            "category": "Food & Dining", "subcategory": "Food Delivery",
+            "merchant": "Swiggy",
+        }]
+        result = _build_fewshot_user_prompt(txn, ["Food & Dining"], examples)
+        assert "Example 1:" in result
+        assert "Swiggy" in result
+        assert "Now classify this transaction:" in result
+        assert "food delivery" in result
+
+    def test_prompt_shows_category_subcategory(self):
+        from src.pipeline.llm import _build_fewshot_user_prompt
+        txn = {"id": "t1", "raw_description": "some txn", "upi_meta": None,
+               "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
+        examples = [{
+            "raw_description": "IRCTC booking", "upi_note": "",
+            "amount": 800, "debit_credit": "debit",
+            "category": "Travel", "subcategory": "Train", "merchant": "IRCTC",
+        }]
+        result = _build_fewshot_user_prompt(txn, ["Travel"], examples)
+        assert "Travel > Train" in result
+
+    def test_empty_examples_still_renders_transaction(self):
+        from src.pipeline.llm import _build_fewshot_user_prompt
+        txn = {"id": "t1", "raw_description": "mystery", "upi_meta": None,
+               "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
+        result = _build_fewshot_user_prompt(txn, ["Uncategorized"], [])
+        assert "mystery" in result
+
+
+# ---------------------------------------------------------------------------
+# RAG pipeline integration tests
+# ---------------------------------------------------------------------------
+
+class TestRAGPipeline:
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _insert_donor(self, txn_id: str, description: str, category: str,
+                      subcategory: str | None = None, merchant: str | None = None) -> None:
+        """Insert a transaction + annotation to act as a RAG donor."""
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+        _insert_txn(self.conn, txn_id, description)
+        insert_annotation(self.conn, Annotation(
+            transaction_id=txn_id,
+            category=category,
+            subcategory=subcategory,
+            merchant=merchant,
+            confidence=0.95,
+            source="rule",
+        ))
+        self.conn.commit()
+
+    def test_rag_direct_copies_annotation(self):
+        """When cosine similarity >= rag_direct_threshold, annotation is copied directly."""
+        from src.pipeline.annotate import auto_annotate
+
+        self._insert_donor("donor_1", "Swiggy food order", "Food & Dining", "Food Delivery", "Swiggy")
+        _insert_txn(self.conn, "target_1", "unknown food delivery app")
+
+        mock_vec = [0.1] * 768
+        # distance=0.05 → similarity=0.95 (above 0.92 threshold)
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "donor_1", "distance": 0.05},
+             ]):
+            result = auto_annotate(self.conn, transaction_ids=["target_1"])
+
+        assert result.rag_direct_annotated == 1
+        assert result.rag_prompted_annotated == 0
+        ann = get_annotation_by_transaction(self.conn, "target_1")
+        assert ann is not None
+        assert ann["source"] == "rag_direct"
+        assert ann["category"] == "Food & Dining"
+        assert ann["confidence"] == pytest.approx(0.95)
+
+    def test_rag_prompted_uses_llm_with_examples(self):
+        """When similarity is below direct threshold, LLM is called with few-shot examples."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        self._insert_donor("donor_2", "Some shop transaction", "Shopping")
+        _insert_txn(self.conn, "target_2", "ambiguous merchant name")
+
+        mock_vec = [0.1] * 768
+        llm_result = AnnotationResponse(
+            category="Shopping", subcategory="General Retail",
+            merchant=None, tags=["shopping"], confidence=0.75,
+        )
+        # distance=0.15 → similarity=0.85 (below 0.92 threshold)
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "donor_2", "distance": 0.15},
+             ]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_2"])
+
+        assert result.rag_prompted_annotated == 1
+        assert result.rag_direct_annotated == 0
+        ann = get_annotation_by_transaction(self.conn, "target_2")
+        assert ann is not None
+        assert ann["source"] == "rag_prompted"
+
+    def test_embedding_unavailable_falls_through_to_plain_llm(self):
+        """When embedding service is down, pipeline falls through to plain LLM."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "target_3", "mystery transaction xyz")
+        llm_result = AnnotationResponse(category="Uncategorized", confidence=0.5)
+
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("connection refused")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_3"])
+
+        assert result.llm_annotated == 1
+        assert result.rag_direct_annotated == 0
+        assert result.rag_prompted_annotated == 0
+
+    def test_no_similar_results_falls_through_to_plain_llm(self):
+        """When vec_items is empty, RAG finds nothing and plain LLM handles it."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "target_4", "new unique merchant")
+        mock_vec = [0.1] * 768
+        llm_result = AnnotationResponse(category="Shopping", confidence=0.7)
+
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_4"])
+
+        assert result.llm_annotated == 1
+
+    def test_rule_source_label_is_rule(self):
+        """Rules now produce source='rule' instead of 'model'."""
+        from src.pipeline.annotate import auto_annotate
+
+        _insert_txn(self.conn, "target_5", "Swiggy food order")
+        result = auto_annotate(self.conn, transaction_ids=["target_5"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_5")
+        assert ann["source"] == "rule"
+        assert result.rule_matched == 1
+
+
+# ---------------------------------------------------------------------------
+# Embeddings API endpoint tests
+# ---------------------------------------------------------------------------
+
+class TestEmbeddingsEndpoint:
+    def setup_method(self):
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+        app.dependency_overrides[api_get_db] = lambda: self.conn
+        self.client = TestClient(app)
+
+    def teardown_method(self):
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        app.dependency_overrides.pop(api_get_db, None)
+        self.conn.close()
+
+    def test_generate_returns_counts(self):
+        with patch("src.api.routes.embeddings.embed_annotated_transactions",
+                   return_value={"embedded": 3, "skipped": 1}):
+            response = self.client.post("/embeddings/generate", json={})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["embedded"] == 3
+        assert data["skipped"] == 1
+
+    def test_generate_with_statement_id(self):
+        with patch("src.api.routes.embeddings.embed_annotated_transactions",
+                   return_value={"embedded": 5, "skipped": 0}) as mock_embed:
+            response = self.client.post("/embeddings/generate", json={"statement_id": "stmt_01"})
+        assert response.status_code == 200
+        mock_embed.assert_called_once()
+        call_kwargs = mock_embed.call_args
+        assert call_kwargs[0][1] == "stmt_01" or call_kwargs[1].get("statement_id") == "stmt_01"
+
+    def test_stats_endpoint_shape(self):
+        response = self.client.get("/embeddings/stats/stmt_01")
+        assert response.status_code == 200
+        data = response.json()
+        assert "total" in data
+        assert "embedded" in data
+        assert "annotated" in data
+
+    def test_stats_returns_zero_counts_for_empty_statement(self):
+        response = self.client.get("/embeddings/stats/stmt_01")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 0
+        assert data["embedded"] == 0
+        assert data["annotated"] == 0

@@ -16,7 +16,7 @@ class Annotation(BaseModel):
     subcategory: Optional[str] = None
     tags: str = ""  # comma-separated, matches DB column
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "imported"]
+    source: Literal["manual", "model", "rule", "rag_direct", "rag_prompted", "llm", "imported"]
     annotated_at: Optional[datetime] = None
 
 
@@ -27,7 +27,7 @@ class AnnotationCreate(BaseModel):
     subcategory: Optional[str] = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "imported"]
+    source: Literal["manual", "model", "rule", "rag_direct", "rag_prompted", "llm", "imported"]
 
 
 class AnnotationPatch(BaseModel):
@@ -41,6 +41,8 @@ class AnnotationPatch(BaseModel):
 class AutoAnnotateResult(BaseModel):
     total_processed: int
     rule_matched: int
+    rag_direct_annotated: int = 0
+    rag_prompted_annotated: int = 0
     llm_annotated: int
     llm_failed: int
     low_confidence: int       # annotations below settings.confidence_threshold

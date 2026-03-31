@@ -45,6 +45,35 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     return [dict(row) for row in rows]
 
 
+@router.delete("/{statement_id}")
+def delete_statement(
+    statement_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Delete a statement and all associated transactions, annotations, and embeddings."""
+    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    txn_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
+        ).fetchall()
+    ]
+
+    if txn_ids:
+        placeholders = ",".join("?" * len(txn_ids))
+        conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+        conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({placeholders})", txn_ids)
+        conn.execute(f"DELETE FROM vec_items WHERE transaction_id IN ({placeholders})", txn_ids)
+        conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+
+    conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+    conn.commit()
+    return {"deleted": statement_id}
+
+
 @router.get("/{statement_id}/transactions")
 def get_statement_transactions(
     statement_id: str,

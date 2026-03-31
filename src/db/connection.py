@@ -20,7 +20,9 @@ def get_connection(db_path: str | None = None) -> sqlite3.Connection:
 
     try:
         import sqlite_vec
+        conn.enable_load_extension(True)
         sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
     except Exception:
         pass  # sqlite-vec unavailable (e.g. unit test environments without the extension)
 
