@@ -195,12 +195,15 @@ def _try_rag_annotation(
         "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f",
         txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold,
     )
+    # Only trust human-verified or rule-matched annotations for direct copy;
+    # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
+    _TRUSTED_SOURCES = {"manual", "rule", "imported"}
     if cosine_similarity >= settings.rag_direct_threshold:
         donor_ann = get_annotation_by_transaction(conn, top_match["transaction_id"])
-        if donor_ann:
+        if donor_ann and donor_ann.get("source") in _TRUSTED_SOURCES:
             logger.debug(
-                "rag_direct | txn=%s  → %s/%s  conf=%.4f",
-                txn["id"], donor_ann["category"], donor_ann.get("subcategory"), cosine_similarity,
+                "rag_direct | txn=%s  → %s/%s  conf=%.4f  donor_source=%s",
+                txn["id"], donor_ann["category"], donor_ann.get("subcategory"), cosine_similarity, donor_ann["source"],
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -210,6 +213,11 @@ def _try_rag_annotation(
                 tags=[t for t in donor_ann.get("tags", "").split(",") if t],
                 confidence=round(cosine_similarity, 4),
                 source="rag_direct",
+            )
+        elif donor_ann:
+            logger.debug(
+                "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
+                txn["id"], donor_ann.get("source"),
             )
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
@@ -267,5 +275,10 @@ def _build_examples_from_similar(
             "category": ann_row["category"],
             "subcategory": ann_row.get("subcategory"),
             "merchant": ann_row.get("merchant"),
+            "source": ann_row.get("source"),
         })
+
+    # Prioritize human-verified examples first — LLMs are sensitive to example ordering
+    _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}
+    examples.sort(key=lambda e: _SOURCE_PRIORITY.get(e.get("source", ""), 9))
     return examples
