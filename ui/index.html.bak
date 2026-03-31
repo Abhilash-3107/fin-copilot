@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Finance Copilot — Annotate</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 24px;
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+    }
+    header h1 { font-size: 16px; font-weight: 600; color: #a5b4fc; }
+    header .meta { font-size: 12px; color: #64748b; margin-left: auto; }
+
+    .model-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+    }
+    .model-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: #1e2235;
+      border: 1px solid #2d3148;
+      border-radius: 20px;
+      padding: 3px 9px;
+      color: #94a3b8;
+      white-space: nowrap;
+    }
+    .model-pill .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-running  { background: #22c55e; box-shadow: 0 0 4px #22c55e; }
+    .dot-available { background: #f59e0b; }
+    .dot-not_pulled { background: #ef4444; }
+    .dot-unknown  { background: #64748b; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 24px;
+      background: #13151f;
+      border-bottom: 1px solid #1e2235;
+    }
+    .toolbar select, .toolbar input {
+      background: #1e2235;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .toolbar label { font-size: 13px; color: #94a3b8; }
+    .badge {
+      background: #312e81;
+      color: #a5b4fc;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge.green { background: #14532d; color: #86efac; }
+
+    .progress-bar {
+      height: 3px;
+      background: #1e2235;
+    }
+    .progress-bar-fill {
+      height: 3px;
+      background: #6366f1;
+      transition: width 0.3s ease;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      padding: 0 24px 120px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0;
+    }
+    thead th {
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      background: #13151f;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      border-bottom: 1px solid #1e2235;
+    }
+    tbody tr {
+      border-bottom: 1px solid #1a1d27;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    tbody tr:hover { background: #1a1d27; }
+    tbody tr.active { background: #1e2440; }
+    tbody tr.annotated { opacity: 0.55; }
+    tbody tr.annotated:hover { opacity: 1; background: #1a1d27; }
+    td {
+      padding: 10px 12px;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+    td.desc {
+      white-space: normal;
+      max-width: 320px;
+      color: #cbd5e1;
+    }
+    .amount-debit  { color: #f87171; font-variant-numeric: tabular-nums; }
+    .amount-credit { color: #4ade80; font-variant-numeric: tabular-nums; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .pill-pending   { background: #292524; color: #a8a29e; }
+    .pill-annotated { background: #14532d; color: #86efac; }
+    .pill-source-manual   { background: #14532d; color: #86efac; }
+    .pill-source-rule     { background: #1e3a5f; color: #7dd3fc; }
+    .pill-source-llm      { background: #3b1f5e; color: #c4b5fd; }
+    .pill-source-model    { background: #3b1f5e; color: #c4b5fd; }
+    .pill-source-rag_direct   { background: #1e3a5f; color: #93c5fd; }
+    .pill-source-rag_prompted { background: #1e3a5f; color: #93c5fd; }
+    .pill-source-imported { background: #292524; color: #d6d3d1; }
+    .pill-cat {
+      background: #1e1b4b;
+      color: #a5b4fc;
+      margin-right: 4px;
+    }
+
+    /* Slide-in panel */
+    .panel-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 100;
+    }
+    .panel-overlay.open { display: block; }
+    .panel {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: 420px;
+      background: #1a1d27;
+      border-left: 1px solid #2d3148;
+      z-index: 101;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.2s ease;
+    }
+    .panel.open { transform: translateX(0); }
+
+    .panel-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #2d3148;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel-header h2 { font-size: 14px; font-weight: 600; color: #a5b4fc; }
+    .panel-close {
+      background: none;
+      border: none;
+      color: #64748b;
+      font-size: 20px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .panel-close:hover { color: #e2e8f0; }
+
+    .panel-txn {
+      padding: 16px 20px;
+      background: #13151f;
+      border-bottom: 1px solid #2d3148;
+    }
+    .panel-txn .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .panel-txn .label { color: #64748b; font-size: 12px; }
+    .panel-txn .val { font-size: 13px; }
+
+    .panel-form {
+      padding: 16px 20px;
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      margin-bottom: 5px;
+    }
+    .field select, .field input[type=text] {
+      width: 100%;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .field select:focus, .field input[type=text]:focus {
+      outline: none;
+      border-color: #6366f1;
+    }
+
+    .tags-input {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      padding: 6px 8px;
+      min-height: 38px;
+      align-items: center;
+    }
+    .tags-input:focus-within { border-color: #6366f1; }
+    .tag-chip {
+      background: #1e1b4b;
+      color: #a5b4fc;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .tag-chip button {
+      background: none; border: none; color: #6366f1;
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+    }
+    .tags-input input {
+      border: none; background: none; color: #e2e8f0;
+      font-size: 13px; outline: none; flex: 1; min-width: 60px;
+    }
+
+    .panel-footer {
+      padding: 16px 20px;
+      border-top: 1px solid #2d3148;
+      display: flex;
+      gap: 10px;
+    }
+    .btn {
+      padding: 8px 18px;
+      border-radius: 6px;
+      border: none;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: #6366f1; color: #fff; flex: 1; }
+    .btn-ghost { background: #1e2235; color: #94a3b8; }
+
+    /* Ingest modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: #1a1d27;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      width: 400px;
+      max-width: 90vw;
+      padding: 24px;
+    }
+    .modal h3 { font-size: 15px; font-weight: 600; color: #a5b4fc; margin-bottom: 16px; }
+    .modal .field { margin-bottom: 14px; }
+    .modal .field label { display: block; font-size: 12px; color: #64748b; margin-bottom: 5px; }
+    .modal .field input[type="text"],
+    .modal .field input[type="password"] {
+      width: 100%;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .modal .field input[type="file"] {
+      width: 100%;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #94a3b8;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
+    .modal-status { font-size: 12px; color: #64748b; margin-top: 10px; min-height: 18px; }
+    .modal-status.running { color: #a5b4fc; }
+    .modal-status.success { color: #86efac; }
+    .modal-status.error   { color: #fca5a5; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e2235;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      z-index: 200;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    .toast.success { border-color: #166534; color: #86efac; }
+    .toast.error   { border-color: #991b1b; color: #fca5a5; }
+
+    .empty {
+      text-align: center;
+      padding: 80px 24px;
+      color: #475569;
+    }
+    .empty p { margin-top: 8px; font-size: 13px; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #2d3148;
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .upi-note {
+      margin-top: 8px;
+      padding: 6px 10px;
+      background: #1e2440;
+      border-left: 2px solid #6366f1;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #a5b4fc;
+    }
+    .upi-note .label { color: #4f5a7a; margin-right: 6px; }
+
+    .section-divider {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #4f5a7a;
+      padding: 4px 0 8px;
+      border-top: 1px solid #2d3148;
+      margin-top: 4px;
+    }
+
+    .link-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #13151f;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .link-item .link-body { flex: 1; }
+    .link-item .link-type {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 3px;
+    }
+    .lt-split         { background: #1e3a5f; color: #7dd3fc; }
+    .lt-reimbursement { background: #14532d; color: #86efac; }
+    .lt-refund        { background: #3b1f5e; color: #c4b5fd; }
+    .lt-transfer      { background: #1c2f3a; color: #67e8f9; }
+    .link-other-desc  { color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+    .link-note        { color: #64748b; margin-top: 2px; }
+    .link-del-btn {
+      background: none; border: none; color: #475569;
+      cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px;
+      flex-shrink: 0;
+    }
+    .link-del-btn:hover { color: #f87171; }
+
+    .link-search-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .link-search-row input {
+      flex: 1;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .link-search-row input:focus { outline: none; border-color: #6366f1; }
+    .link-results {
+      margin-top: 6px;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    .link-result-item {
+      padding: 6px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    .link-result-item:hover { background: #1e2235; color: #e2e8f0; }
+    .link-result-item .amt { float: right; }
+    .link-add-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+      align-items: center;
+    }
+    .link-add-row select {
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .link-add-row input {
+      flex: 1;
+      background: #13151f;
+      border: 1px solid #2d3148;
+      color: #e2e8f0;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .link-add-row input:focus, .link-add-row select:focus { outline: none; border-color: #6366f1; }
+    .btn-sm {
+      padding: 5px 12px;
+      border-radius: 5px;
+      border: none;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #6366f1;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .btn-sm:hover { opacity: 0.85; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Finance Copilot</h1>
+  <span>/ Annotate</span>
+  <div class="model-status" id="model-status">
+    <div class="model-pill" id="pill-chat">
+      <span class="dot dot-unknown"></span>
+      <span id="pill-chat-label">chat</span>
+    </div>
+    <div class="model-pill" id="pill-embed">
+      <span class="dot dot-unknown"></span>
+      <span id="pill-embed-label">embed</span>
+    </div>
+  </div>
+  <span class="meta" id="progress-label"></span>
+</header>
+
+<div class="progress-bar">
+  <div class="progress-bar-fill" id="progress-fill" style="width:0%"></div>
+</div>
+
+<div class="toolbar">
+  <label>Statement</label>
+  <select id="stmt-select">
+    <option value="">All statements</option>
+  </select>
+
+  <label>Month</label>
+  <input type="month" id="month-filter" />
+
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+    <input type="checkbox" id="unannotated-only" checked />
+    Unannotated only
+  </label>
+
+  <button class="btn btn-ghost" id="delete-stmt-btn" style="color:#ef4444;border-color:#7f1d1d;display:none" title="Delete selected statement">Delete statement</button>
+
+  <button class="btn btn-ghost" id="annotate-btn" style="display:none;margin-left:auto">Annotate</button>
+  <button class="btn btn-ghost" id="ingest-btn">Ingest</button>
+
+  <button class="btn btn-ghost" id="refresh-btn">
+    Refresh
+  </button>
+
+  <button class="btn btn-ghost" id="embed-btn" onclick="generateEmbeddings()">
+    Embed
+  </button>
+  <span class="badge" id="embed-status" style="display:none"></span>
+
+  <span class="badge" id="count-badge">0</span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Description</th>
+        <th>Amount</th>
+        <th>Category</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="txn-body">
+      <tr>
+        <td colspan="5" class="empty">
+          <span class="spinner"></span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Annotation panel -->
+<div class="panel-overlay" id="overlay"></div>
+<div class="panel" id="panel">
+  <div class="panel-header">
+    <h2 id="panel-title">Annotate transaction</h2>
+    <button class="panel-close" id="panel-close-btn">&#x2715;</button>
+  </div>
+  <div class="panel-txn" id="panel-txn"></div>
+  <div class="panel-form" id="panel-form">
+    <div class="field">
+      <label>Category <span style="color:#ef4444">*</span></label>
+      <select id="f-category">
+        <option value="">— select —</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Subcategory</label>
+      <select id="f-subcategory">
+        <option value="">— none —</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Merchant</label>
+      <input type="text" id="f-merchant" placeholder="e.g. Swiggy" />
+    </div>
+    <div class="field">
+      <label>Tags</label>
+      <div class="tags-input" id="tags-container">
+        <input type="text" id="tags-raw" placeholder="type and press Enter" />
+      </div>
+    </div>
+
+    <div class="section-divider">Groups</div>
+
+    <div id="groups-list"></div>
+
+    <div style="position:relative">
+      <input type="text" id="group-search" placeholder="Add to group…" autocomplete="off"
+        style="width:100%;background:#13151f;border:1px solid #2d3148;color:#e2e8f0;padding:8px 10px;border-radius:6px;font-size:13px" />
+      <div id="group-dropdown" style="display:none;position:absolute;left:0;right:0;top:100%;margin-top:2px;background:#1a1d27;border:1px solid #2d3148;border-radius:6px;z-index:50;max-height:180px;overflow-y:auto"></div>
+    </div>
+
+    <div id="group-create-row" style="display:none;flex-direction:column;gap:6px;margin-top:6px">
+      <div class="link-add-row">
+        <select id="group-txn-type">
+          <option value="">— type —</option>
+          <option value="split">Split</option>
+          <option value="reimbursement">Reimbursement</option>
+          <option value="refund">Refund</option>
+          <option value="transfer">Transfer</option>
+          <option value="event">Event</option>
+        </select>
+        <button class="btn-sm" id="group-create-btn">Create &amp; add</button>
+      </div>
+      <div class="tags-input" id="group-labels-container" style="min-height:32px">
+        <input type="text" id="group-labels-raw" placeholder="labels (Enter to add)" />
+      </div>
+    </div>
+  </div>
+  <div class="panel-footer">
+    <button class="btn btn-ghost" id="panel-cancel-btn">Cancel</button>
+    <button class="btn btn-primary" id="panel-save-btn">Save annotation</button>
+  </div>
+</div>
+
+<!-- Ingest modal -->
+<div class="modal-backdrop" id="ingest-modal">
+  <div class="modal">
+    <h3>Ingest document</h3>
+    <div class="field">
+      <label>PDF file <span style="color:#ef4444">*</span></label>
+      <input type="file" id="ingest-file" accept=".pdf" />
+    </div>
+    <div class="field">
+      <label>Password (if encrypted)</label>
+      <input type="password" id="ingest-password" placeholder="leave blank if none" />
+    </div>
+    <div class="modal-status" id="ingest-status"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="ingest-cancel-btn">Cancel</button>
+      <button class="btn btn-primary" id="ingest-upload-btn" style="flex:1">Upload</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';  // same origin
+
+// ── Category taxonomy ────────────────────────────────────────────────
+const CATEGORIES = {
+  'Food & Dining':      ['Groceries', 'Restaurants', 'Cafes', 'Food Delivery', 'Alcohol'],
+  'Transport':          ['Fuel', 'Cab / Auto', 'Metro / Bus', 'Parking', 'Vehicle Maintenance', 'Toll'],
+  'Shopping':           ['Clothing', 'Electronics', 'Home & Kitchen', 'Books', 'Personal Care'],
+  'Housing':            ['Rent', 'Maintenance', 'Utilities', 'Internet', 'Household Supplies'],
+  'Health':             ['Doctor / Hospital', 'Pharmacy', 'Fitness', 'Insurance'],
+  'Entertainment':      ['Streaming', 'Movies / Events', 'Games', 'Hobbies', 'Trips', 'Concerts'],
+  'Subscriptions':      ['OTT', 'Music', 'News / Magazines', 'Software / SaaS', 'Cloud Storage', 'Other'],
+  'Education':          ['Courses', 'Books / Stationery', 'Fees'],
+  'Travel':             ['Flights', 'Hotels', 'Holiday Expenses'],
+  'Finance':            ['EMI', 'Credit Card Payment', 'Investment', 'Insurance Premium', 'Fees & Charges'],
+  'Income':             ['Salary', 'Freelance', 'Interest', 'Refund', 'Cashback'],
+  'Transfers':          ['Self Transfer', 'Family', 'Friends'],
+  'Opening Balance':    ['Carry-over'],
+  'Miscellaneous':      ['Unknown', 'Other'],
+};
+
+// ── State ────────────────────────────────────────────────────────────
+let transactions = [];
+let annotationMap = {};  // txn_id → annotation
+let activeTxn = null;
+let editTags = [];
+let allPeople = [];     // loaded once on init, updated when new person created
+let allLabels = new Set(); // accumulated from all membership labels seen
+
+// ── Model status ─────────────────────────────────────────────────────
+let lastHealthStatus = { chat: 'unknown', embed: 'unknown' };
+
+async function pollModelStatus() {
+  try {
+    const h = await apiFetch('/health');
+    lastHealthStatus = { chat: h.chat_model.status, embed: h.embedding_model.status };
+    _updateModelPill('pill-chat', 'pill-chat-label', h.chat_model);
+    _updateModelPill('pill-embed', 'pill-embed-label', h.embedding_model);
+  } catch (_) {
+    lastHealthStatus = { chat: 'unknown', embed: 'unknown' };
+    _setDot('pill-chat', 'unknown');
+    _setDot('pill-embed', 'unknown');
+  }
+}
+
+function _updateModelPill(pillId, labelId, model) {
+  const label = model.name.split(':')[0]; // strip tag, e.g. "qwen3.5:7b" → "qwen3.5"
+  document.getElementById(labelId).textContent = label;
+  _setDot(pillId, model.status);
+  const titles = { running: 'Running', available: 'Pulled, not loaded', not_pulled: 'Not pulled' };
+  document.getElementById(pillId).title = titles[model.status] || model.status;
+}
+
+function _setDot(pillId, status) {
+  const dot = document.querySelector(`#${pillId} .dot`);
+  dot.className = `dot dot-${status}`;
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────
+async function init() {
+  populateCategoryDropdown();
+  pollModelStatus();
+  setInterval(pollModelStatus, 15000); // refresh every 15s
+  await loadStatements();
+  await loadTransactions();
+  allPeople = await apiFetch('/people').catch(() => []);
+  bindEvents();
+}
+
+function populateCategoryDropdown() {
+  const catSel = document.getElementById('f-category');
+  for (const cat of Object.keys(CATEGORIES)) {
+    const opt = document.createElement('option');
+    opt.value = cat;
+    opt.textContent = cat;
+    catSel.appendChild(opt);
+  }
+  catSel.addEventListener('change', () => populateSubcategory(catSel.value));
+}
+
+function populateSubcategory(cat) {
+  const sub = document.getElementById('f-subcategory');
+  sub.innerHTML = '<option value="">— none —</option>';
+  const subs = CATEGORIES[cat] || [];
+  for (const s of subs) {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    sub.appendChild(opt);
+  }
+}
+
+// ── API helpers ──────────────────────────────────────────────────────
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+// ── Load data ────────────────────────────────────────────────────────
+const stmtMonthMap = {};
+
+async function loadStatements() {
+  try {
+    const stmts = await apiFetch('/statements');
+    const sel = document.getElementById('stmt-select');
+    // Clear existing options except the "All statements" placeholder
+    while (sel.options.length > 1) sel.remove(1);
+    for (const s of stmts) {
+      stmtMonthMap[s.id] = s.statement_month;
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.bank_name} — ${s.statement_month}`;
+      sel.appendChild(opt);
+      // Fetch embedding stats async and update option text when ready
+      apiFetch(`/embeddings/stats/${s.id}`).then(stats => {
+        opt.textContent = `${s.bank_name} — ${s.statement_month} [${stats.embedded}/${stats.annotated} embedded]`;
+      }).catch(() => {});
+    }
+  } catch (e) {
+    console.error('Could not load statements', e);
+  }
+}
+
+async function generateEmbeddings() {
+  const stmt = document.getElementById('stmt-select').value;
+  const statusEl = document.getElementById('embed-status');
+  statusEl.style.display = '';
+  statusEl.className = 'badge';
+  statusEl.textContent = 'Generating…';
+  try {
+    const body = stmt ? { statement_id: stmt } : {};
+    const result = await apiFetch('/embeddings/generate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    statusEl.textContent = `${result.embedded} embedded, ${result.skipped} skipped`;
+    statusEl.className = 'badge green';
+    await loadStatements();
+  } catch (e) {
+    statusEl.textContent = 'Error';
+    console.error('generateEmbeddings failed', e);
+  }
+}
+
+async function loadTransactions() {
+  setLoading(true);
+  const params = new URLSearchParams();
+  const stmt = document.getElementById('stmt-select').value;
+  const month = document.getElementById('month-filter').value;
+  const unannotated = document.getElementById('unannotated-only').checked;
+
+  if (stmt)  params.set('statement_id', stmt);
+  if (month) params.set('month', month);
+  if (unannotated) params.set('unannotated', 'true');
+
+  try {
+    const txns = await apiFetch(`/transactions?${params}`);
+
+    // Also load all annotations for the same filter (without unannotated flag)
+    // so we can show categories on already-annotated rows when filter is off.
+    const allParams = new URLSearchParams();
+    if (stmt)  allParams.set('statement_id', stmt);
+    if (month) allParams.set('month', month);
+    const allTxns = await apiFetch(`/transactions?${allParams}`);
+
+    // Fetch annotations for each annotated txn to build map
+    annotationMap = {};
+    await Promise.all(allTxns.map(async t => {
+      const full = await apiFetch(`/transactions/${t.id}`);
+      if (full.annotation_id) {
+        annotationMap[t.id] = {
+          id: full.annotation_id,
+          category: full.category,
+          subcategory: full.subcategory,
+          merchant: full.merchant,
+          tags: full.tags,
+          confidence: full.confidence,
+          source: full.source,
+        };
+      }
+    }));
+
+    transactions = txns;
+    renderTable();
+  } catch (e) {
+    showToast('Failed to load transactions: ' + e.message, 'error');
+    setLoading(false);
+  }
+}
+
+// ── Render ───────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('txn-body');
+
+  // Progress: count how many of all loaded txns are annotated
+  const allIds = [...transactions.map(t => t.id), ...Object.keys(annotationMap)];
+  const uniqueIds = [...new Set(allIds)];
+  const annotatedCount = uniqueIds.filter(id => annotationMap[id]).length;
+  updateProgress(annotatedCount, uniqueIds.length);
+
+  if (transactions.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5"><div class="empty">
+      <strong>No transactions to show</strong>
+      <p>Upload a statement first, or uncheck "Unannotated only".</p>
+    </div></td></tr>`;
+    document.getElementById('count-badge').textContent = '0';
+    return;
+  }
+
+  document.getElementById('count-badge').textContent = transactions.length;
+  tbody.innerHTML = '';
+
+  for (const txn of transactions) {
+    const ann = annotationMap[txn.id];
+    const tr = document.createElement('tr');
+    if (ann) tr.classList.add('annotated');
+    if (activeTxn && activeTxn.id === txn.id) tr.classList.add('active');
+
+    const amtClass = txn.debit_credit === 'debit' ? 'amount-debit' : 'amount-credit';
+    const amtSign  = txn.debit_credit === 'debit' ? '−' : '+';
+    const catHtml  = ann
+      ? `<span class="pill pill-cat">${ann.category}</span>${ann.subcategory ? `<span class="pill pill-cat">${ann.subcategory}</span>` : ''}`
+      : '—';
+    const sourceLabel = { manual: 'manual', rule: 'rule', llm: 'llm', model: 'llm',
+                           rag_direct: 'rag', rag_prompted: 'rag', imported: 'imported' };
+    const statusHtml = ann
+      ? `<span class="pill pill-source-${ann.source}">${sourceLabel[ann.source] ?? ann.source}</span>`
+      : `<span class="pill pill-pending">pending</span>`;
+
+    tr.innerHTML = `
+      <td>${txn.txn_date}</td>
+      <td class="desc">${escHtml(txn.raw_description)}</td>
+      <td class="${amtClass}">${amtSign} ₹${txn.amount.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td>
+      <td>${catHtml}</td>
+      <td>${statusHtml}</td>
+    `;
+    tr.addEventListener('click', () => openPanel(txn));
+    tbody.appendChild(tr);
+  }
+}
+
+function updateProgress(done, total) {
+  const pct = total ? Math.round(100 * done / total) : 0;
+  document.getElementById('progress-fill').style.width = pct + '%';
+  document.getElementById('progress-label').textContent =
+    total ? `${done} / ${total} annotated (${pct}%)` : '';
+}
+
+function setLoading(on) {
+  if (on) {
+    document.getElementById('txn-body').innerHTML =
+      `<tr><td colspan="5" style="text-align:center;padding:40px"><span class="spinner"></span></td></tr>`;
+  }
+}
+
+// ── Panel ────────────────────────────────────────────────────────────
+function openPanel(txn) {
+  activeTxn = txn;
+  const ann = annotationMap[txn.id];
+  const isEdit = !!ann;
+
+  document.getElementById('panel-title').textContent = isEdit ? 'Edit annotation' : 'Annotate transaction';
+
+  // Transaction summary
+  const amtClass = txn.debit_credit === 'debit' ? 'amount-debit' : 'amount-credit';
+  const upiMeta = txn.upi_meta && typeof txn.upi_meta === 'object' ? txn.upi_meta : null;
+  const noteHtml = (upiMeta && upiMeta.note)
+    ? `<div class="upi-note"><span class="label">UPI note</span>${escHtml(upiMeta.note)}</div>`
+    : '';
+  document.getElementById('panel-txn').innerHTML = `
+    <div class="row"><span class="label">Date</span><span class="val">${txn.txn_date}</span></div>
+    <div class="row"><span class="label">Amount</span><span class="val ${amtClass}">
+      ${txn.debit_credit === 'debit' ? '−' : '+'} ₹${txn.amount.toLocaleString('en-IN', {minimumFractionDigits:2})}
+      <small style="color:#64748b">(${txn.debit_credit})</small>
+    </span></div>
+    ${ann ? `<div class="row"><span class="label">Source</span><span class="val"><span class="pill pill-source-${ann.source}">${ann.source}</span></span></div>` : ''}
+    <div class="row" style="margin-top:8px"><span class="label">Description</span></div>
+    <div style="margin-top:4px;color:#cbd5e1;font-size:13px;word-break:break-word">${escHtml(txn.raw_description)}</div>
+    ${noteHtml}
+  `;
+
+  // Pre-fill form
+  const catSel = document.getElementById('f-category');
+  const subSel = document.getElementById('f-subcategory');
+  catSel.value = ann ? ann.category : '';
+  populateSubcategory(ann ? ann.category : '');
+  subSel.value = ann?.subcategory || '';
+  document.getElementById('f-merchant').value = ann?.merchant || '';
+
+  editTags = ann?.tags ? (Array.isArray(ann.tags) ? [...ann.tags] : ann.tags.split(',').filter(Boolean)) : [];
+  renderTags();
+
+  // Reset groups UI
+  allGroups = [];
+  groupLabels = [];
+  renderGroupLabels();
+  document.getElementById('group-search').value = '';
+  document.getElementById('group-dropdown').style.display = 'none';
+  document.getElementById('group-create-row').style.display = 'none';
+  loadGroups(txn.id);
+
+  // Show panel
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('panel').classList.add('open');
+  renderTable(); // re-render to show active highlight
+
+  document.getElementById('f-category').focus();
+}
+
+function closePanel() {
+  activeTxn = null;
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('panel').classList.remove('open');
+  renderTable();
+}
+
+// ── Tags ─────────────────────────────────────────────────────────────
+function renderTags() {
+  const container = document.getElementById('tags-container');
+  const input = document.getElementById('tags-raw');
+  // Remove all chip children but keep the input
+  [...container.children].forEach(el => { if (el !== input) el.remove(); });
+  for (const tag of editTags) {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    chip.innerHTML = `${escHtml(tag)} <button type="button">&times;</button>`;
+    chip.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      editTags = editTags.filter(t => t !== tag);
+      renderTags();
+    });
+    container.insertBefore(chip, input);
+  }
+}
+
+function onTagKeydown(e) {
+  if ((e.key === 'Enter' || e.key === ',') && e.target.value.trim()) {
+    e.preventDefault();
+    const tag = e.target.value.trim().replace(/,/g, '');
+    if (tag && !editTags.includes(tag)) editTags.push(tag);
+    e.target.value = '';
+    renderTags();
+    document.getElementById('tags-raw').focus();
+  }
+}
+
+// ── Groups ────────────────────────────────────────────────────────────
+let allGroups = [];   // cached on panel open
+let groupLabels = []; // labels being built for a new group
+
+async function loadGroups(txnId) {
+  document.getElementById('groups-list').innerHTML = '';
+  try {
+    const groups = await apiFetch(`/groups/for-transaction/${txnId}`);
+    // Accumulate known labels for autocomplete
+    for (const g of groups) {
+      if (g.labels) g.labels.split(',').filter(Boolean).forEach(l => allLabels.add(l));
+    }
+    renderGroups(groups);
+  } catch (_) {}
+}
+
+function renderGroups(groups) {
+  const container = document.getElementById('groups-list');
+  container.innerHTML = '';
+  for (const g of groups) {
+    const div = document.createElement('div');
+    div.className = 'link-item';
+    div.innerHTML = `
+      <div class="link-body" style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <select class="grp-txn-type-sel" style="background:#13151f;border:1px solid #2d3148;color:#a5b4fc;padding:2px 6px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer">
+            <option value="">— type —</option>
+            <option value="split"${g.txn_type === 'split' ? ' selected' : ''}>split</option>
+            <option value="reimbursement"${g.txn_type === 'reimbursement' ? ' selected' : ''}>reimbursement</option>
+            <option value="refund"${g.txn_type === 'refund' ? ' selected' : ''}>refund</option>
+            <option value="transfer"${g.txn_type === 'transfer' ? ' selected' : ''}>transfer</option>
+            <option value="event"${g.txn_type === 'event' ? ' selected' : ''}>event</option>
+          </select>
+          <span class="link-other-desc" style="margin:0">${escHtml(g.name)}</span>
+        </div>
+        <div class="link-note">${g.member_count} transaction${g.member_count !== 1 ? 's' : ''}${g.role ? ' · ' + g.role : ''}</div>
+        <div style="position:relative;margin-top:6px">
+        <div class="tags-input grp-labels-input" style="min-height:28px"></div>
+        <div class="grp-labels-dropdown" style="display:none;position:absolute;left:0;right:0;background:#1a1d27;border:1px solid #2d3148;border-radius:6px;z-index:50;max-height:140px;overflow-y:auto;margin-top:2px"></div>
+        </div>
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#4f5a7a;margin-top:8px;margin-bottom:4px">People</div>
+        <div style="position:relative">
+        <div class="tags-input grp-people-input" style="min-height:28px"></div>
+        <div class="grp-people-dropdown" style="display:none;position:absolute;left:0;right:0;background:#1a1d27;border:1px solid #2d3148;border-radius:6px;z-index:50;max-height:140px;overflow-y:auto;margin-top:2px"></div>
+        </div>
+        <div class="grp-new-person-row" style="display:none;gap:6px;margin-top:6px">
+          <input class="grp-new-person-name" type="text" placeholder="Name" style="flex:1;background:#13151f;border:1px solid #2d3148;color:#e2e8f0;padding:5px 8px;border-radius:5px;font-size:12px" />
+          <input class="grp-new-person-upi" type="text" placeholder="UPI (optional)" style="flex:1;background:#13151f;border:1px solid #2d3148;color:#e2e8f0;padding:5px 8px;border-radius:5px;font-size:12px" />
+          <button class="btn-sm grp-new-person-save" style="font-size:11px;padding:5px 10px">Add</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
+        <button class="link-del-btn" style="font-size:12px">remove</button>
+        <button class="link-del-btn" style="font-size:12px;color:#f87171">delete group</button>
+      </div>
+    `;
+
+    // Labels chips — per membership, with autocomplete from previously seen labels
+    const labelsContainer = div.querySelector('.grp-labels-input');
+    const labelsDropdown = div.querySelector('.grp-labels-dropdown');
+    let currentLabels = g.labels ? g.labels.split(',').filter(Boolean) : [];
+
+    async function saveLabels() {
+      await apiFetch(`/groups/${g.id}/members/${activeTxn.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ labels: currentLabels }),
+      });
+    }
+
+    function showLabelsDropdown(query) {
+      const matches = [...allLabels].filter(l =>
+        !currentLabels.includes(l) && (!query || l.toLowerCase().includes(query.toLowerCase()))
+      );
+      labelsDropdown.innerHTML = '';
+      for (const label of matches) {
+        const item = document.createElement('div');
+        item.className = 'link-result-item';
+        item.textContent = label;
+        item.addEventListener('mousedown', async (e) => {
+          e.preventDefault();
+          if (!currentLabels.includes(label)) {
+            currentLabels.push(label);
+            await saveLabels();
+          }
+          labelSearchInput.value = '';
+          labelsDropdown.style.display = 'none';
+          refreshLabelChips();
+        });
+        labelsDropdown.appendChild(item);
+      }
+      labelsDropdown.style.display = matches.length ? 'block' : 'none';
+    }
+
+    function refreshLabelChips() {
+      [...labelsContainer.children].forEach(el => {
+        if (!el.classList.contains('grp-label-search')) el.remove();
+      });
+      for (const label of currentLabels) {
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip';
+        chip.innerHTML = `${escHtml(label)} <button type="button">&times;</button>`;
+        chip.querySelector('button').addEventListener('click', async (e) => {
+          e.stopPropagation();
+          currentLabels = currentLabels.filter(l => l !== label);
+          await saveLabels();
+          refreshLabelChips();
+        });
+        labelsContainer.insertBefore(chip, labelsContainer.querySelector('.grp-label-search'));
+      }
+    }
+
+    const labelSearchInput = document.createElement('input');
+    labelSearchInput.type = 'text';
+    labelSearchInput.className = 'grp-label-search';
+    labelSearchInput.placeholder = 'add label…';
+    labelSearchInput.style.cssText = 'border:none;background:none;color:#e2e8f0;font-size:12px;outline:none;flex:1;min-width:60px';
+    labelSearchInput.addEventListener('focus', () => showLabelsDropdown(labelSearchInput.value.trim()));
+    labelSearchInput.addEventListener('input', () => showLabelsDropdown(labelSearchInput.value.trim()));
+    labelSearchInput.addEventListener('keydown', async (e) => {
+      if ((e.key === 'Enter' || e.key === ',') && labelSearchInput.value.trim()) {
+        e.preventDefault();
+        const label = labelSearchInput.value.trim().replace(/,/g, '');
+        if (label && !currentLabels.includes(label)) {
+          currentLabels.push(label);
+          allLabels.add(label);
+          await saveLabels();
+        }
+        labelSearchInput.value = '';
+        labelsDropdown.style.display = 'none';
+        refreshLabelChips();
+      } else if (e.key === 'Escape') {
+        labelsDropdown.style.display = 'none';
+      }
+    });
+    document.addEventListener('click', (e) => {
+      if (!labelsContainer.contains(e.target) && !labelsDropdown.contains(e.target)) {
+        labelsDropdown.style.display = 'none';
+      }
+    });
+    labelsContainer.appendChild(labelSearchInput);
+    refreshLabelChips();
+
+    // People chips — peopleDropdown is a sibling of peopleContainer's parent wrapper
+    const peopleContainer = div.querySelector('.grp-people-input');
+    const peopleDropdown = div.querySelector('.grp-people-dropdown');
+    const newPersonRow = div.querySelector('.grp-new-person-row');
+    let currentPeopleIds = g.people ? g.people.split(',').filter(Boolean) : [];
+
+    async function savePeople() {
+      await apiFetch(`/groups/${g.id}/members/${activeTxn.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ people: currentPeopleIds }),
+      });
+    }
+
+    function refreshPeopleChips() {
+      // Keep dropdown and new-person row; remove all chip+input children
+      [...peopleContainer.children].forEach(el => {
+        if (!el.classList.contains('grp-people-search')) el.remove();
+      });
+      // Render chips before search input
+      for (const pid of currentPeopleIds) {
+        const person = allPeople.find(p => p.id === pid);
+        const label = person ? person.name : pid;
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip';
+        chip.innerHTML = `${escHtml(label)} <button type="button">&times;</button>`;
+        chip.querySelector('button').addEventListener('click', async (e) => {
+          e.stopPropagation();
+          currentPeopleIds = currentPeopleIds.filter(id => id !== pid);
+          await savePeople();
+          refreshPeopleChips();
+        });
+        peopleContainer.insertBefore(chip, peopleContainer.querySelector('.grp-people-search'));
+      }
+    }
+
+    // Search input for people
+    const peopleSearchInput = document.createElement('input');
+    peopleSearchInput.type = 'text';
+    peopleSearchInput.className = 'grp-people-search';
+    peopleSearchInput.placeholder = 'add person…';
+    peopleSearchInput.style.cssText = 'border:none;background:none;color:#e2e8f0;font-size:12px;outline:none;flex:1;min-width:80px';
+    peopleContainer.appendChild(peopleSearchInput);
+
+    function showPeopleDropdown(query) {
+      const matches = query
+        ? allPeople.filter(p => p.name.toLowerCase().includes(query.toLowerCase()) || (p.upi || '').toLowerCase().includes(query.toLowerCase()))
+        : allPeople;
+      const unattached = matches.filter(p => !currentPeopleIds.includes(p.id));
+
+      peopleDropdown.innerHTML = '';
+      for (const p of unattached) {
+        const item = document.createElement('div');
+        item.className = 'link-result-item';
+        item.innerHTML = `${escHtml(p.name)}${p.upi ? `<span style="color:#64748b;font-size:11px;margin-left:6px">${escHtml(p.upi)}</span>` : ''}`;
+        item.addEventListener('mousedown', async (e) => {
+          e.preventDefault();
+          currentPeopleIds.push(p.id);
+          await savePeople();
+          peopleSearchInput.value = '';
+          peopleDropdown.style.display = 'none';
+          newPersonRow.style.display = 'none';
+          refreshPeopleChips();
+        });
+        peopleDropdown.appendChild(item);
+      }
+
+      // Show "new person" option if typed name doesn't match exactly
+      const exactMatch = allPeople.some(p => p.name.toLowerCase() === query.toLowerCase());
+      newPersonRow.style.display = (query && !exactMatch) ? 'flex' : 'none';
+
+      peopleDropdown.style.display = (unattached.length || (query && !exactMatch)) ? 'block' : 'none';
+    }
+
+    peopleSearchInput.addEventListener('focus', () => showPeopleDropdown(peopleSearchInput.value.trim()));
+    peopleSearchInput.addEventListener('input', () => showPeopleDropdown(peopleSearchInput.value.trim()));
+    document.addEventListener('click', (e) => {
+      if (!peopleContainer.contains(e.target) && !peopleDropdown.contains(e.target) && !newPersonRow.contains(e.target)) {
+        peopleDropdown.style.display = 'none';
+        newPersonRow.style.display = 'none';
+      }
+    });
+
+    // New person inline form
+    const newPersonSaveBtn = div.querySelector('.grp-new-person-save');
+    const newPersonNameInput = div.querySelector('.grp-new-person-name');
+    const newPersonUpiInput = div.querySelector('.grp-new-person-upi');
+    newPersonSaveBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const name = newPersonNameInput.value.trim();
+      if (!name) return;
+      try {
+        const person = await apiFetch('/people', {
+          method: 'POST',
+          body: JSON.stringify({ name, upi: newPersonUpiInput.value.trim() || null }),
+        });
+        allPeople.push(person);
+        currentPeopleIds.push(person.id);
+        await savePeople();
+        newPersonNameInput.value = '';
+        newPersonUpiInput.value = '';
+        peopleSearchInput.value = '';
+        peopleDropdown.style.display = 'none';
+        newPersonRow.style.display = 'none';
+        showToast(`Added ${name}`, 'success');
+        refreshPeopleChips();
+      } catch (err) {
+        showToast('Failed: ' + err.message, 'error');
+      }
+    });
+
+    refreshPeopleChips();
+
+    div.querySelector('.grp-txn-type-sel').addEventListener('change', async (e) => {
+      await apiFetch(`/groups/${g.id}/members/${activeTxn.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ txn_type: e.target.value || null }),
+      });
+    });
+
+    div.querySelectorAll('.link-del-btn')[0].addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await apiFetch(`/groups/${g.id}/members/${activeTxn.id}`, { method: 'DELETE' });
+      allGroups = [];
+      loadGroups(activeTxn.id);
+    });
+    div.querySelectorAll('.link-del-btn')[1].addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete group "${g.name}"? This removes it for all transactions.`)) return;
+      await apiFetch(`/groups/${g.id}`, { method: 'DELETE' });
+      allGroups = [];
+      loadGroups(activeTxn.id);
+    });
+    container.appendChild(div);
+  }
+}
+
+function bindGroupSearch() {
+  const input = document.getElementById('group-search');
+  const dropdown = document.getElementById('group-dropdown');
+
+  // Show dropdown on focus
+  input.addEventListener('focus', () => showDropdown(input.value.trim()));
+  input.addEventListener('input', () => showDropdown(input.value.trim()));
+
+  // Hide dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.style.display = 'none';
+    }
+  });
+
+  // Group labels chip input — bound once
+  document.getElementById('group-labels-raw').addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ',') && e.target.value.trim()) {
+      e.preventDefault();
+      const label = e.target.value.trim().replace(/,/g, '');
+      if (label && !groupLabels.includes(label)) {
+        groupLabels.push(label);
+        renderGroupLabels();
+      }
+      e.target.value = '';
+    }
+  });
+
+  document.getElementById('group-create-btn').addEventListener('click', async () => {
+    const name = input.value.trim();
+    if (!name) return;
+    const txnType = document.getElementById('group-txn-type').value || null;
+    try {
+      const group = await apiFetch('/groups', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      await apiFetch(`/groups/${group.id}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ transaction_id: activeTxn.id, txn_type: txnType }),
+      });
+      allGroups.push(group);
+      input.value = '';
+      groupLabels = [];
+      renderGroupLabels();
+      dropdown.style.display = 'none';
+      document.getElementById('group-create-row').style.display = 'none';
+      showToast(`Created "${name}"`, 'success');
+      loadGroups(activeTxn.id);
+    } catch (e) {
+      showToast('Failed: ' + e.message, 'error');
+    }
+  });
+}
+
+function renderGroupLabels() {
+  const container = document.getElementById('group-labels-container');
+  const input = document.getElementById('group-labels-raw');
+  [...container.children].forEach(el => { if (el !== input) el.remove(); });
+  for (const label of groupLabels) {
+    const chip = document.createElement('span');
+    chip.className = 'tag-chip';
+    chip.innerHTML = `${escHtml(label)} <button type="button">&times;</button>`;
+    chip.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      groupLabels = groupLabels.filter(l => l !== label);
+      renderGroupLabels();
+    });
+    container.insertBefore(chip, input);
+  }
+}
+
+async function showDropdown(query) {
+  const dropdown = document.getElementById('group-dropdown');
+
+  // Load all groups once per panel open (cached in allGroups)
+  if (!allGroups.length) {
+    allGroups = await apiFetch('/groups').catch(() => []);
+  }
+
+  const memberIds = new Set(
+    [...document.getElementById('groups-list').querySelectorAll('.link-del-btn')]
+      .map(b => b.closest('.link-item')?._groupId)
+      .filter(Boolean)
+  );
+
+  const matches = query
+    ? allGroups.filter(g => g.name.toLowerCase().includes(query.toLowerCase()))
+    : allGroups;
+
+  // Exclude already-member groups by re-fetching current memberships from DOM isn't reliable;
+  // just show all and let the API's INSERT OR IGNORE handle duplicates silently
+  dropdown.innerHTML = '';
+  for (const g of matches) {
+    const div = document.createElement('div');
+    div.className = 'link-result-item';
+    const labelsHtml = g.labels
+      ? g.labels.split(',').filter(Boolean).map(l => `<span class="tag-chip" style="font-size:10px;padding:1px 6px">${escHtml(l)}</span>`).join('')
+      : '';
+    div.innerHTML = `${escHtml(g.name)}${labelsHtml ? '<span style="margin-left:6px">' + labelsHtml + '</span>' : ''}`;
+    div.addEventListener('mousedown', async (e) => {
+      e.preventDefault();  // prevent input blur before click fires
+      try {
+        await apiFetch(`/groups/${g.id}/members`, {
+          method: 'POST',
+          body: JSON.stringify({ transaction_id: activeTxn.id }),
+        });
+        document.getElementById('group-search').value = '';
+        dropdown.style.display = 'none';
+        document.getElementById('group-create-row').style.display = 'none';
+        showToast(`Added to "${g.name}"`, 'success');
+        loadGroups(activeTxn.id);
+      } catch (e) {
+        showToast('Failed: ' + e.message, 'error');
+      }
+    });
+    dropdown.appendChild(div);
+  }
+
+  // Show "create new" row only if typed name doesn't exactly match an existing group
+  const exactMatch = allGroups.some(g => g.name.toLowerCase() === query.toLowerCase());
+  document.getElementById('group-create-row').style.display = (query && !exactMatch) ? 'flex' : 'none';
+  dropdown.style.display = matches.length ? 'block' : 'none';
+}
+
+// ── Save ─────────────────────────────────────────────────────────────
+async function saveAnnotation() {
+  const category = document.getElementById('f-category').value;
+  if (!category) {
+    showToast('Category is required', 'error');
+    return;
+  }
+  const subcategory = document.getElementById('f-subcategory').value || null;
+  const merchant = document.getElementById('f-merchant').value.trim() || null;
+
+  const ann = annotationMap[activeTxn.id];
+  const btn = document.getElementById('panel-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  try {
+    if (ann) {
+      // PATCH existing
+      await apiFetch(`/annotations/${ann.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ category, subcategory, merchant, tags: editTags }),
+      });
+    } else {
+      // POST new
+      await apiFetch('/annotations', {
+        method: 'POST',
+        body: JSON.stringify({
+          transaction_id: activeTxn.id,
+          category,
+          subcategory,
+          merchant,
+          tags: editTags,
+          confidence: 1.0,
+          source: 'manual',
+        }),
+      });
+    }
+    showToast('Saved!', 'success');
+    closePanel();
+    await loadTransactions();
+  } catch (e) {
+    showToast('Save failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save annotation';
+  }
+}
+
+// ── Ingest ───────────────────────────────────────────────────────────
+let ingestedStatement = null;
+
+function openIngestModal() {
+  document.getElementById('ingest-file').value = '';
+  document.getElementById('ingest-password').value = '';
+  document.getElementById('ingest-status').textContent = '';
+  document.getElementById('ingest-status').className = 'modal-status';
+  document.getElementById('ingest-upload-btn').disabled = false;
+  ingestedStatement = null;
+  document.getElementById('ingest-modal').classList.add('open');
+}
+
+function closeIngestModal() {
+  document.getElementById('ingest-modal').classList.remove('open');
+}
+
+async function runUpload() {
+  const fileInput = document.getElementById('ingest-file');
+  const password = document.getElementById('ingest-password').value.trim();
+  const statusEl = document.getElementById('ingest-status');
+  const uploadBtn = document.getElementById('ingest-upload-btn');
+
+  if (!fileInput.files.length) {
+    statusEl.textContent = 'Please select a PDF file.';
+    statusEl.className = 'modal-status error';
+    return;
+  }
+
+  uploadBtn.disabled = true;
+  statusEl.textContent = 'Uploading…';
+  statusEl.className = 'modal-status running';
+
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    if (password) form.append('password', password);
+
+    const res = await fetch(API + '/statements/upload', { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(body);
+    }
+    ingestedStatement = await res.json();
+  } catch (e) {
+    statusEl.textContent = `Upload failed: ${e.message}`;
+    statusEl.className = 'modal-status error';
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  statusEl.textContent = `Uploaded successfully.`;
+  statusEl.className = 'modal-status success';
+
+  // Reload statements and select the new one
+  await loadStatements();
+  const sel = document.getElementById('stmt-select');
+  sel.value = ingestedStatement.id;
+  document.getElementById('delete-stmt-btn').style.display = '';
+  document.getElementById('annotate-btn').style.display = '';
+  const monthInput = document.getElementById('month-filter');
+  monthInput.value = ingestedStatement.statement_month || '';
+  await loadTransactions();
+
+  setTimeout(closeIngestModal, 1000);
+}
+
+async function runAnnotate() {
+  const stmtId = document.getElementById('stmt-select').value;
+  if (!stmtId) return;
+
+  const notRunning = [];
+  if (lastHealthStatus.chat !== 'running') notRunning.push('LLM (chat)');
+  if (lastHealthStatus.embed !== 'running') notRunning.push('embedding');
+  if (notRunning.length > 0) {
+    const names = notRunning.join(' and ');
+    if (!confirm(`${names} model${notRunning.length > 1 ? 's are' : ' is'} not running. Annotation may be incomplete or fail. Continue anyway?`)) return;
+  }
+
+  const btn = document.getElementById('annotate-btn');
+  btn.disabled = true;
+  btn.textContent = 'Annotating…';
+
+  let result;
+  try {
+    result = await apiFetch('/annotations/auto-annotate', {
+      method: 'POST',
+      body: JSON.stringify({ statement_id: stmtId }),
+    });
+  } catch (e) {
+    showToast('Annotation failed: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Annotate';
+    return;
+  }
+
+  const { total_processed, rule_matched, rag_direct, rag_prompted, llm, failed } = result;
+  showToast(`Done — ${total_processed} txns: ${rule_matched} rules, ${rag_direct} RAG direct, ${rag_prompted} RAG prompted, ${llm} LLM, ${failed} failed.`, 'success');
+  btn.disabled = false;
+  btn.textContent = 'Annotate';
+  document.getElementById('unannotated-only').checked = false;
+  await loadTransactions();
+}
+
+// ── Bindings ─────────────────────────────────────────────────────────
+function bindEvents() {
+  document.getElementById('ingest-btn').addEventListener('click', openIngestModal);
+  document.getElementById('ingest-cancel-btn').addEventListener('click', closeIngestModal);
+  document.getElementById('ingest-upload-btn').addEventListener('click', runUpload);
+  document.getElementById('ingest-modal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('ingest-modal')) closeIngestModal();
+  });
+
+  document.getElementById('overlay').addEventListener('click', closePanel);
+  document.getElementById('panel-close-btn').addEventListener('click', closePanel);
+  document.getElementById('panel-cancel-btn').addEventListener('click', closePanel);
+  document.getElementById('panel-save-btn').addEventListener('click', saveAnnotation);
+  document.getElementById('refresh-btn').addEventListener('click', loadTransactions);
+  document.getElementById('stmt-select').addEventListener('change', () => {
+    const stmtId = document.getElementById('stmt-select').value;
+    const monthInput = document.getElementById('month-filter');
+    monthInput.value = stmtId ? (stmtMonthMap[stmtId] || '') : '';
+    document.getElementById('delete-stmt-btn').style.display = stmtId ? '' : 'none';
+    document.getElementById('annotate-btn').style.display = stmtId ? '' : 'none';
+    loadTransactions();
+  });
+
+  document.getElementById('annotate-btn').addEventListener('click', runAnnotate);
+
+  document.getElementById('delete-stmt-btn').addEventListener('click', async () => {
+    const sel = document.getElementById('stmt-select');
+    const stmtId = sel.value;
+    if (!stmtId) return;
+    const label = sel.options[sel.selectedIndex]?.text ?? stmtId;
+    if (!confirm(`Delete "${label}" and all its transactions, annotations, and embeddings?`)) return;
+    try {
+      await apiFetch(`/statements/${stmtId}`, { method: 'DELETE' });
+      showToast('Statement deleted', 'success');
+    } catch (e) {
+      showToast('Delete failed: ' + e.message, 'error');
+      return;
+    }
+    document.getElementById('delete-stmt-btn').style.display = 'none';
+    await loadStatements();
+    document.getElementById('month-filter').value = '';
+    await loadTransactions();
+  });
+  document.getElementById('month-filter').addEventListener('change', loadTransactions);
+  document.getElementById('unannotated-only').addEventListener('change', loadTransactions);
+
+  document.getElementById('tags-raw').addEventListener('keydown', onTagKeydown);
+  bindGroupSearch();
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closePanel();
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && activeTxn) saveAnnotation();
+  });
+}
+
+// ── Utilities ────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show ' + type;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+init();
+</script>
+</body>
+</html>

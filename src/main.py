@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config import settings
 from src.db.connection import get_db
-from src.api.routes import annotations, embeddings, groups, people, statements, transactions
+from src.api.routes import annotations, categories, embeddings, groups, people, statements, transactions
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 
@@ -40,6 +40,7 @@ app.include_router(annotations.router, prefix="/annotations", tags=["annotations
 app.include_router(groups.router, prefix="/groups", tags=["groups"])
 app.include_router(people.router, prefix="/people", tags=["people"])
 app.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
+app.include_router(categories.router, prefix="/categories", tags=["categories"])
 
 
 @app.get("/health")
@@ -84,9 +85,23 @@ def health():
     }
 
 
-@app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse(url="/ui/index.html")
+DIST_DIR = UI_DIR / "dist"
 
+if DIST_DIR.exists():
+    from fastapi.responses import FileResponse
 
-app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")
+    app.mount("/assets", StaticFiles(directory=str(DIST_DIR / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/index.html", include_in_schema=False)
+    def serve_spa():
+        return FileResponse(str(DIST_DIR / "index.html"))
+
+else:
+    # Dev fallback: serve old vanilla JS UI
+    app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse(url="/ui/index.html")
