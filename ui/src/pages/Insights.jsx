@@ -70,8 +70,15 @@ export default function Insights() {
         setTransactions(txns)
         const map = await buildAnnotationMap(txns)
         setAnnMap(map)
+        if (txns.length > 0) {
+          const latestMonth = txns
+            .map(t => t.txn_date.slice(0, 7))
+            .sort()
+            .at(-1)
+          setSelectedMonth(latestMonth)
+        }
       } catch (e) {
-        toast(`Failed: ${e.message}`, 'error')
+        toast(`Couldn't load your data — ${e.message}`, 'error')
       } finally {
         setLoading(false)
       }
@@ -114,7 +121,7 @@ export default function Insights() {
   const catChartData = {
     labels: catSorted.slice(0, 10).map(([k]) => k),
     datasets: [{
-      label: 'Spend',
+      label: 'Amount',
       data: catSorted.slice(0, 10).map(([, v]) => v),
       backgroundColor: CHART_COLORS,
       borderWidth: 0,
@@ -125,7 +132,7 @@ export default function Insights() {
     labels: months6.map(m => dayjs(m).format('MMM YY')),
     datasets: [
       {
-        label: 'Spend',
+        label: 'Spent',
         data: monthlyDebits,
         borderColor: '#ef4444',
         backgroundColor: 'rgba(239,68,68,0.1)',
@@ -134,7 +141,7 @@ export default function Insights() {
         pointRadius: 3,
       },
       {
-        label: 'Income',
+        label: 'Earned',
         data: monthlyCredits,
         borderColor: '#22c55e',
         backgroundColor: 'rgba(34,197,94,0.1)',
@@ -148,15 +155,15 @@ export default function Insights() {
   const stackedData = {
     labels: months6.map(m => dayjs(m).format('MMM YY')),
     datasets: [
-      { label: 'Spend', data: monthlyDebits, backgroundColor: 'rgba(239,68,68,0.7)', stack: 'a' },
-      { label: 'Income', data: monthlyCredits, backgroundColor: 'rgba(34,197,94,0.7)', stack: 'b' },
+      { label: 'Spent', data: monthlyDebits, backgroundColor: 'rgba(239,68,68,0.7)', stack: 'a' },
+      { label: 'Earned', data: monthlyCredits, backgroundColor: 'rgba(34,197,94,0.7)', stack: 'b' },
     ],
   }
 
   return (
     <div className="px-6 py-5 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-base font-semibold text-[#e2e8f0]">Insights</h1>
+        <h1 className="text-base font-semibold text-[#e2e8f0]">Money Map</h1>
         <input
           type="month"
           value={selectedMonth}
@@ -166,25 +173,25 @@ export default function Insights() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-[#475569]">Loading all transactions…</p>
+        <p className="text-sm text-[#475569]">Crunching your numbers…</p>
       ) : (
         <>
           {/* Charts row */}
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">
-                Spending by Category — {dayjs(selectedMonth).format('MMMM YYYY')}
+                Where it went — {dayjs(selectedMonth).format('MMMM YYYY')}
               </p>
               <div className="h-60">
                 {catSorted.length > 0 ? (
                   <Bar data={catChartData} options={{ ...CHART_OPTS, indexAxis: 'y' }} />
                 ) : (
-                  <div className="flex items-center justify-center h-full text-sm text-[#475569]">No data for this month</div>
+                  <div className="flex items-center justify-center h-full text-sm text-[#475569]">Nothing here yet — categorize some transactions first</div>
                 )}
               </div>
             </div>
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Monthly Trend (6 months)</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Your Money Flow</p>
               <div className="h-60">
                 <Line data={trendData} options={CHART_OPTS} />
               </div>
@@ -193,7 +200,7 @@ export default function Insights() {
 
           {/* Stacked bar */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Income vs Expense (6 months)</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Earned vs Spent</p>
             <div className="h-48">
               <Bar data={stackedData} options={CHART_OPTS} />
             </div>
@@ -204,10 +211,10 @@ export default function Insights() {
             {/* Top merchants */}
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
-                Top Merchants — {dayjs(selectedMonth).format('MMMM YYYY')}
+                Where You Shop Most — {dayjs(selectedMonth).format('MMMM YYYY')}
               </p>
               {topMerchants.length === 0 ? (
-                <p className="px-4 py-3 text-sm text-[#475569]">No merchant data yet (annotate transactions with merchant names).</p>
+                <p className="px-4 py-3 text-sm text-[#475569]">No merchant data yet — categorize some transactions to unlock this</p>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
@@ -233,10 +240,10 @@ export default function Insights() {
             {/* Category breakdown */}
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
-                Category Breakdown
+                Spending by Category
               </p>
               {catSorted.length === 0 ? (
-                <p className="px-4 py-3 text-sm text-[#475569]">No data for this month.</p>
+                <p className="px-4 py-3 text-sm text-[#475569]">No data for this month yet</p>
               ) : (
                 <table className="w-full text-sm">
                   <thead>

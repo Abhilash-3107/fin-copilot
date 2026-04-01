@@ -7,11 +7,11 @@ import {
 const NAV = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/transactions', icon: List,             label: 'Transactions' },
-  { to: '/review',       icon: ClipboardCheck,  label: 'Review Queue' },
+  { to: '/review',       icon: ClipboardCheck,  label: 'Teach Me' },
   { to: '/groups',       icon: Layers,           label: 'Groups' },
   { to: '/people',       icon: Users,            label: 'People' },
-  { to: '/upload',       icon: Upload,           label: 'Upload' },
-  { to: '/insights',     icon: BarChart2,        label: 'Insights' },
+  { to: '/upload',       icon: Upload,           label: 'Add Statement' },
+  { to: '/insights',     icon: BarChart2,        label: 'Money Map' },
 ]
 
 export default function Sidebar() {

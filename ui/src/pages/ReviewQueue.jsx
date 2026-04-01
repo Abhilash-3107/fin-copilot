@@ -35,7 +35,7 @@ export default function ReviewQueue() {
       setQueue(data)
       setLoading(false)
     }).catch(e => {
-      toast(`Failed to load queue: ${e.message}`, 'error')
+      toast(`Couldn't load the review list — ${e.message}`, 'error')
       setLoading(false)
     })
   }, [])
@@ -80,40 +80,39 @@ export default function ReviewQueue() {
     if (!current) return
     setSaving(true)
     try {
-      await api.patch(`/annotations/${current.annotation_id}`, { source: 'manual' })
+      await api.post(`/annotations/${current.annotation_id}/confirm`, {})
       setStats(s => ({ ...s, confirmed: s.confirmed + 1 }))
-      toast('Confirmed', 'success')
+      toast('Got it, thanks!', 'success')
       advance()
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
       setSaving(false)
     }
   }
 
   async function saveEdit() {
-    if (!form.category) { toast('Category required', 'error'); return }
+    if (!form.category) { toast('Pick a category first', 'error'); return }
     setSaving(true)
     try {
       await api.patch(`/annotations/${current.annotation_id}`, {
         category: form.category,
         subcategory: form.subcategory || null,
         merchant: form.merchant.trim() || null,
-        tags: form.tags.join(','),
-        source: 'manual',
+        tags: form.tags,
       })
       setStats(s => ({ ...s, edited: s.edited + 1 }))
-      toast('Updated', 'success')
+      toast('Noted — I\'ll remember that', 'success')
       advance()
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
       setSaving(false)
     }
   }
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full text-[#475569]">Loading review queue…</div>
+    return <div className="flex items-center justify-center h-full text-[#475569]">Getting your review list ready…</div>
   }
 
   const total = queue.length
@@ -123,9 +122,14 @@ export default function ReviewQueue() {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">
         <div className="text-4xl">✓</div>
-        <h2 className="text-lg font-semibold text-[#e2e8f0]">All caught up!</h2>
+        <h2 className="text-lg font-semibold text-[#e2e8f0]">You're all done!</h2>
         <p className="text-sm text-[#94a3b8]">
-          {stats.confirmed} confirmed · {stats.edited} edited · {stats.skipped} skipped
+          {stats.confirmed + stats.edited > 0
+            ? `Thanks! I learned from ${stats.confirmed + stats.edited} transaction${stats.confirmed + stats.edited !== 1 ? 's' : ''}.`
+            : 'Nothing to review right now.'}
+        </p>
+        <p className="text-xs text-[#64748b] mt-1">
+          {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
         </p>
       </div>
     )
@@ -140,7 +144,7 @@ export default function ReviewQueue() {
       {/* Progress */}
       <div className="max-w-2xl mx-auto w-full mb-5">
         <div className="flex justify-between text-xs text-[#64748b] mb-1.5">
-          <span>Review Queue</span>
+          <span>Teaching your copilot</span>
           <span>{idx} / {total}</span>
         </div>
         <div className="h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
@@ -150,7 +154,7 @@ export default function ReviewQueue() {
           />
         </div>
         <p className="text-[10px] text-[#475569] mt-1">
-          {stats.confirmed} confirmed · {stats.edited} edited · {stats.skipped} skipped
+          {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
         </p>
       </div>
 
@@ -169,7 +173,7 @@ export default function ReviewQueue() {
 
         {/* Model's guess */}
         <div className="px-6 py-4 border-b border-[#2d3148]">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">Model's guess</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">My best guess</p>
           <div className="flex items-center gap-3 flex-wrap mb-3">
             {item.category && (
               <span className="bg-[#1e1b4b] text-[#a5b4fc] text-sm px-3 py-1 rounded-full">{item.category}</span>
@@ -181,7 +185,11 @@ export default function ReviewQueue() {
               <span className="text-sm text-[#94a3b8]">{item.merchant}</span>
             )}
             <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-              {src === 'rag_direct' || src === 'rag_prompted' ? 'rag' : src}
+              {src === 'rag_direct' || src === 'rag_prompted' ? 'from history'
+                : src === 'llm' ? 'AI guess'
+                : src === 'rule' ? 'rule match'
+                : src === 'manual' ? 'you set this'
+                : src}
             </span>
           </div>
           <ConfidenceBar confidence={item.confidence} />

@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, Cpu, RotateCcw } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, Cpu, RotateCcw, DatabaseZap } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 
-function EmbedStats({ statementId }) {
+function EmbedStats({ statementId, refreshKey }) {
   const [stats, setStats] = useState(null)
   useEffect(() => {
     api.get(`/embeddings/stats/${statementId}`).then(setStats).catch(() => {})
-  }, [statementId])
+  }, [statementId, refreshKey])
   if (!stats) return <span className="text-[#475569]">—</span>
   const pct = stats.total > 0 ? Math.round((stats.embedded / stats.total) * 100) : 0
-  return <span>{pct}%</span>
+  const color = pct === 100 ? 'text-emerald-400' : pct > 0 ? 'text-amber-400' : 'text-[#475569]'
+  return (
+    <span className={`tabular-nums ${color}`}>
+      {stats.embedded}/{stats.total}
+      <span className="text-[#475569] ml-1">({pct}%)</span>
+    </span>
+  )
 }
 
 export default function Upload() {
@@ -24,8 +30,10 @@ export default function Upload() {
   const [dragOver, setDragOver] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [resetTarget, setResetTarget] = useState(null)
+  const [clearEmbedTarget, setClearEmbedTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
   const [embeddingId, setEmbeddingId] = useState(null)
+  const [embedRefreshKey, setEmbedRefreshKey] = useState(0)
   const [lastResult, setLastResult] = useState(null)
   const fileRef = useRef(null)
 
@@ -34,7 +42,7 @@ export default function Upload() {
       const data = await api.get('/statements')
       setStatements(data)
     } catch (e) {
-      toast(`Failed to load statements: ${e.message}`, 'error')
+      toast(`Couldn't load your statements — ${e.message}`, 'error')
     }
   }
 
@@ -103,14 +111,27 @@ export default function Upload() {
       const result = await api.post('/annotations/auto-annotate', { statement_id: stmt.id })
       setLastResult(result)
       toast(
-        `Done — ${result.rule_matched ?? 0} rule, ${result.rag_direct_annotated ?? 0} rag, ${result.llm_annotated ?? 0} llm`,
+        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
         'success',
         5000
       )
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(`Categorization failed — ${e.message}`, 'error')
     } finally {
       setAnnotatingId(null)
+    }
+  }
+
+  async function clearEmbeddings() {
+    if (!clearEmbedTarget) return
+    try {
+      const result = await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
+      toast(`Search index cleared — rebuild it when you're ready`, 'info')
+      setClearEmbedTarget(null)
+      setEmbedRefreshKey(k => k + 1)
+      loadStatements()
+    } catch (e) {
+      toast(`Couldn't clear the index — ${e.message}`, 'error')
     }
   }
 
@@ -118,10 +139,11 @@ export default function Upload() {
     setEmbeddingId(stmt.id)
     try {
       const result = await api.post('/embeddings/generate', { statement_id: stmt.id })
-      toast(`Embedded ${result.embedded} transactions`, 'success')
+      toast(`Indexed ${result.embedded} transactions — ready to learn from them`, 'success')
+      setEmbedRefreshKey(k => k + 1)
       loadStatements()
     } catch (e) {
-      toast(`Embedding failed: ${e.message}`, 'error')
+      toast(`Indexing failed: ${e.message}`, 'error')
     } finally {
       setEmbeddingId(null)
     }
@@ -129,7 +151,7 @@ export default function Upload() {
 
   return (
     <div className="px-6 py-5 space-y-6 max-w-4xl">
-      <h1 className="text-base font-semibold text-[#e2e8f0]">Upload Statement</h1>
+      <h1 className="text-base font-semibold text-[#e2e8f0]">Add a Statement</h1>
 
       {/* Drop zone */}
       <div
@@ -146,8 +168,8 @@ export default function Upload() {
           <p className="text-sm text-[#a5b4fc] font-medium">{file.name}</p>
         ) : (
           <>
-            <p className="text-sm text-[#94a3b8]">Drop a PDF here or click to browse</p>
-            <p className="text-xs text-[#475569] mt-1">Accepts .pdf bank statements</p>
+            <p className="text-sm text-[#94a3b8]">Drop your bank statement here, or click to browse</p>
+            <p className="text-xs text-[#475569] mt-1">PDF format — we'll handle the rest</p>
           </>
         )}
         <input ref={fileRef} type="file" accept=".pdf" onChange={onFileChange} className="hidden" />
@@ -159,7 +181,7 @@ export default function Upload() {
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            placeholder="PDF password (if encrypted)"
+            placeholder="Password (if your PDF is locked)"
             className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] w-64"
           />
           <button
@@ -182,17 +204,16 @@ export default function Upload() {
       {/* Pipeline result */}
       {lastResult && (
         <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Pipeline Result</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Categorization Results</p>
           <div className="flex flex-wrap gap-2">
             {[
-              { label: 'Total', value: lastResult.total_processed, color: 'bg-[#1e2235] text-[#94a3b8]' },
-              { label: 'Rule', value: lastResult.rule_matched, color: 'bg-[#1e3a5f] text-[#7dd3fc]' },
-              { label: 'RAG direct', value: lastResult.rag_direct_annotated, color: 'bg-[#164e63] text-[#67e8f9]' },
-              { label: 'RAG prompted', value: lastResult.rag_prompted_annotated, color: 'bg-[#164e63] text-[#67e8f9]' },
-              { label: 'LLM', value: lastResult.llm_annotated, color: 'bg-[#3b1f5e] text-[#c4b5fd]' },
-              { label: 'Failed', value: lastResult.llm_failed, color: 'bg-[#450a0a] text-[#fca5a5]' },
-              { label: 'Low conf', value: lastResult.low_confidence, color: 'bg-[#451a03] text-[#fdba74]' },
-              { label: 'Already annotated', value: lastResult.already_annotated, color: 'bg-[#14532d] text-[#86efac]' },
+              { label: 'Processed', value: lastResult.total_processed, color: 'bg-[#1e2235] text-[#94a3b8]' },
+              { label: 'Matched by rules', value: lastResult.rule_matched, color: 'bg-[#1e3a5f] text-[#7dd3fc]' },
+              { label: 'Matched from history', value: (lastResult.rag_direct_annotated ?? 0) + (lastResult.rag_prompted_annotated ?? 0), color: 'bg-[#164e63] text-[#67e8f9]' },
+              { label: 'Figured out by AI', value: lastResult.llm_annotated, color: 'bg-[#3b1f5e] text-[#c4b5fd]' },
+              { label: 'Couldn\'t figure out', value: lastResult.llm_failed, color: 'bg-[#450a0a] text-[#fca5a5]' },
+              { label: 'Needs your review', value: lastResult.low_confidence, color: 'bg-[#451a03] text-[#fdba74]' },
+              { label: 'Already done', value: lastResult.already_annotated, color: 'bg-[#14532d] text-[#86efac]' },
             ].map(({ label, value, color }) => (
               <span key={label} className={`text-xs px-3 py-1 rounded-full font-medium ${color}`}>
                 {label}: {value ?? 0}
@@ -205,15 +226,15 @@ export default function Upload() {
       {/* Statement history */}
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
-          Statement History
+          Your Statements
         </p>
         {statements.length === 0 ? (
-          <p className="px-4 py-5 text-sm text-[#475569]">No statements uploaded yet.</p>
+          <p className="px-4 py-5 text-sm text-[#475569]">No statements yet — drop one above to get started</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Uploaded', 'Embeddings', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Uploaded', 'Search Index', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -230,7 +251,7 @@ export default function Upload() {
                   <td className="px-4 py-3 text-[#94a3b8]">{s.statement_month}</td>
                   <td className="px-4 py-3 text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3 text-[#94a3b8]">
-                    <EmbedStats statementId={s.id} />
+                    <EmbedStats statementId={s.id} refreshKey={embedRefreshKey} />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -238,31 +259,38 @@ export default function Upload() {
                         onClick={() => generateEmbeddings(s)}
                         disabled={embeddingId === s.id}
                         className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
-                        title="Generate embeddings"
+                        title="Build search index so the AI can learn from past transactions"
                       >
                         <Cpu size={13} />
-                        {embeddingId === s.id ? 'Embedding…' : 'Embed'}
+                        {embeddingId === s.id ? 'Indexing…' : 'Index'}
                       </button>
                       <button
                         onClick={() => autoAnnotate(s)}
                         disabled={annotatingId === s.id}
                         className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
-                        title="Auto-annotate"
+                        title="Automatically categorize transactions"
                       >
                         <Zap size={13} />
-                        {annotatingId === s.id ? 'Annotating…' : 'Annotate'}
+                        {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
+                      </button>
+                      <button
+                        onClick={() => setClearEmbedTarget(s)}
+                        className="text-[#475569] hover:text-sky-400 transition-colors"
+                        title="Rebuild search index (do this after making corrections)"
+                      >
+                        <DatabaseZap size={14} />
                       </button>
                       <button
                         onClick={() => setResetTarget(s)}
                         className="text-[#475569] hover:text-amber-400 transition-colors"
-                        title="Reset transactions & annotations (keeps statement)"
+                        title="Start over — removes all categories but keeps the statement"
                       >
                         <RotateCcw size={14} />
                       </button>
                       <button
                         onClick={() => setDeleteTarget(s)}
                         className="text-[#475569] hover:text-red-400 transition-colors"
-                        title="Delete statement"
+                        title="Remove this statement and all its data"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -276,9 +304,19 @@ export default function Upload() {
       </div>
 
       <ConfirmDialog
+        open={!!clearEmbedTarget}
+        title="Rebuild search index?"
+        description={`This will reset the search index for "${clearEmbedTarget?.bank_name} — ${clearEmbedTarget?.statement_month}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
+        confirmLabel="Rebuild index"
+        onConfirm={clearEmbeddings}
+        onCancel={() => setClearEmbedTarget(null)}
+        danger
+      />
+
+      <ConfirmDialog
         open={!!resetTarget}
-        title="Reset statement data?"
-        description={`This will permanently delete all annotations and embeddings for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Transactions and the statement record will be kept. This cannot be undone.`}
+        title="Start over with this statement?"
+        description={`This will remove all categories and the search index for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Your transactions stay — you can re-categorize anytime. This can't be undone.`}
         confirmLabel="Reset"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}
@@ -287,8 +325,8 @@ export default function Upload() {
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Delete statement?"
-        description={`This will permanently delete "${deleteTarget?.bank_name} — ${deleteTarget?.statement_month}" and all associated transactions.`}
+        title="Delete this statement?"
+        description={`This will permanently remove "${deleteTarget?.bank_name} — ${deleteTarget?.statement_month}" and all its transactions. This can't be undone.`}
         confirmLabel="Delete"
         onConfirm={deleteStatement}
         onCancel={() => setDeleteTarget(null)}
