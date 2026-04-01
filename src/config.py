@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     ollama_embedding_model: str = "nomic-embed-text"
     rag_direct_threshold: float = 0.92
     rag_top_k: int = 5
+    rag_similarity_floor: float = 0.65
+    rag_agreement_exponent: float = 0.3
+    rag_margin_safe: float = 0.08
+    llm_confidence_dampen: float = 0.85
+    llm_confidence_dampen_rag: float = 0.92
     api_base_url: str = "http://localhost:8000"
 
     # Last-segment values in UPI descriptions that carry no meaningful note.

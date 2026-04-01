@@ -569,6 +569,352 @@ class TestRAGPipeline:
 
 
 # ---------------------------------------------------------------------------
+# Disambiguation rule tests
+# ---------------------------------------------------------------------------
+
+class TestDisambiguationRules:
+    def test_uber_eats_maps_to_food(self):
+        txn = {"id": "t1", "raw_description": "UPI/UBEREATS/PAYMENT", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Food & Dining"
+        assert result.subcategory == "Food Delivery"
+        assert result.merchant == "Uber Eats"
+
+    def test_uber_food_in_note_maps_to_food(self):
+        txn = {"id": "t2", "raw_description": "UPI TRANSFER",
+               "upi_meta": json.dumps({"note": "uber food order"})}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Food & Dining"
+
+    def test_uber_ride_stays_transport(self):
+        txn = {"id": "t3", "raw_description": "Uber ride payment", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Transport"
+        assert result.merchant == "Uber"
+
+    def test_amazon_prime_video_maps_to_entertainment(self):
+        txn = {"id": "t4", "raw_description": "AMZN prime video subscription", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Entertainment"
+        assert result.merchant == "Amazon Prime"
+
+    def test_amazon_prime_membership_maps_to_entertainment(self):
+        txn = {"id": "t5", "raw_description": "amazon prime membership", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Entertainment"
+
+    def test_amazon_shopping_stays_shopping(self):
+        txn = {"id": "t6", "raw_description": "AMAZON PAYMENTS INDIA shopping order", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Shopping"
+
+    def test_aws_maps_to_financial(self):
+        txn = {"id": "t7", "raw_description": "AMZN AWS services payment", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Financial"
+        assert result.merchant == "AWS"
+
+    def test_disambiguation_confidence_is_095(self):
+        txn = {"id": "t8", "raw_description": "Uber eats delivery", "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.confidence == 0.95
+
+
+# ---------------------------------------------------------------------------
+# Agreement and margin factor unit tests
+# ---------------------------------------------------------------------------
+
+class TestAgreementFactor:
+    def test_all_agree_returns_one(self):
+        from src.pipeline.annotate import _compute_agreement_factor
+        matches = [
+            {"category": "Shopping"},
+            {"category": "Shopping"},
+            {"category": "Shopping"},
+        ]
+        assert _compute_agreement_factor(matches, "Shopping") == 1.0
+
+    def test_empty_matches_returns_one(self):
+        from src.pipeline.annotate import _compute_agreement_factor
+        assert _compute_agreement_factor([], "Shopping") == 1.0
+
+    def test_three_of_five_agree(self):
+        from src.pipeline.annotate import _compute_agreement_factor
+        matches = [
+            {"category": "Shopping"},
+            {"category": "Shopping"},
+            {"category": "Shopping"},
+            {"category": "Entertainment"},
+            {"category": "Entertainment"},
+        ]
+        factor = _compute_agreement_factor(matches, "Shopping")
+        # majority_fraction = 3/5 = 0.6, exponent = 0.3
+        expected = 0.6 ** 0.3
+        assert abs(factor - expected) < 1e-6
+
+    def test_four_of_five_agree_gentle_penalty(self):
+        from src.pipeline.annotate import _compute_agreement_factor
+        matches = [{"category": "Shopping"}] * 4 + [{"category": "Transport"}]
+        factor = _compute_agreement_factor(matches, "Shopping")
+        expected = 0.8 ** 0.3
+        assert abs(factor - expected) < 1e-6
+        assert factor > 0.9  # gentle penalty
+
+    def test_one_of_five_agree_strong_penalty(self):
+        from src.pipeline.annotate import _compute_agreement_factor
+        matches = [{"category": "Shopping"}] + [{"category": "Transport"}] * 4
+        factor = _compute_agreement_factor(matches, "Shopping")
+        expected = 0.2 ** 0.3
+        assert abs(factor - expected) < 1e-6
+        assert factor < 0.7  # significant penalty
+
+
+class TestMarginFactor:
+    def test_no_different_category_returns_one(self):
+        from src.pipeline.annotate import _compute_margin_factor
+        assert _compute_margin_factor(0.05, None) == 1.0
+
+    def test_large_margin_returns_one(self):
+        from src.pipeline.annotate import _compute_margin_factor
+        assert _compute_margin_factor(0.05, 0.15) == 1.0  # margin=0.10 >= 0.08
+
+    def test_zero_margin_returns_085(self):
+        from src.pipeline.annotate import _compute_margin_factor
+        factor = _compute_margin_factor(0.05, 0.05)  # margin=0
+        assert abs(factor - 0.85) < 1e-6
+
+    def test_half_margin_interpolates(self):
+        from src.pipeline.annotate import _compute_margin_factor
+        # margin = 0.04, rag_margin_safe = 0.08 → midpoint → 0.85 + 0.075 = 0.925
+        factor = _compute_margin_factor(0.05, 0.09)  # margin=0.04
+        assert abs(factor - 0.925) < 1e-6
+
+    def test_exact_safe_margin_returns_one(self):
+        from src.pipeline.annotate import _compute_margin_factor
+        factor = _compute_margin_factor(0.05, 0.13)  # margin=0.08 exactly
+        assert abs(factor - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Novelty gate tests
+# ---------------------------------------------------------------------------
+
+class TestNoveltyGate:
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_high_distance_falls_through_to_plain_llm(self):
+        """When best similarity < rag_similarity_floor, skip RAG and use plain LLM."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "target_novel", "completely novel merchant xyz")
+        llm_result = AnnotationResponse(category="Uncategorized", confidence=0.5)
+        mock_vec = [0.1] * 768
+        # distance=0.40 → similarity=0.60, below floor of 0.65
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "some_donor", "distance": 0.40},
+             ]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_novel"])
+
+        assert result.llm_annotated == 1
+        assert result.rag_direct_annotated == 0
+        assert result.rag_prompted_annotated == 0
+
+    def test_above_floor_proceeds_to_rag(self):
+        """When best similarity >= rag_similarity_floor, RAG proceeds normally."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+
+        # Insert a real donor so _build_examples_from_similar returns examples
+        _insert_txn(self.conn, "donor_known", "known merchant description")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="donor_known", category="Shopping", confidence=0.95, source="rule",
+        ))
+        self.conn.commit()
+
+        _insert_txn(self.conn, "target_known", "somewhat known merchant")
+        llm_result = AnnotationResponse(category="Shopping", confidence=0.75)
+        mock_vec = [0.1] * 768
+        # distance=0.30 → similarity=0.70, above floor of 0.65
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "donor_known", "distance": 0.30},
+             ]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_known"])
+
+        # RAG proceeds (rag_prompted path used since similarity < rag_direct_threshold)
+        assert result.rag_prompted_annotated == 1
+        assert result.llm_annotated == 0
+
+
+# ---------------------------------------------------------------------------
+# LLM dampening tests
+# ---------------------------------------------------------------------------
+
+class TestLLMDampening:
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_plain_llm_confidence_dampened(self):
+        """Plain LLM confidence is multiplied by llm_confidence_dampen (0.85)."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.db.queries.annotations import get_annotation_by_transaction
+
+        _insert_txn(self.conn, "t_llm", "mystery vendor")
+        llm_result = AnnotationResponse(category="Shopping", confidence=0.9)
+
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_llm"])
+
+        ann = get_annotation_by_transaction(self.conn, "t_llm")
+        assert ann is not None
+        assert abs(ann["confidence"] - round(0.9 * 0.85, 4)) < 1e-4
+
+    def test_rag_prompted_confidence_dampened(self):
+        """RAG prompted confidence is multiplied by llm_confidence_dampen_rag (0.92)."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.db.queries.annotations import get_annotation_by_transaction, insert_annotation
+        from src.models.annotation import Annotation
+
+        # Insert a real donor so _build_examples_from_similar returns examples
+        _insert_txn(self.conn, "donor_rag", "known shopping vendor")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="donor_rag", category="Shopping", confidence=0.95, source="rule",
+        ))
+        self.conn.commit()
+
+        _insert_txn(self.conn, "t_rag", "ambiguous vendor")
+        llm_result = AnnotationResponse(category="Shopping", confidence=0.9)
+        mock_vec = [0.1] * 768
+
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "donor_rag", "distance": 0.15},  # below rag_direct_threshold
+             ]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_rag"])
+
+        ann = get_annotation_by_transaction(self.conn, "t_rag")
+        assert ann is not None
+        assert abs(ann["confidence"] - round(0.9 * 0.92, 4)) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# RAG direct confidence with agreement + margin factors
+# ---------------------------------------------------------------------------
+
+class TestRAGDirectAmbiguity:
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _insert_donor(self, txn_id, description, category, source="rule"):
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+        _insert_txn(self.conn, txn_id, description)
+        insert_annotation(self.conn, Annotation(
+            transaction_id=txn_id, category=category, confidence=0.95, source=source,
+        ))
+        self.conn.commit()
+
+    def test_rag_direct_discounted_when_category_disagreement(self):
+        """When top-K matches disagree on category, rag_direct confidence is penalized."""
+        from src.pipeline.annotate import auto_annotate
+        from src.db.queries.annotations import get_annotation_by_transaction
+
+        self._insert_donor("donor_shop_1", "online shopping", "Shopping")
+        self._insert_donor("donor_shop_2", "buy stuff", "Shopping")
+        self._insert_donor("donor_shop_3", "retail purchase", "Shopping")
+        self._insert_donor("donor_ent_1", "streaming service", "Entertainment")
+        self._insert_donor("donor_ent_2", "video subscription", "Entertainment")
+
+        _insert_txn(self.conn, "target_ambig", "ambiguous vendor payment")
+        mock_vec = [0.1] * 768
+        # distance=0.06 → cosine_similarity=0.94 (above rag_direct_threshold=0.92)
+        similar = [
+            {"transaction_id": "donor_shop_1", "distance": 0.06},
+            {"transaction_id": "donor_shop_2", "distance": 0.07},
+            {"transaction_id": "donor_shop_3", "distance": 0.08},
+            {"transaction_id": "donor_ent_1", "distance": 0.08},
+            {"transaction_id": "donor_ent_2", "distance": 0.09},
+        ]
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar):
+            auto_annotate(self.conn, transaction_ids=["target_ambig"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_ambig")
+        assert ann is not None
+        # 3/5 agreement → factor ≈ 0.858, plus margin factor
+        # Confidence must be below raw cosine_similarity (0.94)
+        assert ann["confidence"] < 0.94
+
+    def test_rag_direct_unpenalized_when_all_agree(self):
+        """When all top-K matches agree on category, confidence equals cosine similarity."""
+        from src.pipeline.annotate import auto_annotate
+        from src.db.queries.annotations import get_annotation_by_transaction
+
+        for i in range(3):
+            self._insert_donor(f"donor_a{i}", f"food delivery {i}", "Food & Dining")
+
+        _insert_txn(self.conn, "target_clear", "food order")
+        mock_vec = [0.1] * 768
+        similar = [
+            {"transaction_id": "donor_a0", "distance": 0.05},
+            {"transaction_id": "donor_a1", "distance": 0.06},
+            {"transaction_id": "donor_a2", "distance": 0.07},
+        ]
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar):
+            auto_annotate(self.conn, transaction_ids=["target_clear"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_clear")
+        assert ann is not None
+        # All agree, no different category → both factors = 1.0
+        assert abs(ann["confidence"] - round(0.95, 4)) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# System prompt calibration test
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptCalibration:
+    def test_system_prompt_contains_calibration_guidance(self):
+        from src.pipeline.llm import _SYSTEM_PROMPT
+        assert "0.95" in _SYSTEM_PROMPT
+        assert "0.85" in _SYSTEM_PROMPT
+        assert "0.70" in _SYSTEM_PROMPT
+        assert "conservative" in _SYSTEM_PROMPT.lower()
+
+
+# ---------------------------------------------------------------------------
 # Embeddings API endpoint tests
 # ---------------------------------------------------------------------------
 

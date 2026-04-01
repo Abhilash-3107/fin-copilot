@@ -8,6 +8,18 @@ from src.models.annotation import AnnotationCreate
 
 
 @dataclass
+class DisambiguationRule:
+    """Override a base rule when secondary patterns also match (more specific takes precedence)."""
+    base_patterns: list[str]      # must match one of these first
+    override_patterns: list[str]  # if ANY of these also match → use override
+    category: str
+    subcategory: str | None = None
+    merchant: str | None = None
+    tags: list[str] = field(default_factory=list)
+    match_fields: list[str] = field(default_factory=lambda: ["raw_description", "upi_note"])
+
+
+@dataclass
 class MerchantRule:
     patterns: list[str]          # case-insensitive substrings to search for
     category: str
@@ -103,6 +115,31 @@ MERCHANT_RULES: list[MerchantRule] = [
 ]
 
 
+DISAMBIGUATION_RULES: list[DisambiguationRule] = [
+    # Uber Eats → Food & Dining (overrides the default Uber → Transport rule)
+    DisambiguationRule(
+        base_patterns=["uber"],
+        override_patterns=["eat", "eats", "food"],
+        category="Food & Dining", subcategory="Food Delivery",
+        merchant="Uber Eats", tags=["food"],
+    ),
+    # Amazon Prime Video → Entertainment (overrides Amazon → Shopping)
+    DisambiguationRule(
+        base_patterns=["amazon", "amzn"],
+        override_patterns=["prime video", "primevideo", "prime membership"],
+        category="Entertainment", subcategory="Movies & OTT",
+        merchant="Amazon Prime", tags=["ott"],
+    ),
+    # AWS → Financial (overrides Amazon → Shopping)
+    DisambiguationRule(
+        base_patterns=["amazon", "amzn"],
+        override_patterns=["aws", "amazon web"],
+        category="Financial", subcategory=None,
+        merchant="AWS", tags=["business", "cloud"],
+    ),
+]
+
+
 def _extract_upi_note(txn: dict) -> str:
     """Pull the UPI note out of upi_meta JSON, returning empty string if absent."""
     upi_meta = txn.get("upi_meta")
@@ -128,6 +165,22 @@ def apply_rules(txn: dict) -> AnnotationCreate | None:
         "upi_note": upi_note.lower(),
     }
 
+    # Phase 1: disambiguation rules (more specific — checked before MERCHANT_RULES)
+    for drule in DISAMBIGUATION_RULES:
+        haystack = " ".join(field_values[f] for f in drule.match_fields if f in field_values)
+        if any(p.lower() in haystack for p in drule.base_patterns):
+            if any(p.lower() in haystack for p in drule.override_patterns):
+                return AnnotationCreate(
+                    transaction_id=txn["id"],
+                    merchant=drule.merchant,
+                    category=drule.category,
+                    subcategory=drule.subcategory,
+                    tags=drule.tags,
+                    confidence=0.95,
+                    source="rule",
+                )
+
+    # Phase 2: standard merchant rules
     for rule in MERCHANT_RULES:
         haystack = " ".join(field_values[f] for f in rule.match_fields if f in field_values)
         for pattern in rule.patterns:

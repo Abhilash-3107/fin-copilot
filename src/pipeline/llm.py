@@ -27,7 +27,13 @@ _SYSTEM_PROMPT = (
     "Return ONLY valid JSON matching this schema:\n"
     '{"category": "...", "subcategory": "...", "merchant": "...", "tags": [...], "confidence": 0.0}\n'
     "confidence must be between 0 and 1. subcategory and merchant may be null. "
-    "tags is a list of short lowercase strings."
+    "tags is a list of short lowercase strings.\n"
+    "Confidence guidelines:\n"
+    "- 0.95: Exact merchant match, unambiguous category (e.g. 'Netflix' → Entertainment)\n"
+    "- 0.85: Strong match with minor ambiguity (e.g. generic 'food' description)\n"
+    "- 0.70: Reasonable guess but multiple categories are plausible\n"
+    "- 0.50: Weak signal, essentially guessing\n"
+    "Be conservative — only use 0.9+ when you are very certain."
 )
 
 

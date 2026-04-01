@@ -128,7 +128,7 @@ def auto_annotate(
                     category=llm_result.category,
                     subcategory=llm_result.subcategory,
                     tags=llm_result.tags,
-                    confidence=llm_result.confidence,
+                    confidence=round(llm_result.confidence * settings.llm_confidence_dampen, 4),
                     source="llm",
                 )
                 _persist(ann)
@@ -136,8 +136,9 @@ def auto_annotate(
                 if llm_result.confidence < settings.confidence_threshold:
                     low_confidence += 1
                 logger.debug(
-                    "llm result | txn=%s  → %s/%s  merchant=%r  conf=%.2f",
-                    txn["id"], llm_result.category, llm_result.subcategory, llm_result.merchant, llm_result.confidence,
+                    "llm result | txn=%s  → %s/%s  merchant=%r  raw_conf=%.2f  dampened_conf=%.4f",
+                    txn["id"], llm_result.category, llm_result.subcategory, llm_result.merchant,
+                    llm_result.confidence, ann.confidence,
                 )
             else:
                 llm_failed += 1
@@ -158,6 +159,35 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
     )
+
+
+def _compute_agreement_factor(annotated_matches: list[dict], top_category: str) -> float:
+    """Discount factor based on how many top-K matches agree on the top category.
+
+    Returns 1.0 when all matches agree (no penalty).
+    Returns majority_fraction ** exponent when there's disagreement (gentle penalty).
+    """
+    if not annotated_matches:
+        return 1.0
+    majority_count = sum(1 for m in annotated_matches if m.get("category") == top_category)
+    majority_fraction = majority_count / len(annotated_matches)
+    if majority_fraction >= 1.0:
+        return 1.0
+    return majority_fraction ** settings.rag_agreement_exponent
+
+
+def _compute_margin_factor(top_distance: float, next_diff_distance: float | None) -> float:
+    """Discount factor based on the distance margin to the nearest different-category match.
+
+    Returns 1.0 when the gap is large enough (clear winner) or no different category exists.
+    Linearly interpolates from 0.85 (tied) to 1.0 (at rag_margin_safe distance apart).
+    """
+    if next_diff_distance is None:
+        return 1.0
+    margin = next_diff_distance - top_distance
+    if margin >= settings.rag_margin_safe:
+        return 1.0
+    return 0.85 + 0.15 * (margin / settings.rag_margin_safe)
 
 
 def _try_rag_annotation(
@@ -188,30 +218,67 @@ def _try_rag_annotation(
         logger.debug("rag | no similar found | txn=%s  desc=%r", txn["id"], txn["raw_description"])
         return None
 
-    # rag_direct: top match above similarity threshold → copy its annotation directly
+    # Novelty gate: if the best match is too far away, the examples are noise
+    best_similarity = 1.0 - similar[0]["distance"]
+    if best_similarity < settings.rag_similarity_floor:
+        logger.debug(
+            "rag | novelty gate | txn=%s  best_sim=%.4f < floor=%.4f → skip RAG",
+            txn["id"], best_similarity, settings.rag_similarity_floor,
+        )
+        return None
+
+    # Fetch annotations for all top-K matches upfront (used for agreement + margin analysis)
     top_match = similar[0]
-    cosine_similarity = 1.0 - top_match["distance"]
+    cosine_similarity = best_similarity
+    annotated_matches = []
+    for match in similar:
+        ann = get_annotation_by_transaction(conn, match["transaction_id"])
+        if ann:
+            annotated_matches.append({
+                "transaction_id": match["transaction_id"],
+                "distance": match["distance"],
+                "category": ann.get("category"),
+                "source": ann.get("source"),
+                "annotation": ann,
+            })
+
     logger.debug(
-        "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f",
-        txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold,
+        "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f  annotated_k=%d",
+        txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold, len(annotated_matches),
     )
-    # Only trust human-verified or rule-matched annotations for direct copy;
+
+    # rag_direct: top match above similarity threshold → copy its annotation directly
+    # Only trust human-verified or rule-matched annotations;
     # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
     _TRUSTED_SOURCES = {"manual", "rule", "imported"}
     if cosine_similarity >= settings.rag_direct_threshold:
-        donor_ann = get_annotation_by_transaction(conn, top_match["transaction_id"])
+        donor_ann = annotated_matches[0]["annotation"] if annotated_matches else None
         if donor_ann and donor_ann.get("source") in _TRUSTED_SOURCES:
+            top_category = donor_ann["category"]
+
+            # Agreement factor: penalize if top-K matches disagree on category
+            agreement_factor = _compute_agreement_factor(annotated_matches, top_category)
+
+            # Margin factor: penalize if nearest different-category match is close
+            next_diff_distance = next(
+                (m["distance"] for m in annotated_matches if m.get("category") != top_category),
+                None,
+            )
+            margin_factor = _compute_margin_factor(top_match["distance"], next_diff_distance)
+
+            confidence = round(cosine_similarity * agreement_factor * margin_factor, 4)
             logger.debug(
-                "rag_direct | txn=%s  → %s/%s  conf=%.4f  donor_source=%s",
-                txn["id"], donor_ann["category"], donor_ann.get("subcategory"), cosine_similarity, donor_ann["source"],
+                "rag_direct | txn=%s  → %s/%s  cosine=%.4f  agreement=%.4f  margin=%.4f  conf=%.4f  donor_source=%s",
+                txn["id"], top_category, donor_ann.get("subcategory"),
+                cosine_similarity, agreement_factor, margin_factor, confidence, donor_ann["source"],
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=donor_ann.get("merchant"),
-                category=donor_ann["category"],
+                category=top_category,
                 subcategory=donor_ann.get("subcategory"),
                 tags=[t for t in donor_ann.get("tags", "").split(",") if t],
-                confidence=round(cosine_similarity, 4),
+                confidence=confidence,
                 source="rag_direct",
             )
         elif donor_ann:
@@ -226,9 +293,10 @@ def _try_rag_annotation(
     if examples:
         llm_result = annotate_transaction_llm_with_examples(txn, category_list, examples)
         if llm_result is not None:
+            confidence = round(llm_result.confidence * settings.llm_confidence_dampen_rag, 4)
             logger.debug(
-                "rag_prompted result | txn=%s  → %s/%s  conf=%.2f",
-                txn["id"], llm_result.category, llm_result.subcategory, llm_result.confidence,
+                "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
+                txn["id"], llm_result.category, llm_result.subcategory, llm_result.confidence, confidence,
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -236,7 +304,7 @@ def _try_rag_annotation(
                 category=llm_result.category,
                 subcategory=llm_result.subcategory,
                 tags=llm_result.tags,
-                confidence=llm_result.confidence,
+                confidence=confidence,
                 source="rag_prompted",
             )
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
