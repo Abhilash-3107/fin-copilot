@@ -28,7 +28,7 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
     <table className="w-full border-collapse text-sm">
       <thead>
         <tr>
-          {['Date', 'Description', 'Amount', 'Category', 'Source'].map(h => (
+          {['Date', 'Description', 'Amount', 'Category', 'Source', 'Confidence'].map(h => (
             <th
               key={h}
               className="sticky top-0 bg-[#13151f] px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap"
@@ -89,6 +89,19 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
                 <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
                   {sourceLabel(src)}
                 </span>
+              </td>
+              <td className="px-3 py-2.5 whitespace-nowrap">
+                {ann?.confidence != null ? (
+                  <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium tabular-nums ${
+                    ann.confidence >= 0.8 ? 'bg-[#14532d] text-[#86efac]'
+                    : ann.confidence >= 0.5 ? 'bg-[#78350f] text-[#fcd34d]'
+                    : 'bg-[#450a0a] text-[#fca5a5]'
+                  }`}>
+                    {Math.round(ann.confidence * 100)}%
+                  </span>
+                ) : (
+                  <span className="text-[#475569]">—</span>
+                )}
               </td>
             </tr>
           )

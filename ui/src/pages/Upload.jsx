@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, Cpu } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, Cpu, RotateCcw } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -23,6 +23,7 @@ export default function Upload() {
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [resetTarget, setResetTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
   const [embeddingId, setEmbeddingId] = useState(null)
   const [lastResult, setLastResult] = useState(null)
@@ -80,6 +81,18 @@ export default function Upload() {
       loadStatements()
     } catch (e) {
       toast(`Delete failed: ${e.message}`, 'error')
+    }
+  }
+
+  async function resetStatementData() {
+    if (!resetTarget) return
+    try {
+      await api.delete(`/statements/${resetTarget.id}/data`)
+      toast(`Reset ${resetTarget.bank_name} — ${resetTarget.statement_month}`, 'info')
+      setResetTarget(null)
+      loadStatements()
+    } catch (e) {
+      toast(`Reset failed: ${e.message}`, 'error')
     }
   }
 
@@ -240,6 +253,13 @@ export default function Upload() {
                         {annotatingId === s.id ? 'Annotating…' : 'Annotate'}
                       </button>
                       <button
+                        onClick={() => setResetTarget(s)}
+                        className="text-[#475569] hover:text-amber-400 transition-colors"
+                        title="Reset transactions & annotations (keeps statement)"
+                      >
+                        <RotateCcw size={14} />
+                      </button>
+                      <button
                         onClick={() => setDeleteTarget(s)}
                         className="text-[#475569] hover:text-red-400 transition-colors"
                         title="Delete statement"
@@ -254,6 +274,16 @@ export default function Upload() {
           </table>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!resetTarget}
+        title="Reset statement data?"
+        description={`This will permanently delete all annotations and embeddings for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Transactions and the statement record will be kept. This cannot be undone.`}
+        confirmLabel="Reset"
+        onConfirm={resetStatementData}
+        onCancel={() => setResetTarget(null)}
+        danger
+      />
 
       <ConfirmDialog
         open={!!deleteTarget}
