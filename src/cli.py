@@ -62,12 +62,7 @@ def review():
         elif choice == "s":
             continue
         elif choice == "c":
-            _patch(base, item["id"], {
-                "category": item["category"],
-                "subcategory": item.get("subcategory"),
-                "merchant": item.get("merchant"),
-                "confidence": item["confidence"],
-            })
+            _confirm(base, item["id"])
             console.print("[green]Confirmed.[/green]")
         elif choice == "e":
             category = typer.prompt("Category", default=item["category"])
@@ -81,6 +76,14 @@ def review():
             console.print("[green]Updated.[/green]")
         else:
             console.print("[dim]Unknown key — skipping.[/dim]")
+
+
+def _confirm(base: str, annotation_id: str) -> None:
+    try:
+        resp = httpx.post(f"{base}/annotations/{annotation_id}/confirm", timeout=10)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        console.print(f"[red]Confirm failed: {exc}[/red]")
 
 
 def _patch(base: str, annotation_id: str, payload: dict) -> None:

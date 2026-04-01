@@ -12,7 +12,8 @@ INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
     ('cat_entertainment',     'Entertainment',      NULL),
     ('cat_travel',            'Travel',             NULL),
     ('cat_education',         'Education',          NULL),
-    ('cat_financial',         'Financial',          NULL),
+    ('cat_financial',         'Finances',           NULL),
+    ('cat_investments',       'Investments',        NULL),
     ('cat_personal_care',     'Personal Care',      NULL),
     ('cat_gifts_donations',   'Gifts & Donations',  NULL),
     ('cat_transfers',         'Transfers',          NULL),
@@ -24,7 +25,8 @@ INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
     ('cat_food_restaurants',    'Restaurants',    'cat_food_dining'),
     ('cat_food_delivery',       'Food Delivery',  'cat_food_dining'),
     ('cat_food_groceries',      'Groceries',      'cat_food_dining'),
-    ('cat_food_cafe',           'Cafe & Snacks',  'cat_food_dining');
+    ('cat_food_cafe',           'Cafe & Snacks',  'cat_food_dining'),
+    ('cat_food_alcohol',        'Alcohol',        'cat_food_dining');
 
 -- Shopping subcategories
 INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
@@ -81,13 +83,16 @@ INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
     ('cat_edu_books',   'Books & Stationery','cat_education'),
     ('cat_edu_courses', 'Online Courses',    'cat_education');
 
--- Financial subcategories
+-- Finances subcategories (EMIs, insurance, credit card, tax)
 INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
     ('cat_fin_insurance',    'Insurance Premium',    'cat_financial'),
-    ('cat_fin_mf_sip',       'Mutual Fund SIP',      'cat_financial'),
     ('cat_fin_loan_emi',     'Loan EMI',             'cat_financial'),
     ('cat_fin_cc_payment',   'Credit Card Payment',  'cat_financial'),
     ('cat_fin_tax',          'Tax Payment',          'cat_financial');
+
+-- Investments subcategories (SIPs, mutual funds)
+INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
+    ('cat_inv_mf_sip',       'Mutual Fund SIP',      'cat_investments');
 
 -- Personal Care subcategories
 INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
@@ -108,8 +113,9 @@ INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
 
 -- Income subcategories
 INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
-    ('cat_inc_salary',     'Salary',               'cat_income'),
-    ('cat_inc_freelance',  'Freelance',             'cat_income'),
-    ('cat_inc_interest',   'Interest & Dividends',  'cat_income'),
-    ('cat_inc_refund',     'Refund',                'cat_income'),
-    ('cat_inc_cashback',   'Cashback',              'cat_income');
+    ('cat_inc_salary',          'Salary',               'cat_income'),
+    ('cat_inc_freelance',       'Freelance',             'cat_income'),
+    ('cat_inc_interest',        'Interest & Dividends',  'cat_income'),
+    ('cat_inc_refund',          'Refund',                'cat_income'),
+    ('cat_inc_cashback',        'Cashback',              'cat_income'),
+    ('cat_inc_opening_balance', 'Opening Balance',       'cat_income');

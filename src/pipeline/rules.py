@@ -87,15 +87,30 @@ MERCHANT_RULES: list[MerchantRule] = [
 
     # --- Financial ---
     MerchantRule(["salary", "sal cr", "sal credit"], "Income", "Salary", None, ["income", "salary"], ["raw_description"]),
-    MerchantRule(["mutual fund", "mf sip", "sip debit", "nfo"], "Financial", "Mutual Fund SIP", None, ["investment"]),
-    MerchantRule(["emi", "loan emi", "home loan", "car loan", "personal loan"], "Financial", "Loan EMI", None, ["emi"]),
-    MerchantRule(["insurance", "lic ", "hdfc life", "sbi life", "icici pru"], "Financial", "Insurance Premium", None, ["insurance"]),
-    MerchantRule(["credit card", "cc payment", "card outstanding"], "Financial", "Credit Card Payment", None, ["credit-card"]),
-    MerchantRule(["income tax", "tds payment", "advance tax", "gst payment"], "Financial", "Tax Payment", None, ["tax"]),
+    MerchantRule(["mutual fund", "mf sip", "sip debit", "nfo"], "Investments", "Mutual Fund SIP", None, ["investment"]),
+    MerchantRule(["emi", "loan emi", "home loan", "car loan", "personal loan"], "Finances", "Loan EMI", None, ["emi"]),
+    MerchantRule(["insurance", "lic ", "hdfc life", "sbi life", "icici pru"], "Finances", "Insurance Premium", None, ["insurance"]),
+    MerchantRule(["credit card", "cc payment", "card outstanding"], "Finances", "Credit Card Payment", None, ["credit-card"]),
+    MerchantRule(["income tax", "tds payment", "advance tax", "gst payment"], "Finances", "Tax Payment", None, ["tax"]),
+
+    # --- Income ---
+    MerchantRule(["opening balance"], "Income", "Opening Balance", None, ["opening-balance"], ["raw_description"]),
+
+    # --- Financial / Investment ---
+    MerchantRule(["indmoney", "ind money"], "Financial", "Mutual Fund SIP", "INDmoney", ["investment"]),
+    MerchantRule(["nach-mut-dr", "nach mut dr"], "Financial", "Mutual Fund SIP", None, ["investment", "sip"]),
+    MerchantRule(["groww"], "Financial", "Mutual Fund SIP", "Groww", ["investment"]),
+    MerchantRule(["zerodha", "coin by zerodha"], "Financial", "Mutual Fund SIP", "Zerodha", ["investment"]),
+    MerchantRule(["kuvera"], "Financial", "Mutual Fund SIP", "Kuvera", ["investment"]),
 
     # --- ATM / Transfers ---
     MerchantRule(["atm withdrawal", "atm cash", "atm wd"], "Transfers", "ATM Withdrawal", None, ["cash"]),
     MerchantRule(["neft", "rtgs", "imps"], "Transfers", "Peer Transfer", None, ["transfer"], ["raw_description"]),
+
+    # --- Transport (public) ---
+    MerchantRule(["irctctourism"], "Transport", "Public Transport", "IRCTC Tourism", ["transport", "metro"]),
+    MerchantRule(["maha mumbai met", "mumbai metro"], "Transport", "Public Transport", "Mumbai Metro", ["transport", "metro"]),
+    MerchantRule(["uts- direct", "uts-direct"], "Transport", "Public Transport", "UTS", ["transport", "train"]),
 
     # --- Health ---
     MerchantRule(["pharmeasy", "netmeds", "1mg", "medplus", "apollo pharmacy"], "Health", "Pharmacy", None, ["health", "pharmacy"]),

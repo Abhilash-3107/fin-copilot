@@ -61,7 +61,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     """Return model annotations below the confidence threshold, joined with their transactions."""
     rows = conn.execute(
         """
-        SELECT a.*, t.txn_date, t.amount, t.debit_credit, t.raw_description
+        SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
         WHERE a.source IN ('model','rule','rag_direct','rag_prompted','llm') AND a.confidence < ?

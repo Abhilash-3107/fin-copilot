@@ -105,7 +105,7 @@ def annotate_transaction_llm_with_examples(
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        "format": "json",
+        "format": AnnotationResponse.model_json_schema(),
         "options": {
             "num_ctx": 2048,
             "num_predict": 256,
@@ -169,7 +169,7 @@ def annotate_transaction_llm(
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        "format": "json",
+        "format": AnnotationResponse.model_json_schema(),
         "options": {
             "num_ctx": 2048,
             "num_predict": 256,

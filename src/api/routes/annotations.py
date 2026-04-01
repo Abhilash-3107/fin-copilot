@@ -1,4 +1,4 @@
-"""Annotation routes: create, patch, and review-queue listing."""
+"""Annotation routes: create, patch, confirm, and review-queue listing."""
 from __future__ import annotations
 
 import sqlite3
@@ -14,6 +14,7 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
+from src.db.queries.feedback_stats import record_feedback
 from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
 from src.pipeline.annotate import auto_annotate
 
@@ -75,8 +76,38 @@ def patch_annotation(
         patch["confidence"] = body.confidence
 
     if patch:
+        # Record feedback before updating — use original source + category.
+        # Only track feedback for pipeline sources that use dampening.
+        if existing["source"] in ("llm", "rag_prompted"):
+            feedback_type = _classify_feedback(existing, patch)
+            record_feedback(conn, existing["source"], existing["category"], feedback_type)
+
         update_annotation(conn, annotation_id, patch)
         conn.commit()
+
+    updated = get_annotation(conn, annotation_id)
+    return _as_response(updated)
+
+
+@router.post("/{annotation_id}/confirm")
+def confirm_annotation(
+    annotation_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Mark an annotation as confirmed by a human without changes.
+
+    Records a 'confirmed' feedback event for the original (source, category),
+    then sets confidence=1.0 and source='manual'.
+    """
+    existing = get_annotation(conn, annotation_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    if existing["source"] in ("llm", "rag_prompted"):
+        record_feedback(conn, existing["source"], existing["category"], "confirmed")
+
+    update_annotation(conn, annotation_id, {"confidence": 1.0})
+    conn.commit()
 
     updated = get_annotation(conn, annotation_id)
     return _as_response(updated)
@@ -88,6 +119,22 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     for item in items:
         item["tags"] = [t for t in item.get("tags", "").split(",") if t]
     return items
+
+
+def _classify_feedback(existing: dict, patch: dict) -> str:
+    """Detect whether a patch represents a confirmation, refinement, or correction.
+
+    - corrected: category field changed
+    - refined:   category unchanged but subcategory/merchant/tags changed
+    - confirmed: no meaningful fields changed (e.g. only confidence patched)
+    """
+    new_category = patch.get("category")
+    if new_category is not None and new_category != existing["category"]:
+        return "corrected"
+    for field in ("subcategory", "merchant", "tags"):
+        if field in patch and patch[field] != existing.get(field):
+            return "refined"
+    return "confirmed"
 
 
 def _annotation_response(annotation: Annotation) -> dict:

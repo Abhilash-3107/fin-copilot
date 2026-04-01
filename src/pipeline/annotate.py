@@ -13,6 +13,7 @@ from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import Annotation, AnnotationCreate, AutoAnnotateResult
+from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import annotate_transaction_llm, annotate_transaction_llm_with_examples
 from src.pipeline.rules import apply_rules
@@ -128,7 +129,7 @@ def auto_annotate(
                     category=llm_result.category,
                     subcategory=llm_result.subcategory,
                     tags=llm_result.tags,
-                    confidence=round(llm_result.confidence * settings.llm_confidence_dampen, 4),
+                    confidence=round(llm_result.confidence * get_calibrated_dampening(conn, "llm", llm_result.category), 4),
                     source="llm",
                 )
                 _persist(ann)
@@ -293,7 +294,7 @@ def _try_rag_annotation(
     if examples:
         llm_result = annotate_transaction_llm_with_examples(txn, category_list, examples)
         if llm_result is not None:
-            confidence = round(llm_result.confidence * settings.llm_confidence_dampen_rag, 4)
+            confidence = round(llm_result.confidence * get_calibrated_dampening(conn, "rag_prompted", llm_result.category), 4)
             logger.debug(
                 "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
                 txn["id"], llm_result.category, llm_result.subcategory, llm_result.confidence, confidence,
