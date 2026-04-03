@@ -5,23 +5,23 @@ Local-first personal finance tool that auto-categorizes bank transactions using 
 ## Screenshots
 
 ### Dashboard
-<!-- ![Dashboard](docs/dashboard.png) -->
+[Dashboard](docs/dashboard.png)
 *Transaction overview with auto-annotate trigger and confidence scores*
 
 ### Review Queue
-<!-- ![Review Queue](docs/reviewqueue.png) -->
+[Review Queue](docs/reviewqueue.png)
 *Low-confidence annotations surfaced for human correction*
 
 ### Upload & Parse
-<!-- ![Upload](docs/upload.png) -->
+[Upload](docs/upload.png)
 *Drag-and-drop PDF upload with bank auto-detection*
 
 ### Transactions
-<!-- ![Transactions](docs/transaction.png) -->
+[Transactions](docs/transaction.png)
 *Full transaction table with category chips, inline editing, and filters*
 
 ### Insights
-<!-- ![Insights](docs/insights.png) -->
+[Insights](docs/insights.png)
 *Spending breakdowns and trends*
 
 ---
