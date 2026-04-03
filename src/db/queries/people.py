@@ -33,6 +33,14 @@ def search_people(conn: sqlite3.Connection, query: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def update_person(conn: sqlite3.Connection, person_id: str, name: str, upi: str | None) -> dict | None:
+    conn.execute(
+        "UPDATE people SET name = ?, upi = ? WHERE id = ?",
+        (name, upi, person_id),
+    )
+    return get_person(conn, person_id)
+
+
 def delete_person(conn: sqlite3.Connection, person_id: str) -> bool:
     cursor = conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
     return cursor.rowcount > 0

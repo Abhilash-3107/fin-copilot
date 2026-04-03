@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, HelpCircle } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { formatAmount } from './TransactionTable.jsx'
+import Tooltip from './Tooltip.jsx'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
 const ROLES = ['paid', 'received', 'partial']
@@ -84,9 +85,25 @@ export default function GroupCard({ group, allPeople = [], onDelete, onUpdated }
             <table className="w-full text-xs">
               <thead>
                 <tr>
-                  {['Date', 'Description', 'Amount', 'Type', 'Role'].map(h => (
+                  {['Date', 'Description', 'Amount'].map(h => (
                     <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                   ))}
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
+                    <span className="flex items-center gap-1">
+                      Type
+                      <Tooltip content="split = shared expense · reimbursement = paid back · refund = returned · transfer = between accounts · event = one-time occasion" position="bottom">
+                        <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                      </Tooltip>
+                    </span>
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
+                    <span className="flex items-center gap-1">
+                      Role
+                      <Tooltip content="paid = you covered it · received = money came to you · partial = you paid part" position="bottom">
+                        <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                      </Tooltip>
+                    </span>
+                  </th>
                   <th className="px-3 py-2 border-b border-[#1e2235]"></th>
                 </tr>
               </thead>

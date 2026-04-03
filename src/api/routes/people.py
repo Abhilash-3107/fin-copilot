@@ -13,6 +13,7 @@ from src.db.queries.people import (
     delete_person,
     list_people,
     search_people,
+    update_person,
 )
 
 router = APIRouter()
@@ -33,6 +34,20 @@ def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
 @router.get("")
 def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
     return search_people(conn, q) if q else list_people(conn)
+
+
+class PersonUpdate(BaseModel):
+    name: str
+    upi: Optional[str] = None
+
+
+@router.patch("/{person_id}")
+def update(person_id: str, body: PersonUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    person = update_person(conn, person_id, body.name, body.upi or None)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    conn.commit()
+    return person
 
 
 @router.delete("/{person_id}", status_code=204)

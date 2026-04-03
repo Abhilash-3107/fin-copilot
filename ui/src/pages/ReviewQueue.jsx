@@ -6,6 +6,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from '../components/CategoryPicker.jsx'
 import TagInput from '../components/TagInput.jsx'
 import { SOURCE_PILL, formatAmount } from '../components/TransactionTable.jsx'
+import Tooltip from '../components/Tooltip.jsx'
 
 function ConfidenceBar({ confidence }) {
   const pct = Math.round((confidence ?? 0) * 100)
@@ -192,7 +193,9 @@ export default function ReviewQueue() {
                 : src}
             </span>
           </div>
-          <ConfidenceBar confidence={item.confidence} />
+          <Tooltip content="How sure the AI is about this guess. Below 60% means it's mostly guessing." position="bottom">
+            <ConfidenceBar confidence={item.confidence} />
+          </Tooltip>
         </div>
 
         {/* Edit form */}

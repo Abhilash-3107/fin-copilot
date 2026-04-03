@@ -11,12 +11,33 @@ from src.config import settings
 from src.db.queries.annotations import get_annotation_by_transaction, insert_annotation
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
+from src.db.queries.people import list_people
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import Annotation, AnnotationCreate, AutoAnnotateResult
 from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import annotate_transaction_llm, annotate_transaction_llm_with_examples
 from src.pipeline.rules import apply_rules
+
+
+def _match_known_person(txn: dict, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
+    """Return a Peer Transfer annotation if the transaction description matches a known person.
+
+    known_people is a list of (display_name, match_token) where match_token is already lowercased.
+    """
+    desc = (txn.get("raw_description") or "").lower()
+    for name, token in known_people:
+        if token in desc:
+            return AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=name,
+                category="Transfers",
+                subcategory="Peer Transfer",
+                tags=["transfer", "peer"],
+                confidence=0.95,
+                source="rule",
+            )
+    return None
 
 
 def auto_annotate(
@@ -73,11 +94,14 @@ def auto_annotate(
         insert_annotation(conn, annotation)
         conn.commit()
 
+    # Load known people once — used for peer transfer matching before merchant rules
+    known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
+
     # --- Stage 1: Rule pass ---
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
     for txn in unannotated:
-        result = apply_rules(txn)
+        result = _match_known_person(txn, known_people) or apply_rules(txn)
         if result is not None:
             _persist(result)
             rule_matched += 1

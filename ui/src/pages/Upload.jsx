@@ -1,25 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, Cpu, RotateCcw, DatabaseZap } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
-
-function EmbedStats({ statementId, refreshKey }) {
-  const [stats, setStats] = useState(null)
-  useEffect(() => {
-    api.get(`/embeddings/stats/${statementId}`).then(setStats).catch(() => {})
-  }, [statementId, refreshKey])
-  if (!stats) return <span className="text-[#475569]">—</span>
-  const pct = stats.total > 0 ? Math.round((stats.embedded / stats.total) * 100) : 0
-  const color = pct === 100 ? 'text-emerald-400' : pct > 0 ? 'text-amber-400' : 'text-[#475569]'
-  return (
-    <span className={`tabular-nums ${color}`}>
-      {stats.embedded}/{stats.total}
-      <span className="text-[#475569] ml-1">({pct}%)</span>
-    </span>
-  )
-}
+import Tooltip from '../components/Tooltip.jsx'
 
 export default function Upload() {
   const toast = useToast()
@@ -32,8 +17,6 @@ export default function Upload() {
   const [resetTarget, setResetTarget] = useState(null)
   const [clearEmbedTarget, setClearEmbedTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
-  const [embeddingId, setEmbeddingId] = useState(null)
-  const [embedRefreshKey, setEmbedRefreshKey] = useState(0)
   const [lastResult, setLastResult] = useState(null)
   const fileRef = useRef(null)
 
@@ -128,24 +111,9 @@ export default function Upload() {
       const result = await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
       toast(`Search index cleared — rebuild it when you're ready`, 'info')
       setClearEmbedTarget(null)
-      setEmbedRefreshKey(k => k + 1)
       loadStatements()
     } catch (e) {
       toast(`Couldn't clear the index — ${e.message}`, 'error')
-    }
-  }
-
-  async function generateEmbeddings(stmt) {
-    setEmbeddingId(stmt.id)
-    try {
-      const result = await api.post('/embeddings/generate', { statement_id: stmt.id })
-      toast(`Indexed ${result.embedded} transactions — ready to learn from them`, 'success')
-      setEmbedRefreshKey(k => k + 1)
-      loadStatements()
-    } catch (e) {
-      toast(`Indexing failed: ${e.message}`, 'error')
-    } finally {
-      setEmbeddingId(null)
     }
   }
 
@@ -234,7 +202,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Uploaded', 'Search Index', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -250,50 +218,42 @@ export default function Upload() {
                   </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{s.statement_month}</td>
                   <td className="px-4 py-3 text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
-                  <td className="px-4 py-3 text-[#94a3b8]">
-                    <EmbedStats statementId={s.id} refreshKey={embedRefreshKey} />
-                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => generateEmbeddings(s)}
-                        disabled={embeddingId === s.id}
-                        className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
-                        title="Build search index so the AI can learn from past transactions"
-                      >
-                        <Cpu size={13} />
-                        {embeddingId === s.id ? 'Indexing…' : 'Index'}
-                      </button>
-                      <button
-                        onClick={() => autoAnnotate(s)}
-                        disabled={annotatingId === s.id}
-                        className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
-                        title="Automatically categorize transactions"
-                      >
-                        <Zap size={13} />
-                        {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
-                      </button>
-                      <button
-                        onClick={() => setClearEmbedTarget(s)}
-                        className="text-[#475569] hover:text-sky-400 transition-colors"
-                        title="Rebuild search index (do this after making corrections)"
-                      >
-                        <DatabaseZap size={14} />
-                      </button>
-                      <button
-                        onClick={() => setResetTarget(s)}
-                        className="text-[#475569] hover:text-amber-400 transition-colors"
-                        title="Start over — removes all categories but keeps the statement"
-                      >
-                        <RotateCcw size={14} />
-                      </button>
-                      <button
-                        onClick={() => setDeleteTarget(s)}
-                        className="text-[#475569] hover:text-red-400 transition-colors"
-                        title="Remove this statement and all its data"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <Tooltip content="Use AI to automatically categorize transactions in this statement">
+                        <button
+                          onClick={() => autoAnnotate(s)}
+                          disabled={annotatingId === s.id}
+                          className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
+                        >
+                          <Zap size={13} />
+                          {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="Rebuild search index — do this after making corrections">
+                        <button
+                          onClick={() => setClearEmbedTarget(s)}
+                          className="text-[#475569] hover:text-sky-400 transition-colors"
+                        >
+                          <DatabaseZap size={14} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="Reset all categories — keeps the statement data">
+                        <button
+                          onClick={() => setResetTarget(s)}
+                          className="text-[#475569] hover:text-amber-400 transition-colors"
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip content="Delete this statement and all its data">
+                        <button
+                          onClick={() => setDeleteTarget(s)}
+                          className="text-[#475569] hover:text-red-400 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Tooltip>
                     </div>
                   </td>
                 </tr>

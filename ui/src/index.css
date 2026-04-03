@@ -51,3 +51,12 @@ html, body {
 .animate-slide-in {
   animation: slideIn 200ms ease forwards;
 }
+
+/* Tooltip scale-in */
+@keyframes tooltipIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-tooltip-in {
+  animation: tooltipIn 150ms ease forwards;
+}

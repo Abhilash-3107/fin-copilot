@@ -5,6 +5,8 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
+import Tooltip from '../components/Tooltip.jsx'
+import { HelpCircle } from 'lucide-react'
 
 const CAT_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#a855f7', '#f59e0b',
@@ -213,18 +215,20 @@ export default function Dashboard() {
           >
             Add statement
           </Link>
-          <button
-            onClick={runAutoAnnotate}
-            disabled={autoAnnotating}
-            className="bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors"
-          >
-            {autoAnnotating
-              ? 'Categorizing…'
-              : activeStatement
-                ? 'Auto-categorize'
-                : 'Auto-categorize all'
-            }
-          </button>
+          <Tooltip content="Use AI to automatically categorize transactions in this statement">
+            <button
+              onClick={runAutoAnnotate}
+              disabled={autoAnnotating}
+              className="bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors"
+            >
+              {autoAnnotating
+                ? 'Categorizing…'
+                : activeStatement
+                  ? 'Auto-categorize'
+                  : 'Auto-categorize all'
+              }
+            </button>
+          </Tooltip>
         </div>
       </div>
 
@@ -334,7 +338,12 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-4">
           {/* Confidence by category */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-5">
-            <p className="text-sm text-[#e2e8f0] mb-4">Accuracy</p>
+            <p className="text-sm text-[#e2e8f0] mb-4 flex items-center gap-1.5">
+              Accuracy
+              <Tooltip content="How often the AI's auto-categorizations are correct">
+                <HelpCircle size={13} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+              </Tooltip>
+            </p>
             {loading ? (
               <p className="text-sm text-[#475569]">Pulling it together…</p>
             ) : confByCategory.length === 0 ? (

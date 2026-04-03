@@ -6,6 +6,7 @@ import { useStatement } from '../contexts/StatementContext.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import EmptyState from '../components/EmptyState.jsx'
+import Tooltip from '../components/Tooltip.jsx'
 
 const BATCH_SIZE = 10
 
@@ -213,25 +214,27 @@ export default function Transactions() {
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        <button
-          onClick={generateEmbeddings}
-          disabled={embedding || !selectedStmt}
-          className="flex items-center gap-1.5 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-3 py-1.5 rounded-md text-xs hover:text-[#e2e8f0] disabled:opacity-50 transition-colors"
-          title="Generate embeddings for selected statement"
-        >
-          <Cpu size={13} />
-          {embedding ? 'Embedding…' : 'Embed'}
-        </button>
+        <Tooltip content="Convert categorized transactions into searchable patterns so the AI can learn from them">
+          <button
+            onClick={generateEmbeddings}
+            disabled={embedding || !selectedStmt}
+            className="flex items-center gap-1.5 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-3 py-1.5 rounded-md text-xs hover:text-[#e2e8f0] disabled:opacity-50 transition-colors"
+          >
+            <Cpu size={13} />
+            {embedding ? 'Embedding…' : 'Embed'}
+          </button>
+        </Tooltip>
 
-        <button
-          onClick={autoAnnotate}
-          disabled={autoAnnotating || !selectedStmt}
-          className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-          title="Auto-annotate this statement"
-        >
-          <Zap size={13} />
-          {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
-        </button>
+        <Tooltip content="Use AI to automatically categorize transactions in this statement">
+          <button
+            onClick={autoAnnotate}
+            disabled={autoAnnotating || !selectedStmt}
+            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            <Zap size={13} />
+            {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
+          </button>
+        </Tooltip>
       </div>
 
       {/* Table */}
