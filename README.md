@@ -1,16 +1,16 @@
 # Finance Copilot
 
-Personal finance tool that auto-categorizes bank transactions using a multi-stage pipeline of rules, RAG, and LLM — powered entirely by Ollama. No cloud services, no API costs, full privacy.
+Personal finance tool that auto-categorizes bank transactions using a multi-stage pipeline of rules, RAG, and LLM. Powered entirely by Ollama, with no cloud services, no API costs, and full privacy.
 
 
 ## Highlights
 
-- **100% local** — SQLite database + Ollama for inference, everything stays on your machine
-- **Multi-stage annotation pipeline** — Rules > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
-- **Human-in-the-loop** — Low-confidence predictions surface in an intuitive and fast review queue for correction
-- **Bank statement parsing** — Upload PDFs from Kotak and HDFC; UPI metadata extracted automatically
-- **Vector similarity search** — sqlite-vec powers few-shot retrieval for better categorization over time
-- **React dashboard** — Transaction management, annotation review, expense groups, and insights/charts
+- **100% local** - SQLite database + Ollama for inference, everything stays on your machine
+- **Multi-stage annotation pipeline** - Rules > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
+- **Human-in-the-loop** - Low-confidence predictions surface in an intuitive and fast review queue for correction
+- **Bank statement parsing** - Upload PDFs from Kotak and HDFC; UPI metadata extracted automatically
+- **Vector similarity search** - sqlite-vec powers few-shot retrieval for better categorization over time
+- **React dashboard** - Transaction management, annotation review, expense groups, and insights/charts
 
 ## How the Pipeline Works
 
@@ -20,26 +20,26 @@ When you trigger auto-annotation, each transaction flows through four stages. Th
 Transaction
     |
     v
-[Stage 1: Rules]          -- Known-person match (UPI handle from people table),
+[Stage 1: Rules]          - Known-person match (UPI handle from people table),
     |  confidence: 0.95       then merchant keywords & UPI notes (~70 built-in rules)
     |  no match? ↓
     v
-[Stage 2: RAG Direct]     -- Find top-5 similar annotated transactions via embeddings
+[Stage 2: RAG Direct]     - Find top-5 similar annotated transactions via embeddings
     |  confidence: dynamic    If best match similarity >= 0.92 and donor is trusted,
     |                         copy annotation (cosine × agreement × margin factors)
     |  no match? ↓
     v
-[Stage 3: RAG Prompted]   -- Few-shot LLM call with retrieved examples as context
+[Stage 3: RAG Prompted]   - Few-shot LLM call with retrieved examples as context
     |  confidence: dynamic    llm_conf × calibrated dampening (base 0.92, adapts with feedback)
     |  no match? ↓
     v
-[Stage 4: Plain LLM]      -- Cold LLM call without examples
+[Stage 4: Plain LLM]      - Cold LLM call without examples
     |  confidence: dynamic    llm_conf × calibrated dampening (base 0.85, adapts with feedback)
     v
  Annotation saved → below threshold (0.85)? → Review Queue
 ```
 
-Confidence dampening for Stages 3 and 4 uses Bayesian calibration — starting from static base values but dynamically adjusting per `(source, category)` as human feedback (confirmations, corrections) accumulates.
+Confidence dampening for Stages 3 and 4 uses Bayesian calibration, starting from static base values but dynamically adjusting per `(source, category)` as human feedback (confirmations, corrections) accumulates.
 
 See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Mermaid flowchart.
 
