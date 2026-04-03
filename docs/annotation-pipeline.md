@@ -14,8 +14,12 @@ flowchart TD
 
     subgraph S1["Stage 1 — Rules"]
         direction TB
-        R1["`For each unannotated txn
-        run **apply_rules(txn)**`"]
+        R0["`For each unannotated txn
+        try **_match_known_person(txn)**`"]
+        R0Y(["`Persist annotation
+        source=rule · category=Transfers/Peer Transfer
+        confidence=0.95`"])
+        R1["`run **apply_rules(txn)**`"]
         R2{"`**Phase 1:** Disambiguation rule match?
         base_pattern AND override_pattern`"}
         R3{"`**Phase 2:** Merchant rule match?
@@ -24,6 +28,8 @@ flowchart TD
         source=rule · confidence=0.95`"])
         R5[Push to needs_rag]
 
+        R0 -->|match — known person in description| R0Y
+        R0 -->|no match| R1
         R1 --> R2
         R2 -->|yes — more specific match| R4
         R2 -->|no| R3
@@ -82,7 +88,8 @@ flowchart TD
             P3["`**annotate_transaction_llm_with_examples()**
             system prompt + few-shot examples + txn`"]
             P4["`confidence =
-            llm_conf × llm_confidence_dampen_rag (0.92)`"]
+            llm_conf × calibrated_dampen(rag_prompted, category)
+            base 0.92, shifts with feedback`"]
             P5(["`Persist annotation
             source=rag_prompted`"])
             P_FAIL(["`LLM returned nothing
@@ -108,7 +115,8 @@ flowchart TD
         L1["`**annotate_transaction_llm()**
         system prompt + txn only, no examples`"]
         L2["`confidence =
-        llm_conf × llm_confidence_dampen (0.85)`"]
+        llm_conf × calibrated_dampen(llm, category)
+        base 0.85, shifts with feedback`"]
         L3(["`Persist annotation
         source=llm`"])
         L_FAIL(["`All retries failed
@@ -130,10 +138,10 @@ flowchart TD
         C1("`**rule:** 0.95 fixed`")
         C2("`**rag_direct:** cosine × agreement × margin
         e.g. 0.95 × 0.93 × 0.96 ≈ 0.849`")
-        C3("`**rag_prompted:** llm_conf × 0.92
-        e.g. 0.85 × 0.92 = 0.782`")
-        C4("`**llm:** llm_conf × 0.85
-        e.g. 0.85 × 0.85 = 0.723`")
+        C3("`**rag_prompted:** llm_conf × calibrated_dampen(rag_prompted, category)
+        base 0.92, adjusted by feedback`")
+        C4("`**llm:** llm_conf × calibrated_dampen(llm, category)
+        base 0.85, adjusted by feedback`")
     end
 
     RESULT(["`**AutoAnnotateResult**
@@ -152,10 +160,10 @@ flowchart TD
 
 | Stage | Source tag | Trigger | Confidence formula |
 |---|---|---|---|
-| 1 — Rules | `rule` | Keyword/merchant match in raw_description or upi_note | Fixed **0.95** |
-| 2 — RAG Direct | `rag_direct` | cosine_similarity ≥ 0.92 AND donor is trusted source | `cosine × agreement_factor × margin_factor` |
-| 3 — RAG Prompted | `rag_prompted` | cosine_similarity found but < 0.92, or donor untrusted | `llm_conf × 0.92` |
-| 4 — Plain LLM | `llm` | No embeddings, novelty gate triggered, or RAG found nothing | `llm_conf × 0.85` |
+| 1 — Rules | `rule` | Known-person match (UPI handle in `people` table), or keyword/merchant match in raw_description / upi_note | Fixed **0.95** |
+| 2 — RAG Direct | `rag_direct` | cosine_similarity ≥ 0.92 AND donor is trusted source (`manual`, `rule`, `imported`) | `cosine × agreement_factor × margin_factor` |
+| 3 — RAG Prompted | `rag_prompted` | cosine_similarity found but < 0.92, donor untrusted, or no annotation on top match | `llm_conf × calibrated_dampen(rag_prompted, category)` |
+| 4 — Plain LLM | `llm` | No embeddings, novelty gate triggered, or RAG found nothing | `llm_conf × calibrated_dampen(llm, category)` |
 
 ## Key Thresholds (all configurable via env)
 
@@ -166,6 +174,21 @@ flowchart TD
 | `rag_top_k` | 5 | Number of similar transactions to retrieve |
 | `rag_agreement_exponent` | 0.3 | Controls harshness of category disagreement penalty |
 | `rag_margin_safe` | 0.08 | Distance gap above which margin factor = 1.0 (no penalty) |
-| `llm_confidence_dampen` | 0.85 | Post-hoc dampening for plain LLM confidence |
-| `llm_confidence_dampen_rag` | 0.92 | Post-hoc dampening for RAG-prompted LLM confidence |
+| `llm_confidence_dampen` | 0.85 | Base dampening for plain LLM confidence (Beta prior) |
+| `llm_confidence_dampen_rag` | 0.92 | Base dampening for RAG-prompted LLM confidence (Beta prior) |
 | `confidence_threshold` | 0.85 | Below this → flagged for human review |
+
+## Bayesian Confidence Calibration
+
+Stages 3 and 4 use dynamic dampening instead of fixed multipliers. The dampening factor for each `(source, category)` pair is modelled as a Beta distribution:
+
+- **Prior:** Derived from the static setting (`0.85` or `0.92`) with 5 pseudo-observations
+- **Updates:** Human feedback shifts the distribution:
+  - Confirmation → alpha + 1
+  - Refinement (minor edit) → alpha + 0.5
+  - Correction (category change) → beta + 1
+- **Result:** `dampening = alpha / (alpha + beta)`
+
+With zero feedback the dampening equals the static setting exactly. As confirmations accumulate for a category, dampening rises toward 1.0; corrections push it down.
+
+See `src/pipeline/calibration.py` for the implementation.
