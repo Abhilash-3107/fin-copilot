@@ -116,10 +116,12 @@ export default function Dashboard() {
   const totalMonthSpend = Object.values(spendByCat).reduce((s, v) => s + v, 0)
   const spendRanked = Object.entries(spendByCat).sort((a, b) => b[1] - a[1]).slice(0, 5)
 
-  // Confidence by category (across all loaded transactions — used in "How well your copilot knows you")
+  // Confidence by category — scoped to the active statement's transactions
   const catConfMap = {}
   const catCountMap = {}
-  for (const ann of Object.values(annMap)) {
+  const scopedTxnIds = new Set(thisMonth.map(t => t.id))
+  for (const [txnId, ann] of Object.entries(annMap)) {
+    if (!scopedTxnIds.has(txnId)) continue
     if (!ann.category || ann.confidence == null) continue
     catConfMap[ann.category] = (catConfMap[ann.category] ?? 0) + Number(ann.confidence)
     catCountMap[ann.category] = (catCountMap[ann.category] ?? 0) + 1
@@ -302,32 +304,32 @@ export default function Dashboard() {
           </div>
 
           {/* Biggest Spike / Top Category */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Worth Noticing</p>
+          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4 flex flex-col justify-between">
             {spikeResult ? (
               <>
-                <div className="flex items-baseline gap-1">
-                  <span className={`text-3xl font-bold tabular-nums ${spikeResult.type === 'spike' ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {spikeResult.type === 'spike' ? '+' : '-'}{Math.abs(Math.round((spikeResult.multiple - 1) * 100))}%
-                  </span>
-                </div>
-                <p className="text-xs text-[#94a3b8] mt-1 leading-relaxed">
+                <p className="text-xs text-[#94a3b8] leading-relaxed">
                   {spikeResult.type === 'spike'
                     ? `You spent more on ${spikeResult.cat} than usual`
                     : `${spikeResult.cat} spending dropped — nice!`
                   }
                 </p>
+                <div className="flex items-baseline gap-1 my-2">
+                  <span className={`text-3xl font-bold tabular-nums ${spikeResult.type === 'spike' ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {spikeResult.type === 'spike' ? '+' : '-'}{Math.abs(Math.round((spikeResult.multiple - 1) * 100))}%
+                  </span>
+                </div>
               </>
             ) : topCatFallback ? (
               <>
-                <div className="flex items-baseline gap-1">
+                <p className="text-xs text-[#94a3b8]">Most of your money went to {topCatFallback.cat}</p>
+                <div className="flex items-baseline gap-1 my-2">
                   <span className="text-3xl font-bold tabular-nums text-[#2dd4bf]">{topCatFallback.pct}%</span>
                 </div>
-                <p className="text-xs text-[#94a3b8] mt-1">Most of your money went to {topCatFallback.cat}</p>
               </>
             ) : (
-              <p className="text-sm text-[#475569] mt-1">Categorize your transactions to unlock insights</p>
+              <p className="text-sm text-[#475569]">Categorize your transactions to unlock insights</p>
             )}
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b]">Worth Noticing</p>
           </div>
         </div>
       </div>
@@ -370,7 +372,7 @@ export default function Dashboard() {
 
           {/* Where your money went */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-5">
-            <p className="text-sm text-[#e2e8f0] mb-4">Your top spendings : {monthLabel}</p>
+            <p className="text-sm text-[#e2e8f0] mb-4">Your top spendings in {monthLabel}</p>
             {loading ? (
               <p className="text-sm text-[#475569]">Pulling it together…</p>
             ) : spendRanked.length === 0 ? (

@@ -1,36 +1,13 @@
 # Finance Copilot
 
 Local-first personal finance tool that auto-categorizes bank transactions using a multi-stage pipeline of rules, RAG, and LLM — powered entirely by Ollama. No cloud services, no API costs, full privacy.
-
-## Screenshots
-
-### Dashboard
-![Dashboard](docs/dashboard.png)
-*Transaction overview with auto-annotate trigger and confidence scores*
-
-### Review Queue
-![Review Queue](docs/reviewqueue.png)
-*Low-confidence annotations surfaced for human correction*
-
-### Upload & Parse
-![Upload](docs/upload.png)
-*Drag-and-drop PDF upload with bank auto-detection*
-
-### Transactions
-![Transactions](docs/transaction.png)
-*Full transaction table with category chips, inline editing, and filters*
-
-### Insights
-![Insights](docs/insights.png)
-*Spending breakdowns and trends*
-
 ---
 
 ## Highlights
 
 - **100% local** — SQLite database + Ollama for inference, everything stays on your machine
 - **Multi-stage annotation pipeline** — Rules > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
-- **Human-in-the-loop** — Low-confidence predictions surface in a review queue for correction
+- **Human-in-the-loop** — Low-confidence predictions surface in an intuitive and fast review queue for correction
 - **Bank statement parsing** — Upload PDFs from Kotak and HDFC; UPI metadata extracted automatically
 - **Vector similarity search** — sqlite-vec powers few-shot retrieval for better categorization over time
 - **React dashboard** — Transaction management, annotation review, expense groups, and insights/charts
@@ -192,6 +169,28 @@ After seeding, start the server and trigger auto-annotate on the remaining unann
 4. Register it in `src/parsers/registry.py`
 
 The registry auto-detects the bank type when a PDF is uploaded.
+
+## Demo Screenshots
+
+### Dashboard
+![Dashboard](docs/dashboard.png)
+*Transaction overview with auto-annotate trigger and confidence scores*
+
+### Review Queue
+![Review Queue](docs/reviewqueue.png)
+*Low-confidence annotations surfaced for human correction*
+
+### Upload & Parse
+![Upload](docs/upload.png)
+*Drag-and-drop PDF upload with bank auto-detection*
+
+### Transactions
+![Transactions](docs/transaction.png)
+*Full transaction table with category chips, inline editing, and filters*
+
+### Insights
+![Insights](docs/insights.png)
+*Spending breakdowns and trends*
 
 ## Testing
 

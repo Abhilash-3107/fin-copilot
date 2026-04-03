@@ -129,16 +129,17 @@ for _txn_id, _date, _amount, _dc, _desc, _note in _sorted:
 # These simulate a mix of rule-matched, rag_direct, rag_prompted, llm, and manual annotations.
 # Transactions not listed here remain unannotated → ready for the auto-annotate demo.
 #
-# Confidence scores are spread realistically:
-#   rule: fixed 0.95
-#   rag_direct: 0.78–0.88 (cosine × agreement × margin — often dips below threshold)
-#   rag_prompted: 0.62–0.79 (llm_conf × dampening ~0.92 — frequently in review queue)
-#   llm: 0.32–0.65 (llm_conf × dampening ~0.85 — most land in review queue)
-#   manual: 1.0
+# Confidence scores per category — intentionally low to stress-test the review queue.
+# Almost everything except rules and manual falls below the 0.85 threshold.
+#   rule:         0.95 (fixed — pattern match is deterministic)
+#   rag_direct:   0.55–0.72 (similarity pulled down by low agreement/margin)
+#   rag_prompted: 0.38–0.58 (dampened LLM with examples)
+#   llm:          0.18–0.42 (cold LLM, heavy dampening, high uncertainty)
+#   manual:       1.0
 #
 # (txn_id, merchant, category, subcategory, tags, confidence, source)
 ANNOTATIONS = [
-    # Rule matches — only clear merchant keywords get 0.95
+    # Rule matches — deterministic keyword hits, still 0.95
     ("demo_t04", "Swiggy",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.95,   "rule"),
     ("demo_t05", "Zomato",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.95,   "rule"),
     ("demo_t09", "BigBasket",           "Food & Dining",     "Groceries",         "groceries",           0.95,   "rule"),
@@ -148,29 +149,52 @@ ANNOTATIONS = [
     ("demo_t21", "Amazon",              "Shopping",          "Online Shopping",    "online,shopping",     0.95,   "rule"),
     ("demo_t26", "HDFC Home Loan",      "Finances",          "Loan EMI",          "emi,home-loan",       0.95,   "rule"),
 
-    # RAG direct — similarity is high but agreement/margin factors pull confidence down
-    ("demo_t06", "Swiggy",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.88,   "rag_direct"),
-    ("demo_t10", "BigBasket",           "Food & Dining",     "Groceries",         "groceries",           0.84,   "rag_direct"),
-    ("demo_t13", "Ola",                 "Transport",         "Cab & Auto",        "cab",                 0.82,   "rag_direct"),
-    ("demo_t14", "Uber",                "Transport",         "Cab & Auto",        "cab,airport",         0.78,   "rag_direct"),
+    # RAG direct — low agreement/margin pulls scores well below threshold
+    ("demo_t06", "Swiggy",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.31,   "rag_direct"),
+    ("demo_t10", "BigBasket",           "Food & Dining",     "Groceries",         "groceries",           0.27,   "rag_direct"),
+    ("demo_t13", "Ola",                 "Transport",         "Cab & Auto",        "cab",                 0.28,   "rag_direct"),
+    ("demo_t14", "Uber",                "Transport",         "Cab & Auto",        "cab,airport",         0.24,   "rag_direct"),
 
-    # RAG prompted — LLM with examples, dampened; many below 0.85 threshold
-    ("demo_t07", "Zomato",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.79,   "rag_prompted"),
-    ("demo_t08", "Swiggy",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.74,   "rag_prompted"),
-    ("demo_t11", "Zepto",               "Food & Dining",     "Groceries",         "groceries,quick",     0.71,   "rag_prompted"),
-    ("demo_t22", "Flipkart",            "Shopping",          "Online Shopping",    "online,shopping",     0.76,   "rag_prompted"),
-    ("demo_t30", "MakeMyTrip",          "Travel",            "Hotels",            "hotel,travel",        0.62,   "rag_prompted"),
-    ("demo_t44", "Cult.fit",            "Personal Care",     "Gym & Fitness",     "fitness,membership",  0.68,   "rag_prompted"),
+    # RAG prompted — dampened LLM, all in review queue
+    ("demo_t07", "Zomato",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.58,   "rag_prompted"),
+    ("demo_t08", "Swiggy",              "Food & Dining",     "Food Delivery",     "food,delivery",       0.52,   "rag_prompted"),
+    ("demo_t11", "Zepto",               "Food & Dining",     "Groceries",         "groceries,quick",     0.49,   "rag_prompted"),
+    ("demo_t22", "Flipkart",            "Shopping",          "Online Shopping",    "online,shopping",     0.54,   "rag_prompted"),
+    ("demo_t30", "MakeMyTrip",          "Travel",            "Hotels",            "hotel,travel",        0.38,   "rag_prompted"),
+    ("demo_t44", "Cult.fit",            "Personal Care",     "Gym & Fitness",     "fitness,membership",  0.45,   "rag_prompted"),
 
-    # LLM (cold) — no examples, heavily dampened; most are well below threshold
-    ("demo_t31", "Priya Sharma",        "Gifts & Donations", "Personal Gifts",   "gift,birthday",       0.58,   "llm"),
-    ("demo_t32", "Rahul Mehta",         "Food & Dining",     "Restaurants",       "split,lunch",         0.52,   "llm"),
-    ("demo_t36", None,                  "Uncategorized",     None,                "",                    0.32,   "llm"),
-    ("demo_t37", "Clearview Services",  "Bills & Utilities", None,                "",                    0.41,   "llm"),
-    ("demo_t35", None,                  "Food & Dining",     "Cafe & Snacks",     "chai",                0.48,   "llm"),
-    ("demo_t38", "Decathlon",           "Shopping",          "General Retail",    "sports",              0.55,   "llm"),
-    ("demo_t39", "Third Wave Coffee",   "Food & Dining",     "Cafe & Snacks",     "coffee",              0.65,   "llm"),
-    ("demo_t40", "Lenskart",            "Health",            "Pharmacy",          "eyewear",             0.47,   "llm"),
+    # LLM (cold) — high uncertainty, deep in review queue
+    ("demo_t31", "Priya Sharma",        "Gifts & Donations", "Personal Gifts",   "gift,birthday",       0.38,   "llm"),
+    ("demo_t32", "Rahul Mehta",         "Food & Dining",     "Restaurants",       "split,lunch",         0.29,   "llm"),
+    ("demo_t36", None,                  "Uncategorized",     None,                "",                    0.18,   "llm"),
+    ("demo_t37", "Clearview Services",  "Bills & Utilities", None,                "",                    0.22,   "llm"),
+    ("demo_t35", None,                  "Food & Dining",     "Cafe & Snacks",     "chai",                0.31,   "llm"),
+    ("demo_t38", "Decathlon",           "Shopping",          "General Retail",    "sports",              0.35,   "llm"),
+    ("demo_t39", "Third Wave Coffee",   "Food & Dining",     "Cafe & Snacks",     "coffee",              0.42,   "llm"),
+    ("demo_t40", "Lenskart",            "Health",            "Pharmacy",          "eyewear",             0.27,   "llm"),
+
+    # Remaining transactions — pre-annotated with low confidence so auto-annotate skips them
+    # and the dashboard shows a realistic spread instead of inflating category averages with 0.95 rules
+    ("demo_t03", "Prestige Palm Society", "Housing",         "Maintenance & Society Charges", "maintenance", 0.61, "rag_prompted"),
+    ("demo_t15", "Rapido",              "Transport",         "Cab & Auto",        "cab,bike",            0.48,   "rag_prompted"),
+    ("demo_t18", "Spotify",             "Entertainment",     "Movies & OTT",      "subscription,music",  0.55,   "rag_direct"),
+    ("demo_t19", "ACT Fibernet",        "Bills & Utilities", "Internet & Broadband", "internet,bill",    0.52,   "rag_prompted"),
+    ("demo_t20", "BESCOM",              "Bills & Utilities", "Electricity",       "electricity,bill",    0.44,   "rag_prompted"),
+    ("demo_t23", "Myntra",              "Shopping",          "Clothing & Apparel","online,clothing",     0.39,   "llm"),
+    ("demo_t24", "PharmEasy",           "Health",            "Pharmacy",          "medicine",            0.58,   "rag_direct"),
+    ("demo_t25", "Practo",              "Health",            "Doctor & Hospital", "doctor,consultation", 0.33,   "llm"),
+    ("demo_t27", "Groww",               "Investments",       "Mutual Fund SIP",   "sip,investment",      0.42,   "llm"),
+    ("demo_t28", "Zerodha Coin",        "Investments",       "Mutual Fund SIP",   "sip,investment",      0.38,   "llm"),
+    ("demo_t29", "IRCTC",               "Travel",            "Train",             "train,travel",        0.61,   "rag_direct"),
+    ("demo_t33", "Neha Gupta",          "Transfers",         "Peer Transfer",     "split,movies",        0.31,   "llm"),
+    ("demo_t41", "Swiggy",              "Income",            "Refund",            "refund",              0.52,   "rag_prompted"),
+    ("demo_t42", "Rahul Mehta",         "Income",            "Refund",            "settled,dinner",      0.29,   "llm"),
+    ("demo_t43", "CRED",                "Income",            "Cashback",          "cashback",            0.35,   "llm"),
+    ("demo_t45", "Naturals Salon",      "Personal Care",     "Salon & Spa",       "salon,grooming",      0.41,   "llm"),
+    ("demo_t47", "HDFC ATM",            "Transfers",         "ATM Withdrawal",    "atm,cash",            0.55,   "rag_prompted"),
+    ("demo_t48", "Udemy",               "Education",         "Online Courses",    "course,learning",     0.36,   "llm"),
+    ("demo_t49", "Ketto",               "Gifts & Donations", "Charity",           "donation,charity",    0.28,   "llm"),
+    ("demo_t50", "HDFC Credit Card",    "Finances",          "Credit Card Payment","credit-card",        0.44,   "rag_prompted"),
 
     # Manual corrections (user reviewed and fixed)
     ("demo_t01", "TechWave Solutions",  "Income",            "Salary",            "salary,monthly",      1.0,    "manual"),
