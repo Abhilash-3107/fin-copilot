@@ -1,7 +1,7 @@
 # Finance Copilot
 
-Local-first personal finance tool that auto-categorizes bank transactions using a multi-stage pipeline of rules, RAG, and LLM — powered entirely by Ollama. No cloud services, no API costs, full privacy.
----
+Personal finance tool that auto-categorizes bank transactions using a multi-stage pipeline of rules, RAG, and LLM — powered entirely by Ollama. No cloud services, no API costs, full privacy.
+
 
 ## Highlights
 
