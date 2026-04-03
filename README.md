@@ -5,7 +5,7 @@ Local-first personal finance tool that auto-categorizes bank transactions using 
 ## Screenshots
 
 ### Dashboard
-[Dashboard](docs/dashboard.png)
+![Dashboard](docs/dashboard.png)
 *Transaction overview with auto-annotate trigger and confidence scores*
 
 ### Review Queue
