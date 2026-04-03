@@ -203,7 +203,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         category:    form.category,
         subcategory: form.subcategory || null,
         merchant:    form.merchant.trim() || null,
-        tags:        form.tags.join(','),
+        tags:        form.tags,
       }
       if (annotation?.id) {
         await api.patch(`/annotations/${annotation.id}`, payload)

@@ -162,9 +162,8 @@ export default function ReviewQueue() {
     }
   }
 
-  // When user picks a category chip, save immediately unless it needs a subcategory choice
   function handleCategoryChange({ category, subcategory }) {
-    setForm(f => ({ ...f, category, subcategory }))
+    setForm(f => ({ ...f, category, subcategory, tags: [] }))
   }
 
   // Keyboard shortcuts
