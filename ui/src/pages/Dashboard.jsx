@@ -234,7 +234,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-4 gap-4">
           {/* You Spent */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money Out</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money spent</p>
             <div className="flex items-center gap-3">
               <span className="text-[#94a3b8] text-xl">₹</span>
               {amountsVisible ? (
@@ -255,7 +255,7 @@ export default function Dashboard() {
 
           {/* You Earned */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money In</p>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money earned</p>
             <div className="flex items-center gap-3">
               <span className="text-[#94a3b8] text-xl">₹</span>
               {amountsVisible ? (
@@ -334,7 +334,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 gap-4">
           {/* Confidence by category */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-5">
-            <p className="text-sm text-[#e2e8f0] mb-4">How sure I am</p>
+            <p className="text-sm text-[#e2e8f0] mb-4">Accuracy</p>
             {loading ? (
               <p className="text-sm text-[#475569]">Pulling it together…</p>
             ) : confByCategory.length === 0 ? (

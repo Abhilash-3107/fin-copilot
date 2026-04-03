@@ -100,8 +100,8 @@ export default function Insights() {
   const catSorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1])
   const totalSpend = catSorted.reduce((s, [, v]) => s + v, 0)
 
-  // Monthly trend (last 6 months)
-  const months6 = Array.from({ length: 6 }, (_, i) => dayjs().subtract(5 - i, 'month').format('YYYY-MM'))
+  // Monthly trend (6 months ending at selectedMonth)
+  const months6 = Array.from({ length: 6 }, (_, i) => dayjs(selectedMonth).subtract(5 - i, 'month').format('YYYY-MM'))
   const monthlyDebits = months6.map(m =>
     transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'debit').reduce((s, t) => s + Number(t.amount), 0)
   )

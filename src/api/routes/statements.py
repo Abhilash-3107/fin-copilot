@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 
 from src.api.deps import get_db
 from src.db.queries.transactions import list_transactions
@@ -18,7 +18,7 @@ router = APIRouter()
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
-    password: Annotated[str | None, Form()] = None,
+    password: Annotated[str | None, Query()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""

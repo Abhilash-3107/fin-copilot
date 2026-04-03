@@ -86,6 +86,7 @@ export default function Transactions() {
 
   async function openAnnotationPanel(txn) {
     setActiveTxn(txn)
+    setActiveAnnotation(undefined) // sentinel: loading
     // Fetch full transaction to get annotation fields
     try {
       const full = await api.get(`/transactions/${txn.id}`)

@@ -175,9 +175,13 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
-  // Reset form when transaction changes
+  // Reset form when transaction or annotation changes.
+  // We depend on txn?.id and annotation (by reference) so that:
+  // - switching between two unannotated transactions (both annotation=null) still resets
+  // - the undefined sentinel from the parent (annotation loading) also triggers a reset
   useEffect(() => {
     if (!txn) return
+    if (annotation === undefined) return // still loading; wait for real value
     setForm({
       category:    annotation?.category    ?? '',
       subcategory: annotation?.subcategory ?? '',
@@ -186,7 +190,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         ? (Array.isArray(annotation.tags) ? annotation.tags : annotation.tags.split(',').filter(Boolean))
         : [],
     })
-  }, [txn?.id, annotation?.id])
+  }, [txn?.id, annotation])
 
   async function handleSave() {
     if (!form.category) {
