@@ -12,7 +12,7 @@ export const SOURCE_PILL = {
 }
 
 function sourceLabel(src) {
-  if (src === 'rag_direct' || src === 'rag_prompted') return 'rag'
+  if (src === 'rag_direct' || src === 'rag_prompted') return 'from history'
   return src ?? 'pending'
 }
 

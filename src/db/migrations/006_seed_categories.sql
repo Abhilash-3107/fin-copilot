@@ -118,4 +118,5 @@ INSERT OR IGNORE INTO categories (id, name, parent_id) VALUES
     ('cat_inc_interest',        'Interest & Dividends',  'cat_income'),
     ('cat_inc_refund',          'Refund',                'cat_income'),
     ('cat_inc_cashback',        'Cashback',              'cat_income'),
+    ('cat_inc_reimbursement',   'Reimbursement',         'cat_income'),
     ('cat_inc_opening_balance', 'Opening Balance',       'cat_income');

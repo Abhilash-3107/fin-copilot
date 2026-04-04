@@ -267,7 +267,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
           {annotation && (
             <div className="mt-3 flex items-center gap-2">
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-                {src === 'rag_direct' || src === 'rag_prompted' ? 'rag' : src}
+                {src === 'rag_direct' || src === 'rag_prompted' ? 'from history' : src}
               </span>
               <div className="flex-1">
                 <ConfidenceBar confidence={annotation.confidence} />
