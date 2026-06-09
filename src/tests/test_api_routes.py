@@ -64,14 +64,14 @@ class TestAnnotationPatch:
     def test_patch_updates_field(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn)
-        resp = client.patch("/annotations/a1", json={"category": "Entertainment"})
+        resp = client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         assert resp.status_code == 200
         assert resp.json()["category"] == "Entertainment"
 
     def test_patch_explicit_null_clears_nullable_field(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn)
-        resp = client.patch("/annotations/a1", json={"subcategory": None, "merchant": None})
+        resp = client.patch("/api/annotations/a1", json={"subcategory": None, "merchant": None})
         assert resp.status_code == 200
         body = resp.json()
         assert body["subcategory"] is None
@@ -80,7 +80,7 @@ class TestAnnotationPatch:
     def test_patch_omitted_fields_untouched(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn)
-        resp = client.patch("/annotations/a1", json={"category": "Entertainment"})
+        resp = client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         body = resp.json()
         assert body["subcategory"] == "Online Shopping"
         assert body["merchant"] == "SomeShop"
@@ -88,13 +88,13 @@ class TestAnnotationPatch:
     def test_patch_null_category_rejected(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn)
-        resp = client.patch("/annotations/a1", json={"category": None})
+        resp = client.patch("/api/annotations/a1", json={"category": None})
         assert resp.status_code == 422
 
     def test_patch_preserves_original_source(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="rag_direct")
-        resp = client.patch("/annotations/a1", json={"category": "Entertainment"})
+        resp = client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         body = resp.json()
         assert body["source"] == "manual"
         assert body["original_source"] == "rag_direct"
@@ -102,19 +102,19 @@ class TestAnnotationPatch:
     def test_second_patch_keeps_first_original_source(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="llm")
-        client.patch("/annotations/a1", json={"category": "Entertainment"})
-        resp = client.patch("/annotations/a1", json={"category": "Travel"})
+        client.patch("/api/annotations/a1", json={"category": "Entertainment"})
+        resp = client.patch("/api/annotations/a1", json={"category": "Travel"})
         assert resp.json()["original_source"] == "llm"
 
     def test_patch_404(self, client_conn):
         client, _, _ = client_conn
-        resp = client.patch("/annotations/nope", json={"category": "X"})
+        resp = client.patch("/api/annotations/nope", json={"category": "X"})
         assert resp.status_code == 404
 
     def test_patch_triggers_embedding(self, client_conn):
         client, conn, embed_mock = client_conn
         _seed_annotated_txn(conn)
-        client.patch("/annotations/a1", json={"category": "Entertainment"})
+        client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         embed_mock.assert_called_once_with(conn, "t1")
 
 
@@ -129,14 +129,14 @@ class TestFeedbackRecording:
     def test_correction_recorded_for_all_model_sources(self, client_conn, source):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source=source)
-        client.patch("/annotations/a1", json={"category": "Entertainment"})
+        client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         rows = self._feedback_rows(conn)
         assert rows[(source, "Shopping")]["corrected"] == 1
 
     def test_confirm_recorded_for_rag_direct(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="rag_direct")
-        resp = client.post("/annotations/a1/confirm")
+        resp = client.post("/api/annotations/a1/confirm")
         assert resp.status_code == 200
         rows = self._feedback_rows(conn)
         assert rows[("rag_direct", "Shopping")]["confirmed"] == 1
@@ -144,7 +144,7 @@ class TestFeedbackRecording:
     def test_manual_source_records_no_feedback(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="manual")
-        client.patch("/annotations/a1", json={"category": "Entertainment"})
+        client.patch("/api/annotations/a1", json={"category": "Entertainment"})
         assert self._feedback_rows(conn) == {}
 
 
@@ -152,11 +152,61 @@ class TestConfirmFlow:
     def test_confirm_sets_confidence_and_provenance(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="llm", confidence=0.6)
-        resp = client.post("/annotations/a1/confirm")
+        resp = client.post("/api/annotations/a1/confirm")
         body = resp.json()
         assert body["confidence"] == 1.0
         assert body["source"] == "manual"
         assert body["original_source"] == "llm"
+
+
+class TestTransactionsList:
+    def _seed_many(self, conn, n=5):
+        conn.execute(
+            "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        for i in range(n):
+            conn.execute(
+                """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+                   VALUES (?, 's1', ?, 50.0, 'debit', ?)""",
+                (f"t{i}", f"2026-01-{10 + i:02d}", f"TXN {i}"),
+            )
+        conn.commit()
+
+    def test_include_annotation_single_request(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_many(conn, 2)
+        insert_annotation(conn, Annotation(
+            id="a0", transaction_id="t0", category="Shopping", confidence=0.9, source="rule",
+        ))
+        conn.commit()
+
+        rows = client.get("/api/transactions?include=annotation").json()
+        by_id = {r["id"]: r for r in rows}
+        assert by_id["t0"]["annotation_id"] == "a0"
+        assert by_id["t0"]["category"] == "Shopping"
+        assert by_id["t1"]["annotation_id"] is None
+
+    def test_plain_list_has_no_annotation_columns(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_many(conn, 1)
+        rows = client.get("/api/transactions").json()
+        assert "annotation_id" not in rows[0]
+
+    def test_cursor_pagination(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_many(conn, 5)
+        page1 = client.get("/api/transactions?limit=2").json()
+        assert [r["id"] for r in page1] == ["t0", "t1"]
+        page2 = client.get(f"/api/transactions?limit=2&after={page1[-1]['id']}").json()
+        assert [r["id"] for r in page2] == ["t2", "t3"]
+        page3 = client.get(f"/api/transactions?limit=2&after={page2[-1]['id']}").json()
+        assert [r["id"] for r in page3] == ["t4"]
+
+    def test_unknown_cursor_ignored(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_many(conn, 2)
+        rows = client.get("/api/transactions?after=missing&limit=10").json()
+        assert len(rows) == 2
 
 
 class TestStatementUploadDedup:
@@ -201,7 +251,7 @@ class TestStatementUploadDedup:
         client, conn, _ = client_conn
         with patch("src.pipeline.ingest.detect_parser", return_value=self._fake_parser()):
             files = {"file": ("stmt.pdf", b"%PDF same bytes", "application/pdf")}
-            first = client.post("/statements/upload", files=files)
+            first = client.post("/api/statements/upload", files=files)
             assert first.status_code == 200
-            second = client.post("/statements/upload", files=files)
+            second = client.post("/api/statements/upload", files=files)
             assert second.status_code == 409

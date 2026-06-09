@@ -35,22 +35,16 @@ const CHART_OPTS = {
   },
 }
 
-const BATCH = 20
-
-async function buildAnnotationMap(txns) {
+function buildAnnotationMap(txns) {
   const map = {}
-  for (let i = 0; i < txns.length; i += BATCH) {
-    const batch = txns.slice(i, i + BATCH)
-    const results = await Promise.allSettled(batch.map(t => api.get(`/transactions/${t.id}`)))
-    results.forEach((r, idx) => {
-      if (r.status === 'fulfilled' && r.value?.annotation_id) {
-        map[batch[idx].id] = {
-          category: r.value.category,
-          subcategory: r.value.subcategory,
-          merchant: r.value.merchant,
-        }
+  for (const t of txns) {
+    if (t.annotation_id) {
+      map[t.id] = {
+        category: t.category,
+        subcategory: t.subcategory,
+        merchant: t.merchant,
       }
-    })
+    }
   }
   return map
 }
@@ -66,10 +60,9 @@ export default function Insights() {
     async function load() {
       setLoading(true)
       try {
-        const txns = await api.get('/transactions')
+        const txns = await api.get('/transactions?include=annotation')
         setTransactions(txns)
-        const map = await buildAnnotationMap(txns)
-        setAnnMap(map)
+        setAnnMap(buildAnnotationMap(txns))
         if (txns.length > 0) {
           const latestMonth = txns
             .map(t => t.txn_date.slice(0, 7))

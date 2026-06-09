@@ -9,7 +9,7 @@ import sqlite3
 logger = logging.getLogger(__name__)
 
 from src.config import settings
-from src.db.queries.annotations import get_annotation_by_transaction, insert_annotation
+from src.db.queries.annotations import insert_annotation
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
 from src.db.queries.people import list_people
@@ -89,20 +89,13 @@ def auto_annotate(
     """
     logger.info("auto_annotate start | statement_id=%s", statement_id)
 
+    all_txns = list_transactions(conn, statement_id=statement_id)
+    unannotated = list_transactions(conn, statement_id=statement_id, unannotated=True)
     if transaction_ids:
-        all_txns = list_transactions(conn, statement_id=statement_id)
         id_set = set(transaction_ids)
         all_txns = [t for t in all_txns if t["id"] in id_set]
-    else:
-        all_txns = list_transactions(conn, statement_id=statement_id)
-
-    unannotated: list[dict] = []
-    already_annotated_count = 0
-    for txn in all_txns:
-        if get_annotation_by_transaction(conn, txn["id"]) is not None:
-            already_annotated_count += 1
-        else:
-            unannotated.append(txn)
+        unannotated = [t for t in unannotated if t["id"] in id_set]
+    already_annotated_count = len(all_txns) - len(unannotated)
 
     logger.info(
         "txn counts | total=%d  unannotated=%d  already_annotated=%d",
@@ -116,7 +109,13 @@ def auto_annotate(
     llm_failed = 0
     low_confidence = 0
 
+    # Commit in small batches: cheap enough to keep progress on a crash, without
+    # paying a WAL sync per annotation.
+    _COMMIT_EVERY = 10
+    uncommitted = 0
+
     def _persist(ann_create: AnnotationCreate) -> None:
+        nonlocal uncommitted
         annotation = Annotation(
             transaction_id=ann_create.transaction_id,
             merchant=ann_create.merchant,
@@ -127,7 +126,10 @@ def auto_annotate(
             source=ann_create.source,
         )
         insert_annotation(conn, annotation)
-        conn.commit()
+        uncommitted += 1
+        if uncommitted >= _COMMIT_EVERY:
+            conn.commit()
+            uncommitted = 0
 
     # Load known people once — used for peer transfer matching before merchant rules
     known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
@@ -205,6 +207,8 @@ def auto_annotate(
             else:
                 llm_failed += 1
                 logger.warning("llm failed | txn=%s  desc=%r", txn["id"], txn["raw_description"])
+
+    conn.commit()  # flush the final partial batch
     logger.info(
         "auto_annotate done | total_processed=%d  rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
         len(unannotated), rule_matched, rag_direct_annotated, rag_prompted_annotated,
@@ -292,9 +296,10 @@ def _try_rag_annotation(
     # Fetch annotations for all top-K matches upfront (used for agreement + margin analysis)
     top_match = similar[0]
     cosine_similarity = best_similarity
+    ann_by_txn = _annotations_by_transaction(conn, [m["transaction_id"] for m in similar])
     annotated_matches = []
     for match in similar:
-        ann = get_annotation_by_transaction(conn, match["transaction_id"])
+        ann = ann_by_txn.get(match["transaction_id"])
         if ann:
             annotated_matches.append({
                 "transaction_id": match["transaction_id"],
@@ -350,7 +355,7 @@ def _try_rag_annotation(
             )
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
-    examples = _build_examples_from_similar(conn, similar)
+    examples = _build_examples_from_similar(conn, similar, ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
         llm_result = annotate_transaction_llm_with_examples(txn, category_list, examples)
@@ -375,18 +380,37 @@ def _try_rag_annotation(
     return None
 
 
+def _annotations_by_transaction(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, dict]:
+    """Fetch annotations for many transactions in one query, keyed by transaction id."""
+    if not transaction_ids:
+        return {}
+    placeholders = ",".join("?" * len(transaction_ids))
+    rows = conn.execute(
+        f"SELECT * FROM annotations WHERE transaction_id IN ({placeholders})",
+        transaction_ids,
+    ).fetchall()
+    return {row["transaction_id"]: dict(row) for row in rows}
+
+
 def _build_examples_from_similar(
     conn: sqlite3.Connection,
     similar: list[dict],
+    ann_by_txn: dict[str, dict],
 ) -> list[dict]:
-    """Fetch transaction + annotation details for similar matches to use as few-shot examples."""
+    """Fetch transaction details for similar matches to use as few-shot examples."""
+    txn_ids = [m["transaction_id"] for m in similar]
+    placeholders = ",".join("?" * len(txn_ids))
+    txn_by_id = {
+        row["id"]: row
+        for row in conn.execute(
+            f"SELECT * FROM transactions WHERE id IN ({placeholders})", txn_ids
+        ).fetchall()
+    } if txn_ids else {}
+
     examples = []
     for match in similar:
-        txn_row = conn.execute(
-            "SELECT * FROM transactions WHERE id = ?",
-            (match["transaction_id"],),
-        ).fetchone()
-        ann_row = get_annotation_by_transaction(conn, match["transaction_id"])
+        txn_row = txn_by_id.get(match["transaction_id"])
+        ann_row = ann_by_txn.get(match["transaction_id"])
         if txn_row is None or ann_row is None:
             continue
         upi_note = ""
