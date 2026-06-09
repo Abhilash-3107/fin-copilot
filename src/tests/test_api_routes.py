@@ -209,6 +209,61 @@ class TestTransactionsList:
         assert len(rows) == 2
 
 
+class TestAnnotationJobs:
+    @pytest.fixture
+    def file_db_client(self, tmp_path, monkeypatch):
+        """File-backed DB: the background job opens its own connection, so the
+        usual shared in-memory connection can't be used here."""
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        from src.db import connection as dbc
+        from src.config import settings
+
+        db_path = str(tmp_path / "jobs.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        conn = dbc.get_db(db_path)  # apply migrations
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield TestClient(app), conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    def test_job_runs_and_reports_progress(self, file_db_client):
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t1', 's1', '2026-01-15', 199.0, 'debit', 'Netflix subscription')"""
+        )
+        conn.commit()
+
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={})
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        # TestClient runs BackgroundTasks before returning, so the job is done
+        job = client.get(f"/api/annotations/jobs/{job_id}").json()
+        assert job["status"] == "completed"
+        assert job["processed"] == job["total"] == 1
+        assert job["result"]["rule_matched"] == 1
+
+        ann = conn.execute("SELECT * FROM annotations WHERE transaction_id='t1'").fetchone()
+        assert ann["category"] == "Entertainment"
+
+    def test_unknown_job_404(self, file_db_client):
+        client, _ = file_db_client
+        assert client.get("/api/annotations/jobs/missing").status_code == 404
+
+
 class TestStatementUploadDedup:
     def _fake_parser(self):
         from src.models.transaction import Transaction

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw, Zap, Cpu } from 'lucide-react'
-import { api } from '../lib/api.js'
+import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+
+const PAGE_SIZE = 500
 
 function buildAnnotationMap(txns) {
   const map = {}
@@ -36,9 +38,12 @@ export default function Transactions() {
   const [transactions, setTransactions] = useState([])
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   const [autoAnnotating, setAutoAnnotating] = useState(false)
+  const [annotateProgress, setAnnotateProgress] = useState(null)
   const [embedding, setEmbedding] = useState(false)
   const loadRef = useRef(0)
 
@@ -48,6 +53,7 @@ export default function Transactions() {
     try {
       const params = new URLSearchParams()
       params.set('include', 'annotation')
+      params.set('limit', PAGE_SIZE)
       if (selectedStmt) params.set('statement_id', selectedStmt)
       if (month) params.set('month', month)
       if (filter === 'unannotated') params.set('unannotated', 'true')
@@ -55,12 +61,36 @@ export default function Transactions() {
       if (id !== loadRef.current) return
       setTransactions(txns)
       setAnnotationMap(buildAnnotationMap(txns))
+      setHasMore(txns.length === PAGE_SIZE)
     } catch (e) {
       toast(`Failed to load: ${e.message}`, 'error')
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
   }, [selectedStmt, month, filter, toast])
+
+  async function loadMore() {
+    const last = transactions.at(-1)
+    if (!last) return
+    setLoadingMore(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('include', 'annotation')
+      params.set('limit', PAGE_SIZE)
+      params.set('after', last.id)
+      if (selectedStmt) params.set('statement_id', selectedStmt)
+      if (month) params.set('month', month)
+      if (filter === 'unannotated') params.set('unannotated', 'true')
+      const more = await api.get(`/transactions?${params}`)
+      setTransactions(prev => [...prev, ...more])
+      setAnnotationMap(prev => ({ ...prev, ...buildAnnotationMap(more) }))
+      setHasMore(more.length === PAGE_SIZE)
+    } catch (e) {
+      toast(`Failed to load more: ${e.message}`, 'error')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   useEffect(() => { loadTransactions() }, [loadTransactions])
 
@@ -104,7 +134,10 @@ export default function Transactions() {
     }
     setAutoAnnotating(true)
     try {
-      const result = await api.post('/annotations/auto-annotate', { statement_id: selectedStmt })
+      const result = await runAnnotationJob(
+        { statement_id: selectedStmt },
+        job => setAnnotateProgress(job),
+      )
       toast(
         `Done — ${result.rule_matched ?? 0} rule, ${result.rag_direct_annotated ?? 0} rag, ${result.llm_annotated ?? 0} llm`,
         'success',
@@ -115,6 +148,7 @@ export default function Transactions() {
       toast(`Auto-annotate failed: ${e.message}`, 'error')
     } finally {
       setAutoAnnotating(false)
+      setAnnotateProgress(null)
     }
   }
 
@@ -220,7 +254,11 @@ export default function Transactions() {
             className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Zap size={13} />
-            {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
+            {autoAnnotating
+              ? annotateProgress?.total
+                ? `Annotating… ${annotateProgress.processed}/${annotateProgress.total}`
+                : 'Annotating…'
+              : 'Auto-annotate'}
           </button>
         </Tooltip>
       </div>
@@ -233,12 +271,25 @@ export default function Transactions() {
             description={transactions.length === 0 ? 'Upload a statement to get started.' : 'No transactions match the current filters.'}
           />
         ) : (
-          <TransactionTable
-            transactions={displayed}
-            annotationMap={annotationMap}
-            activeId={activeTxn?.id}
-            onSelect={openAnnotationPanel}
-          />
+          <>
+            <TransactionTable
+              transactions={displayed}
+              annotationMap={annotationMap}
+              activeId={activeTxn?.id}
+              onSelect={openAnnotationPanel}
+            />
+            {hasMore && (
+              <div className="flex justify-center py-4">
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-1.5 rounded-md text-xs hover:text-[#e2e8f0] disabled:opacity-50 transition-colors"
+                >
+                  {loadingMore ? 'Loading…' : 'Load more'}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

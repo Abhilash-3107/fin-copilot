@@ -1,10 +1,16 @@
-"""Annotation routes: create, patch, confirm, and review-queue listing."""
+"""Annotation routes: create, patch, confirm, review-queue listing, and background jobs."""
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
+import time
 
-from fastapi import APIRouter, Depends, HTTPException
+import ulid
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from src.api.deps import get_db
 from src.config import settings
@@ -37,7 +43,90 @@ def auto_annotate_endpoint(
     body: AutoAnnotateRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
+    """Synchronous annotation — fine for scripts/small batches. The UI uses the job flow."""
     return auto_annotate(conn, body.statement_id, body.transaction_ids)
+
+
+def _open_job_connection() -> sqlite3.Connection:
+    """Background tasks outlive the request's connection; open a fresh one."""
+    from src.db.connection import get_connection
+
+    return get_connection()
+
+
+def _run_annotation_job(
+    job_id: str,
+    statement_id: str | None,
+    transaction_ids: list[str] | None,
+) -> None:
+    conn = _open_job_connection()
+    try:
+        conn.execute(
+            "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') WHERE id = ?",
+            (job_id,),
+        )
+        conn.commit()
+
+        last_commit = 0.0
+
+        def progress(processed: int, total: int) -> None:
+            nonlocal last_commit
+            conn.execute(
+                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
+                (processed, total, job_id),
+            )
+            # Commit at most ~once per second; the pipeline's batch commits flush the rest
+            now = time.monotonic()
+            if now - last_commit >= 1.0 or processed == total:
+                conn.commit()
+                last_commit = now
+
+        result = auto_annotate(conn, statement_id, transaction_ids, progress_cb=progress)
+        conn.execute(
+            """UPDATE annotation_jobs
+               SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
+               WHERE id = ?""",
+            (result.total_processed, result.total_processed, result.model_dump_json(), job_id),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.exception("annotation job failed | job=%s", job_id)
+        conn.rollback()
+        conn.execute(
+            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') WHERE id = ?",
+            (str(e), job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@router.post("/auto-annotate/jobs", status_code=202)
+def start_auto_annotate_job(
+    body: AutoAnnotateRequest,
+    background_tasks: BackgroundTasks,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress."""
+    job_id = str(ulid.ULID())
+    conn.execute(
+        "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
+        (job_id, body.statement_id),
+    )
+    conn.commit()
+    background_tasks.add_task(_run_annotation_job, job_id, body.statement_id, body.transaction_ids)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.get("/jobs/{job_id}")
+def get_annotation_job(job_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    row = conn.execute("SELECT * FROM annotation_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = dict(row)
+    if job.get("result"):
+        job["result"] = json.loads(job["result"])
+    return job
 
 
 @router.post("", status_code=201)
