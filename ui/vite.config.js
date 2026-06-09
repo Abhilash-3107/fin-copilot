@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 const PROXY_PATHS = [
   '/statements', '/transactions', '/annotations',
-  '/groups', '/people', '/links', '/embeddings', '/categories', '/health',
+  '/groups', '/people', '/embeddings', '/categories', '/health',
 ]
 
 export default defineConfig({
