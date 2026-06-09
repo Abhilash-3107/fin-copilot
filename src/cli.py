@@ -19,7 +19,7 @@ def review():
     base = settings.api_base_url
 
     try:
-        resp = httpx.get(f"{base}/annotations/review-queue", timeout=10)
+        resp = httpx.get(f"{base}/api/annotations/review-queue", timeout=10)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         console.print(f"[red]Could not reach API at {base}: {exc}[/red]")
@@ -77,7 +77,7 @@ def review():
 
 def _confirm(base: str, annotation_id: str) -> None:
     try:
-        resp = httpx.post(f"{base}/annotations/{annotation_id}/confirm", timeout=10)
+        resp = httpx.post(f"{base}/api/annotations/{annotation_id}/confirm", timeout=10)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         console.print(f"[red]Confirm failed: {exc}[/red]")
@@ -85,7 +85,7 @@ def _confirm(base: str, annotation_id: str) -> None:
 
 def _patch(base: str, annotation_id: str, payload: dict) -> None:
     try:
-        resp = httpx.patch(f"{base}/annotations/{annotation_id}", json=payload, timeout=10)
+        resp = httpx.patch(f"{base}/api/annotations/{annotation_id}", json=payload, timeout=10)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         console.print(f"[red]PATCH failed: {exc}[/red]")

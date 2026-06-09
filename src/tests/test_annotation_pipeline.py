@@ -396,7 +396,7 @@ class TestAutoAnnotateEndpoint:
         self.conn.close()
 
     def test_returns_auto_annotate_result_shape(self):
-        response = self.client.post("/annotations/auto-annotate", json={})
+        response = self.client.post("/api/annotations/auto-annotate", json={})
         assert response.status_code == 200
         data = response.json()
         for key in ("total_processed", "rule_matched", "rag_direct_annotated",
@@ -407,7 +407,7 @@ class TestAutoAnnotateEndpoint:
     def test_rule_match_reflected_in_response(self):
         _insert_txn(self.conn, "api_t1", "Netflix subscription")
 
-        response = self.client.post("/annotations/auto-annotate", json={})
+        response = self.client.post("/api/annotations/auto-annotate", json={})
         assert response.status_code == 200
         data = response.json()
         assert data["rule_matched"] == 1
@@ -1046,7 +1046,7 @@ class TestEmbeddingsEndpoint:
     def test_generate_returns_counts(self):
         with patch("src.api.routes.embeddings.embed_annotated_transactions",
                    return_value={"embedded": 3, "skipped": 1}):
-            response = self.client.post("/embeddings/generate", json={})
+            response = self.client.post("/api/embeddings/generate", json={})
         assert response.status_code == 200
         data = response.json()
         assert data["embedded"] == 3
@@ -1055,14 +1055,14 @@ class TestEmbeddingsEndpoint:
     def test_generate_with_statement_id(self):
         with patch("src.api.routes.embeddings.embed_annotated_transactions",
                    return_value={"embedded": 5, "skipped": 0}) as mock_embed:
-            response = self.client.post("/embeddings/generate", json={"statement_id": "stmt_01"})
+            response = self.client.post("/api/embeddings/generate", json={"statement_id": "stmt_01"})
         assert response.status_code == 200
         mock_embed.assert_called_once()
         call_kwargs = mock_embed.call_args
         assert call_kwargs[0][1] == "stmt_01" or call_kwargs[1].get("statement_id") == "stmt_01"
 
     def test_stats_endpoint_shape(self):
-        response = self.client.get("/embeddings/stats/stmt_01")
+        response = self.client.get("/api/embeddings/stats/stmt_01")
         assert response.status_code == 200
         data = response.json()
         assert "total" in data
@@ -1070,7 +1070,7 @@ class TestEmbeddingsEndpoint:
         assert "annotated" in data
 
     def test_stats_returns_zero_counts_for_empty_statement(self):
-        response = self.client.get("/embeddings/stats/stmt_01")
+        response = self.client.get("/api/embeddings/stats/stmt_01")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 0
