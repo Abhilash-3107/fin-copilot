@@ -300,7 +300,7 @@ def seed(conn) -> None:
     print(f"  {low_conf} annotations below confidence threshold (will appear in review queue)")
     print()
     print("Run auto-annotate on remaining transactions:")
-    print(f'  curl -X POST http://localhost:8000/annotations/auto-annotate \\')
+    print(f'  curl -X POST http://localhost:8000/api/annotations/auto-annotate \\')
     print(f'       -H "Content-Type: application/json" \\')
     print(f'       -d \'{{"statement_id": "{STATEMENT_ID}"}}\' | python3 -m json.tool')
 
