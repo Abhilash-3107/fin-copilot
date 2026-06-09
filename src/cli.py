@@ -43,8 +43,6 @@ def review():
         content.append(f"  (confidence: {item['confidence']:.2f})\n")
         if item.get("merchant"):
             content.append(f"Merchant:       {item['merchant']}\n")
-        if item.get("reasoning"):
-            content.append(f'Reasoning:      "{item["reasoning"]}"\n')
 
         console.print(
             Panel(
@@ -68,11 +66,10 @@ def review():
             category = typer.prompt("Category", default=item["category"])
             subcategory = typer.prompt("Subcategory (leave blank to clear)", default="") or None
             merchant = typer.prompt("Merchant (leave blank to keep)", default=item.get("merchant") or "") or None
-            _patch(base, item["id"], {
-                "category": category,
-                "subcategory": subcategory,
-                "merchant": merchant,
-            })
+            payload = {"category": category, "subcategory": subcategory}
+            if merchant is not None:  # blank means keep — omit so PATCH leaves it untouched
+                payload["merchant"] = merchant
+            _patch(base, item["id"], payload)
             console.print("[green]Updated.[/green]")
         else:
             console.print("[dim]Unknown key — skipping.[/dim]")
@@ -87,7 +84,6 @@ def _confirm(base: str, annotation_id: str) -> None:
 
 
 def _patch(base: str, annotation_id: str, payload: dict) -> None:
-    payload = {k: v for k, v in payload.items() if v is not None}
     try:
         resp = httpx.patch(f"{base}/annotations/{annotation_id}", json=payload, timeout=10)
         resp.raise_for_status()
