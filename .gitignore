@@ -9,3 +9,11 @@ __pycache__/
 data/
 
 .claude/
+
+.pytest_cache/
+
+node_modules/
+
+ui/dist/
+
+.venv/

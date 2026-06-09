@@ -52,7 +52,7 @@ See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Me
 | Styling | Tailwind CSS, Lucide React icons |
 | Database | SQLite + sqlite-vec (vectors in the same DB file) |
 | LLM | Ollama — qwen3.5:4b (inference), nomic-embed-text (embeddings) |
-| PDF Parsing | pdfplumber, pypdf (fallback) |
+| PDF Parsing | pdfplumber |
 | Charts | Chart.js + react-chartjs-2 |
 | CLI | Typer + Rich (terminal review queue) |
 | IDs | ULID (sortable, unique) |
@@ -75,12 +75,10 @@ ollama pull nomic-embed-text
 ### Backend
 
 ```bash
-# Install dependencies
-uv pip install -r requirements.txt
-# Or install individually:
-# uv pip install fastapi uvicorn pdfplumber pydantic-settings typer rich sqlite-vec python-ulid httpx
+# Install dependencies (creates .venv from pyproject.toml + uv.lock)
+uv sync
 
-# Start the API server (runs migrations automatically)
+# Start the API server (runs migrations automatically on startup)
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -103,8 +101,9 @@ OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3.5:4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 CONFIDENCE_THRESHOLD=0.85
-KOTAK_PDF_PASSWORD=your_pdf_password
 ```
+
+For password-protected statement PDFs, enter the password in the upload form — it is sent with the upload request, not stored.
 
 All values have sensible defaults in `src/config.py` — the `.env` file is optional unless you need to override them.
 
@@ -122,11 +121,11 @@ Interactive terminal UI for reviewing and correcting low-confidence annotations.
 src/
 ├── api/routes/          # FastAPI endpoints (statements, transactions, annotations, ...)
 ├── db/
-│   ├── migrations/      # Idempotent SQL migrations (001–008)
+│   ├── migrations/      # Versioned SQL migrations (applied once, tracked in schema_migrations)
 │   └── queries/         # SQL query builders
 ├── models/              # Pydantic schemas
 ├── parsers/
-│   └── banks/           # Bank-specific PDF parsers (kotak.py, hdfc.py)
+│   └── banks/           # Bank-specific PDF parsers (kotak.py)
 ├── pipeline/            # Annotation engine (rules, embed, annotate, llm, calibration)
 ├── config.py            # All settings (Pydantic BaseSettings, reads .env)
 ├── cli.py               # Typer CLI for terminal review
