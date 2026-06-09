@@ -23,3 +23,4 @@ class Statement(BaseModel):
     bank_name: str
     parser_version: str
     statement_month: str                # YYYY-MM format
+    file_sha256: Optional[str] = None   # content hash of the uploaded PDF, for dedup

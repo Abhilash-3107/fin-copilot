@@ -50,8 +50,8 @@ export default function Upload() {
     try {
       const form = new FormData()
       form.append('file', file)
-      const url = `/statements/upload${password ? `?password=${encodeURIComponent(password)}` : ''}`
-      const result = await api.upload(url, form)
+      if (password) form.append('password', password)
+      const result = await api.upload('/statements/upload', form)
       toast(`Uploaded: ${result.bank_name} — ${result.statement_month}`, 'success')
       setFile(null)
       setPassword('')

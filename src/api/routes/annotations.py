@@ -17,8 +17,14 @@ from src.db.queries.annotations import (
 from src.db.queries.feedback_stats import record_feedback
 from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
 from src.pipeline.annotate import auto_annotate
+from src.pipeline.embed import embed_transaction
 
 router = APIRouter()
+
+# Pipeline sources whose outcomes feed calibration. Corrections to rag_direct and
+# rule annotations are tracked too: they tune thresholds and expose bad donors,
+# even though only llm/rag_prompted confidences are dampened today.
+_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rule")
 
 
 class AutoAnnotateRequest(BaseModel):
@@ -50,6 +56,8 @@ def create_annotation(
     )
     insert_annotation(conn, annotation)
     conn.commit()
+    # Embed immediately so this annotation can serve as a RAG donor (best-effort)
+    embed_transaction(conn, annotation.transaction_id)
     return _annotation_response(annotation)
 
 
@@ -63,27 +71,29 @@ def patch_annotation(
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
 
+    # Only fields the client actually sent are updated; an explicit null clears
+    # the field (merchant/subcategory/tags are nullable, category/confidence are not).
     patch: dict = {}
-    if body.merchant is not None:
-        patch["merchant"] = body.merchant
-    if body.category is not None:
-        patch["category"] = body.category
-    if body.subcategory is not None:
-        patch["subcategory"] = body.subcategory
-    if body.tags is not None:
-        patch["tags"] = ",".join(body.tags)
-    if body.confidence is not None:
-        patch["confidence"] = body.confidence
+    for field in ("merchant", "category", "subcategory", "tags", "confidence"):
+        if field not in body.model_fields_set:
+            continue
+        value = getattr(body, field)
+        if value is None and field in ("category", "confidence"):
+            raise HTTPException(status_code=422, detail=f"{field} cannot be null")
+        if field == "tags":
+            value = ",".join(value) if value else ""
+        patch[field] = value
 
     if patch:
         # Record feedback before updating — use original source + category.
-        # Only track feedback for pipeline sources that use dampening.
-        if existing["source"] in ("llm", "rag_prompted"):
+        if existing["source"] in _MODEL_SOURCES:
             feedback_type = _classify_feedback(existing, patch)
             record_feedback(conn, existing["source"], existing["category"], feedback_type)
 
         update_annotation(conn, annotation_id, patch)
         conn.commit()
+        # Corrected annotations are trusted donors — refresh the embedding (best-effort)
+        embed_transaction(conn, existing["transaction_id"])
 
     updated = get_annotation(conn, annotation_id)
     return _as_response(updated)
@@ -103,11 +113,12 @@ def confirm_annotation(
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
 
-    if existing["source"] in ("llm", "rag_prompted"):
+    if existing["source"] in _MODEL_SOURCES:
         record_feedback(conn, existing["source"], existing["category"], "confirmed")
 
     update_annotation(conn, annotation_id, {"confidence": 1.0})
     conn.commit()
+    embed_transaction(conn, existing["transaction_id"])
 
     updated = get_annotation(conn, annotation_id)
     return _as_response(updated)
