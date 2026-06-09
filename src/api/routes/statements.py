@@ -6,11 +6,11 @@ import sqlite3
 import tempfile
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from src.api.deps import get_db
 from src.db.queries.transactions import list_transactions
-from src.pipeline.ingest import ingest_pdf
+from src.pipeline.ingest import DuplicateStatementError, ingest_pdf
 
 router = APIRouter()
 
@@ -18,7 +18,8 @@ router = APIRouter()
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
-    password: Annotated[str | None, Query()] = None,
+    # Form body, not query param — query strings end up in server access logs.
+    password: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
@@ -29,6 +30,8 @@ def upload_statement(
     try:
         try:
             statement = ingest_pdf(tmp_path, password=password, conn=conn)
+        except DuplicateStatementError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:

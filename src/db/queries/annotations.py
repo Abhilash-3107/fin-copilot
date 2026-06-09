@@ -28,17 +28,21 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
 
 
 def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict) -> None:
-    """Update an existing annotation. Always sets source='manual' and refreshes annotated_at."""
-    patch = {k: v for k, v in patch.items() if v is not None}
-    set_clauses = ", ".join(f"{col} = ?" for col in patch)
+    """Update an existing annotation, including explicit None values (clears the field).
+
+    Sets source='manual', preserving the pipeline source in original_source on
+    the first manual touch, and refreshes annotated_at.
+    """
+    set_clauses = [f"{col} = ?" for col in patch]
     values = list(patch.values())
+    set_clauses += [
+        "original_source = COALESCE(original_source, source)",
+        "source = 'manual'",
+        "annotated_at = datetime('now')",
+    ]
 
     conn.execute(
-        f"""
-        UPDATE annotations
-        SET {set_clauses}, source = 'manual', annotated_at = datetime('now')
-        WHERE id = ?
-        """,
+        f"UPDATE annotations SET {', '.join(set_clauses)} WHERE id = ?",
         [*values, annotation_id],
     )
 

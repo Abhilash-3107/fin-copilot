@@ -10,10 +10,11 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
     """Insert a statement row; silently skips if it already exists (idempotent)."""
     conn.execute(
         """
-        INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month)
-        VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month, file_sha256)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (statement.id, statement.bank_name, statement.parser_version, statement.statement_month),
+        (statement.id, statement.bank_name, statement.parser_version,
+         statement.statement_month, statement.file_sha256),
     )
 
 

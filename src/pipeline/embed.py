@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 
 import httpx
 
 from src.config import settings
 from src.db.queries.embeddings import get_embedded_transaction_ids, upsert_embedding
+
+logger = logging.getLogger(__name__)
 
 
 def build_embed_text(txn: dict) -> str:
@@ -47,6 +50,28 @@ def get_embeddings_batch(
 def get_embedding_single(text: str, timeout: float = 60.0) -> list[float]:
     """Get embedding for a single text."""
     return get_embeddings_batch([text], timeout=timeout)[0]
+
+
+def embed_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
+    """Embed one transaction so it can serve as a RAG donor immediately.
+
+    Best-effort: returns False instead of raising when the transaction is missing
+    or the embedding service is down (the bulk /embeddings/generate endpoint
+    backfills gaps), so annotation writes never fail because of Ollama.
+    """
+    try:
+        row = conn.execute(
+            "SELECT * FROM transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        vector = get_embedding_single(build_embed_text(dict(row)))
+        upsert_embedding(conn, transaction_id, vector, settings.ollama_embedding_model)
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning("embed on write failed | txn=%s  error=%s", transaction_id, e)
+        return False
 
 
 def embed_annotated_transactions(
