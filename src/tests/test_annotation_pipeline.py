@@ -130,6 +130,45 @@ class TestRuleEngine:
 
 
 # ---------------------------------------------------------------------------
+# Rule false-positive corpus: substrings that used to fire word-boundary-less
+# ---------------------------------------------------------------------------
+
+class TestRuleFalsePositives:
+    @pytest.mark.parametrize("description", [
+        "INSURANCE PREMIUM COLLECTION AXA",   # 'premium' must not match 'emi'
+        "ACCOUNT INFO UPDATE CHARGE",         # 'info' must not match 'nfo'
+        "GRANOLA BARS SUPERSTORE",            # 'granola' must not match 'ola'
+        "COCA COLA BEVERAGES",                # 'cola' must not match 'ola'
+        "NAVI TECHNOLOGIES PAYMENT",          # 'navi' must not match 'vi'
+        "COMMITMENT FEE CHARGED",             # 'commitment' must not match 'mmt'
+        "REPUBLIC DAY OFFER CASHBACK",        # 'republic' must not match 'lic'
+        "PINOLA RESTAURANT BILL",             # 'pinola' must not match 'ola'
+    ])
+    def test_no_substring_false_positive(self, description):
+        txn = {"id": "fp", "raw_description": description, "upi_meta": None}
+        result = apply_rules(txn)
+        wrong = {"Loan EMI", "Mutual Fund SIP", "Cab & Auto", "Mobile Recharge"}
+        assert result is None or result.subcategory not in wrong, (
+            f"{description!r} falsely matched {result.category}/{result.subcategory}"
+        )
+
+    @pytest.mark.parametrize("description,expected_subcategory", [
+        ("HOME LOAN EMI DEBIT", "Loan EMI"),
+        ("MUTUAL FUND NFO SUBSCRIPTION", "Mutual Fund SIP"),
+        ("OLA RIDE 1234", "Cab & Auto"),
+        ("OLACABS BANGALORE", "Cab & Auto"),
+        ("VI RECHARGE 299", "Mobile Recharge"),
+        ("LIC PREMIUM PAYMENT", "Insurance Premium"),
+        ("MMT*FLIGHT BOOKING", None),  # MakeMyTrip rule has no subcategory
+    ])
+    def test_word_boundary_still_matches(self, description, expected_subcategory):
+        txn = {"id": "tp", "raw_description": description, "upi_meta": None}
+        result = apply_rules(txn)
+        assert result is not None, f"{description!r} should match a rule"
+        assert result.subcategory == expected_subcategory
+
+
+# ---------------------------------------------------------------------------
 # LLM client tests (mocked httpx)
 # ---------------------------------------------------------------------------
 
@@ -899,6 +938,76 @@ class TestRAGDirectAmbiguity:
         assert ann is not None
         # All agree, no different category → both factors = 1.0
         assert abs(ann["confidence"] - round(0.95, 4)) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Category validation tests (enum schema + server-side normalization)
+# ---------------------------------------------------------------------------
+
+CATEGORY_LIST = [
+    "Food & Dining", "Food & Dining > Restaurants", "Food & Dining > Groceries",
+    "Shopping", "Shopping > Online Shopping",
+    "Transport", "Transfers", "Entertainment", "Uncategorized",
+]
+
+
+class TestCategoryValidation:
+    def test_top_level_categories_collapse(self):
+        from src.pipeline.llm import top_level_categories
+        tops = top_level_categories(CATEGORY_LIST)
+        assert tops == ["Food & Dining", "Shopping", "Transport", "Transfers",
+                        "Entertainment", "Uncategorized"]
+
+    def test_schema_constrains_category_enum(self):
+        from src.pipeline.llm import _response_schema
+        schema = _response_schema(CATEGORY_LIST)
+        assert schema["properties"]["category"]["enum"] == [
+            "Food & Dining", "Shopping", "Transport", "Transfers",
+            "Entertainment", "Uncategorized",
+        ]
+
+    def test_empty_category_list_leaves_schema_unconstrained(self):
+        from src.pipeline.llm import _response_schema
+        schema = _response_schema([])
+        assert "enum" not in schema["properties"]["category"]
+
+    def test_exact_category_passes_through(self):
+        from src.pipeline.annotate import _normalize_category
+        assert _normalize_category("Shopping", CATEGORY_LIST) == "Shopping"
+
+    def test_case_mismatch_normalized(self):
+        from src.pipeline.annotate import _normalize_category
+        assert _normalize_category("shopping", CATEGORY_LIST) == "Shopping"
+
+    def test_partial_name_normalized(self):
+        from src.pipeline.annotate import _normalize_category
+        assert _normalize_category("Food", CATEGORY_LIST) == "Food & Dining"
+
+    def test_close_misspelling_normalized(self):
+        from src.pipeline.annotate import _normalize_category
+        assert _normalize_category("Entertainmnet", CATEGORY_LIST) == "Entertainment"
+
+    def test_hallucinated_category_falls_back(self):
+        from src.pipeline.annotate import _normalize_category
+        assert _normalize_category("Subscriptions", CATEGORY_LIST) == "Uncategorized"
+
+    def test_hallucinated_category_persisted_as_uncategorized(self):
+        """End-to-end: LLM returns a made-up category, stored row is valid."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        conn = _make_conn()
+        _insert_statement(conn)
+        _insert_txn(conn, "t_hallu", "weird merchant qqq")
+        llm_result = AnnotationResponse(category="Crypto Stuff", confidence=0.9)
+
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(conn)
+
+        ann = get_annotation_by_transaction(conn, "t_hallu")
+        assert ann["category"] == "Uncategorized"
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

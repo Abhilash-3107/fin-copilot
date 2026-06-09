@@ -2,9 +2,25 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from src.models.annotation import AnnotationCreate
+
+
+@lru_cache(maxsize=None)
+def _compile_pattern(pattern: str) -> re.Pattern:
+    """Compile a keyword to a word-boundary regex so 'emi' can't match 'premium'.
+
+    Lookarounds instead of \\b so patterns that start/end with non-word chars
+    (e.g. 'd-mart', 'cult.fit') still anchor correctly.
+    """
+    return re.compile(r"(?<!\w)" + re.escape(pattern.strip().lower()) + r"(?!\w)")
+
+
+def _pattern_matches(pattern: str, haystack: str) -> bool:
+    return _compile_pattern(pattern).search(haystack) is not None
 
 
 @dataclass
@@ -58,19 +74,19 @@ MERCHANT_RULES: list[MerchantRule] = [
 
     # --- Transport ---
     MerchantRule(["uber"], "Transport", "Cab & Auto", "Uber", ["transport"]),
-    MerchantRule(["ola"], "Transport", "Cab & Auto", "Ola", ["transport"]),
+    MerchantRule(["ola", "olacabs", "ola cabs"], "Transport", "Cab & Auto", "Ola", ["transport"]),
     MerchantRule(["rapido"], "Transport", "Cab & Auto", "Rapido", ["transport"]),
     MerchantRule(["irctc"], "Travel", "Train", "IRCTC", ["travel", "train"]),
     MerchantRule(["indigo", "air india", "spicejet", "akasa", "vistara", "go first"], "Travel", "Flights", None, ["travel", "flight"]),
     MerchantRule(["makemytrip", "mmt"], "Travel", None, "MakeMyTrip", ["travel"]),
     MerchantRule(["goibibo"], "Travel", None, "Goibibo", ["travel"]),
     MerchantRule(["redbus"], "Travel", "Bus", "redBus", ["travel", "bus"]),
-    MerchantRule(["petrol", "hp petrol", "indian oil", "iocl", "bharat petroleum", "bpcl", "hpcl"], "Transport", "Fuel", None, ["fuel"]),
+    MerchantRule(["petrol", "petroleum", "hp petrol", "indian oil", "iocl", "bharat petroleum", "bpcl", "hpcl"], "Transport", "Fuel", None, ["fuel"]),
 
     # --- Bills & Utilities ---
     MerchantRule(["jio", "reliance jio"], "Bills & Utilities", "Mobile Recharge", "Jio", ["telecom"]),
     MerchantRule(["airtel"], "Bills & Utilities", "Mobile Recharge", "Airtel", ["telecom"]),
-    MerchantRule(["vi ", "vodafone", "idea cellular"], "Bills & Utilities", "Mobile Recharge", "Vi", ["telecom"]),
+    MerchantRule(["vi", "vodafone", "idea cellular"], "Bills & Utilities", "Mobile Recharge", "Vi", ["telecom"]),
     MerchantRule(["bsnl"], "Bills & Utilities", "Mobile Recharge", "BSNL", ["telecom"]),
     MerchantRule(["tata sky", "dish tv", "sun direct", "videocon d2h", "d2h"], "Bills & Utilities", "DTH", None, ["dth"]),
     MerchantRule(["bescom", "msedcl", "tneb", "tata power", "adani electricity", "electricity bill"], "Bills & Utilities", "Electricity", None, ["electricity"]),
@@ -89,7 +105,7 @@ MERCHANT_RULES: list[MerchantRule] = [
     MerchantRule(["salary", "sal cr", "sal credit"], "Income", "Salary", None, ["income", "salary"], ["raw_description"]),
     MerchantRule(["mutual fund", "mf sip", "sip debit", "nfo"], "Investments", "Mutual Fund SIP", None, ["investment"]),
     MerchantRule(["emi", "loan emi", "home loan", "car loan", "personal loan"], "Finances", "Loan EMI", None, ["emi"]),
-    MerchantRule(["insurance", "lic ", "hdfc life", "sbi life", "icici pru"], "Finances", "Insurance Premium", None, ["insurance"]),
+    MerchantRule(["insurance", "lic", "hdfc life", "sbi life", "icici pru"], "Finances", "Insurance Premium", None, ["insurance"]),
     MerchantRule(["credit card", "cc payment", "card outstanding"], "Finances", "Credit Card Payment", None, ["credit-card"]),
     MerchantRule(["income tax", "tds payment", "advance tax", "gst payment"], "Finances", "Tax Payment", None, ["tax"]),
 
@@ -133,8 +149,8 @@ MERCHANT_RULES: list[MerchantRule] = [
 DISAMBIGUATION_RULES: list[DisambiguationRule] = [
     # Uber Eats → Food & Dining (overrides the default Uber → Transport rule)
     DisambiguationRule(
-        base_patterns=["uber"],
-        override_patterns=["eat", "eats", "food"],
+        base_patterns=["uber", "ubereats"],
+        override_patterns=["eat", "eats", "food", "ubereats"],
         category="Food & Dining", subcategory="Food Delivery",
         merchant="Uber Eats", tags=["food"],
     ),
@@ -183,8 +199,8 @@ def apply_rules(txn: dict) -> AnnotationCreate | None:
     # Phase 1: disambiguation rules (more specific — checked before MERCHANT_RULES)
     for drule in DISAMBIGUATION_RULES:
         haystack = " ".join(field_values[f] for f in drule.match_fields if f in field_values)
-        if any(p.lower() in haystack for p in drule.base_patterns):
-            if any(p.lower() in haystack for p in drule.override_patterns):
+        if any(_pattern_matches(p, haystack) for p in drule.base_patterns):
+            if any(_pattern_matches(p, haystack) for p in drule.override_patterns):
                 return AnnotationCreate(
                     transaction_id=txn["id"],
                     merchant=drule.merchant,
@@ -199,7 +215,7 @@ def apply_rules(txn: dict) -> AnnotationCreate | None:
     for rule in MERCHANT_RULES:
         haystack = " ".join(field_values[f] for f in rule.match_fields if f in field_values)
         for pattern in rule.patterns:
-            if pattern.lower() in haystack:
+            if _pattern_matches(pattern, haystack):
                 return AnnotationCreate(
                     transaction_id=txn["id"],
                     merchant=rule.merchant,

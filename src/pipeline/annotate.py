@@ -1,6 +1,7 @@
 """Auto-annotation pipeline: rules → RAG direct → RAG prompted → plain LLM."""
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import sqlite3
@@ -16,8 +17,42 @@ from src.db.queries.transactions import list_transactions
 from src.models.annotation import Annotation, AnnotationCreate, AutoAnnotateResult
 from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.embed import build_embed_text, get_embedding_single
-from src.pipeline.llm import annotate_transaction_llm, annotate_transaction_llm_with_examples
+from src.pipeline.llm import (
+    annotate_transaction_llm,
+    annotate_transaction_llm_with_examples,
+    top_level_categories,
+)
 from src.pipeline.rules import apply_rules
+
+
+def _normalize_category(category: str, category_list: list[str]) -> str:
+    """Validate an LLM-returned category against the taxonomy.
+
+    The JSON-schema enum should already constrain it, but small models can still
+    slip (and older Ollama versions ignore enums), so: exact match → fuzzy match
+    → 'Uncategorized'.
+    """
+    valid = top_level_categories(category_list)
+    if not valid or category in valid:
+        return category
+
+    lower = category.strip().lower()
+    for v in valid:
+        if v.lower() == lower:
+            return v
+
+    # Unambiguous substring (e.g. 'Food' → 'Food & Dining')
+    containing = [v for v in valid if lower in v.lower() or v.lower() in lower]
+    if len(containing) == 1:
+        logger.warning("category normalized | %r → %r", category, containing[0])
+        return containing[0]
+
+    close = difflib.get_close_matches(category, valid, n=1, cutoff=0.6)
+    if close:
+        logger.warning("category normalized | %r → %r", category, close[0])
+        return close[0]
+    logger.warning("category invalid | %r → 'Uncategorized'", category)
+    return "Uncategorized"
 
 
 def _match_known_person(txn: dict, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
@@ -147,18 +182,20 @@ def auto_annotate(
             logger.debug("llm | txn=%s  desc=%r  amount=%.2f", txn["id"], txn["raw_description"], txn["amount"])
             llm_result = annotate_transaction_llm(txn, category_list)
             if llm_result is not None:
+                category = _normalize_category(llm_result.category, category_list)
                 ann = AnnotationCreate(
                     transaction_id=txn["id"],
                     merchant=llm_result.merchant,
-                    category=llm_result.category,
+                    category=category,
                     subcategory=llm_result.subcategory,
                     tags=llm_result.tags,
-                    confidence=round(llm_result.confidence * get_calibrated_dampening(conn, "llm", llm_result.category), 4),
+                    confidence=round(llm_result.confidence * get_calibrated_dampening(conn, "llm", category), 4),
                     source="llm",
                 )
                 _persist(ann)
                 llm_annotated += 1
-                if llm_result.confidence < settings.confidence_threshold:
+                # Compare the stored (dampened) confidence — it decides review-queue membership
+                if ann.confidence < settings.confidence_threshold:
                     low_confidence += 1
                 logger.debug(
                     "llm result | txn=%s  → %s/%s  merchant=%r  raw_conf=%.2f  dampened_conf=%.4f",
@@ -318,15 +355,16 @@ def _try_rag_annotation(
     if examples:
         llm_result = annotate_transaction_llm_with_examples(txn, category_list, examples)
         if llm_result is not None:
-            confidence = round(llm_result.confidence * get_calibrated_dampening(conn, "rag_prompted", llm_result.category), 4)
+            category = _normalize_category(llm_result.category, category_list)
+            confidence = round(llm_result.confidence * get_calibrated_dampening(conn, "rag_prompted", category), 4)
             logger.debug(
                 "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
-                txn["id"], llm_result.category, llm_result.subcategory, llm_result.confidence, confidence,
+                txn["id"], category, llm_result.subcategory, llm_result.confidence, confidence,
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=llm_result.merchant,
-                category=llm_result.category,
+                category=category,
                 subcategory=llm_result.subcategory,
                 tags=llm_result.tags,
                 confidence=confidence,

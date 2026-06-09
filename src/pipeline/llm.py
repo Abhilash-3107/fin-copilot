@@ -21,6 +21,30 @@ class AnnotationResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+def top_level_categories(category_list: list[str]) -> list[str]:
+    """Collapse 'Category > Subcategory' strings to unique top-level category names."""
+    seen: list[str] = []
+    for c in category_list:
+        top = c.split(" > ", 1)[0].strip()
+        if top and top not in seen:
+            seen.append(top)
+    return seen
+
+
+def _response_schema(category_list: list[str]) -> dict:
+    """JSON schema for Ollama structured output, with category constrained to the taxonomy.
+
+    The enum makes a small model pick a real category instead of inventing one
+    (e.g. 'Food' or 'Subscriptions'); server-side validation in annotate.py is
+    the backstop.
+    """
+    schema = AnnotationResponse.model_json_schema()
+    tops = top_level_categories(category_list)
+    if tops:
+        schema["properties"]["category"]["enum"] = tops
+    return schema
+
+
 _SYSTEM_PROMPT = (
     "You are a personal finance categorizer for Indian bank transactions. "
     "Classify each transaction into the provided categories. "
@@ -93,19 +117,20 @@ def _build_fewshot_user_prompt(
     return "\n\n".join(parts)
 
 
-def annotate_transaction_llm_with_examples(
-    txn: dict,
+def _call_ollama(
+    user_prompt: str,
     category_list: list[str],
-    similar_examples: list[dict],
-    timeout: float = 60.0,
-    max_retries: int = 2,
+    txn_id: str,
+    log_prefix: str,
+    timeout: float,
+    max_retries: int,
 ) -> AnnotationResponse | None:
-    """Call Ollama with few-shot examples injected into the prompt. Returns None on final failure."""
+    """Shared Ollama chat call with retries and error taxonomy. Returns None on final failure."""
     url = f"{settings.ollama_url}/api/chat"
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        "format": AnnotationResponse.model_json_schema(),
+        "format": _response_schema(category_list),
         "options": {
             "num_ctx": 2048,
             "num_predict": 256,
@@ -113,15 +138,13 @@ def annotate_transaction_llm_with_examples(
         "think": False,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_fewshot_user_prompt(txn, category_list, similar_examples)},
+            {"role": "user", "content": user_prompt},
         ],
     }
 
-    txn_id = txn.get("id", "?")
     logger.debug(
-        "llm_with_examples | txn=%s  model=%s  examples=%d  prompt=\n%s",
-        txn_id, settings.ollama_model, len(similar_examples),
-        payload["messages"][1]["content"],
+        "%s | txn=%s  model=%s  prompt=\n%s",
+        log_prefix, txn_id, settings.ollama_model, user_prompt,
     )
 
     for attempt in range(max_retries + 1):
@@ -134,28 +157,46 @@ def annotate_transaction_llm_with_examples(
             content = data["message"]["content"]
             result = AnnotationResponse.model_validate_json(content)
             logger.debug(
-                "llm_with_examples | txn=%s  attempt=%d  latency=%.2fs  response=%s",
-                txn_id, attempt, elapsed, content,
+                "%s | txn=%s  attempt=%d  latency=%.2fs  response=%s",
+                log_prefix, txn_id, attempt, elapsed, content,
             )
             return result
         except (httpx.HTTPError, httpx.TimeoutException) as e:
             elapsed = time.monotonic() - t0
             logger.warning(
-                "llm_with_examples | txn=%s  attempt=%d  latency=%.2fs  http_error=%s",
-                txn_id, attempt, elapsed, e,
+                "%s | txn=%s  attempt=%d  latency=%.2fs  http_error=%s",
+                log_prefix, txn_id, attempt, elapsed, e,
             )
         except KeyError as e:
-            logger.warning("llm_with_examples | txn=%s  attempt=%d  missing_key=%s  raw=%s", txn_id, attempt, e, response.text)
+            logger.warning("%s | txn=%s  attempt=%d  missing_key=%s  raw=%s", log_prefix, txn_id, attempt, e, response.text)
         except json.JSONDecodeError as e:
-            logger.warning("llm_with_examples | txn=%s  attempt=%d  json_error=%s  raw=%s", txn_id, attempt, e, response.text)
+            logger.warning("%s | txn=%s  attempt=%d  json_error=%s  raw=%s", log_prefix, txn_id, attempt, e, response.text)
         except ValidationError as e:
-            logger.warning("llm_with_examples | txn=%s  attempt=%d  validation_error=%s  raw=%s", txn_id, attempt, e, content)
+            logger.warning("%s | txn=%s  attempt=%d  validation_error=%s  raw=%s", log_prefix, txn_id, attempt, e, content)
 
         if attempt < max_retries:
             time.sleep(1.0)
 
-    logger.error("llm_with_examples | txn=%s  all %d attempts failed", txn_id, max_retries + 1)
+    logger.error("%s | txn=%s  all %d attempts failed", log_prefix, txn_id, max_retries + 1)
     return None
+
+
+def annotate_transaction_llm_with_examples(
+    txn: dict,
+    category_list: list[str],
+    similar_examples: list[dict],
+    timeout: float = 60.0,
+    max_retries: int = 2,
+) -> AnnotationResponse | None:
+    """Call Ollama with few-shot examples injected into the prompt. Returns None on final failure."""
+    return _call_ollama(
+        _build_fewshot_user_prompt(txn, category_list, similar_examples),
+        category_list,
+        txn_id=txn.get("id", "?"),
+        log_prefix="llm_with_examples",
+        timeout=timeout,
+        max_retries=max_retries,
+    )
 
 
 def annotate_transaction_llm(
@@ -165,57 +206,11 @@ def annotate_transaction_llm(
     max_retries: int = 2,
 ) -> AnnotationResponse | None:
     """Call Ollama to annotate a transaction. Returns None on final failure."""
-    url = f"{settings.ollama_url}/api/chat"
-    payload = {
-        "model": settings.ollama_model,
-        "stream": False,
-        "format": AnnotationResponse.model_json_schema(),
-        "options": {
-            "num_ctx": 2048,
-            "num_predict": 256,
-        },
-        "think": False,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_prompt(txn, category_list)},
-        ],
-    }
-
-    txn_id = txn.get("id", "?")
-    logger.debug(
-        "llm | txn=%s  model=%s  prompt=\n%s",
-        txn_id, settings.ollama_model, payload["messages"][1]["content"],
+    return _call_ollama(
+        _build_user_prompt(txn, category_list),
+        category_list,
+        txn_id=txn.get("id", "?"),
+        log_prefix="llm",
+        timeout=timeout,
+        max_retries=max_retries,
     )
-
-    for attempt in range(max_retries + 1):
-        t0 = time.monotonic()
-        try:
-            response = httpx.post(url, json=payload, timeout=timeout)
-            elapsed = time.monotonic() - t0
-            response.raise_for_status()
-            data = response.json()
-            content = data["message"]["content"]
-            result = AnnotationResponse.model_validate_json(content)
-            logger.debug(
-                "llm | txn=%s  attempt=%d  latency=%.2fs  response=%s",
-                txn_id, attempt, elapsed, content,
-            )
-            return result
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
-            elapsed = time.monotonic() - t0
-            logger.warning(
-                "llm | txn=%s  attempt=%d  latency=%.2fs  http_error=%s",
-                txn_id, attempt, elapsed, e,
-            )
-        except KeyError as e:
-            logger.warning("llm | txn=%s  attempt=%d  missing_key=%s  raw=%s", txn_id, attempt, e, response.text)
-        except json.JSONDecodeError as e:
-            logger.warning("llm | txn=%s  attempt=%d  json_error=%s  raw=%s", txn_id, attempt, e, response.text)
-        except ValidationError as e:
-            logger.warning("llm | txn=%s  attempt=%d  validation_error=%s  raw=%s", txn_id, attempt, e, content)
-
-        if attempt < max_retries:
-            time.sleep(1.0)
-
-    logger.error("llm | txn=%s  all %d attempts failed", txn_id, max_retries + 1)
-    return None
