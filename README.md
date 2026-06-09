@@ -8,7 +8,7 @@ Personal finance tool that auto-categorizes bank transactions using a multi-stag
 - **100% local** - SQLite database + Ollama for inference, everything stays on your machine
 - **Multi-stage annotation pipeline** - Rules > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
 - **Human-in-the-loop** - Low-confidence predictions surface in an intuitive and fast review queue for correction
-- **Bank statement parsing** - Upload PDFs from Kotak and HDFC; UPI metadata extracted automatically
+- **Bank statement parsing** - Dedicated Kotak parser plus a generic parser that handles most banks' tabular statement PDFs, with every row verified against the running balance; UPI metadata extracted automatically
 - **Vector similarity search** - sqlite-vec powers few-shot retrieval for better categorization over time
 - **React dashboard** - Transaction management, annotation review, expense groups, and insights/charts
 
@@ -161,14 +161,31 @@ The demo data includes:
 
 After seeding, start the server and trigger auto-annotate on the remaining unannotated transactions to see the full pipeline in action.
 
-## Adding a Bank Parser
+## Bank Statement Parsing
+
+Uploads are auto-detected by the parser registry (`src/parsers/registry.py`):
+
+1. **Dedicated parsers** (currently Kotak) are tried first.
+2. The **generic parser** (`src/parsers/generic.py`) handles everything else: it
+   extracts tables from the PDF, infers which columns are date / description /
+   debit / credit / balance from the header row, and then **verifies every row
+   arithmetically against the running balance** (`balance[i] == balance[i-1] ± amount`).
+   It only claims a statement when ≥80% of those checks pass, so it cannot
+   silently ingest wrong amounts — unsupported layouts are rejected with an error
+   instead.
+
+Limitations of the generic parser: it needs a text-native PDF (no scans/OCR), a
+tabular layout with a header row, and a running-balance column (so most savings
+account statements work; credit-card statements generally won't yet).
+
+### Adding a Dedicated Bank Parser
+
+Only needed when the generic parser can't handle a bank's layout:
 
 1. Create a new file under `src/parsers/banks/` (e.g., `sbi.py`)
 2. Subclass `StatementParser` from `src/parsers/base.py`
 3. Implement the `parse()` method to extract transactions from the PDF
-4. Register it in `src/parsers/registry.py`
-
-The registry auto-detects the bank type when a PDF is uploaded.
+4. Register it in `src/parsers/registry.py` **before** `GenericStatementParser`
 
 ## Demo Screenshots
 

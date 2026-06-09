@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from src.parsers.base import StatementParser
 from src.parsers.banks.kotak import KotakParser
+from src.parsers.generic import GenericStatementParser
 
 # Ordered list — detect() is tried in this order; first match wins.
+# Dedicated bank parsers go first; the generic balance-verified parser is the
+# last-resort fallback and must stay at the end.
 _PARSERS: list[type[StatementParser]] = [
     KotakParser,
-    # Future: HdfcParser, IciciParser, etc.
+    GenericStatementParser,
 ]
 
 _BY_NAME: dict[str, type[StatementParser]] = {
