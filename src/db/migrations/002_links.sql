@@ -1,7 +1,6 @@
 -- Migration 002: upi_meta column on transactions + transaction group model
 
 ALTER TABLE transactions ADD COLUMN upi_meta TEXT;
-ALTER TABLE transaction_groups ADD COLUMN labels TEXT;
 
 -- A named group that ties related transactions together (splits, reimbursements, etc.)
 CREATE TABLE IF NOT EXISTS transaction_groups (

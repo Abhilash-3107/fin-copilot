@@ -8,17 +8,16 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 
+from src.config import settings
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=settings.log_level.upper(),
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     datefmt="%H:%M:%S",
 )
-# Per-module overrides: set pipeline to DEBUG for full per-transaction detail
-logging.getLogger("src.pipeline").setLevel(logging.DEBUG)
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.config import settings
 from src.db.connection import get_db
 from src.api.routes import annotations, categories, embeddings, groups, people, statements, transactions
 
@@ -27,6 +26,7 @@ UI_DIR = Path(__file__).parent.parent / "ui"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Apply pending migrations once at startup; per-request connections skip this.
     conn = get_db()
     conn.close()
     yield
