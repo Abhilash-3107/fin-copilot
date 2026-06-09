@@ -8,29 +8,20 @@ import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
-const BATCH_SIZE = 10
-
-async function buildAnnotationMap(txns) {
+function buildAnnotationMap(txns) {
   const map = {}
-  // Fetch full transaction detail (includes annotation join) in batches
-  for (let i = 0; i < txns.length; i += BATCH_SIZE) {
-    const batch = txns.slice(i, i + BATCH_SIZE)
-    const results = await Promise.allSettled(
-      batch.map(t => api.get(`/transactions/${t.id}`))
-    )
-    results.forEach((r, idx) => {
-      if (r.status === 'fulfilled' && r.value?.annotation_id) {
-        map[batch[idx].id] = {
-          id: r.value.annotation_id,
-          category: r.value.category,
-          subcategory: r.value.subcategory,
-          merchant: r.value.merchant,
-          tags: r.value.tags,
-          confidence: r.value.confidence,
-          source: r.value.source,
-        }
+  for (const t of txns) {
+    if (t.annotation_id) {
+      map[t.id] = {
+        id: t.annotation_id,
+        category: t.category,
+        subcategory: t.subcategory,
+        merchant: t.merchant,
+        tags: t.tags,
+        confidence: t.confidence,
+        source: t.source,
       }
-    })
+    }
   }
   return map
 }
@@ -56,17 +47,14 @@ export default function Transactions() {
     setLoading(true)
     try {
       const params = new URLSearchParams()
+      params.set('include', 'annotation')
       if (selectedStmt) params.set('statement_id', selectedStmt)
       if (month) params.set('month', month)
       if (filter === 'unannotated') params.set('unannotated', 'true')
-      const qs = params.toString()
-      const txns = await api.get(`/transactions${qs ? '?' + qs : ''}`)
+      const txns = await api.get(`/transactions?${params}`)
       if (id !== loadRef.current) return
       setTransactions(txns)
-      // Build annotation map
-      const map = await buildAnnotationMap(txns)
-      if (id !== loadRef.current) return
-      setAnnotationMap(map)
+      setAnnotationMap(buildAnnotationMap(txns))
     } catch (e) {
       toast(`Failed to load: ${e.message}`, 'error')
     } finally {

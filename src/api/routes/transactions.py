@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.deps import get_db
 from src.db.queries.transactions import list_transactions
@@ -17,9 +17,20 @@ def get_transactions(
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
+    include: str | None = Query(None, description="'annotation' joins each row's annotation"),
+    after: str | None = Query(None, description="cursor: id of the last row of the previous page"),
+    limit: int | None = Query(None, ge=1, le=1000),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    return list_transactions(conn, statement_id=statement_id, month=month, unannotated=unannotated)
+    return list_transactions(
+        conn,
+        statement_id=statement_id,
+        month=month,
+        unannotated=unannotated,
+        include_annotation=include == "annotation",
+        after=after,
+        limit=limit,
+    )
 
 
 @router.get("/{transaction_id}")

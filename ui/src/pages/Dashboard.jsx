@@ -39,30 +39,28 @@ export default function Dashboard() {
       setLoading(true)
       try {
         const params = new URLSearchParams()
+        params.set('include', 'annotation')
         if (activeStatement) params.set('statement_id', activeStatement.id)
-        const qs = params.toString()
 
         const [txns, queue] = await Promise.all([
-          api.get(`/transactions${qs ? '?' + qs : ''}`),
+          api.get(`/transactions?${params}`),
           api.get('/annotations/review-queue'),
         ])
         setTransactions(txns)
         setReviewCount(queue.length)
 
         const map = {}
-        const sample = txns.slice(0, 200)
-        const results = await Promise.allSettled(sample.map(t => api.get(`/transactions/${t.id}`)))
-        results.forEach((r, i) => {
-          if (r.status === 'fulfilled' && r.value?.annotation_id) {
-            map[sample[i].id] = {
-              id: r.value.annotation_id,
-              category: r.value.category,
-              subcategory: r.value.subcategory,
-              source: r.value.source,
-              confidence: r.value.confidence,
+        for (const t of txns) {
+          if (t.annotation_id) {
+            map[t.id] = {
+              id: t.annotation_id,
+              category: t.category,
+              subcategory: t.subcategory,
+              source: t.source,
+              confidence: t.confidence,
             }
           }
-        })
+        }
         setAnnMap(map)
       } catch (e) {
         toast(`Couldn't load your data — ${e.message}`, 'error')
