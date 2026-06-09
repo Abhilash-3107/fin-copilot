@@ -941,6 +941,45 @@ class TestRAGDirectAmbiguity:
 
 
 # ---------------------------------------------------------------------------
+# Stage-4 description dedup cache
+# ---------------------------------------------------------------------------
+
+class TestLLMDescriptionDedup:
+    def test_identical_descriptions_call_llm_once(self):
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        conn = _make_conn()
+        _insert_statement(conn)
+        for i in range(3):
+            _insert_txn(conn, f"dup{i}", "NACH RECURRING GYM FEE", amount=999.0)
+
+        llm_result = AnnotationResponse(category="Personal Care", confidence=0.8)
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result) as llm_mock:
+            result = auto_annotate(conn)
+
+        assert llm_mock.call_count == 1
+        assert result.llm_annotated == 3
+        for i in range(3):
+            assert get_annotation_by_transaction(conn, f"dup{i}")["category"] == "Personal Care"
+        conn.close()
+
+    def test_progress_callback_reports_each_transaction(self):
+        from src.pipeline.annotate import auto_annotate
+
+        conn = _make_conn()
+        _insert_statement(conn)
+        _insert_txn(conn, "p1", "Netflix subscription")
+        _insert_txn(conn, "p2", "Swiggy order")
+
+        calls = []
+        auto_annotate(conn, progress_cb=lambda done, total: calls.append((done, total)))
+        assert calls == [(1, 2), (2, 2)]
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Category validation tests (enum schema + server-side normalization)
 # ---------------------------------------------------------------------------
 

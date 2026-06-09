@@ -79,6 +79,7 @@ def auto_annotate(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
     transaction_ids: list[str] | None = None,
+    progress_cb=None,
 ) -> AutoAnnotateResult:
     """Run the full auto-annotation pipeline on unannotated transactions.
 
@@ -86,6 +87,9 @@ def auto_annotate(
     Stage 2 — rag_direct:   cosine similarity >= threshold → copy annotation → source=rag_direct
     Stage 3 — rag_prompted: cosine similarity found but below threshold → LLM with examples → source=rag_prompted
     Stage 4 — llm:          no similar found or embedding unavailable → plain LLM → source=llm
+
+    progress_cb(processed, total), when given, is called after each transaction
+    so callers (e.g. background jobs) can report progress.
     """
     logger.info("auto_annotate start | statement_id=%s", statement_id)
 
@@ -134,6 +138,17 @@ def auto_annotate(
     # Load known people once — used for peer transfer matching before merchant rules
     known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
 
+    # A transaction counts as processed once its final outcome is decided
+    # (annotated or failed) — stage-1 misses are still pending.
+    total = len(unannotated)
+    processed = 0
+
+    def _tick() -> None:
+        nonlocal processed
+        processed += 1
+        if progress_cb is not None:
+            progress_cb(processed, total)
+
     # --- Stage 1: Rule pass ---
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
@@ -141,6 +156,7 @@ def auto_annotate(
         result = _match_known_person(txn, known_people) or apply_rules(txn)
         if result is not None:
             _persist(result)
+            _tick()
             rule_matched += 1
             if result.confidence < settings.confidence_threshold:
                 low_confidence += 1
@@ -162,6 +178,7 @@ def auto_annotate(
             rag_result = _try_rag_annotation(conn, txn, category_list)
             if rag_result is not None:
                 _persist(rag_result)
+                _tick()
                 if rag_result.source == "rag_direct":
                     rag_direct_annotated += 1
                 else:
@@ -180,9 +197,22 @@ def auto_annotate(
         logger.info("stage 4 | llm | %d txns", len(needs_llm))
         if not category_list:
             category_list = get_category_names_flat(conn)
+        # Recurring transactions share normalized descriptions — call the LLM once
+        # per (description, direction) and reuse the result within this run.
+        llm_cache: dict = {}
         for txn in needs_llm:
             logger.debug("llm | txn=%s  desc=%r  amount=%.2f", txn["id"], txn["raw_description"], txn["amount"])
-            llm_result = annotate_transaction_llm(txn, category_list)
+            cache_key = (
+                (txn.get("raw_description") or "").strip().lower(),
+                txn.get("debit_credit") or "",
+            )
+            llm_result = llm_cache.get(cache_key)
+            if llm_result is None:
+                llm_result = annotate_transaction_llm(txn, category_list)
+                if llm_result is not None and cache_key[0]:
+                    llm_cache[cache_key] = llm_result
+            else:
+                logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
                 category = _normalize_category(llm_result.category, category_list)
                 ann = AnnotationCreate(
@@ -207,6 +237,7 @@ def auto_annotate(
             else:
                 llm_failed += 1
                 logger.warning("llm failed | txn=%s  desc=%r", txn["id"], txn["raw_description"])
+            _tick()
 
     conn.commit()  # flush the final partial batch
     logger.info(

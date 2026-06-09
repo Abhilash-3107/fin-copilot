@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
-import { api } from '../lib/api.js'
+import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   const [autoAnnotating, setAutoAnnotating] = useState(false)
+  const [annotateProgress, setAnnotateProgress] = useState(null)
   const [amountsVisible, setAmountsVisible] = useState(false)
 
   // Reload transactions whenever the active statement changes
@@ -75,12 +76,13 @@ export default function Dashboard() {
     setAutoAnnotating(true)
     try {
       const body = activeStatement ? { statement_id: activeStatement.id } : {}
-      const result = await api.post('/annotations/auto-annotate', body)
+      const result = await runAnnotationJob(body, job => setAnnotateProgress(job))
       toast(`All done! ${result.rule_matched ?? 0} matched by rules, ${result.llm_annotated ?? 0} figured out by AI`, 'success', 4000)
     } catch (e) {
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
       setAutoAnnotating(false)
+      setAnnotateProgress(null)
     }
   }
 
@@ -222,7 +224,9 @@ export default function Dashboard() {
               className="bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors"
             >
               {autoAnnotating
-                ? 'Categorizing…'
+                ? annotateProgress?.total
+                  ? `Categorizing… ${annotateProgress.processed}/${annotateProgress.total}`
+                  : 'Categorizing…'
                 : activeStatement
                   ? 'Auto-categorize'
                   : 'Auto-categorize all'
