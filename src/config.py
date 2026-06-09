@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     llm_confidence_dampen: float = 0.85
     llm_confidence_dampen_rag: float = 0.92
     api_base_url: str = "http://localhost:8000"
+    log_level: str = "INFO"
 
     # Last-segment values in UPI descriptions that carry no meaningful note.
     # Extend this list as you encounter new noise patterns — no code changes needed.
