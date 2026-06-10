@@ -43,8 +43,25 @@ def upload_statement(
 
 @router.get("")
 def list_statements(conn: sqlite3.Connection = Depends(get_db)):
+    """List statements, each enriched with transaction/annotation/embedding counts.
+
+    Counts are computed in a single grouped query (no N+1) so the UI can show
+    annotation and vector-DB coverage per statement.
+    """
     rows = conn.execute(
-        "SELECT * FROM statements ORDER BY uploaded_at DESC"
+        """
+        SELECT
+            s.*,
+            COUNT(DISTINCT t.id)              AS txn_count,
+            COUNT(DISTINCT a.transaction_id)  AS annotated_count,
+            COUNT(DISTINCT em.transaction_id) AS embedded_count
+        FROM statements s
+        LEFT JOIN transactions t   ON t.statement_id = s.id
+        LEFT JOIN annotations a    ON a.transaction_id = t.id
+        LEFT JOIN embedding_meta em ON em.transaction_id = t.id
+        GROUP BY s.id
+        ORDER BY s.uploaded_at DESC
+        """
     ).fetchall()
     return [dict(row) for row in rows]
 
