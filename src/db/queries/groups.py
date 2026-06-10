@@ -132,7 +132,7 @@ def list_members_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict
     """Return all transactions in a group with their basic fields."""
     rows = conn.execute(
         """
-        SELECT m.role, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta
+        SELECT m.role, m.txn_type, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta
         FROM transaction_group_members m
         JOIN transactions t ON t.id = m.transaction_id
         WHERE m.group_id = ?
