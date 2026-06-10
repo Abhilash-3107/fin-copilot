@@ -7,6 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.deps import get_db
+from src.db.queries.common import parse_string_list
 from src.db.queries.transactions import list_transactions
 
 router = APIRouter()
@@ -22,7 +23,7 @@ def get_transactions(
     limit: int | None = Query(None, ge=1, le=1000),
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    return list_transactions(
+    rows = list_transactions(
         conn,
         statement_id=statement_id,
         month=month,
@@ -31,6 +32,10 @@ def get_transactions(
         after=after,
         limit=limit,
     )
+    if include == "annotation":
+        for row in rows:
+            row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
+    return rows
 
 
 @router.get("/{transaction_id}")
@@ -53,4 +58,5 @@ def get_transaction(
     result = dict(row)
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])
+    result["tags"] = parse_string_list(result.get("tags")) if result.get("annotation_id") else []
     return result

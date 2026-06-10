@@ -148,6 +148,83 @@ class TestFeedbackRecording:
         assert self._feedback_rows(conn) == {}
 
 
+class TestJsonTags:
+    def test_tags_with_commas_round_trip(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn)
+        resp = client.patch("/api/annotations/a1", json={"tags": ["food, delivery", "weekend"]})
+        assert resp.json()["tags"] == ["food, delivery", "weekend"]
+        # And through the list endpoint too
+        rows = client.get("/api/transactions?include=annotation").json()
+        assert rows[0]["tags"] == ["food, delivery", "weekend"]
+
+    def test_legacy_comma_string_still_parses(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, tags="food,delivery")  # pre-migration format
+        rows = client.get("/api/transactions?include=annotation").json()
+        assert rows[0]["tags"] == ["food", "delivery"]
+
+    def test_clearing_tags_stores_empty_array(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn)
+        resp = client.patch("/api/annotations/a1", json={"tags": []})
+        assert resp.json()["tags"] == []
+        raw = conn.execute("SELECT tags FROM annotations WHERE id='a1'").fetchone()[0]
+        assert raw == "[]"
+
+
+class TestCategoryIds:
+    def test_insert_resolves_ids(self, client_conn):
+        _, conn, _ = client_conn
+        _seed_annotated_txn(conn, category="Shopping", subcategory="Online Shopping")
+        row = conn.execute("SELECT category_id, subcategory_id FROM annotations WHERE id='a1'").fetchone()
+        assert row["category_id"] == "cat_shopping"
+        assert row["subcategory_id"] == "cat_shop_online"
+
+    def test_insert_with_free_text_subcategory_leaves_id_null(self, client_conn):
+        _, conn, _ = client_conn
+        _seed_annotated_txn(conn, category="Shopping", subcategory="LLM Made This Up")
+        row = conn.execute("SELECT category_id, subcategory_id FROM annotations WHERE id='a1'").fetchone()
+        assert row["category_id"] == "cat_shopping"
+        assert row["subcategory_id"] is None
+
+    def test_patch_updates_ids(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn)
+        client.patch("/api/annotations/a1", json={"category": "Entertainment", "subcategory": "Movies & OTT"})
+        row = conn.execute("SELECT category_id, subcategory_id FROM annotations WHERE id='a1'").fetchone()
+        assert row["category_id"] == "cat_entertainment"
+        assert row["subcategory_id"] == "cat_ent_movies"
+
+    def test_patch_unknown_category_rejected(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn)
+        resp = client.patch("/api/annotations/a1", json={"category": "Subscriptions"})
+        assert resp.status_code == 422
+
+    def test_patch_subcategory_must_belong_to_category(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn)
+        resp = client.patch(
+            "/api/annotations/a1",
+            json={"category": "Entertainment", "subcategory": "Groceries"},
+        )
+        assert resp.status_code == 422
+
+    def test_create_unknown_category_rejected(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t9", ann_id="a9")
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_new', 's1', '2026-01-16', 50.0, 'debit', 'X')"""
+        )
+        conn.commit()
+        resp = client.post("/api/annotations", json={
+            "transaction_id": "t_new", "category": "Nope", "source": "manual",
+        })
+        assert resp.status_code == 422
+
+
 class TestConfirmFlow:
     def test_confirm_sets_confidence_and_provenance(self, client_conn):
         client, conn, _ = client_conn
@@ -207,6 +284,61 @@ class TestTransactionsList:
         self._seed_many(conn, 2)
         rows = client.get("/api/transactions?after=missing&limit=10").json()
         assert len(rows) == 2
+
+
+class TestStatementDeleteCascade:
+    def _seed_statement_with_data(self, conn, stmt_id="s_del"):
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES (?, 'test', '1', '2026-01')",
+            (stmt_id,),
+        )
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES (?, ?, '2026-01-10', 10.0, 'debit', 'D')""",
+            (f"{stmt_id}_t", stmt_id),
+        )
+        insert_annotation(conn, Annotation(
+            id=f"{stmt_id}_a", transaction_id=f"{stmt_id}_t",
+            category="Shopping", confidence=0.9, source="rule",
+        ))
+        conn.execute(
+            "INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES (?, ?, 'm')",
+            (f"{stmt_id}_e", f"{stmt_id}_t"),
+        )
+        conn.commit()
+
+    def test_delete_removes_transactions_annotations_embeddings(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_statement_with_data(conn)
+        # An unrelated statement must survive
+        self._seed_statement_with_data(conn, stmt_id="s_keep")
+
+        resp = client.delete("/api/statements/s_del")
+        assert resp.status_code == 200
+
+        def count(table, col, val):
+            return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} = ?", (val,)).fetchone()[0]
+
+        assert count("statements", "id", "s_del") == 0
+        assert count("transactions", "statement_id", "s_del") == 0
+        assert count("annotations", "transaction_id", "s_del_t") == 0
+        assert count("embedding_meta", "transaction_id", "s_del_t") == 0
+        # unrelated data intact
+        assert count("transactions", "statement_id", "s_keep") == 1
+        assert count("annotations", "transaction_id", "s_keep_t") == 1
+
+    def test_reset_keeps_statement_and_transactions(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_statement_with_data(conn)
+        resp = client.delete("/api/statements/s_del/data")
+        assert resp.status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM statements WHERE id='s_del'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM transactions WHERE statement_id='s_del'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM annotations WHERE transaction_id='s_del_t'").fetchone()[0] == 0
+
+    def test_delete_missing_statement_404(self, client_conn):
+        client, _, _ = client_conn
+        assert client.delete("/api/statements/nope").status_code == 404
 
 
 class TestAnnotationJobs:
@@ -276,10 +408,13 @@ class TestStatementUploadDedup:
                 return True
 
             def parse(self, path, password=None):
-                return [Transaction(
-                    txn_date=date(2026, 1, 5), amount=100.0,
-                    debit_credit="debit", raw_description="TEST TXN",
-                )]
+                # Spans two months on purpose — period metadata must cover both
+                return [
+                    Transaction(txn_date=date(2026, 1, 5), amount=100.0,
+                                debit_credit="debit", raw_description="TEST TXN 1"),
+                    Transaction(txn_date=date(2026, 3, 2), amount=50.0,
+                                debit_credit="credit", raw_description="TEST TXN 2"),
+                ]
 
         return FakeParser()
 
@@ -298,7 +433,25 @@ class TestStatementUploadDedup:
                 ingest_pdf(path, conn=conn)
 
         txn_count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
-        assert txn_count == 1
+        assert txn_count == 2
+        Path(path).unlink()
+        conn.close()
+
+    def test_period_metadata_covers_all_transactions(self):
+        from src.pipeline.ingest import ingest_pdf
+
+        conn = _make_conn()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF period test")
+            path = tmp.name
+
+        with patch("src.pipeline.ingest.detect_parser", return_value=self._fake_parser()):
+            stmt = ingest_pdf(path, conn=conn)
+
+        assert stmt.statement_month == "2026-01"
+        row = conn.execute("SELECT period_start, period_end FROM statements WHERE id = ?", (stmt.id,)).fetchone()
+        assert row["period_start"] == "2026-01-05"
+        assert row["period_end"] == "2026-03-02"
         Path(path).unlink()
         conn.close()
 

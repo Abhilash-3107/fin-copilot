@@ -10,11 +10,13 @@ logger = logging.getLogger(__name__)
 
 from src.config import settings
 from src.db.queries.annotations import insert_annotation
+from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
 from src.db.queries.people import list_people
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import Annotation, AnnotationCreate, AutoAnnotateResult
+from src.models.transaction import TxnRow
 from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import (
@@ -55,14 +57,27 @@ def _normalize_category(category: str, category_list: list[str]) -> str:
     return "Uncategorized"
 
 
-def _match_known_person(txn: dict, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
-    """Return a Peer Transfer annotation if the transaction description matches a known person.
+def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
+    """Return a Peer Transfer annotation if the transaction matches a known person.
 
-    known_people is a list of (display_name, match_token) where match_token is already lowercased.
+    known_people is a list of (display_name, match_token) where match_token is the
+    person's UPI handle, already lowercased. When the transaction has an extracted
+    counterparty VPA, match it exactly; otherwise fall back to substring search in
+    the description (older rows ingested before VPA extraction).
     """
+    vpa = None
+    upi_meta = txn.get("upi_meta")
+    if upi_meta:
+        try:
+            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+            vpa = (meta.get("vpa") or "").lower() or None
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
     desc = (txn.get("raw_description") or "").lower()
     for name, token in known_people:
-        if token in desc:
+        matched = vpa == token if vpa else token in desc
+        if matched:
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=name,
@@ -125,7 +140,7 @@ def auto_annotate(
             merchant=ann_create.merchant,
             category=ann_create.category,
             subcategory=ann_create.subcategory,
-            tags=",".join(ann_create.tags),
+            tags=dump_string_list(ann_create.tags),
             confidence=ann_create.confidence,
             source=ann_create.source,
         )
@@ -289,7 +304,7 @@ def _compute_margin_factor(top_distance: float, next_diff_distance: float | None
 
 def _try_rag_annotation(
     conn: sqlite3.Connection,
-    txn: dict,
+    txn: TxnRow,
     category_list: list[str],
 ) -> AnnotationCreate | None:
     """Attempt RAG-based annotation.
@@ -375,7 +390,7 @@ def _try_rag_annotation(
                 merchant=donor_ann.get("merchant"),
                 category=top_category,
                 subcategory=donor_ann.get("subcategory"),
-                tags=[t for t in donor_ann.get("tags", "").split(",") if t],
+                tags=parse_string_list(donor_ann.get("tags")),
                 confidence=confidence,
                 source="rag_direct",
             )

@@ -20,6 +20,8 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
+from src.db.queries.categories import resolve_category_ids
+from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.feedback_stats import record_feedback
 from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
 from src.pipeline.annotate import auto_annotate
@@ -134,12 +136,20 @@ def create_annotation(
     body: AnnotationCreate,
     conn: sqlite3.Connection = Depends(get_db),
 ):
+    category_id, subcategory_id = resolve_category_ids(conn, body.category, body.subcategory)
+    if category_id is None:
+        raise HTTPException(status_code=422, detail=f"Unknown category: {body.category}")
+    if body.subcategory and subcategory_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown subcategory under {body.category}: {body.subcategory}",
+        )
     annotation = Annotation(
         transaction_id=body.transaction_id,
         merchant=body.merchant,
         category=body.category,
         subcategory=body.subcategory,
-        tags=",".join(body.tags),
+        tags=dump_string_list(body.tags),
         confidence=body.confidence,
         source=body.source,
     )
@@ -170,8 +180,24 @@ def patch_annotation(
         if value is None and field in ("category", "confidence"):
             raise HTTPException(status_code=422, detail=f"{field} cannot be null")
         if field == "tags":
-            value = ",".join(value) if value else ""
+            value = dump_string_list(value)
         patch[field] = value
+
+    if "category" in patch or "subcategory" in patch:
+        new_category = patch.get("category", existing["category"])
+        new_subcategory = patch.get("subcategory", existing.get("subcategory"))
+        category_id, subcategory_id = resolve_category_ids(conn, new_category, new_subcategory)
+        # Strict only for values the client sent; inherited stale names (e.g. an
+        # old LLM free-text subcategory) just leave the id NULL.
+        if "category" in patch and category_id is None:
+            raise HTTPException(status_code=422, detail=f"Unknown category: {new_category}")
+        if "subcategory" in patch and new_subcategory and subcategory_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown subcategory under {new_category}: {new_subcategory}",
+            )
+        patch["category_id"] = category_id
+        patch["subcategory_id"] = subcategory_id
 
     if patch:
         # Record feedback before updating — use original source + category.
@@ -217,7 +243,7 @@ def confirm_annotation(
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     items = list_review_queue(conn, settings.confidence_threshold)
     for item in items:
-        item["tags"] = [t for t in item.get("tags", "").split(",") if t]
+        item["tags"] = parse_string_list(item.get("tags"))
     return items
 
 
@@ -239,10 +265,10 @@ def _classify_feedback(existing: dict, patch: dict) -> str:
 
 def _annotation_response(annotation: Annotation) -> dict:
     d = annotation.model_dump()
-    d["tags"] = [t for t in annotation.tags.split(",") if t]
+    d["tags"] = parse_string_list(annotation.tags)
     return d
 
 
 def _as_response(row: dict) -> dict:
-    row["tags"] = [t for t in row.get("tags", "").split(",") if t]
+    row["tags"] = parse_string_list(row.get("tags"))
     return row

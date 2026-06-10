@@ -14,7 +14,7 @@ class Annotation(BaseModel):
     merchant: Optional[str] = None
     category: str
     subcategory: Optional[str] = None
-    tags: str = ""  # comma-separated, matches DB column
+    tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source: Literal["manual", "model", "rule", "rag_direct", "rag_prompted", "llm", "imported"]
     annotated_at: Optional[datetime] = None

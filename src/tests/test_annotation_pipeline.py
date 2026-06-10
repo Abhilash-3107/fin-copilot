@@ -653,11 +653,11 @@ class TestDisambiguationRules:
         assert result is not None
         assert result.category == "Shopping"
 
-    def test_aws_maps_to_financial(self):
+    def test_aws_maps_to_finances(self):
         txn = {"id": "t7", "raw_description": "AMZN AWS services payment", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
-        assert result.category == "Financial"
+        assert result.category == "Finances"
         assert result.merchant == "AWS"
 
     def test_disambiguation_confidence_is_095(self):
@@ -941,6 +941,68 @@ class TestRAGDirectAmbiguity:
 
 
 # ---------------------------------------------------------------------------
+# UPI metadata extraction + known-person matching
+# ---------------------------------------------------------------------------
+
+class TestUpiParsing:
+    NOISE = ["UPI", "NA", "NO REMARKS", "-"]
+
+    def _parse(self, raw):
+        from src.parsers.upi import parse_upi_description
+        result = parse_upi_description(raw, self.NOISE)
+        return json.loads(result) if result else None
+
+    def test_vpa_ref_note_extracted(self):
+        meta = self._parse("UPI/merchant@okaxis/118030236405/food order")
+        assert meta == {"vpa": "merchant@okaxis", "ref": "118030236405", "note": "food order"}
+
+    def test_ref_as_last_segment_is_not_a_note(self):
+        meta = self._parse("UPI/Agoda Company P/118030236405")
+        assert meta["ref"] == "118030236405"
+        assert meta["note"] is None
+
+    def test_noise_note_is_none(self):
+        meta = self._parse("UPI/someone@ybl/12345678/NA")
+        assert meta["vpa"] == "someone@ybl"
+        assert meta["note"] is None
+
+    def test_non_upi_returns_none(self):
+        assert self._parse("NEFT TRANSFER FROM ACME") is None
+
+    def test_no_vpa_or_ref(self):
+        meta = self._parse("UPI/SOME SHOP/groceries")
+        assert meta == {"vpa": None, "ref": None, "note": "groceries"}
+
+
+class TestKnownPersonMatching:
+    def _people(self):
+        return [("Rahul", "rahul@okaxis")]
+
+    def test_exact_vpa_match(self):
+        from src.pipeline.annotate import _match_known_person
+        txn = {"id": "t1", "raw_description": "UPI/rahul@okaxis/118030236405/dinner",
+               "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "118030236405", "note": "dinner"})}
+        result = _match_known_person(txn, self._people())
+        assert result is not None
+        assert result.merchant == "Rahul"
+        assert result.subcategory == "Peer Transfer"
+
+    def test_different_vpa_does_not_substring_match(self):
+        """'rahul@okaxis' must not match 'notrahul@okaxis' when a VPA is present."""
+        from src.pipeline.annotate import _match_known_person
+        txn = {"id": "t2", "raw_description": "UPI/notrahul@okaxis/12345678/x",
+               "upi_meta": json.dumps({"vpa": "notrahul@okaxis", "ref": "12345678", "note": "x"})}
+        assert _match_known_person(txn, self._people()) is None
+
+    def test_legacy_rows_fall_back_to_substring(self):
+        from src.pipeline.annotate import _match_known_person
+        txn = {"id": "t3", "raw_description": "IMPS rahul@okaxis transfer", "upi_meta": None}
+        result = _match_known_person(txn, self._people())
+        assert result is not None
+        assert result.merchant == "Rahul"
+
+
+# ---------------------------------------------------------------------------
 # Stage-4 description dedup cache
 # ---------------------------------------------------------------------------
 
@@ -1047,6 +1109,68 @@ class TestCategoryValidation:
         ann = get_annotation_by_transaction(conn, "t_hallu")
         assert ann["category"] == "Uncategorized"
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Bayesian calibration math
+# ---------------------------------------------------------------------------
+
+class TestCalibration:
+    def setup_method(self):
+        self.conn = _make_conn()
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _record(self, n, feedback_type, source="llm", category="Shopping"):
+        from src.db.queries.feedback_stats import record_feedback
+        for _ in range(n):
+            record_feedback(self.conn, source, category, feedback_type)
+        self.conn.commit()
+
+    def test_no_feedback_returns_static_base(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        from src.config import settings
+        assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(settings.llm_confidence_dampen)
+        assert get_calibrated_dampening(self.conn, "rag_prompted", "Shopping") == pytest.approx(settings.llm_confidence_dampen_rag)
+
+    @pytest.mark.parametrize("source", ["rule", "rag_direct", "manual"])
+    def test_undampened_sources_return_one(self, source):
+        from src.pipeline.calibration import get_calibrated_dampening
+        assert get_calibrated_dampening(self.conn, source, "Shopping") == 1.0
+
+    def test_confirmations_raise_dampening(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        self._record(5, "confirmed")
+        # prior: alpha=0.85*5=4.25, beta=0.75; +5 confirmed → 9.25/10
+        assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(0.925)
+
+    def test_corrections_lower_dampening(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        self._record(5, "corrected")
+        # alpha=4.25, beta=0.75+5 → 4.25/10
+        assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(0.425)
+
+    def test_refinements_count_half(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        self._record(2, "refined")
+        # alpha=4.25+1, beta=0.75 → 5.25/6
+        assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(5.25 / 6.0)
+
+    def test_feedback_is_scoped_per_source_and_category(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        from src.config import settings
+        self._record(5, "corrected", source="llm", category="Shopping")
+        # other category and other source unaffected
+        assert get_calibrated_dampening(self.conn, "llm", "Travel") == pytest.approx(settings.llm_confidence_dampen)
+        assert get_calibrated_dampening(self.conn, "rag_prompted", "Shopping") == pytest.approx(settings.llm_confidence_dampen_rag)
+
+    def test_single_event_does_not_swing_score(self):
+        from src.pipeline.calibration import get_calibrated_dampening
+        from src.config import settings
+        self._record(1, "corrected")
+        value = get_calibrated_dampening(self.conn, "llm", "Shopping")
+        assert abs(value - settings.llm_confidence_dampen) < 0.15
 
 
 # ---------------------------------------------------------------------------

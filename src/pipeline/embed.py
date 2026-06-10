@@ -9,11 +9,12 @@ import httpx
 
 from src.config import settings
 from src.db.queries.embeddings import get_embedded_transaction_ids, upsert_embedding
+from src.models.transaction import TxnRow
 
 logger = logging.getLogger(__name__)
 
 
-def build_embed_text(txn: dict) -> str:
+def build_embed_text(txn: TxnRow) -> str:
     """Build canonical text for embedding: '{debit_credit} {amount} {raw_description} {upi_note}'."""
     upi_note = ""
     upi_meta = txn.get("upi_meta")

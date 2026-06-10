@@ -5,6 +5,15 @@ import sqlite3
 
 import ulid
 
+from src.db.queries.common import dump_string_list, parse_string_list
+
+
+def _with_parsed_lists(row: dict, fields: tuple[str, ...]) -> dict:
+    for field in fields:
+        if field in row:
+            row[field] = parse_string_list(row[field])
+    return row
+
 
 def create_group(
     conn: sqlite3.Connection,
@@ -13,7 +22,7 @@ def create_group(
     labels: list[str] | None = None,
 ) -> dict:
     group_id = str(ulid.ULID())
-    labels_str = ",".join(labels) if labels else None
+    labels_str = dump_string_list(labels) if labels else None
     conn.execute(
         "INSERT INTO transaction_groups (id, name, note, labels) VALUES (?, ?, ?, ?)",
         (group_id, name, note, labels_str),
@@ -25,14 +34,14 @@ def get_group(conn: sqlite3.Connection, group_id: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM transaction_groups WHERE id = ?", (group_id,)
     ).fetchone()
-    return dict(row) if row else None
+    return _with_parsed_lists(dict(row), ("labels",)) if row else None
 
 
 def list_groups(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM transaction_groups ORDER BY created_at DESC"
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_parsed_lists(dict(r), ("labels",)) for r in rows]
 
 
 def search_groups(conn: sqlite3.Connection, query: str) -> list[dict]:
@@ -40,7 +49,7 @@ def search_groups(conn: sqlite3.Connection, query: str) -> list[dict]:
         "SELECT * FROM transaction_groups WHERE name LIKE ? ORDER BY created_at DESC LIMIT 20",
         (f"%{query}%",),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_parsed_lists(dict(r), ("labels",)) for r in rows]
 
 
 def delete_group(conn: sqlite3.Connection, group_id: str) -> bool:
@@ -57,8 +66,8 @@ def add_member(
     labels: list[str] | None = None,
     txn_type: str | None = None,
 ) -> None:
-    people_str = ",".join(people) if people else None
-    labels_str = ",".join(labels) if labels else None
+    people_str = dump_string_list(people) if people else None
+    labels_str = dump_string_list(labels) if labels else None
     conn.execute(
         "INSERT OR IGNORE INTO transaction_group_members (group_id, transaction_id, role, people, labels, txn_type) VALUES (?, ?, ?, ?, ?, ?)",
         (group_id, transaction_id, role, people_str, labels_str, txn_type),
@@ -78,10 +87,10 @@ def update_member(
     params: list = []
     if people is not None:
         clauses.append("people = ?")
-        params.append(",".join(people) or None)
+        params.append(dump_string_list(people) if people else None)
     if labels is not None:
         clauses.append("labels = ?")
-        params.append(",".join(labels) or None)
+        params.append(dump_string_list(labels) if labels else None)
     if txn_type is not None:
         clauses.append("txn_type = ?")
         params.append(txn_type)
@@ -116,7 +125,7 @@ def list_groups_for_transaction(conn: sqlite3.Connection, transaction_id: str) -
         """,
         (transaction_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_parsed_lists(dict(r), ("people", "labels")) for r in rows]
 
 
 def list_members_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict]:

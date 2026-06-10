@@ -12,6 +12,34 @@ def get_category_tree(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def resolve_category_ids(
+    conn: sqlite3.Connection,
+    category: str | None,
+    subcategory: str | None,
+) -> tuple[str | None, str | None]:
+    """Map (category name, subcategory name) to (category_id, subcategory_id).
+
+    Returns None for whichever name doesn't exist in the taxonomy (subcategory
+    must belong to the resolved category).
+    """
+    category_id = None
+    if category:
+        row = conn.execute(
+            "SELECT id FROM categories WHERE name = ? AND parent_id IS NULL", (category,)
+        ).fetchone()
+        category_id = row["id"] if row else None
+
+    subcategory_id = None
+    if subcategory and category_id:
+        row = conn.execute(
+            "SELECT id FROM categories WHERE name = ? AND parent_id = ?",
+            (subcategory, category_id),
+        ).fetchone()
+        subcategory_id = row["id"] if row else None
+
+    return category_id, subcategory_id
+
+
 def get_category_names_flat(conn: sqlite3.Connection) -> list[str]:
     """Return category strings in 'Category > Subcategory' format for LLM prompts.
 
