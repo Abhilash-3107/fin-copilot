@@ -6,6 +6,24 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
+// Coverage badge: full (green), partial (amber), none (grey).
+function CoverageBadge({ done, total }) {
+  if (!total) return <span className="text-xs text-[#475569]">—</span>
+  const full = done >= total
+  const none = done === 0
+  const cls = full
+    ? 'bg-[#14532d] text-[#86efac]'
+    : none
+      ? 'bg-[#1e2235] text-[#64748b]'
+      : 'bg-[#451a03] text-[#fdba74]'
+  const label = full ? 'Full' : none ? 'None' : 'Partial'
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
+      {label} · {done}/{total}
+    </span>
+  )
+}
+
 export default function Upload() {
   const toast = useToast()
   const [statements, setStatements] = useState([])
@@ -98,6 +116,7 @@ export default function Upload() {
         'success',
         5000
       )
+      loadStatements()
     } catch (e) {
       toast(`Categorization failed — ${e.message}`, 'error')
     } finally {
@@ -202,7 +221,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Uploaded', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Categorized', 'Search index', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -217,6 +236,16 @@ export default function Upload() {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{s.statement_month}</td>
+                  <td className="px-4 py-3">
+                    <Tooltip content="Transactions that have been categorized">
+                      <CoverageBadge done={s.annotated_count} total={s.txn_count} />
+                    </Tooltip>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Tooltip content="Transactions saved to the vector DB — these are what the AI learns from for future statements">
+                      <CoverageBadge done={s.embedded_count} total={s.txn_count} />
+                    </Tooltip>
+                  </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
