@@ -3,16 +3,25 @@ from __future__ import annotations
 
 import sqlite3
 
+from src.db.queries.categories import resolve_category_ids
 from src.models.annotation import Annotation
 
 
 def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
-    """Insert or replace an annotation row."""
+    """Insert or replace an annotation row, resolving category/subcategory ids.
+
+    Unresolvable names (e.g. LLM free-text subcategories) leave the id NULL —
+    callers that need strictness validate before inserting.
+    """
+    category_id, subcategory_id = resolve_category_ids(
+        conn, annotation.category, annotation.subcategory
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO annotations
-            (id, transaction_id, merchant, category, subcategory, tags, confidence, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, transaction_id, merchant, category, subcategory, tags, confidence, source,
+             category_id, subcategory_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             annotation.id,
@@ -23,6 +32,8 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
             annotation.tags,
             annotation.confidence,
             annotation.source,
+            category_id,
+            subcategory_id,
         ),
     )
 

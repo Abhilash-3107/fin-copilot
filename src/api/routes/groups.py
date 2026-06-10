@@ -77,9 +77,11 @@ def patch(group_id: str, body: GroupPatch, conn: sqlite3.Connection = Depends(ge
     if not get_group(conn, group_id):
         raise HTTPException(status_code=404, detail="Group not found")
     if body.labels is not None:
+        from src.db.queries.common import dump_string_list
+
         conn.execute(
             "UPDATE transaction_groups SET labels = ? WHERE id = ?",
-            (",".join(body.labels) or None, group_id),
+            (dump_string_list(body.labels) if body.labels else None, group_id),
         )
         conn.commit()
     return get_group(conn, group_id)

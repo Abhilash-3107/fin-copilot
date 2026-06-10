@@ -258,10 +258,11 @@ def seed(conn) -> None:
         ).fetchone()
         if existing:
             continue
+        tags_json = json.dumps([t for t in tags.split(",") if t]) if tags else "[]"
         conn.execute(
             """INSERT INTO annotations (id, transaction_id, merchant, category, subcategory, tags, confidence, source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f"ann_{txn_id}", txn_id, merchant, category, subcategory, tags, confidence, source),
+            (f"ann_{txn_id}", txn_id, merchant, category, subcategory, tags_json, confidence, source),
         )
         ann_inserted += 1
 

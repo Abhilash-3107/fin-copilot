@@ -49,7 +49,9 @@ export default function GroupCard({ group, allPeople = [], onDelete, onUpdated }
     }
   }
 
-  const labels = group.labels ? group.labels.split(',').filter(Boolean) : []
+  const labels = Array.isArray(group.labels)
+    ? group.labels
+    : (group.labels ? group.labels.split(',').filter(Boolean) : [])
 
   return (
     <div className="bg-[#13151f] border border-[#2d3148] rounded-lg overflow-hidden">

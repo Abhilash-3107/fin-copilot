@@ -3,18 +3,22 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.models.transaction import Statement, Transaction
+from src.models.transaction import Statement, Transaction, TxnRow
 
 
 def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
     """Insert a statement row; silently skips if it already exists (idempotent)."""
     conn.execute(
         """
-        INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month, file_sha256)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT OR IGNORE INTO statements
+            (id, bank_name, parser_version, statement_month, period_start, period_end, file_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (statement.id, statement.bank_name, statement.parser_version,
-         statement.statement_month, statement.file_sha256),
+         statement.statement_month,
+         statement.period_start.isoformat() if statement.period_start else None,
+         statement.period_end.isoformat() if statement.period_end else None,
+         statement.file_sha256),
     )
 
 
@@ -49,7 +53,7 @@ def list_transactions(
     include_annotation: bool = False,
     after: str | None = None,
     limit: int | None = None,
-) -> list[dict]:
+) -> list[TxnRow]:
     """Return transactions as a list of dicts, with optional filters.
 
     include_annotation joins each row's annotation (same shape as the per-id

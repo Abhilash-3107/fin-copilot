@@ -50,11 +50,14 @@ def ingest_pdf(
         if not transactions:
             raise ValueError(f"Parser returned no transactions for: {pdf_path}")
 
-        statement_month = transactions[0].txn_date.strftime("%Y-%m")
+        period_start = min(t.txn_date for t in transactions)
+        period_end = max(t.txn_date for t in transactions)
         statement = Statement(
             bank_name=parser.bank_name,
             parser_version=parser.version,
-            statement_month=statement_month,
+            statement_month=period_start.strftime("%Y-%m"),
+            period_start=period_start,
+            period_end=period_end,
             file_sha256=file_sha256,
         )
 

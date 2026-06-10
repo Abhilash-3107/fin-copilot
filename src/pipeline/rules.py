@@ -112,12 +112,12 @@ MERCHANT_RULES: list[MerchantRule] = [
     # --- Income ---
     MerchantRule(["opening balance"], "Income", "Opening Balance", None, ["opening-balance"], ["raw_description"]),
 
-    # --- Financial / Investment ---
-    MerchantRule(["indmoney", "ind money"], "Financial", "Mutual Fund SIP", "INDmoney", ["investment"]),
-    MerchantRule(["nach-mut-dr", "nach mut dr"], "Financial", "Mutual Fund SIP", None, ["investment", "sip"]),
-    MerchantRule(["groww"], "Financial", "Mutual Fund SIP", "Groww", ["investment"]),
-    MerchantRule(["zerodha", "coin by zerodha"], "Financial", "Mutual Fund SIP", "Zerodha", ["investment"]),
-    MerchantRule(["kuvera"], "Financial", "Mutual Fund SIP", "Kuvera", ["investment"]),
+    # --- Investments (brokers / SIP debits) ---
+    MerchantRule(["indmoney", "ind money"], "Investments", "Mutual Fund SIP", "INDmoney", ["investment"]),
+    MerchantRule(["nach-mut-dr", "nach mut dr"], "Investments", "Mutual Fund SIP", None, ["investment", "sip"]),
+    MerchantRule(["groww"], "Investments", "Mutual Fund SIP", "Groww", ["investment"]),
+    MerchantRule(["zerodha", "coin by zerodha"], "Investments", "Mutual Fund SIP", "Zerodha", ["investment"]),
+    MerchantRule(["kuvera"], "Investments", "Mutual Fund SIP", "Kuvera", ["investment"]),
 
     # --- ATM / Transfers ---
     MerchantRule(["atm withdrawal", "atm cash", "atm wd"], "Transfers", "ATM Withdrawal", None, ["cash"]),
@@ -161,11 +161,11 @@ DISAMBIGUATION_RULES: list[DisambiguationRule] = [
         category="Entertainment", subcategory="Movies & OTT",
         merchant="Amazon Prime", tags=["ott"],
     ),
-    # AWS → Financial (overrides Amazon → Shopping)
+    # AWS → Finances (overrides Amazon → Shopping; closest fit in the taxonomy)
     DisambiguationRule(
         base_patterns=["amazon", "amzn"],
         override_patterns=["aws", "amazon web"],
-        category="Financial", subcategory=None,
+        category="Finances", subcategory=None,
         merchant="AWS", tags=["business", "cloud"],
     ),
 ]

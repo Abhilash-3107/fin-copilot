@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from src.config import settings
+from src.models.transaction import TxnRow
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _build_user_prompt(txn: dict, category_list: list[str]) -> str:
+def _build_user_prompt(txn: TxnRow, category_list: list[str]) -> str:
     categories_text = "\n".join(f"  - {c}" for c in category_list)
     upi_note = ""
     if txn.get("upi_meta"):
@@ -90,7 +91,7 @@ def _build_user_prompt(txn: dict, category_list: list[str]) -> str:
 
 
 def _build_fewshot_user_prompt(
-    txn: dict,
+    txn: TxnRow,
     category_list: list[str],
     similar_examples: list[dict],
 ) -> str:
@@ -182,7 +183,7 @@ def _call_ollama(
 
 
 def annotate_transaction_llm_with_examples(
-    txn: dict,
+    txn: TxnRow,
     category_list: list[str],
     similar_examples: list[dict],
     timeout: float = 60.0,
@@ -200,7 +201,7 @@ def annotate_transaction_llm_with_examples(
 
 
 def annotate_transaction_llm(
-    txn: dict,
+    txn: TxnRow,
     category_list: list[str],
     timeout: float = 60.0,
     max_retries: int = 2,
