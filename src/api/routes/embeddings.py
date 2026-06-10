@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from src.api.deps import get_db
-from src.db.queries.embeddings import get_embedding_stats
+from src.db.queries.embeddings import delete_embeddings, get_embedding_stats
 from src.pipeline.embed import embed_annotated_transactions
 
 router = APIRouter()
@@ -48,16 +48,8 @@ def clear_embeddings(
             "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
         ).fetchall()
     ]
-    deleted = 0
-    if txn_ids:
-        placeholders = ",".join("?" * len(txn_ids))
-        deleted = conn.execute(
-            f"DELETE FROM embedding_meta WHERE transaction_id IN ({placeholders})", txn_ids
-        ).rowcount
-        conn.execute(
-            f"DELETE FROM vec_items WHERE transaction_id IN ({placeholders})", txn_ids
-        )
-        conn.commit()
+    deleted = delete_embeddings(conn, txn_ids)
+    conn.commit()
     return {"cleared": deleted}
 
 

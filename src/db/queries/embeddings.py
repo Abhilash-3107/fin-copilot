@@ -41,6 +41,29 @@ def upsert_embedding(
         )
 
 
+def delete_embeddings(conn: sqlite3.Connection, transaction_ids: list[str]) -> int:
+    """Delete embedding rows for the given transactions. Returns embedding_meta rows deleted.
+
+    vec_items is a virtual table that only exists when the sqlite-vec extension
+    loaded; tolerate its absence so deletes work everywhere.
+    """
+    if not transaction_ids:
+        return 0
+    placeholders = ",".join("?" * len(transaction_ids))
+    deleted = conn.execute(
+        f"DELETE FROM embedding_meta WHERE transaction_id IN ({placeholders})",
+        transaction_ids,
+    ).rowcount
+    try:
+        conn.execute(
+            f"DELETE FROM vec_items WHERE transaction_id IN ({placeholders})",
+            transaction_ids,
+        )
+    except sqlite3.OperationalError:
+        pass  # sqlite-vec not loaded → table never created
+    return deleted
+
+
 def find_similar(
     conn: sqlite3.Connection,
     query_embedding: list[float],

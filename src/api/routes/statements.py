@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from src.api.deps import get_db
+from src.db.queries.embeddings import delete_embeddings
 from src.db.queries.transactions import list_transactions
 from src.pipeline.ingest import DuplicateStatementError, ingest_pdf
 
@@ -68,8 +69,7 @@ def delete_statement(
     if txn_ids:
         placeholders = ",".join("?" * len(txn_ids))
         conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
-        conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({placeholders})", txn_ids)
-        conn.execute(f"DELETE FROM vec_items WHERE transaction_id IN ({placeholders})", txn_ids)
+        delete_embeddings(conn, txn_ids)
         conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
 
     conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
@@ -97,8 +97,7 @@ def reset_statement_data(
     if txn_ids:
         placeholders = ",".join("?" * len(txn_ids))
         conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
-        conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({placeholders})", txn_ids)
-        conn.execute(f"DELETE FROM vec_items WHERE transaction_id IN ({placeholders})", txn_ids)
+        delete_embeddings(conn, txn_ids)
 
     conn.commit()
     return {"reset": statement_id, "annotations_deleted": len(txn_ids)}
