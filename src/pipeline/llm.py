@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 import httpx
@@ -24,6 +25,31 @@ def _strip_code_fence(content: str) -> str:
     if body.rstrip().endswith("```"):
         body = body.rstrip()[: -len("```")]
     return body.strip()
+
+
+def _salvage_dropping_reasoning(content: str) -> AnnotationResponse | None:
+    """Parse the response after dropping a malformed `reasoning` value.
+
+    Small models intermittently mangle the free-text `reasoning` string (escaped
+    `\\"`, nested quotes, stray braces) into invalid JSON, which fails parsing
+    *before* any field validator runs. The category/subcategory/confidence are
+    still recoverable — strip the reasoning field and retry, so a cosmetic prose
+    error never costs us a usable classification. Returns None if unrecoverable.
+    """
+    # Remove a `"reasoning": "..."` (or `\"..."`) entry, greedy to the last
+    # quote before the next key or the closing brace.
+    cleaned = re.sub(
+        r',?\s*"reasoning"\s*:\s*\\?".*(?=,\s*"|\s*})',
+        "",
+        content,
+        flags=re.DOTALL,
+    )
+    # Also handle reasoning as the trailing field with a broken closer.
+    cleaned = re.sub(r',?\s*"reasoning"\s*:\s*\\?".*$', "}", cleaned, flags=re.DOTALL)
+    try:
+        return AnnotationResponse.model_validate_json(cleaned)
+    except (ValidationError, json.JSONDecodeError):
+        return None
 
 
 class AnnotationResponse(BaseModel):
@@ -222,7 +248,18 @@ def _call_ollama(
             response.raise_for_status()
             data = response.json()
             content = _strip_code_fence(data["message"]["content"])
-            result = AnnotationResponse.model_validate_json(content)
+            try:
+                result = AnnotationResponse.model_validate_json(content)
+            except (ValidationError, json.JSONDecodeError):
+                # A malformed free-text `reasoning` value is the common culprit;
+                # try to recover the classification by dropping it before failing.
+                result = _salvage_dropping_reasoning(content)
+                if result is None:
+                    raise
+                logger.info(
+                    "%s | txn=%s  attempt=%d  salvaged classification by dropping malformed reasoning",
+                    log_prefix, txn_id, attempt,
+                )
             logger.debug(
                 "%s | txn=%s  attempt=%d  latency=%.2fs  response=%s",
                 log_prefix, txn_id, attempt, elapsed, content,
