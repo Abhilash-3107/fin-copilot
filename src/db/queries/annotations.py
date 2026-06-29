@@ -20,8 +20,8 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
         """
         INSERT OR REPLACE INTO annotations
             (id, transaction_id, merchant, category, subcategory, tags, confidence, source,
-             category_id, subcategory_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             category_id, subcategory_id, reasoning)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             annotation.id,
@@ -34,6 +34,7 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
             annotation.source,
             category_id,
             subcategory_id,
+            annotation.reasoning,
         ),
     )
 

@@ -8,6 +8,41 @@ import ulid
 from pydantic import BaseModel, Field
 
 
+class TraceNeighbour(BaseModel):
+    """One RAG neighbour as surfaced in the dev-mode reasoning trace."""
+    transaction_id: str
+    raw_description: Optional[str] = None
+    category: Optional[str] = None
+    source: Optional[str] = None
+    distance: float
+    similarity: float  # 1.0 - distance
+
+
+class ReasoningTrace(BaseModel):
+    """Why the pipeline chose what it did — captured at annotation time for dev mode.
+
+    All fields are optional so each stage fills only what applies. Serialized to the
+    annotations.reasoning JSON column (only when settings.dev_mode is on).
+    """
+    stage: str  # "rule" | "rag_direct" | "rag_prompted" | "llm"
+    final_confidence: float
+    # RAG paths (rag_direct + rag_prompted)
+    best_similarity: Optional[float] = None
+    neighbours: list[TraceNeighbour] = Field(default_factory=list)
+    vote_category: Optional[str] = None
+    vote_share: Optional[float] = None
+    trusted_weight: Optional[float] = None
+    agreement_factor: Optional[float] = None
+    margin_factor: Optional[float] = None
+    caps_applied: list[str] = Field(default_factory=list)  # e.g. ["off_example", "defer"]
+    # LLM paths (rag_prompted + llm)
+    llm_reasoning: Optional[str] = None      # the one-sentence "why" from the model
+    raw_confidence: Optional[float] = None   # before dampening
+    dampening_factor: Optional[float] = None
+    # rule path
+    matched_rule: Optional[str] = None
+
+
 class Annotation(BaseModel):
     id: str = Field(default_factory=lambda: str(ulid.ULID()))
     transaction_id: str
@@ -18,6 +53,7 @@ class Annotation(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source: Literal["manual", "model", "rule", "rag_direct", "rag_prompted", "llm", "imported"]
     annotated_at: Optional[datetime] = None
+    reasoning: Optional[str] = None  # JSON-serialized ReasoningTrace, dev mode only
 
 
 class AnnotationCreate(BaseModel):

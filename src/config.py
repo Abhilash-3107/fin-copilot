@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     rag_defer_llm_confidence: float = 0.85
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
+    # When on (DEV_MODE=true), the annotation pipeline captures a per-annotation
+    # reasoning trace (neighbours, similarity math, donor vote, raw vs dampened
+    # confidence, LLM "why") into annotations.reasoning, and the review queue UI
+    # exposes a "Why this annotation?" panel. Off by default — regular users never
+    # see it and no trace is stored.
+    dev_mode: bool = False
 
     # Last-segment values in UPI descriptions that carry no meaningful note.
     # Extend this list as you encounter new noise patterns — no code changes needed.

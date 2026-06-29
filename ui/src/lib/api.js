@@ -39,6 +39,7 @@ export async function apiFetch(path, options = {}) {
 export const api = {
   get:    (path)           => apiFetch(path),
   post:   (path, json)     => apiFetch(path, { method: 'POST',   json }),
+  put:    (path, json)     => apiFetch(path, { method: 'PUT',    json }),
   patch:  (path, json)     => apiFetch(path, { method: 'PATCH',  json }),
   delete: (path)           => apiFetch(path, { method: 'DELETE' }),
   // For multipart/form-data — do NOT set Content-Type; browser sets boundary automatically
