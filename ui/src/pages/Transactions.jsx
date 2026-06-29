@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, Zap, Cpu } from 'lucide-react'
+import { RefreshCw, Zap, Cpu, ChevronDown, X } from 'lucide-react'
 import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
@@ -9,6 +9,72 @@ import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
 const PAGE_SIZE = 500
+
+function sourceLabel(s) {
+  if (s === 'rag_direct' || s === 'rag_prompted') return 'From history'
+  if (s === 'llm') return 'AI guess'
+  if (s === 'rule') return 'Rule match'
+  if (s === 'manual') return 'Manual'
+  return s
+}
+
+function MultiFilter({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const count = selected.size
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className={`flex items-center gap-1.5 bg-[#13151f] border px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+          count > 0 ? 'border-[#6366f1] text-[#a5b4fc]' : 'border-[#2d3148] text-[#94a3b8] hover:text-[#e2e8f0]'
+        }`}
+      >
+        <span>{label}{count > 0 ? ` (${count})` : ''}</span>
+        {count > 0 && (
+          <X
+            size={12}
+            className="opacity-60 hover:opacity-100"
+            onClick={e => { e.stopPropagation(); onChange(new Set()) }}
+          />
+        )}
+        <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-30 bg-[#13151f] border border-[#2d3148] rounded-lg shadow-lg py-1 min-w-[160px]">
+          {options.map(opt => (
+            <label
+              key={opt.value}
+              className="flex items-center gap-2.5 px-3 py-1.5 text-sm cursor-pointer hover:bg-[#1e2235] text-[#cbd5e1]"
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt.value)}
+                onChange={e => {
+                  const next = new Set(selected)
+                  if (e.target.checked) next.add(opt.value)
+                  else next.delete(opt.value)
+                  onChange(next)
+                }}
+                className="accent-[#6366f1]"
+              />
+              {opt.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function buildAnnotationMap(txns) {
   const map = {}
@@ -33,7 +99,8 @@ export default function Transactions() {
   const { statements, activeStatement, setActiveStatement } = useStatement()
   const selectedStmt = activeStatement?.id ?? ''
   const [month, setMonth] = useState('')
-  const [filter, setFilter] = useState('all') // all | annotated | unannotated
+  const [sourceFilter, setSourceFilter] = useState(new Set())
+  const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [search, setSearch] = useState('')
   const [transactions, setTransactions] = useState([])
   const [annotationMap, setAnnotationMap] = useState({})
@@ -56,7 +123,6 @@ export default function Transactions() {
       params.set('limit', PAGE_SIZE)
       if (selectedStmt) params.set('statement_id', selectedStmt)
       if (month) params.set('month', month)
-      if (filter === 'unannotated') params.set('unannotated', 'true')
       const txns = await api.get(`/transactions?${params}`)
       if (id !== loadRef.current) return
       setTransactions(txns)
@@ -67,7 +133,7 @@ export default function Transactions() {
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
-  }, [selectedStmt, month, filter, toast])
+  }, [selectedStmt, month, toast])
 
   async function loadMore() {
     const last = transactions.at(-1)
@@ -80,7 +146,6 @@ export default function Transactions() {
       params.set('after', last.id)
       if (selectedStmt) params.set('statement_id', selectedStmt)
       if (month) params.set('month', month)
-      if (filter === 'unannotated') params.set('unannotated', 'true')
       const more = await api.get(`/transactions?${params}`)
       setTransactions(prev => [...prev, ...more])
       setAnnotationMap(prev => ({ ...prev, ...buildAnnotationMap(more) }))
@@ -168,10 +233,20 @@ export default function Transactions() {
     }
   }
 
-  // Client-side filter for annotated/search
+  // Derive filter options from loaded data
+  const sourceOptions = [...new Set(
+    Object.values(annotationMap).map(a => a.source).filter(Boolean)
+  )].map(s => ({ value: s, label: sourceLabel(s) }))
+
+  const categoryOptions = [...new Set(
+    Object.values(annotationMap).map(a => a.category).filter(Boolean)
+  )].sort().map(c => ({ value: c, label: c }))
+
+  // Client-side filtering
   const displayed = transactions.filter(txn => {
-    if (filter === 'annotated' && !annotationMap[txn.id]) return false
-    if (filter === 'unannotated' && annotationMap[txn.id]) return false
+    const ann = annotationMap[txn.id]
+    if (sourceFilter.size > 0 && !sourceFilter.has(ann?.source)) return false
+    if (categoryFilter.size > 0 && !categoryFilter.has(ann?.category)) return false
     if (search && !txn.raw_description.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
@@ -209,19 +284,19 @@ export default function Transactions() {
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
         />
 
-        <div className="flex rounded-md overflow-hidden border border-[#2d3148]">
-          {['all', 'unannotated', 'annotated'].map(f => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                filter === f ? 'bg-[#6366f1] text-white' : 'bg-[#13151f] text-[#94a3b8] hover:text-[#e2e8f0]'
-              }`}
-            >
-              {f}
-            </button>
-          ))}
-        </div>
+        <MultiFilter
+          label="Source"
+          options={sourceOptions}
+          selected={sourceFilter}
+          onChange={setSourceFilter}
+        />
+
+        <MultiFilter
+          label="Category"
+          options={categoryOptions}
+          selected={categoryFilter}
+          onChange={setCategoryFilter}
+        />
 
         <span className="text-xs text-[#64748b] ml-auto">
           {loading ? 'Loading…' : `${displayed.length} of ${transactions.length}`}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2 } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -83,6 +83,7 @@ export default function ReviewQueue() {
   const [showTags, setShowTags] = useState(false)
   const [saving, setSaving] = useState(false)
   const [stats, setStats] = useState({ confirmed: 0, edited: 0, skipped: 0 })
+  const [history, setHistory] = useState([]) // stack of {idx, stats} snapshots
 
   useEffect(() => {
     api.get('/annotations/review-queue').then(data => {
@@ -117,11 +118,24 @@ export default function ReviewQueue() {
     setShowTags(false)
   }, [idx, current?.annotation_id])
 
+  function pushHistory() {
+    setHistory(h => [...h, { idx, stats }])
+  }
+
   function advance() {
     setIdx(i => i + 1)
   }
 
+  function goBack() {
+    if (history.length === 0) return
+    const prev = history[history.length - 1]
+    setHistory(h => h.slice(0, -1))
+    setIdx(prev.idx)
+    setStats(prev.stats)
+  }
+
   function skip() {
+    pushHistory()
     setStats(s => ({ ...s, skipped: s.skipped + 1 }))
     advance()
   }
@@ -131,6 +145,7 @@ export default function ReviewQueue() {
     setSaving(true)
     try {
       await api.post(`/annotations/${current.annotation_id}/confirm`, {})
+      pushHistory()
       setStats(s => ({ ...s, confirmed: s.confirmed + 1 }))
       toast('Got it, thanks!', 'success')
       advance()
@@ -152,6 +167,7 @@ export default function ReviewQueue() {
         merchant: payload.merchant?.trim() || null,
         tags: payload.tags,
       })
+      pushHistory()
       setStats(s => ({ ...s, edited: s.edited + 1 }))
       toast("Noted — I'll remember that", 'success')
       advance()
@@ -170,7 +186,9 @@ export default function ReviewQueue() {
   useEffect(() => {
     function handler(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
-      if (e.key === 'c') confirm()
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (e.key === 'b') goBack()
+      else if (e.key === 'c') confirm()
       else if (e.key === 's') skip()
       else if (e.key === 'Enter') {
         const isDirty =
@@ -204,6 +222,14 @@ export default function ReviewQueue() {
         <p className="text-xs text-[#64748b] mt-1">
           {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
         </p>
+        {history.length > 0 && (
+          <button
+            onClick={goBack}
+            className="mt-2 flex items-center gap-2 text-sm text-[#94a3b8] hover:text-[#e2e8f0] border border-[#2d3148] px-4 py-2 rounded-lg transition-colors"
+          >
+            <Undo2 size={15} /> Go back
+          </button>
+        )}
       </div>
     )
   }
@@ -320,6 +346,14 @@ export default function ReviewQueue() {
 
         {/* Actions */}
         <div className="px-6 py-4 flex gap-3">
+          <button
+            onClick={goBack}
+            disabled={history.length === 0}
+            className="flex items-center justify-center gap-1.5 bg-[#13151f] border border-[#2d3148] text-[#64748b] px-3 py-2.5 rounded-lg text-sm hover:text-[#94a3b8] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Go back [b]"
+          >
+            <Undo2 size={15} /> <span className="text-xs opacity-60">[b]</span>
+          </button>
           {isDirty ? (
             <>
               <button
@@ -357,7 +391,8 @@ export default function ReviewQueue() {
       </div>
 
       <p className="text-center text-xs text-[#475569] mt-4">
-        Keyboard: <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">c</kbd> confirm ·
+        Keyboard: <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">b</kbd> back ·
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">c</kbd> confirm ·
         <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> confirm or save ·
         <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">s</kbd> skip
       </p>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -36,6 +36,8 @@ export default function Upload() {
   const [clearEmbedTarget, setClearEmbedTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
   const [lastResult, setLastResult] = useState(null)
+  const [editingId, setEditingId] = useState(null)
+  const [editingName, setEditingName] = useState('')
   const fileRef = useRef(null)
 
   async function loadStatements() {
@@ -121,6 +123,29 @@ export default function Upload() {
       toast(`Categorization failed — ${e.message}`, 'error')
     } finally {
       setAnnotatingId(null)
+    }
+  }
+
+  function startEditName(s) {
+    setEditingId(s.id)
+    setEditingName(s.bank_name)
+  }
+
+  function cancelEditName() {
+    setEditingId(null)
+    setEditingName('')
+  }
+
+  async function saveEditName(id) {
+    const name = editingName.trim()
+    if (!name) return
+    try {
+      await api.patch(`/statements/${id}`, { bank_name: name })
+      setEditingId(null)
+      setEditingName('')
+      loadStatements()
+    } catch (e) {
+      toast(`Couldn't rename — ${e.message}`, 'error')
     }
   }
 
@@ -230,10 +255,37 @@ export default function Upload() {
               {statements.map(s => (
                 <tr key={s.id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27] transition-colors">
                   <td className="px-4 py-3 text-[#e2e8f0]">
-                    <div className="flex items-center gap-2">
-                      <FileText size={14} className="text-[#6366f1] shrink-0" />
-                      {s.bank_name}
-                    </div>
+                    {editingId === s.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          value={editingName}
+                          onChange={e => setEditingName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveEditName(s.id)
+                            if (e.key === 'Escape') cancelEditName()
+                          }}
+                          className="bg-[#1e2235] border border-[#6366f1] text-[#e2e8f0] px-2 py-0.5 rounded text-sm focus:outline-none w-40"
+                        />
+                        <button onClick={() => saveEditName(s.id)} className="text-[#86efac] hover:opacity-80">
+                          <Check size={13} />
+                        </button>
+                        <button onClick={cancelEditName} className="text-[#64748b] hover:text-[#94a3b8]">
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <FileText size={14} className="text-[#6366f1] shrink-0" />
+                        <span>{s.bank_name}</span>
+                        <button
+                          onClick={() => startEditName(s)}
+                          className="opacity-0 group-hover:opacity-100 text-[#475569] hover:text-[#94a3b8] transition-opacity"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{s.statement_month}</td>
                   <td className="px-4 py-3">
