@@ -1573,3 +1573,186 @@ class TestEmbeddingsEndpoint:
         assert data["total"] == 0
         assert data["embedded"] == 0
         assert data["annotated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Dev-mode reasoning trace
+# ---------------------------------------------------------------------------
+
+class TestReasoningTrace:
+    """The pipeline captures a per-annotation reasoning trace into the reasoning
+    column, but only when dev mode is on (the runtime app_settings value)."""
+
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _enable_dev_mode(self):
+        from src.db.queries.app_settings import set_dev_mode
+        set_dev_mode(self.conn, True)
+        self.conn.commit()
+
+    def _stored_reasoning(self, txn_id: str):
+        ann = get_annotation_by_transaction(self.conn, txn_id)
+        assert ann is not None
+        return ann.get("reasoning"), ann
+
+    def test_no_trace_when_dev_mode_off(self):
+        """With dev_mode off (default), the reasoning column stays NULL."""
+        from src.pipeline.annotate import auto_annotate
+
+        _insert_txn(self.conn, "t_off", "Swiggy food order")
+        auto_annotate(self.conn, transaction_ids=["t_off"])
+
+        reasoning, _ = self._stored_reasoning("t_off")
+        assert reasoning is None
+
+    def test_rule_trace_captured(self):
+        from src.pipeline.annotate import auto_annotate
+
+        self._enable_dev_mode()
+        _insert_txn(self.conn, "t_rule", "Netflix subscription")
+        auto_annotate(self.conn, transaction_ids=["t_rule"])
+
+        reasoning, ann = self._stored_reasoning("t_rule")
+        assert reasoning is not None
+        trace = json.loads(reasoning)
+        assert trace["stage"] == "rule"
+        assert trace["matched_rule"]  # merchant or category
+        assert trace["final_confidence"] == pytest.approx(ann["confidence"])
+
+    def test_rag_prompted_trace_has_neighbours_and_llm_reasoning(self):
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+
+        self._enable_dev_mode()
+        _insert_txn(self.conn, "donor_tr", "known shopping vendor")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="donor_tr", category="Shopping", confidence=0.95, source="rule",
+        ))
+        self.conn.commit()
+        _insert_txn(self.conn, "t_rag", "ambiguous vendor")
+
+        llm_result = AnnotationResponse(
+            category="Shopping", confidence=0.8, reasoning="Looks like a retail purchase.",
+        )
+        mock_vec = [0.1] * 768
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=[
+                 {"transaction_id": "donor_tr", "distance": 0.15},
+             ]), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_rag"])
+
+        reasoning, ann = self._stored_reasoning("t_rag")
+        assert reasoning is not None
+        trace = json.loads(reasoning)
+        assert trace["stage"] == "rag_prompted"
+        assert len(trace["neighbours"]) >= 1
+        assert trace["neighbours"][0]["category"] == "Shopping"
+        assert trace["neighbours"][0]["similarity"] == pytest.approx(0.85)
+        assert trace["llm_reasoning"] == "Looks like a retail purchase."
+        assert trace["raw_confidence"] == pytest.approx(0.8)
+        assert trace["final_confidence"] == pytest.approx(ann["confidence"])
+
+    def test_plain_llm_trace_has_dampening(self):
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        self._enable_dev_mode()
+        _insert_txn(self.conn, "t_plain", "mystery vendor xyz")
+        llm_result = AnnotationResponse(
+            category="Shopping", confidence=0.9, reasoning="No close history; best guess.",
+        )
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_plain"])
+
+        reasoning, ann = self._stored_reasoning("t_plain")
+        trace = json.loads(reasoning)
+        assert trace["stage"] == "llm"
+        assert trace["raw_confidence"] == pytest.approx(0.9)
+        assert trace["dampening_factor"] is not None
+        assert trace["llm_reasoning"] == "No close history; best guess."
+        assert trace["final_confidence"] == pytest.approx(ann["confidence"])
+
+    def test_review_queue_endpoint_exposes_trace_in_dev_mode(self):
+        """The review-queue endpoint parses the stored JSON only when dev_mode is on."""
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        from src.db.queries.app_settings import set_dev_mode
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        self._enable_dev_mode()
+        _insert_txn(self.conn, "t_q", "mystery vendor for queue")
+        llm_result = AnnotationResponse(category="Uncategorized", confidence=0.3,
+                                        reasoning="Weak signal.")
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_q"])
+
+        app.dependency_overrides[api_get_db] = lambda: self.conn
+        try:
+            client = TestClient(app)
+            resp = client.get("/api/annotations/review-queue")
+            assert resp.status_code == 200
+            item = next(i for i in resp.json() if i["transaction_id"] == "t_q")
+            assert item["reasoning"] is not None
+            assert item["reasoning"]["stage"] == "llm"
+
+            # Dev mode off → no reasoning field leaks out.
+            set_dev_mode(self.conn, False)
+            self.conn.commit()
+            resp = client.get("/api/annotations/review-queue")
+            item = next(i for i in resp.json() if i["transaction_id"] == "t_q")
+            assert "reasoning" not in item
+        finally:
+            app.dependency_overrides.pop(api_get_db, None)
+
+
+class TestConfigEndpoint:
+    def setup_method(self):
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        self.conn = _make_conn()
+        app.dependency_overrides[api_get_db] = lambda: self.conn
+        self.client = TestClient(app)
+
+    def teardown_method(self):
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        app.dependency_overrides.pop(api_get_db, None)
+        self.conn.close()
+
+    def test_config_defaults_to_env_when_unset(self):
+        """With no stored row, GET falls back to the DEV_MODE env default (False)."""
+        with patch("src.config.settings.dev_mode", False):
+            resp = self.client.get("/api/config")
+        assert resp.status_code == 200
+        assert resp.json()["dev_mode"] is False
+
+    def test_put_toggles_and_persists(self):
+        """PUT writes app_settings; subsequent GET reflects it regardless of env."""
+        put = self.client.put("/api/config", json={"dev_mode": True})
+        assert put.status_code == 200
+        assert put.json()["dev_mode"] is True
+
+        # Even with the env default False, the stored value wins.
+        with patch("src.config.settings.dev_mode", False):
+            assert self.client.get("/api/config").json()["dev_mode"] is True
+
+        self.client.put("/api/config", json={"dev_mode": False})
+        assert self.client.get("/api/config").json()["dev_mode"] is False
+
+    def test_stored_value_overrides_env(self):
+        from src.db.queries.app_settings import set_dev_mode
+        set_dev_mode(self.conn, True)
+        self.conn.commit()
+        with patch("src.config.settings.dev_mode", False):
+            assert self.client.get("/api/config").json()["dev_mode"] is True

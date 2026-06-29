@@ -32,6 +32,10 @@ class AnnotationResponse(BaseModel):
     merchant: str | None = None
     tags: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str | None = Field(
+        default=None,
+        description="One short sentence explaining why this category was chosen.",
+    )
 
 
 def top_level_categories(category_list: list[str]) -> list[str]:
@@ -62,9 +66,10 @@ _SYSTEM_PROMPT = (
     "You are a personal finance categorizer for Indian bank transactions. "
     "Classify each transaction into the provided categories. "
     "Return ONLY valid JSON matching this schema:\n"
-    '{"category": "...", "subcategory": "...", "merchant": "...", "tags": [...], "confidence": 0.0}\n'
+    '{"category": "...", "subcategory": "...", "merchant": "...", "tags": [...], "confidence": 0.0, "reasoning": "..."}\n'
     "confidence must be between 0 and 1. subcategory and merchant may be null. "
-    "tags is a list of short lowercase strings.\n"
+    "tags is a list of short lowercase strings. "
+    "reasoning is ONE short sentence explaining why you chose this category.\n"
     "When example transactions are provided, they are confirmed categorizations of "
     "transactions similar to this one and are your primary signal — weigh them above "
     "your own prior knowledge.\n"
@@ -174,7 +179,7 @@ def _call_ollama(
         "format": _response_schema(category_list),
         "options": {
             "num_ctx": 2048,
-            "num_predict": 256,
+            "num_predict": 320,  # headroom for the one-sentence reasoning field
         },
         "think": False,
         "messages": [

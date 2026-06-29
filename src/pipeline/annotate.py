@@ -11,12 +11,19 @@ logger = logging.getLogger(__name__)
 
 from src.config import settings
 from src.db.queries.annotations import insert_annotation
+from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
 from src.db.queries.people import list_people
 from src.db.queries.transactions import list_transactions
-from src.models.annotation import Annotation, AnnotationCreate, AutoAnnotateResult
+from src.models.annotation import (
+    Annotation,
+    AnnotationCreate,
+    AutoAnnotateResult,
+    ReasoningTrace,
+    TraceNeighbour,
+)
 from src.models.transaction import TxnRow
 from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.embed import build_embed_text, get_embedding_single
@@ -109,6 +116,10 @@ def auto_annotate(
     """
     logger.info("auto_annotate start | statement_id=%s", statement_id)
 
+    # Runtime, UI-toggleable: capture the reasoning trace only when dev mode is on.
+    # Read once per run (the setting won't flip mid-run).
+    dev_mode = get_dev_mode(conn)
+
     all_txns = list_transactions(conn, statement_id=statement_id)
     unannotated = list_transactions(conn, statement_id=statement_id, unannotated=True)
     if transaction_ids:
@@ -134,8 +145,10 @@ def auto_annotate(
     _COMMIT_EVERY = 10
     uncommitted = 0
 
-    def _persist(ann_create: AnnotationCreate) -> None:
+    def _persist(ann_create: AnnotationCreate, trace: ReasoningTrace | None = None) -> None:
         nonlocal uncommitted
+        # Only store the reasoning trace in dev mode — regular runs leave it NULL.
+        reasoning = trace.model_dump_json() if (trace is not None and dev_mode) else None
         annotation = Annotation(
             transaction_id=ann_create.transaction_id,
             merchant=ann_create.merchant,
@@ -144,6 +157,7 @@ def auto_annotate(
             tags=dump_string_list(ann_create.tags),
             confidence=ann_create.confidence,
             source=ann_create.source,
+            reasoning=reasoning,
         )
         insert_annotation(conn, annotation)
         uncommitted += 1
@@ -171,7 +185,12 @@ def auto_annotate(
     for txn in unannotated:
         result = _match_known_person(txn, known_people) or apply_rules(txn)
         if result is not None:
-            _persist(result)
+            trace = ReasoningTrace(
+                stage="rule",
+                final_confidence=result.confidence,
+                matched_rule=result.merchant or result.category,
+            )
+            _persist(result, trace)
             _tick()
             rule_matched += 1
             if result.confidence < settings.confidence_threshold:
@@ -191,9 +210,9 @@ def auto_annotate(
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
         category_list = get_category_names_flat(conn)
         for txn in needs_rag:
-            rag_result = _try_rag_annotation(conn, txn, category_list)
+            rag_result, rag_trace = _try_rag_annotation(conn, txn, category_list)
             if rag_result is not None:
-                _persist(rag_result)
+                _persist(rag_result, rag_trace)
                 _tick()
                 if rag_result.source == "rag_direct":
                     rag_direct_annotated += 1
@@ -231,16 +250,24 @@ def auto_annotate(
                 logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
                 category = _normalize_category(llm_result.category, category_list)
+                dampening = get_calibrated_dampening(conn, "llm", category)
                 ann = AnnotationCreate(
                     transaction_id=txn["id"],
                     merchant=llm_result.merchant,
                     category=category,
                     subcategory=llm_result.subcategory,
                     tags=llm_result.tags,
-                    confidence=round(llm_result.confidence * get_calibrated_dampening(conn, "llm", category), 4),
+                    confidence=round(llm_result.confidence * dampening, 4),
                     source="llm",
                 )
-                _persist(ann)
+                trace = ReasoningTrace(
+                    stage="llm",
+                    final_confidence=ann.confidence,
+                    llm_reasoning=llm_result.reasoning,
+                    raw_confidence=llm_result.confidence,
+                    dampening_factor=round(dampening, 4),
+                )
+                _persist(ann, trace)
                 llm_annotated += 1
                 # Compare the stored (dampened) confidence — it decides review-queue membership
                 if ann.confidence < settings.confidence_threshold:
@@ -387,18 +414,19 @@ def _try_rag_annotation(
     conn: sqlite3.Connection,
     txn: TxnRow,
     category_list: list[str],
-) -> AnnotationCreate | None:
+) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
 
-    Returns AnnotationCreate with source='rag_direct' or 'rag_prompted', or None if
-    the embedding service is unavailable or no similar annotated transactions exist.
+    Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct' or
+    'rag_prompted', or (None, None) if the embedding service is unavailable or no
+    similar annotated transactions exist (caller falls through to plain LLM).
     """
     try:
         embed_text = build_embed_text(txn)
         query_vec = get_embedding_single(embed_text)
     except Exception as e:
         logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
-        return None  # embedding service down — fall through to plain LLM
+        return None, None  # embedding service down — fall through to plain LLM
 
     similar = find_similar(
         conn,
@@ -409,7 +437,7 @@ def _try_rag_annotation(
 
     if not similar:
         logger.debug("rag | no similar found | txn=%s  desc=%r", txn["id"], txn["raw_description"])
-        return None
+        return None, None
 
     # Novelty gate: if the best match is too far away, the examples are noise
     best_similarity = 1.0 - similar[0]["distance"]
@@ -418,7 +446,7 @@ def _try_rag_annotation(
             "rag | novelty gate | txn=%s  best_sim=%.4f < floor=%.4f → skip RAG",
             txn["id"], best_similarity, settings.rag_similarity_floor,
         )
-        return None
+        return None, None
 
     # Fetch annotations for all top-K matches upfront (used for agreement + margin analysis)
     top_match = similar[0]
@@ -453,6 +481,21 @@ def _try_rag_annotation(
     # confidence and the reject/defer decision (more reliable than top-1 similarity).
     vote_category, vote_share, trusted_weight = _weighted_trusted_vote(annotated_matches)
 
+    # Dev-mode trace: the deduped neighbours behind this decision, with their
+    # cosine similarity. Built once and shared by both the rag_direct and
+    # rag_prompted branches below (only serialized when settings.dev_mode is on).
+    trace_neighbours = [
+        TraceNeighbour(
+            transaction_id=m["transaction_id"],
+            raw_description=m.get("raw_description"),
+            category=m.get("category"),
+            source=m.get("source"),
+            distance=round(m["distance"], 4),
+            similarity=round(1.0 - m["distance"], 4),
+        )
+        for m in annotated_matches
+    ]
+
     # rag_direct: top match above similarity threshold → copy its annotation directly
     # Only trust human-verified or rule-matched annotations;
     # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
@@ -480,6 +523,17 @@ def _try_rag_annotation(
                 txn["id"], top_category, donor_ann.get("subcategory"),
                 cosine_similarity, agreement_factor, margin_factor, confidence, donor_ann["source"],
             )
+            trace = ReasoningTrace(
+                stage="rag_direct",
+                final_confidence=confidence,
+                best_similarity=round(cosine_similarity, 4),
+                neighbours=trace_neighbours,
+                vote_category=vote_category,
+                vote_share=round(vote_share, 4) if vote_share is not None else None,
+                trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
+                agreement_factor=round(agreement_factor, 4),
+                margin_factor=round(margin_factor, 4),
+            )
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=donor_ann.get("merchant"),
@@ -488,7 +542,7 @@ def _try_rag_annotation(
                 tags=parse_string_list(donor_ann.get("tags")),
                 confidence=confidence,
                 source="rag_direct",
-            )
+            ), trace
         elif donor_ann:
             logger.debug(
                 "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
@@ -508,7 +562,9 @@ def _try_rag_annotation(
         )
         if llm_result is not None:
             category = _normalize_category(llm_result.category, category_list)
-            confidence = round(llm_result.confidence * get_calibrated_dampening(conn, "rag_prompted", category), 4)
+            dampening = get_calibrated_dampening(conn, "rag_prompted", category)
+            confidence = round(llm_result.confidence * dampening, 4)
+            caps_applied: list[str] = []
 
             # Off-example backstop: if the LLM picked a category that none of the
             # retrieved examples used, it's likely falling back on its prior rather
@@ -522,6 +578,7 @@ def _try_rag_annotation(
                     txn["id"], category, sorted(set(example_categories)), confidence, capped,
                 )
                 confidence = capped
+                caps_applied.append("off_example")
 
             # Reject/defer band: only when the LLM is *itself* uncertain AND the
             # trusted donors are split with no clear winner. This is the genuinely
@@ -543,10 +600,24 @@ def _try_rag_annotation(
                     settings.rag_consensus_floor, confidence, capped,
                 )
                 confidence = capped
+                caps_applied.append("defer")
 
             logger.debug(
                 "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
                 txn["id"], category, llm_result.subcategory, llm_result.confidence, confidence,
+            )
+            trace = ReasoningTrace(
+                stage="rag_prompted",
+                final_confidence=confidence,
+                best_similarity=round(best_similarity, 4),
+                neighbours=trace_neighbours,
+                vote_category=vote_category,
+                vote_share=round(vote_share, 4) if vote_share is not None else None,
+                trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
+                caps_applied=caps_applied,
+                llm_reasoning=llm_result.reasoning,
+                raw_confidence=llm_result.confidence,
+                dampening_factor=round(dampening, 4),
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -556,10 +627,10 @@ def _try_rag_annotation(
                 tags=llm_result.tags,
                 confidence=confidence,
                 source="rag_prompted",
-            )
+            ), trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
 
-    return None
+    return None, None
 
 
 def _majority_category(categories: list[str]) -> tuple[str | None, int]:

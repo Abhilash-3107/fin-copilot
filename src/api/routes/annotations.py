@@ -20,6 +20,7 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
+from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.categories import resolve_category_ids
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.feedback_stats import record_feedback
@@ -241,9 +242,18 @@ def confirm_annotation(
 
 @router.get("/review-queue")
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
+    dev_mode = get_dev_mode(conn)
     items = list_review_queue(conn, settings.confidence_threshold)
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
+        # Dev mode: surface the captured reasoning trace; otherwise drop the raw
+        # column so the UI never sees it. Older rows have reasoning=NULL → None.
+        raw = item.pop("reasoning", None)
+        if dev_mode:
+            try:
+                item["reasoning"] = json.loads(raw) if raw else None
+            except (TypeError, json.JSONDecodeError):
+                item["reasoning"] = None
     return items
 
 

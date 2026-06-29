@@ -18,7 +18,7 @@ logging.basicConfig(
 from fastapi.staticfiles import StaticFiles
 
 from src.db.connection import get_db
-from src.api.routes import annotations, categories, embeddings, groups, people, statements, transactions
+from src.api.routes import annotations, categories, config, embeddings, groups, people, statements, transactions
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 
@@ -41,6 +41,7 @@ app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
 app.include_router(people.router, prefix="/api/people", tags=["people"])
 app.include_router(embeddings.router, prefix="/api/embeddings", tags=["embeddings"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
+app.include_router(config.router, prefix="/api/config", tags=["config"])
 
 
 @app.get("/api/health")
