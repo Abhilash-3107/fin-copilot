@@ -90,13 +90,18 @@ flowchart TD
             P4["`confidence =
             llm_conf × calibrated_dampen(rag_prompted, category)
             base 0.92, shifts with feedback`"]
+            P4B["`off-example cap / defer band
+            (see Confidence Scoring Summary)`"]
+            P4C["`**_fuse_counterparty_prior()**
+            recurrence prior agrees → rescue
+            disagrees → tighten · else neutral`"]
             P5(["`Persist annotation
             source=rag_prompted`"])
             P_FAIL(["`LLM returned nothing
             → fall through to Stage 4`"])
 
             P1 --> P2
-            P2 -->|yes| P3 --> P4 --> P5
+            P2 -->|yes| P3 --> P4 --> P4B --> P4C --> P5
             P2 -->|no| P_FAIL
             P3 -->|LLM failed| P_FAIL
         end
@@ -162,7 +167,7 @@ flowchart TD
 |---|---|---|---|
 | 1 — Rules | `rule` | Known-person match (UPI handle in `people` table), or keyword/merchant match in raw_description / upi_note | Fixed **0.95** |
 | 2 — RAG Direct | `rag_direct` | cosine_similarity ≥ 0.92 AND donor is trusted source (`manual`, `rule`, `imported`) | `cosine × agreement_factor × margin_factor` |
-| 3 — RAG Prompted | `rag_prompted` | cosine_similarity found but < 0.92, donor untrusted, or no annotation on top match | `llm_conf × calibrated_dampen(rag_prompted, category)` |
+| 3 — RAG Prompted | `rag_prompted` | cosine_similarity found but < 0.92, donor untrusted, or no annotation on top match | `llm_conf × calibrated_dampen(rag_prompted, category)`, then off-example cap / defer band / counterparty prior |
 | 4 — Plain LLM | `llm` | No embeddings, novelty gate triggered, or RAG found nothing | `llm_conf × calibrated_dampen(llm, category)` |
 
 ## Key Thresholds (all configurable via env)
@@ -177,6 +182,13 @@ flowchart TD
 | `llm_confidence_dampen` | 0.85 | Base dampening for plain LLM confidence (Beta prior) |
 | `llm_confidence_dampen_rag` | 0.92 | Base dampening for RAG-prompted LLM confidence (Beta prior) |
 | `confidence_threshold` | 0.85 | Below this → flagged for human review |
+| `rag_offexample_confidence_cap` | 0.5 | Cap when rag_prompted picks a category absent from all retrieved examples |
+| `rag_consensus_floor` | 0.6 | Trusted-vote winning share below this → defer band may fire |
+| `rag_defer_confidence_cap` | 0.5 | Cap applied by the defer band (and counterparty "tighten") |
+| `counterparty_prior_enabled` | true | Master switch for the counterparty recurrence prior |
+| `counterparty_min_observations` | 2 | Min prior txns to a counterparty before its prior can influence routing |
+| `counterparty_dominance_floor` | 0.65 | Shrunk P(category·counterparty) needed for the prior to count as established |
+| `counterparty_prior_weight` | 2.0 | Empirical-Bayes pseudo-count; higher = more evidence before history dominates |
 
 ## Bayesian Confidence Calibration
 
@@ -192,3 +204,28 @@ Stages 3 and 4 use dynamic dampening instead of fixed multipliers. The dampening
 With zero feedback the dampening equals the static setting exactly. As confirmations accumulate for a category, dampening rises toward 1.0; corrections push it down.
 
 See `src/pipeline/calibration.py` for the implementation.
+
+## Counterparty Recurrence Prior (rag_prompted)
+
+The embedding/KNN retriever is blind to *recurrence*: a payment to a recurring contact and one to a random cab driver are both "a UPI to a personal name", so the neighbour vote is dominated by base rates. But the user's own history separates them — cab counterparties are one-and-done (~1.06 txns each) while family/friends recur (~4.2x). This signal is computed **out-of-band** and **late-fused** into the rag_prompted confidence, after the off-example/defer caps and **without ever changing the label**.
+
+- **Identity:** `upper(trim())` of the UPI name segment (2nd `/`-field of `UPI/NAME/ref/note`). The bank format carries no VPA (≈1/568 rows), so the name segment is the only stable counterparty handle. Consistent truncation means an entity collides with itself; the only failure mode is *false-split* (one entity seen as two), which merely under-counts recurrence — never over-merges two people.
+- **Empirical-Bayes shrinkage (uninformed prior):** `P(c·cp) = (m·base + w_c) / (m + W)` over the counterparty's *prior* labels only (causal: bounded by the txn's date, excludes self; trusted sources full weight, machine guesses downweighted). At `W=0` the prior is **inert** — a new user or first-time counterparty behaves exactly as before. The prior can only sharpen, never skew (cold-start safe).
+- **Fusion (`_fuse_counterparty_prior`):** only when the prior is *established* (`n ≥ counterparty_min_observations` and `P ≥ counterparty_dominance_floor`):
+  - **agrees** with the chosen label → **rescue**: lift confidence toward `P` (recovers genuine recurring transfers that category-level calibration over-punishes).
+  - **disagrees** → **tighten**: cap to `rag_defer_confidence_cap` → routes to review (catches both a cab-misfire and a recurring contact's occasional off-category spend).
+  - otherwise → **neutral** (no change).
+
+The dev-mode reasoning trace records `counterparty_prior_category / _probability / _n / _effect`. Tuned on the Dec–Mar 2026 causal backtest (`scripts/backtest_counterparty_prior.py --sweep`): `min_observations=2`, `dominance_floor=0.65`. The prior only helps *recurring* counterparties — one-off personal names get no nudge by design.
+
+See `src/pipeline/counterparty.py` for the implementation.
+
+## Embedding Text (recurring-merchant retrieval)
+
+`build_embed_text` (`src/pipeline/embed.py`) deliberately **excludes the raw amount and the rotating UPI reference number**. UPI descriptions are `UPI/<merchant>/<numeric-ref>/<note>`, and that 12-ish-digit ref is unique per transaction — leaving it (or the amount) in the embedded string makes two visits to the *same* merchant embed as only ~0.6–0.9 similar instead of ~1.0. That drops recurring merchants below `rag_similarity_floor` (0.65), the novelty gate discards the correct same-merchant donors, and the txn falls through to plain Stage-4 LLM with no examples (the "description lacks context" failure → confidence crushed to ~0.14).
+
+`normalize_description_for_embedding` strips only the numeric ref segment of a `UPI/...` description, keeps the merchant and any meaningful trailing note (e.g. `movie tickets`), drops the boilerplate `UPI` note, and leaves non-UPI descriptions (NEFT/PCD/VISA/plain text) untouched. After this change two visits to `OBEROIFC tucksh` embed identically (similarity 1.0), clearing both the novelty gate and the `rag_direct` threshold. **Changing this function invalidates the stored vector space** — re-embed all transactions (`scripts/reembed_all.py`) and re-annotate afterward.
+
+## LLM Determinism
+
+Annotation is a deterministic classification task, so the Ollama calls run with `temperature: 0` and a fixed `seed` (`src/pipeline/llm.py`). This matters beyond reproducibility: at the default temperature (~0.8) a small model intermittently emits **malformed JSON in the free-text `reasoning` field** (escaped/single quotes, stray braces, or truncation), which fails schema validation, triggers retries, and silently degrades the label. With `temperature: 0`, re-annotating the same transactions is stable run-to-run (verified 19/19 stable, 0 validation errors via `scripts/diff_reannotate_april.py`). `num_predict` gives the reasoning sentence headroom to avoid mid-string truncation. The `reasoning` field is **truncated, not rejected**, when it exceeds 160 chars (a `field_validator` in `AnnotationResponse`): a slightly-too-long sentence from a small model must never drop an otherwise-valid classification.
