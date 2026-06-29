@@ -426,7 +426,8 @@ class TestBuildEmbedText:
         txn = {"debit_credit": "debit", "amount": 500.0,
                "raw_description": "SWIGGY ORDER", "upi_meta": None}
         result = build_embed_text(txn)
-        assert result == "debit SWIGGY ORDER"
+        # Lowercased: nomic-embed-text mangles ALL-CAPS bank text.
+        assert result == "debit swiggy order"
 
     def test_with_upi_note(self):
         from src.pipeline.embed import build_embed_text
@@ -443,7 +444,7 @@ class TestBuildEmbedText:
                "raw_description": "SALARY CREDIT",
                "upi_meta": json.dumps({"note": None})}
         result = build_embed_text(txn)
-        assert result == "credit SALARY CREDIT"
+        assert result == "credit salary credit"
 
     def test_strips_upi_reference(self):
         # The rotating numeric ref must be dropped so two visits to the same
@@ -453,21 +454,21 @@ class TestBuildEmbedText:
              "raw_description": "UPI/OBEROIFC tucksh/121013717523/UPI", "upi_meta": None}
         b = {"debit_credit": "debit", "amount": 805.0,
              "raw_description": "UPI/OBEROIFC tucksh/120580534937/UPI", "upi_meta": None}
-        assert build_embed_text(a) == build_embed_text(b) == "debit UPI/OBEROIFC tucksh"
+        assert build_embed_text(a) == build_embed_text(b) == "debit upi/oberoifc tucksh"
 
     def test_keeps_meaningful_upi_note(self):
         from src.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 300.0,
                "raw_description": "UPI/ANANTA KUMAR BO/121066925569/movie tickets",
                "upi_meta": None}
-        assert build_embed_text(txn) == "debit UPI/ANANTA KUMAR BO/movie tickets"
+        assert build_embed_text(txn) == "debit upi/ananta kumar bo/movie tickets"
 
     def test_non_upi_description_untouched(self):
         from src.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 100.0,
                "raw_description": "PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21",
                "upi_meta": None}
-        assert build_embed_text(txn) == "debit PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21"
+        assert build_embed_text(txn) == "debit pcd/1280/eternal limited/gurgaon180226/16:21"
 
 
 # ---------------------------------------------------------------------------
