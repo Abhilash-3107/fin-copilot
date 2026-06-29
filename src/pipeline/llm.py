@@ -6,7 +6,7 @@ import logging
 import time
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from src.config import settings
 from src.models.transaction import TxnRow
@@ -34,8 +34,21 @@ class AnnotationResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str | None = Field(
         default=None,
-        description="One short sentence explaining why this category was chosen.",
+        description=(
+            "One short sentence (<=160 chars) explaining why this category was "
+            "chosen. Avoid nested quotes."
+        ),
     )
+
+    @field_validator("reasoning")
+    @classmethod
+    def _truncate_reasoning(cls, v: str | None) -> str | None:
+        # Reasoning is a dev-mode nicety; a slightly-too-long sentence must never
+        # reject an otherwise-valid classification (small models overshoot the
+        # length hint). Truncate instead of failing validation.
+        if v and len(v) > 160:
+            return v[:157].rstrip() + "..."
+        return v
 
 
 def top_level_categories(category_list: list[str]) -> list[str]:
@@ -179,7 +192,15 @@ def _call_ollama(
         "format": _response_schema(category_list),
         "options": {
             "num_ctx": 2048,
-            "num_predict": 320,  # headroom for the one-sentence reasoning field
+            "num_predict": 512,  # headroom for the one-sentence reasoning field
+            # Categorization is deterministic, not creative: temperature 0 + a fixed
+            # seed make the structured output stable run-to-run. Without this, the
+            # default temperature (~0.8) makes a small model mangle the free-text
+            # `reasoning` field into invalid JSON on some samples, which fails schema
+            # validation and silently degrades the label. See
+            # scripts/diff_reannotate_april.py.
+            "temperature": 0,
+            "seed": 42,
         },
         "think": False,
         "messages": [

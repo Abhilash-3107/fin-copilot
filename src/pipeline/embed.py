@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 
 import httpx
@@ -14,8 +15,36 @@ from src.models.transaction import TxnRow
 logger = logging.getLogger(__name__)
 
 
+# UPI descriptions are 'UPI/<merchant>/<numeric-ref>/<note>'. The 12-ish-digit
+# reference is unique per transaction, so leaving it in the embed text makes two
+# visits to the *same* merchant look only ~0.6-0.9 similar instead of ~1.0 — which
+# drops recurring merchants below rag_similarity_floor and breaks RAG retrieval.
+# Strip just the numeric ref segment; keep merchant and the trailing note (which
+# can carry real signal like 'movie tickets'). Non-UPI descriptions are untouched.
+_UPI_REF_RE = re.compile(r"^(UPI/[^/]+)/\d{4,}/(.*)$", re.IGNORECASE)
+
+
+def normalize_description_for_embedding(raw_description: str) -> str:
+    """Drop the rotating UPI numeric reference so recurring merchants embed consistently."""
+    if not raw_description:
+        return ""
+    m = _UPI_REF_RE.match(raw_description.strip())
+    if not m:
+        return raw_description
+    merchant, note = m.group(1), m.group(2).strip()
+    # Collapse the boilerplate 'UPI' note to nothing; keep meaningful notes.
+    if note.upper() == "UPI":
+        note = ""
+    return f"{merchant}/{note}" if note else merchant
+
+
 def build_embed_text(txn: TxnRow) -> str:
-    """Build canonical text for embedding: '{debit_credit} {amount} {raw_description} {upi_note}'."""
+    """Build canonical text for embedding: '{debit_credit} {description-without-ref} {upi_note}'.
+
+    The raw per-transaction amount and the rotating UPI reference number are
+    deliberately excluded — both are transaction-unique noise that dilutes the
+    merchant/counterparty signal the retriever depends on.
+    """
     upi_note = ""
     upi_meta = txn.get("upi_meta")
     if upi_meta:
@@ -26,8 +55,7 @@ def build_embed_text(txn: TxnRow) -> str:
             pass
     parts = [
         txn.get("debit_credit", ""),
-        str(txn.get("amount", "")),
-        txn.get("raw_description", ""),
+        normalize_description_for_embedding(txn.get("raw_description", "")),
         upi_note,
     ]
     return " ".join(p for p in parts if p).strip()

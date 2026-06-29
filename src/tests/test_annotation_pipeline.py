@@ -420,11 +420,13 @@ class TestAutoAnnotateEndpoint:
 
 class TestBuildEmbedText:
     def test_basic(self):
+        # Amount is deliberately excluded — it's per-transaction noise that
+        # dilutes the merchant signal the retriever depends on.
         from src.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 500.0,
                "raw_description": "SWIGGY ORDER", "upi_meta": None}
         result = build_embed_text(txn)
-        assert result == "debit 500.0 SWIGGY ORDER"
+        assert result == "debit SWIGGY ORDER"
 
     def test_with_upi_note(self):
         from src.pipeline.embed import build_embed_text
@@ -433,7 +435,7 @@ class TestBuildEmbedText:
                "upi_meta": json.dumps({"note": "food order"})}
         result = build_embed_text(txn)
         assert "food order" in result
-        assert "500.0" in result
+        assert "500.0" not in result  # amount no longer embedded
 
     def test_missing_upi_note_key(self):
         from src.pipeline.embed import build_embed_text
@@ -441,7 +443,31 @@ class TestBuildEmbedText:
                "raw_description": "SALARY CREDIT",
                "upi_meta": json.dumps({"note": None})}
         result = build_embed_text(txn)
-        assert result == "credit 10000.0 SALARY CREDIT"
+        assert result == "credit SALARY CREDIT"
+
+    def test_strips_upi_reference(self):
+        # The rotating numeric ref must be dropped so two visits to the same
+        # merchant embed identically.
+        from src.pipeline.embed import build_embed_text
+        a = {"debit_credit": "debit", "amount": 228.0,
+             "raw_description": "UPI/OBEROIFC tucksh/121013717523/UPI", "upi_meta": None}
+        b = {"debit_credit": "debit", "amount": 805.0,
+             "raw_description": "UPI/OBEROIFC tucksh/120580534937/UPI", "upi_meta": None}
+        assert build_embed_text(a) == build_embed_text(b) == "debit UPI/OBEROIFC tucksh"
+
+    def test_keeps_meaningful_upi_note(self):
+        from src.pipeline.embed import build_embed_text
+        txn = {"debit_credit": "debit", "amount": 300.0,
+               "raw_description": "UPI/ANANTA KUMAR BO/121066925569/movie tickets",
+               "upi_meta": None}
+        assert build_embed_text(txn) == "debit UPI/ANANTA KUMAR BO/movie tickets"
+
+    def test_non_upi_description_untouched(self):
+        from src.pipeline.embed import build_embed_text
+        txn = {"debit_credit": "debit", "amount": 100.0,
+               "raw_description": "PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21",
+               "upi_meta": None}
+        assert build_embed_text(txn) == "debit PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21"
 
 
 # ---------------------------------------------------------------------------
