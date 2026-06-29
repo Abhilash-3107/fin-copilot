@@ -44,6 +44,12 @@ def build_embed_text(txn: TxnRow) -> str:
     The raw per-transaction amount and the rotating UPI reference number are
     deliberately excluded — both are transaction-unique noise that dilutes the
     merchant/counterparty signal the retriever depends on.
+
+    The result is lowercased: nomic-embed-text tokenizes ALL-CAPS bank-statement
+    text into near-meaningless fragments, so distinct uppercase personal-name
+    payees (e.g. 'M S KINGSTON PR' vs 'AABID ALI SO NA') collapse to *identical*
+    embeddings (cosine 1.0). Lowercasing recovers normal subword tokens and the
+    names separate cleanly (~0.7).
     """
     upi_note = ""
     upi_meta = txn.get("upi_meta")
@@ -58,7 +64,7 @@ def build_embed_text(txn: TxnRow) -> str:
         normalize_description_for_embedding(txn.get("raw_description", "")),
         upi_note,
     ]
-    return " ".join(p for p in parts if p).strip()
+    return " ".join(p for p in parts if p).strip().lower()
 
 
 def get_embeddings_batch(
