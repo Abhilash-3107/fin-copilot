@@ -14,6 +14,18 @@ from src.models.transaction import TxnRow
 logger = logging.getLogger(__name__)
 
 
+def _strip_code_fence(content: str) -> str:
+    """Unwrap a markdown code fence (```json ... ```) some models emit despite the JSON schema."""
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return content
+    # Drop the opening fence line (```/```json) and the trailing fence.
+    body = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+    if body.rstrip().endswith("```"):
+        body = body.rstrip()[: -len("```")]
+    return body.strip()
+
+
 class AnnotationResponse(BaseModel):
     category: str
     subcategory: str | None = None
@@ -155,7 +167,7 @@ def _call_ollama(
             elapsed = time.monotonic() - t0
             response.raise_for_status()
             data = response.json()
-            content = data["message"]["content"]
+            content = _strip_code_fence(data["message"]["content"])
             result = AnnotationResponse.model_validate_json(content)
             logger.debug(
                 "%s | txn=%s  attempt=%d  latency=%.2fs  response=%s",
