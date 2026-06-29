@@ -65,6 +65,9 @@ _SYSTEM_PROMPT = (
     '{"category": "...", "subcategory": "...", "merchant": "...", "tags": [...], "confidence": 0.0}\n'
     "confidence must be between 0 and 1. subcategory and merchant may be null. "
     "tags is a list of short lowercase strings.\n"
+    "When example transactions are provided, they are confirmed categorizations of "
+    "transactions similar to this one and are your primary signal — weigh them above "
+    "your own prior knowledge.\n"
     "Confidence guidelines:\n"
     "- 0.95: Exact merchant match, unambiguous category (e.g. 'Netflix' → Entertainment)\n"
     "- 0.85: Strong match with minor ambiguity (e.g. generic 'food' description)\n"
@@ -106,8 +109,18 @@ def _build_fewshot_user_prompt(
     txn: TxnRow,
     category_list: list[str],
     similar_examples: list[dict],
+    majority_category: str | None = None,
+    majority_count: int = 0,
 ) -> str:
-    """Build user prompt with few-shot examples from RAG retrieval injected before the transaction."""
+    """Build user prompt with few-shot examples from RAG retrieval injected before the transaction.
+
+    When majority_category is given, an agreement hint and a guardrail instruction
+    are added: the LLM should prefer a category that appears among the examples and
+    only pick one absent from all of them when the transaction is clearly different.
+    This counters the failure where the model falls back on its pretraining prior
+    (e.g. 'named person + UPI → peer transfer') and invents a category none of the
+    retrieved neighbors used.
+    """
     parts = ["Here are similar transactions that were previously categorized:\n"]
 
     for i, ex in enumerate(similar_examples, 1):
@@ -125,6 +138,21 @@ def _build_fewshot_user_prompt(
         parts.append("\n".join(lines))
 
     parts.append("\n---\n")
+
+    guidance = [
+        "Prefer a category that appears among the examples above. Only choose a "
+        "category that none of the examples use if this transaction is clearly "
+        "different from every one of them (e.g. a merchant name you recognize that "
+        "contradicts them)."
+    ]
+    if majority_category and majority_count > 0:
+        guidance.insert(
+            0,
+            f"Note: {majority_count} of the examples above were categorized as "
+            f'"{majority_category}".',
+        )
+    parts.append("\n".join(guidance))
+
     parts.append("Now classify this transaction:")
     parts.append(_build_user_prompt(txn, category_list))
     return "\n\n".join(parts)
@@ -198,12 +226,16 @@ def annotate_transaction_llm_with_examples(
     txn: TxnRow,
     category_list: list[str],
     similar_examples: list[dict],
+    majority_category: str | None = None,
+    majority_count: int = 0,
     timeout: float = 60.0,
     max_retries: int = 2,
 ) -> AnnotationResponse | None:
     """Call Ollama with few-shot examples injected into the prompt. Returns None on final failure."""
     return _call_ollama(
-        _build_fewshot_user_prompt(txn, category_list, similar_examples),
+        _build_fewshot_user_prompt(
+            txn, category_list, similar_examples, majority_category, majority_count
+        ),
         category_list,
         txn_id=txn.get("id", "?"),
         log_prefix="llm_with_examples",

@@ -484,6 +484,37 @@ class TestFewShotPrompt:
         result = _build_fewshot_user_prompt(txn, ["Uncategorized"], [])
         assert "mystery" in result
 
+    def test_prompt_includes_majority_hint_and_guardrail(self):
+        from src.pipeline.llm import _build_fewshot_user_prompt
+        txn = {"id": "t1", "raw_description": "UPI/UNKNOWN NAME/123/UPI", "upi_meta": None,
+               "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
+        examples = [{
+            "raw_description": "UPI/DRIVER/1/UPI", "upi_note": "",
+            "amount": 100, "debit_credit": "debit",
+            "category": "Transport", "subcategory": "Cab & Auto", "merchant": None,
+        }]
+        result = _build_fewshot_user_prompt(
+            txn, ["Transport"], examples, majority_category="Transport", majority_count=4
+        )
+        # Agreement hint surfaces the count and category explicitly
+        assert "4 of the examples" in result
+        assert "Transport" in result
+        # Guardrail discourages off-example categories
+        assert "Prefer a category that appears among the examples" in result
+
+    def test_prompt_omits_hint_when_no_majority(self):
+        from src.pipeline.llm import _build_fewshot_user_prompt
+        txn = {"id": "t1", "raw_description": "some txn", "upi_meta": None,
+               "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
+        examples = [{
+            "raw_description": "x", "upi_note": "", "amount": 1, "debit_credit": "debit",
+            "category": "Shopping", "subcategory": None, "merchant": None,
+        }]
+        result = _build_fewshot_user_prompt(txn, ["Shopping"], examples)
+        # No "N of the examples" hint line, but the guardrail still appears
+        assert "of the examples above were categorized" not in result
+        assert "Prefer a category that appears among the examples" in result
+
 
 # ---------------------------------------------------------------------------
 # RAG pipeline integration tests
@@ -605,6 +636,211 @@ class TestRAGPipeline:
         ann = get_annotation_by_transaction(self.conn, "target_5")
         assert ann["source"] == "rule"
         assert result.rule_matched == 1
+
+
+# ---------------------------------------------------------------------------
+# rag_prompted off-example backstop + majority hint
+# ---------------------------------------------------------------------------
+
+class TestRagPromptedOffExample:
+    """The LLM should not get an auto-accepted pass for a category that none of
+    the retrieved examples used (the 'invents Peer Transfer' failure)."""
+
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _insert_donor(self, txn_id, description, category, subcategory=None, source="manual"):
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+        _insert_txn(self.conn, txn_id, description)
+        insert_annotation(self.conn, Annotation(
+            transaction_id=txn_id, category=category, subcategory=subcategory,
+            confidence=0.95, source=source,
+        ))
+        self.conn.commit()
+
+    def test_majority_category_helper(self):
+        from src.pipeline.annotate import _majority_category
+        assert _majority_category([]) == (None, 0)
+        assert _majority_category(["Transport", "Transport", "Food & Dining"]) == ("Transport", 2)
+
+    def test_off_example_category_confidence_capped(self):
+        """LLM returns 'Transfers' but no example was Transfers → confidence capped
+        below threshold so it lands in the review queue rather than auto-accepted."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.config import settings
+
+        # All donors are Transport — none are Transfers.
+        for i in range(4):
+            self._insert_donor(f"donor_t{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
+        _insert_txn(self.conn, "target_off", "UPI/UNKNOWN NAME/9/UPI")
+
+        # LLM ignores the examples and picks Transfers (the prior-driven failure).
+        llm_result = AnnotationResponse(category="Transfers", subcategory="Peer Transfer", confidence=0.9)
+        mock_vec = [0.1] * 768
+        similar = [{"transaction_id": f"donor_t{i}", "distance": 0.2} for i in range(4)]
+
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_off"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_off")
+        assert ann is not None
+        assert ann["source"] == "rag_prompted"
+        assert ann["category"] == "Transfers"  # not overridden — just distrusted
+        assert ann["confidence"] <= settings.rag_offexample_confidence_cap
+        assert ann["confidence"] < settings.confidence_threshold
+        assert result.low_confidence == 1
+
+    def test_in_example_category_not_capped(self):
+        """When the LLM picks a category present in the examples, normal dampening applies."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.config import settings
+
+        for i in range(4):
+            self._insert_donor(f"donor_in{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
+        _insert_txn(self.conn, "target_in", "UPI/SOME NAME/9/UPI")
+
+        llm_result = AnnotationResponse(category="Transport", subcategory="Cab & Auto", confidence=0.9)
+        mock_vec = [0.1] * 768
+        similar = [{"transaction_id": f"donor_in{i}", "distance": 0.2} for i in range(4)]
+
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["target_in"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_in")
+        assert ann is not None
+        assert ann["category"] == "Transport"
+        # 0.9 * rag dampen (0.92) = 0.828, well above the off-example cap of 0.5
+        assert ann["confidence"] > settings.rag_offexample_confidence_cap
+
+    def test_split_trusted_neighbors_deferred_to_review(self):
+        """When trusted donors are split with no clear winner, confidence is capped
+        below threshold so the txn routes to review (selective classification).
+
+        Mirrors the real ANSHU YADAV case: a small UPI to an unknown name whose
+        amount-neighbors are part Transport (cab), part Transfers (family)."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.config import settings
+
+        # 2 trusted Transport + 2 trusted Transfers → no clear winner (50/50).
+        self._insert_donor("d_cab1", "UPI/DRIVER A/1/UPI", "Transport", "Cab & Auto")
+        self._insert_donor("d_cab2", "UPI/DRIVER B/2/UPI", "Transport", "Cab & Auto")
+        self._insert_donor("d_fam1", "UPI/SIBLING/3/UPI", "Transfers", "Family")
+        self._insert_donor("d_fam2", "UPI/COUSIN/4/UPI", "Transfers", "Family")
+        _insert_txn(self.conn, "target_split", "UPI/UNKNOWN PERSON/9/UPI")
+
+        # LLM picks Transfers (in examples, so off-example doesn't fire) AND is
+        # itself unsure (raw conf below the defer ceiling) → genuinely undecidable.
+        llm_result = AnnotationResponse(category="Transfers", subcategory="Family", confidence=0.7)
+        mock_vec = [0.1] * 768
+        similar = [
+            {"transaction_id": "d_fam1", "distance": 0.20},
+            {"transaction_id": "d_cab1", "distance": 0.21},
+            {"transaction_id": "d_fam2", "distance": 0.22},
+            {"transaction_id": "d_cab2", "distance": 0.23},
+        ]
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            result = auto_annotate(self.conn, transaction_ids=["target_split"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_split")
+        assert ann is not None
+        assert ann["confidence"] <= settings.rag_defer_confidence_cap
+        assert ann["confidence"] < settings.confidence_threshold
+        assert result.low_confidence == 1
+
+    def test_clear_trusted_majority_not_deferred(self):
+        """A clear trusted majority (>= consensus floor) is not deferred."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.config import settings
+
+        # 4 trusted Transport vs 0 others → unanimous, well above the floor.
+        for i in range(4):
+            self._insert_donor(f"d_clear{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
+        _insert_txn(self.conn, "target_clear2", "UPI/NAME/9/UPI")
+
+        llm_result = AnnotationResponse(category="Transport", subcategory="Cab & Auto", confidence=0.7)
+        mock_vec = [0.1] * 768
+        similar = [{"transaction_id": f"d_clear{i}", "distance": 0.20 + i * 0.01} for i in range(4)]
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["target_clear2"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_clear2")
+        assert ann is not None
+        # Clear consensus (share=1.0 >= floor) → not deferred even though LLM is unsure.
+        assert ann["confidence"] > settings.rag_defer_confidence_cap
+
+    def test_confident_llm_not_deferred_despite_split_neighbors(self):
+        """A confident, merchant-grounded LLM answer is NOT deferred even when the
+        amount-driven neighbor vote is split (the Zomato/Miya Kebabs case)."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+        from src.config import settings
+
+        # Split trusted donors: 2 Food, 2 Transport.
+        self._insert_donor("ds_f1", "UPI/REST A/1/UPI", "Food & Dining", "Restaurants")
+        self._insert_donor("ds_f2", "UPI/REST B/2/UPI", "Food & Dining", "Restaurants")
+        self._insert_donor("ds_t1", "UPI/DRIVER A/3/UPI", "Transport", "Cab & Auto")
+        self._insert_donor("ds_t2", "UPI/DRIVER B/4/UPI", "Transport", "Cab & Auto")
+        _insert_txn(self.conn, "target_confident", "UPI/Zomato8759/9/UPI")
+
+        # LLM recognizes the merchant and is confident → must not be deferred.
+        llm_result = AnnotationResponse(category="Food & Dining", subcategory="Food Delivery", confidence=0.95)
+        mock_vec = [0.1] * 768
+        similar = [
+            {"transaction_id": "ds_f1", "distance": 0.20},
+            {"transaction_id": "ds_t1", "distance": 0.21},
+            {"transaction_id": "ds_f2", "distance": 0.22},
+            {"transaction_id": "ds_t2", "distance": 0.23},
+        ]
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["target_confident"])
+
+        ann = get_annotation_by_transaction(self.conn, "target_confident")
+        assert ann is not None
+        assert ann["category"] == "Food & Dining"
+        assert ann["confidence"] > settings.rag_defer_confidence_cap  # not deferred
+
+    def test_majority_hint_passed_to_llm(self):
+        """The example-category majority is forwarded to the LLM call."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
+
+        for i in range(3):
+            self._insert_donor(f"donor_m{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
+        self._insert_donor("donor_other", "UPI/SHOP/1/UPI", "Shopping")
+        _insert_txn(self.conn, "target_m", "UPI/NAME/9/UPI")
+
+        llm_result = AnnotationResponse(category="Transport", confidence=0.8)
+        mock_vec = [0.1] * 768
+        similar = [{"transaction_id": f"donor_m{i}", "distance": 0.2} for i in range(3)]
+        similar.append({"transaction_id": "donor_other", "distance": 0.25})
+
+        with patch("src.pipeline.annotate.get_embedding_single", return_value=mock_vec), \
+             patch("src.pipeline.annotate.find_similar", return_value=similar), \
+             patch("src.pipeline.annotate.annotate_transaction_llm_with_examples", return_value=llm_result) as llm_mock:
+            auto_annotate(self.conn, transaction_ids=["target_m"])
+
+        # majority_category="Transport", majority_count=3 passed positionally
+        args, kwargs = llm_mock.call_args
+        assert "Transport" in args or kwargs.get("majority_category") == "Transport"
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +976,104 @@ class TestMarginFactor:
         from src.pipeline.annotate import _compute_margin_factor
         factor = _compute_margin_factor(0.05, 0.13)  # margin=0.08 exactly
         assert abs(factor - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Donor-pool dedup + source-weighted voting
+# ---------------------------------------------------------------------------
+
+class TestDonorVoting:
+    def test_donor_weight_trusted_vs_machine(self):
+        from src.pipeline.annotate import _donor_weight
+        from src.config import settings
+        assert _donor_weight("manual") == 1.0
+        assert _donor_weight("rule") == 1.0
+        assert _donor_weight("imported") == 1.0
+        assert _donor_weight("llm") == settings.rag_machine_donor_weight
+        assert _donor_weight("rag_prompted") == settings.rag_machine_donor_weight
+        assert _donor_weight(None) == settings.rag_machine_donor_weight
+
+    def test_counterparty_key_prefers_vpa(self):
+        from src.pipeline.annotate import _counterparty_key
+        match = {
+            "transaction_id": "x", "distance": 0.1,
+            "annotation": {"merchant": "District Dining"},
+            "upi_meta": json.dumps({"vpa": "dist@hdfc"}),
+            "raw_description": "UPI/DISTRICT DINING/1/UPI",
+        }
+        assert _counterparty_key(match) == "vpa:dist@hdfc"
+
+    def test_counterparty_key_falls_back_to_merchant(self):
+        from src.pipeline.annotate import _counterparty_key
+        match = {
+            "transaction_id": "x", "distance": 0.1,
+            "annotation": {"merchant": "District Dining"},
+            "upi_meta": None, "raw_description": "UPI/DD/1/UPI",
+        }
+        assert _counterparty_key(match) == "merchant:district dining"
+
+    def test_dedup_collapses_recurring_merchant(self):
+        """3 instances of the same merchant collapse to one (nearest) vote."""
+        from src.pipeline.annotate import _dedup_donors
+        matches = [
+            {"transaction_id": "a", "distance": 0.30, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "b", "distance": 0.20, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "c", "distance": 0.25, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "d", "distance": 0.22, "category": "Transport",
+             "source": "manual", "annotation": {"merchant": "Some Driver"},
+             "upi_meta": None, "raw_description": "y"},
+        ]
+        deduped = _dedup_donors(matches)
+        assert len(deduped) == 2  # one District Dining + one driver
+        dd = [m for m in deduped if m["annotation"]["merchant"] == "District Dining"][0]
+        assert dd["distance"] == 0.20  # kept the nearest instance
+
+    def test_weighted_vote_human_beats_repeated_machine(self):
+        """One human Transport label outweighs three machine Food labels of the
+        same merchant after dedup + source weighting (the RAMESH case)."""
+        from src.pipeline.annotate import _dedup_donors, _weighted_trusted_vote
+        matches = [
+            {"transaction_id": "f1", "distance": 0.20, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "f2", "distance": 0.25, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "f3", "distance": 0.30, "category": "Food & Dining",
+             "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
+             "upi_meta": None, "raw_description": "x"},
+            {"transaction_id": "t1", "distance": 0.22, "category": "Transport",
+             "source": "manual", "annotation": {"merchant": "Driver"},
+             "upi_meta": None, "raw_description": "y"},
+        ]
+        deduped = _dedup_donors(matches)
+        winner, share, trusted = _weighted_trusted_vote(deduped)
+        # After dedup: Food (machine, 0.25) vs Transport (manual, 1.0) → Transport wins.
+        assert winner == "Transport"
+        assert share > 0.5
+        assert trusted == 1.0
+
+    def test_weighted_vote_split_has_low_share(self):
+        from src.pipeline.annotate import _weighted_trusted_vote
+        matches = [
+            {"category": "Transport", "source": "manual", "distance": 0.2,
+             "annotation": {}, "upi_meta": None},
+            {"category": "Transfers", "source": "manual", "distance": 0.2,
+             "annotation": {}, "upi_meta": None},
+        ]
+        winner, share, trusted = _weighted_trusted_vote(matches)
+        assert share == 0.5  # tied → below the consensus floor
+        assert trusted == 2.0
+
+    def test_weighted_vote_empty(self):
+        from src.pipeline.annotate import _weighted_trusted_vote
+        assert _weighted_trusted_vote([]) == (None, 0.0, 0.0)
 
 
 # ---------------------------------------------------------------------------
