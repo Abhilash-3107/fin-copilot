@@ -5,6 +5,7 @@ import difflib
 import json
 import logging
 import sqlite3
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,86 @@ def auto_annotate(
     )
 
 
+_TRUSTED_SOURCES = {"manual", "rule", "imported"}
+
+
+def _donor_weight(source: str | None) -> float:
+    """Vote weight for a donor based on its annotation source.
+
+    Human-verified / rule donors carry full weight; machine guesses (llm, rag_*)
+    are downweighted so they cannot out-vote a human label or let one recurring
+    machine-labeled merchant dominate the vote.
+    """
+    return 1.0 if source in _TRUSTED_SOURCES else settings.rag_machine_donor_weight
+
+
+def _dedup_donors(annotated_matches: list[dict]) -> list[dict]:
+    """Collapse donors that refer to the same counterparty to a single vote.
+
+    Amount-clustered retrieval often returns the same recurring merchant several
+    times (e.g. DISTRICT DINING ×3); counting each as an independent vote inflates
+    its category's apparent agreement. Group by a stable counterparty key (UPI VPA,
+    else canonical merchant, else normalized description) and keep only the nearest
+    (smallest-distance) donor per group.
+    """
+    best_by_key: dict[str, dict] = {}
+    for m in annotated_matches:
+        key = _counterparty_key(m)
+        existing = best_by_key.get(key)
+        if existing is None or m["distance"] < existing["distance"]:
+            best_by_key[key] = m
+    # Preserve ascending-distance order for downstream margin logic.
+    return sorted(best_by_key.values(), key=lambda m: m["distance"])
+
+
+def _counterparty_key(match: dict) -> str:
+    """Stable identity for a donor: UPI VPA → merchant → normalized description."""
+    ann = match.get("annotation") or {}
+    vpa = None
+    upi_meta = match.get("upi_meta")
+    if upi_meta:
+        try:
+            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+            vpa = (meta.get("vpa") or "").lower() or None
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if vpa:
+        return f"vpa:{vpa}"
+    merchant = (ann.get("merchant") or "").strip().lower()
+    if merchant:
+        return f"merchant:{merchant}"
+    return f"desc:{(match.get('raw_description') or match['transaction_id']).strip().lower()}"
+
+
+def _weighted_trusted_vote(annotated_matches: list[dict]) -> tuple[str | None, float, float]:
+    """Aggregate donor categories into a source-weighted, deduplicated vote.
+
+    Literature consistently finds majority/consensus aggregation more reliable than
+    the single nearest neighbour (RankRAG 2024; VoteGCL 2026), so confidence and
+    routing key off this vote rather than top-1 similarity.
+
+    Returns (winning_category, winning_share, trusted_total_weight) where
+    winning_share is the winner's fraction of the total weighted vote in [0,1].
+    """
+    if not annotated_matches:
+        return None, 0.0, 0.0
+    weights: dict[str, float] = {}
+    trusted_weight = 0.0
+    for m in annotated_matches:
+        cat = m.get("category")
+        if not cat:
+            continue
+        w = _donor_weight(m.get("source"))
+        weights[cat] = weights.get(cat, 0.0) + w
+        if m.get("source") in _TRUSTED_SOURCES:
+            trusted_weight += w
+    if not weights:
+        return None, 0.0, 0.0
+    total = sum(weights.values())
+    winner, winner_weight = max(weights.items(), key=lambda kv: kv[1])
+    return winner, winner_weight / total, trusted_weight
+
+
 def _compute_agreement_factor(annotated_matches: list[dict], top_category: str) -> float:
     """Discount factor based on how many top-K matches agree on the top category.
 
@@ -343,27 +424,38 @@ def _try_rag_annotation(
     top_match = similar[0]
     cosine_similarity = best_similarity
     ann_by_txn = _annotations_by_transaction(conn, [m["transaction_id"] for m in similar])
+    # Counterparty metadata (VPA, description) for the donors, used to dedup the vote.
+    donor_txn_by_id = _donor_transactions([m["transaction_id"] for m in similar], conn)
     annotated_matches = []
     for match in similar:
         ann = ann_by_txn.get(match["transaction_id"])
         if ann:
+            donor_txn = donor_txn_by_id.get(match["transaction_id"], {})
             annotated_matches.append({
                 "transaction_id": match["transaction_id"],
                 "distance": match["distance"],
                 "category": ann.get("category"),
                 "source": ann.get("source"),
                 "annotation": ann,
+                "upi_meta": donor_txn.get("upi_meta"),
+                "raw_description": donor_txn.get("raw_description"),
             })
+
+    # Deduplicate recurring counterparties to one vote before any agreement logic.
+    annotated_matches = _dedup_donors(annotated_matches)
 
     logger.debug(
         "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f  annotated_k=%d",
         txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold, len(annotated_matches),
     )
 
+    # Source-weighted, deduplicated vote across the donors — the basis for
+    # confidence and the reject/defer decision (more reliable than top-1 similarity).
+    vote_category, vote_share, trusted_weight = _weighted_trusted_vote(annotated_matches)
+
     # rag_direct: top match above similarity threshold → copy its annotation directly
     # Only trust human-verified or rule-matched annotations;
     # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
-    _TRUSTED_SOURCES = {"manual", "rule", "imported"}
     if cosine_similarity >= settings.rag_direct_threshold:
         donor_ann = annotated_matches[0]["annotation"] if annotated_matches else None
         if donor_ann and donor_ann.get("source") in _TRUSTED_SOURCES:
@@ -372,12 +464,15 @@ def _try_rag_annotation(
             # Agreement factor: penalize if top-K matches disagree on category
             agreement_factor = _compute_agreement_factor(annotated_matches, top_category)
 
-            # Margin factor: penalize if nearest different-category match is close
+            # Margin factor: penalize if nearest different-category match is close.
+            # Use the deduped nearest donor's distance so both sides of the margin
+            # come from the same (post-dedup) donor set.
+            nearest_distance = annotated_matches[0]["distance"]
             next_diff_distance = next(
                 (m["distance"] for m in annotated_matches if m.get("category") != top_category),
                 None,
             )
-            margin_factor = _compute_margin_factor(top_match["distance"], next_diff_distance)
+            margin_factor = _compute_margin_factor(nearest_distance, next_diff_distance)
 
             confidence = round(cosine_similarity * agreement_factor * margin_factor, 4)
             logger.debug(
@@ -404,10 +499,51 @@ def _try_rag_annotation(
     examples = _build_examples_from_similar(conn, similar, ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
-        llm_result = annotate_transaction_llm_with_examples(txn, category_list, examples)
+        # Pass the example-category majority as a hint so the LLM weighs the
+        # retrieved neighbors over its pretraining prior.
+        example_categories = [m["category"] for m in annotated_matches if m.get("category")]
+        majority_category, majority_count = _majority_category(example_categories)
+        llm_result = annotate_transaction_llm_with_examples(
+            txn, category_list, examples, majority_category, majority_count
+        )
         if llm_result is not None:
             category = _normalize_category(llm_result.category, category_list)
             confidence = round(llm_result.confidence * get_calibrated_dampening(conn, "rag_prompted", category), 4)
+
+            # Off-example backstop: if the LLM picked a category that none of the
+            # retrieved examples used, it's likely falling back on its prior rather
+            # than the evidence. Don't override it (the example majority can itself
+            # be a coincidence of amount), but cap confidence so it lands in the
+            # review queue instead of being auto-accepted.
+            if example_categories and category not in set(example_categories):
+                capped = min(confidence, settings.rag_offexample_confidence_cap)
+                logger.info(
+                    "rag_prompted off-example | txn=%s  → %s (not in examples %s)  conf %.4f → %.4f",
+                    txn["id"], category, sorted(set(example_categories)), confidence, capped,
+                )
+                confidence = capped
+
+            # Reject/defer band: only when the LLM is *itself* uncertain AND the
+            # trusted donors are split with no clear winner. This is the genuinely
+            # undecidable case (e.g. an unfamiliar small UPI to a bare personal name
+            # whose amount-neighbors are part cab, part family transfer) — the
+            # description carries no signal and neither does history, so route to a
+            # human. We deliberately do NOT defer when the LLM is confident (a
+            # merchant it recognizes, e.g. 'Zomato', 'Miya Kebabs'); the noisy
+            # amount-driven neighbor vote must not override a grounded decision.
+            elif (
+                trusted_weight > 0
+                and vote_share < settings.rag_consensus_floor
+                and llm_result.confidence < settings.rag_defer_llm_confidence
+            ):
+                capped = min(confidence, settings.rag_defer_confidence_cap)
+                logger.info(
+                    "rag_prompted defer | txn=%s  → %s  llm_conf=%.2f  trusted_vote_share=%.2f < floor=%.2f  conf %.4f → %.4f",
+                    txn["id"], category, llm_result.confidence, vote_share,
+                    settings.rag_consensus_floor, confidence, capped,
+                )
+                confidence = capped
+
             logger.debug(
                 "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
                 txn["id"], category, llm_result.subcategory, llm_result.confidence, confidence,
@@ -426,6 +562,14 @@ def _try_rag_annotation(
     return None
 
 
+def _majority_category(categories: list[str]) -> tuple[str | None, int]:
+    """Return the most common category and its count, or (None, 0) if empty."""
+    if not categories:
+        return None, 0
+    top_category, count = Counter(categories).most_common(1)[0]
+    return top_category, count
+
+
 def _annotations_by_transaction(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, dict]:
     """Fetch annotations for many transactions in one query, keyed by transaction id."""
     if not transaction_ids:
@@ -436,6 +580,21 @@ def _annotations_by_transaction(conn: sqlite3.Connection, transaction_ids: list[
         transaction_ids,
     ).fetchall()
     return {row["transaction_id"]: dict(row) for row in rows}
+
+
+def _donor_transactions(transaction_ids: list[str], conn: sqlite3.Connection) -> dict[str, dict]:
+    """Fetch id, upi_meta, raw_description for donor transactions, keyed by id.
+
+    Used to derive a stable counterparty key for vote deduplication.
+    """
+    if not transaction_ids:
+        return {}
+    placeholders = ",".join("?" * len(transaction_ids))
+    rows = conn.execute(
+        f"SELECT id, upi_meta, raw_description FROM transactions WHERE id IN ({placeholders})",
+        transaction_ids,
+    ).fetchall()
+    return {row["id"]: dict(row) for row in rows}
 
 
 def _build_examples_from_similar(
