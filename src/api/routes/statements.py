@@ -7,6 +7,7 @@ import tempfile
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from src.api.deps import get_db
 from src.db.queries.embeddings import delete_embeddings
@@ -64,6 +65,28 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         """
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+class StatementPatch(BaseModel):
+    bank_name: str
+
+
+@router.patch("/{statement_id}")
+def patch_statement(
+    statement_id: str,
+    body: StatementPatch,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Update mutable fields on a statement (currently: bank_name)."""
+    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    conn.execute(
+        "UPDATE statements SET bank_name = ? WHERE id = ?",
+        (body.bank_name.strip(), statement_id),
+    )
+    conn.commit()
+    return {"id": statement_id, "bank_name": body.bank_name.strip()}
 
 
 @router.delete("/{statement_id}")
