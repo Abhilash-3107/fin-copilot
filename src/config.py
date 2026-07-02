@@ -95,9 +95,12 @@ class Settings(BaseSettings):
     # >= learned_rule_purity purity. Computed on-demand from annotations (no
     # materialized table); rules demote automatically when a correction lowers
     # purity. Personal counterparties are handled by the stage-1 person rule and
-    # never reach here; the purity bar blocks mixed-purpose names. Default off
-    # until the causal eval validates it (see scripts/eval.py).
-    learned_rule_enabled: bool = False
+    # never reach here; the purity bar blocks mixed-purpose names. Adopted
+    # 2026-07-03: clean-DB eval (e7b_control vs e7b_learned) showed accuracy
+    # neutral, Brier -0.0015, auto-accept +0.85pp, review -0.85pp, and 21/234
+    # recurring merchants labeled deterministically with no embedding/LLM call
+    # at 100% causal precision, no learned-rule-caused regressions.
+    learned_rule_enabled: bool = True
     learned_rule_min_support: int = 3
     learned_rule_purity: float = 0.9
     learned_rule_confidence: float = 0.95

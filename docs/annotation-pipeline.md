@@ -241,7 +241,7 @@ A merchant is *promoted* when it has >= `learned_rule_min_support` (3) human-ver
 Rules are **computed on-demand** from the annotations table (indexed by `counterparty_key`), not materialized: single source of truth, no staleness, automatic demotion (a correction lowers purity on the next lookup), and identical code in production and the causal eval (`before_txn_date` bounds it to labels older than the scored transaction).
 Personal counterparties are handled by the stage-1 person rule and never reach here; the purity bar blocks mixed-purpose names.
 `GET /api/annotations/learned-rules` lists the currently-established rules for transparency; correcting a transaction is how a user retires or changes one.
-Gated by `learned_rule_enabled` (default off pending causal-eval validation).
+Gated by `learned_rule_enabled` (on by default since 2026-07-03: clean-DB eval showed accuracy-neutral, better Brier/auto-accept/latency, 21/234 recurring merchants labeled deterministically at 100% causal precision).
 
 ## Apply-to-Similar (correction propagation)
 
