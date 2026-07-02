@@ -42,20 +42,19 @@ from src.db.connection import get_connection
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.people import list_people
 from src.pipeline.annotate import (
-    _match_known_person,
     _normalize_category,
     _try_rag_annotation,
+    rule_annotation,
 )
 from src.pipeline.calibration import get_calibrated_dampening
 from src.pipeline.llm import annotate_transaction_llm
-from src.pipeline.rules import apply_rules
 
 
 def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     """Run the cascade for one golden txn, time-split at its own date. Returns a record."""
     t0 = time.monotonic()
 
-    rule_result = _match_known_person(txn, known_people) or apply_rules(txn)
+    rule_result, _rule_trace = rule_annotation(conn, txn, known_people)
     if rule_result is not None:
         return {
             "stage": "rule",

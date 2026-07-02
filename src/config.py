@@ -8,6 +8,16 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     db_path: str = str(Path(__file__).parent.parent / "data" / "finance.db")
+    # --- BYOM: pluggable LLM provider ---
+    # "ollama": native Ollama API (default; structured output + logprobs).
+    # "openai": any OpenAI-compatible /chat/completions endpoint (LM Studio,
+    #           vLLM, OpenRouter, OpenAI itself) via llm_base_url + llm_api_key.
+    # "none":   AI disabled; the pipeline degrades to rules + RAG-direct and
+    #           routes everything else to the review queue.
+    llm_provider: str = "ollama"
+    llm_base_url: str = ""  # e.g. https://api.openai.com/v1 (openai provider only)
+    llm_api_key: str = ""
+    llm_model: str = ""  # openai-provider model name; ollama uses ollama_model
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3.5:4b"
     confidence_threshold: float = 0.85
@@ -71,12 +81,18 @@ class Settings(BaseSettings):
     # example from each not-yet-seen category, instead of raw top-5.
     rag_example_diversity: bool = False
     # Replace verbalized LLM confidence with token-logprob mass on the category
-    # value (requires an Ollama version that returns logprobs).
-    llm_logprob_confidence: bool = False
+    # value (requires an Ollama version that returns logprobs; falls back to the
+    # verbalized number when logprobs are absent). Adopted 2026-07-02: -9.5%
+    # Brier at identical labels on the golden-set eval.
+    llm_logprob_confidence: bool = True
     # Strip long numeric refs and dates from non-UPI descriptions before
     # embedding (same noise class the UPI-ref fix addressed). Changing this
     # invalidates the stored vector space — re-embed before querying.
     embed_strip_non_upi_refs: bool = False
+    # Similarity floor for "apply to similar": neighbours at or above this cosine
+    # similarity (or sharing the same UPI counterparty identity) are offered for
+    # bulk re-annotation after a human correction.
+    apply_similar_floor: float = 0.9
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
     # When on (DEV_MODE=true), the annotation pipeline captures a per-annotation

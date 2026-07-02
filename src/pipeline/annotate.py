@@ -122,6 +122,49 @@ def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> Ann
     return None
 
 
+def rule_annotation(
+    conn: sqlite3.Connection,
+    txn: TxnRow,
+    known_people: list[tuple[str, str]],
+) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
+    """Stage 1: known-person match or keyword rule, with the person-history gate.
+
+    The person rule labels by *mechanism* (a payment to a known person →
+    Transfers) but humans label by *purpose* (the same payment can be
+    Entertainment or Food when it settles a shared expense) — on the golden eval
+    it was wrong 10/49 times. When the person's own history says their payments
+    are dominated by a non-Transfers category, drop confidence below the review
+    threshold so a human decides; cold-start (no history) and genuine
+    transfer-dominant contacts keep the 0.95 fast path.
+    """
+    person_result = _match_known_person(txn, known_people)
+    result = person_result or apply_rules(txn)
+    if result is None:
+        return None, None
+
+    caps: list[str] = []
+    prior = None
+    if person_result is not None:
+        prior = counterparty_prior(conn, txn)
+        if prior.established and prior.category != result.category:
+            result.confidence = min(result.confidence, settings.rag_defer_confidence_cap)
+            caps.append("person_history_disagrees")
+            logger.info(
+                "rule person gate | txn=%s  %s → review  prior=%s (n=%d p=%.2f)",
+                txn["id"], result.merchant, prior.category,
+                prior.n_prior, prior.probability,
+            )
+    trace = ReasoningTrace(
+        stage="rule",
+        final_confidence=result.confidence,
+        matched_rule=result.merchant or result.category,
+        caps_applied=caps,
+        counterparty_prior_category=prior.category if prior is not None and prior.established else None,
+        counterparty_prior_effect="tighten" if caps else "neutral",
+    )
+    return result, trace
+
+
 def auto_annotate(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
@@ -207,13 +250,8 @@ def auto_annotate(
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
     for txn in unannotated:
-        result = _match_known_person(txn, known_people) or apply_rules(txn)
+        result, trace = rule_annotation(conn, txn, known_people)
         if result is not None:
-            trace = ReasoningTrace(
-                stage="rule",
-                final_confidence=result.confidence,
-                matched_rule=result.merchant or result.category,
-            )
             _persist(result, trace)
             _tick()
             rule_matched += 1

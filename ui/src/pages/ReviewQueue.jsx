@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2 } from 'lucide-react'
+import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -74,6 +74,72 @@ function CategoryChips({ tree, category, subcategory, onChange }) {
   )
 }
 
+function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
+  const { label, items } = propagate
+  const [selected, setSelected] = useState(() => new Set(items.map(i => i.transaction_id)))
+
+  function toggle(id) {
+    setSelected(s => {
+      const next = new Set(s)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col">
+        <div className="px-5 py-4 border-b border-[#2d3148]">
+          <div className="flex items-center gap-2 text-[#e2e8f0] text-sm font-semibold">
+            <Copy size={15} className="text-[#818cf8]" />
+            Apply "{label}" to similar transactions?
+          </div>
+          <p className="text-xs text-[#94a3b8] mt-1">
+            These look like the same counterparty and were labeled by the AI. Untick any that are different.
+          </p>
+        </div>
+        <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
+          {items.map(it => (
+            <label
+              key={it.transaction_id}
+              className="flex items-start gap-2.5 text-xs cursor-pointer group"
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(it.transaction_id)}
+                onChange={() => toggle(it.transaction_id)}
+                className="mt-0.5 accent-[#6366f1]"
+              />
+              <span className="flex-1 min-w-0">
+                <span className="block text-[#cbd5e1] truncate">{it.raw_description}</span>
+                <span className="text-[#64748b]">
+                  {dayjs(it.txn_date).format('DD MMM')} · {formatAmount(it.amount, it.debit_credit)} · currently {it.category}
+                  {it.similarity != null && ` · ${Math.round(it.similarity * 100)}% similar`}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="px-5 py-4 border-t border-[#2d3148] flex gap-3">
+          <button
+            onClick={() => onApply([...selected])}
+            disabled={applying || selected.size === 0}
+            className="flex-1 py-2 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {applying ? 'Applying…' : `Apply to ${selected.size} transaction${selected.size !== 1 ? 's' : ''}`}
+          </button>
+          <button
+            onClick={onDismiss}
+            className="px-4 py-2 rounded-lg border border-[#2d3148] text-[#94a3b8] text-sm hover:text-[#e2e8f0] transition-colors"
+          >
+            No thanks
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function ReviewQueue() {
   const toast = useToast()
   const [queue, setQueue] = useState([])
@@ -86,6 +152,10 @@ export default function ReviewQueue() {
   const [stats, setStats] = useState({ confirmed: 0, edited: 0, skipped: 0 })
   const [history, setHistory] = useState([]) // stack of {idx, stats} snapshots
   const [devMode, setDevMode] = useState(false)
+  const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
+  const [applying, setApplying] = useState(false)
+  const idxRef = useRef(0)
+  useEffect(() => { idxRef.current = idx }, [idx])
 
   useEffect(() => {
     api.get('/annotations/review-queue').then(data => {
@@ -176,6 +246,19 @@ export default function ReviewQueue() {
       setStats(s => ({ ...s, edited: s.edited + 1 }))
       toast("Noted — I'll remember that", 'success')
       advance()
+      // One correction can fix many: offer the same label for similar
+      // machine-annotated transactions (best-effort; never blocks the save).
+      try {
+        const similar = await api.get(`/annotations/${current.annotation_id}/similar`)
+        const fixable = similar.filter(s => s.differs)
+        if (fixable.length > 0) {
+          setPropagate({
+            annotationId: current.annotation_id,
+            label: payload.subcategory ? `${payload.category} > ${payload.subcategory}` : payload.category,
+            items: fixable,
+          })
+        }
+      } catch { /* similar lookup is optional */ }
     } catch (e) {
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
@@ -192,6 +275,7 @@ export default function ReviewQueue() {
     function handler(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
       if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (propagate) return // dialog owns the keyboard
       if (e.key === 'b') goBack()
       else if (e.key === 'c') confirm()
       else if (e.key === 's') skip()
@@ -205,7 +289,25 @@ export default function ReviewQueue() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [idx, queue, form, current])
+  }, [idx, queue, form, current, propagate])
+
+  async function applyPropagation(transactionIds) {
+    setApplying(true)
+    try {
+      const res = await api.post(`/annotations/${propagate.annotationId}/apply-to-similar`, {
+        transaction_ids: transactionIds,
+      })
+      toast(`Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`, 'success')
+      // Applied rows are now human-labeled — drop any still ahead in the queue.
+      const appliedSet = new Set(transactionIds)
+      setQueue(q => q.filter((it, i) => i < idxRef.current || !appliedSet.has(it.transaction_id)))
+    } catch (e) {
+      toast(`Couldn't apply — ${e.message}`, 'error')
+    } finally {
+      setApplying(false)
+      setPropagate(null)
+    }
+  }
 
   if (loading) {
     return <div className="flex items-center justify-center h-full text-[#475569]">Getting your review list ready…</div>
@@ -214,9 +316,19 @@ export default function ReviewQueue() {
   const total = queue.length
   const done = idx >= total
 
+  const propagateDialog = propagate && (
+    <PropagateDialog
+      propagate={propagate}
+      onApply={applyPropagation}
+      onDismiss={() => setPropagate(null)}
+      applying={applying}
+    />
+  )
+
   if (done) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">
+        {propagateDialog}
         <div className="text-4xl">✓</div>
         <h2 className="text-lg font-semibold text-[#e2e8f0]">You're all done!</h2>
         <p className="text-sm text-[#94a3b8]">
@@ -253,6 +365,7 @@ export default function ReviewQueue() {
 
   return (
     <div className="flex flex-col h-full px-4 py-5">
+      {propagateDialog}
       {/* Progress */}
       <div className="max-w-2xl mx-auto w-full mb-5">
         <div className="flex justify-between text-xs text-[#64748b] mb-1.5">

@@ -16,10 +16,14 @@ from src.api.deps import get_db
 from src.config import settings
 from src.db.queries.annotations import (
     get_annotation,
+    get_annotation_by_transaction,
     insert_annotation,
     list_review_queue,
     update_annotation,
 )
+from src.db.queries.embeddings import find_similar
+from src.pipeline.counterparty import normalize_identity
+from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.categories import resolve_category_ids
 from src.db.queries.common import dump_string_list, parse_string_list
@@ -238,6 +242,127 @@ def confirm_annotation(
 
     updated = get_annotation(conn, annotation_id)
     return _as_response(updated)
+
+
+class ApplySimilarRequest(BaseModel):
+    transaction_ids: list[str]
+
+
+_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "rag_knn"}
+
+
+@router.get("/{annotation_id}/similar")
+def similar_candidates(
+    annotation_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Machine-labeled neighbours of this annotation's transaction, for bulk fix-up.
+
+    A human correction is worth 5-20 corrections when propagated: return every
+    machine-sourced annotation whose transaction is either ≥ apply_similar_floor
+    cosine-similar or shares the same UPI counterparty identity. Human-sourced
+    annotations are never offered for overwriting.
+    """
+    ann = get_annotation(conn, annotation_id)
+    if ann is None:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+    txn_row = conn.execute(
+        "SELECT * FROM transactions WHERE id = ?", (ann["transaction_id"],)
+    ).fetchone()
+    if txn_row is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    txn = dict(txn_row)
+
+    candidate_ids: dict[str, float | None] = {}  # transaction_id → similarity
+
+    try:
+        vec = get_embedding_single(build_embed_text(txn))
+        for m in find_similar(conn, vec, top_k=50, exclude_transaction_ids=[txn["id"]]):
+            similarity = 1.0 - m["distance"]
+            if similarity >= settings.apply_similar_floor:
+                candidate_ids[m["transaction_id"]] = round(similarity, 4)
+    except Exception as e:
+        logger.warning("apply-similar | embedding unavailable, identity-only | %s", e)
+
+    identity = normalize_identity(txn.get("raw_description"))
+    if identity is not None:
+        rows = conn.execute(
+            "SELECT id, raw_description FROM transactions WHERE raw_description LIKE 'UPI/%' AND id != ?",
+            (txn["id"],),
+        ).fetchall()
+        for r in rows:
+            if normalize_identity(r["raw_description"]) == identity:
+                candidate_ids.setdefault(r["id"], None)
+
+    if not candidate_ids:
+        return []
+
+    placeholders = ",".join("?" * len(candidate_ids))
+    rows = conn.execute(
+        f"""
+        SELECT a.id AS annotation_id, a.category, a.subcategory, a.merchant, a.source,
+               a.confidence, t.id AS transaction_id, t.txn_date, t.amount,
+               t.debit_credit, t.raw_description
+        FROM annotations a JOIN transactions t ON t.id = a.transaction_id
+        WHERE t.id IN ({placeholders})
+        """,
+        list(candidate_ids),
+    ).fetchall()
+
+    out = []
+    for r in rows:
+        if r["source"] not in _MACHINE_SOURCES:
+            continue
+        item = dict(r)
+        item["similarity"] = candidate_ids.get(r["transaction_id"])
+        item["differs"] = (
+            r["category"] != ann["category"] or r["subcategory"] != ann.get("subcategory")
+        )
+        out.append(item)
+    # Different-label candidates first (the ones worth fixing), then by similarity.
+    out.sort(key=lambda x: (not x["differs"], -(x["similarity"] or 0.0)))
+    return out
+
+
+@router.post("/{annotation_id}/apply-to-similar")
+def apply_to_similar(
+    annotation_id: str,
+    body: ApplySimilarRequest,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Copy this annotation's label onto the selected machine-labeled transactions.
+
+    Each target is treated as a human decision (the user explicitly selected it):
+    feedback is recorded against the target's machine source, source flips to
+    manual (original_source preserved by update_annotation), confidence 1.0.
+    """
+    donor = get_annotation(conn, annotation_id)
+    if donor is None:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    applied = 0
+    skipped = 0
+    for txn_id in body.transaction_ids:
+        target = get_annotation_by_transaction(conn, txn_id)
+        if target is None or target["source"] not in _MACHINE_SOURCES:
+            skipped += 1
+            continue
+        patch = {
+            "category": donor["category"],
+            "subcategory": donor.get("subcategory"),
+            "merchant": donor.get("merchant"),
+            "tags": donor.get("tags"),
+            "confidence": 1.0,
+        }
+        feedback_type = _classify_feedback(target, patch)
+        record_feedback(conn, target["source"], target["category"], feedback_type)
+        update_annotation(conn, target["id"], patch)
+        applied += 1
+    conn.commit()
+    # Re-embed the corrected rows so they become trusted donors (best-effort).
+    for txn_id in body.transaction_ids:
+        embed_transaction(conn, txn_id)
+    return {"applied": applied, "skipped": skipped}
 
 
 @router.get("/review-queue")

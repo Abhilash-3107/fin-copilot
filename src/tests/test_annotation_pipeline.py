@@ -45,12 +45,13 @@ def _insert_txn(
     amount: float = 100.0,
     debit_credit: str = "debit",
 ) -> dict:
+    from src.pipeline.counterparty import normalize_identity
     upi_meta = json.dumps({"note": upi_note}) if upi_note else None
     conn.execute(
         """INSERT INTO transactions
-           (id, statement_id, txn_date, amount, debit_credit, raw_description, upi_meta)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (txn_id, stmt_id, "2026-01-15", amount, debit_credit, description, upi_meta),
+           (id, statement_id, txn_date, amount, debit_credit, raw_description, upi_meta, counterparty_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (txn_id, stmt_id, "2026-01-15", amount, debit_credit, description, upi_meta, normalize_identity(description)),
     )
     conn.commit()
     return {"id": txn_id, "raw_description": description, "upi_meta": upi_meta,
@@ -1783,3 +1784,72 @@ class TestConfigEndpoint:
         self.conn.commit()
         with patch("src.config.settings.dev_mode", False):
             assert self.client.get("/api/config").json()["dev_mode"] is True
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 person-history gate
+# ---------------------------------------------------------------------------
+
+class TestPersonHistoryGate:
+    """The known-person rule keeps 0.95 only when the person's own history does
+    not contradict Transfers; an established non-Transfers prior routes to review."""
+
+    def _conn_with_history(self, category: str, n: int):
+        conn = _make_conn()
+        _insert_statement(conn)
+        for i in range(n):
+            txn_id = f"hist{i}"
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key)
+                   VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, 'SANYA PRASHANT')""",
+                (txn_id, f"2026-01-{i+1:02d}", "UPI/SANYA PRASHANT/1234567890/UPI"),
+            )
+            conn.execute(
+                """INSERT INTO annotations (id, transaction_id, category, confidence, source)
+                   VALUES (?, ?, ?, 1.0, 'manual')""",
+                (f"ann{i}", txn_id, category),
+            )
+        conn.commit()
+        return conn
+
+    def _txn(self):
+        return {"id": "t_new", "raw_description": "UPI/SANYA PRASHANT/9999999999/UPI",
+                "upi_meta": json.dumps({"vpa": "sanya@okhdfc", "ref": "9", "note": ""}),
+                "txn_date": "2026-02-01", "amount": 500.0, "debit_credit": "debit"}
+
+    def _people(self):
+        return [("Sanya", "sanya@okhdfc")]
+
+    def test_non_transfers_history_routes_to_review(self):
+        from src.config import settings
+        from src.pipeline.annotate import rule_annotation
+        conn = self._conn_with_history("Entertainment", 4)
+        result, trace = rule_annotation(conn, self._txn(), self._people())
+        assert result is not None
+        assert result.category == "Transfers"  # label never changed, only routing
+        assert result.confidence <= settings.rag_defer_confidence_cap
+        assert "person_history_disagrees" in trace.caps_applied
+
+    def test_transfers_history_keeps_fast_path(self):
+        from src.pipeline.annotate import rule_annotation
+        conn = self._conn_with_history("Transfers", 4)
+        result, trace = rule_annotation(conn, self._txn(), self._people())
+        assert result.confidence == 0.95
+        assert trace.caps_applied == []
+
+    def test_cold_start_keeps_fast_path(self):
+        from src.pipeline.annotate import rule_annotation
+        conn = _make_conn()
+        _insert_statement(conn)
+        result, trace = rule_annotation(conn, self._txn(), self._people())
+        assert result.confidence == 0.95
+
+    def test_keyword_rule_not_gated(self):
+        from src.pipeline.annotate import rule_annotation
+        conn = self._conn_with_history("Entertainment", 4)
+        txn = {"id": "t_kw", "raw_description": "Swiggy food order", "upi_meta": None,
+               "txn_date": "2026-02-01", "amount": 300.0, "debit_credit": "debit"}
+        result, trace = rule_annotation(conn, txn, [])
+        assert result is not None
+        assert result.confidence == 0.95

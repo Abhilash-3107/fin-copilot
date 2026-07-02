@@ -463,3 +463,71 @@ class TestStatementUploadDedup:
             assert first.status_code == 200
             second = client.post("/api/statements/upload", files=files)
             assert second.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Apply-to-similar
+# ---------------------------------------------------------------------------
+
+def _seed_upi_txn(conn, txn_id, ann_id, name, source="llm", category="Miscellaneous", date="2026-01-10"):
+    conn.execute(
+        "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+    )
+    conn.execute(
+        """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+           VALUES (?, 's1', ?, 250.0, 'debit', ?)""",
+        (txn_id, date, f"UPI/{name}/123456789012/UPI"),
+    )
+    ann = Annotation(id=ann_id, transaction_id=txn_id, category=category,
+                     confidence=0.5, source=source)
+    insert_annotation(conn, ann)
+    conn.commit()
+
+
+class TestApplyToSimilar:
+    """Embedding service is stubbed out in tests, so candidates come from the
+    same-counterparty-identity path — which must work without embeddings."""
+
+    def test_similar_lists_same_identity_machine_rows(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
+        _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="llm", category="Miscellaneous")
+        _seed_upi_txn(conn, "t3", "a3", "OTHER PERSON", source="llm", category="Miscellaneous")
+        resp = client.get("/api/annotations/a1/similar")
+        assert resp.status_code == 200
+        items = resp.json()
+        assert [i["transaction_id"] for i in items] == ["t2"]
+        assert items[0]["differs"] is True
+
+    def test_similar_never_offers_human_rows(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
+        _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="manual", category="Transfers")
+        resp = client.get("/api/annotations/a1/similar")
+        assert resp.json() == []
+
+    def test_apply_copies_label_and_records_feedback(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
+        _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="llm", category="Miscellaneous")
+        resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"applied": 1, "skipped": 0}
+        row = conn.execute("SELECT * FROM annotations WHERE id='a2'").fetchone()
+        assert row["category"] == "Entertainment"
+        assert row["source"] == "manual"
+        assert row["original_source"] == "llm"
+        assert row["confidence"] == 1.0
+        fb = conn.execute(
+            "SELECT corrected FROM feedback_stats WHERE source='llm' AND category='Miscellaneous'"
+        ).fetchone()
+        assert fb["corrected"] == 1
+
+    def test_apply_skips_human_targets(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
+        _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="manual", category="Transfers")
+        resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
+        assert resp.json() == {"applied": 0, "skipped": 1}
+        row = conn.execute("SELECT category FROM annotations WHERE id='a2'").fetchone()
+        assert row["category"] == "Transfers"
