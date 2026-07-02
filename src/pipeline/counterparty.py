@@ -104,28 +104,24 @@ def counterparty_history(
     order must only see labels that existed *before* the transaction being scored,
     otherwise the prior leaks its own answer.
 
-    Identity matching is done in SQL against the same normalization as
-    normalize_identity (upper + trimmed 2nd "/"-segment). SQLite lacks a split
-    function, so we match on the upper-cased description prefix `UPI/<NAME>/` which
-    is equivalent for this format.
+    Identity matching uses the indexed transactions.counterparty_key column
+    (computed via normalize_identity at ingest, backfilled by migration 017) —
+    an indexed lookup instead of the previous full scan of all UPI annotations.
+    The Python-side identity check stays as a cheap exactness guard for the few
+    matched rows (the SQL backfill's whitespace handling is slightly looser).
     """
-    # Reconstruct the `UPI/<NAME>/` prefix this identity must match. The stored
-    # description is upper-cased for comparison; spaces inside the name are
-    # preserved by the bank, and normalize_identity collapsed runs of whitespace,
-    # so we compare against a collapsed-whitespace upper form below in Python to
-    # avoid SQL LIKE edge cases with multi-space names.
     rows = conn.execute(
         """
         SELECT t.id AS transaction_id, t.txn_date, t.raw_description,
                a.category, a.source
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE t.raw_description LIKE 'UPI/%'
+        WHERE t.counterparty_key = ?
           AND a.category IS NOT NULL
           AND (? IS NULL OR t.txn_date < ?)
           AND (? IS NULL OR t.id != ?)
         """,
-        (before_txn_date, before_txn_date, exclude_transaction_id, exclude_transaction_id),
+        (identity, before_txn_date, before_txn_date, exclude_transaction_id, exclude_transaction_id),
     ).fetchall()
 
     out: list[dict] = []

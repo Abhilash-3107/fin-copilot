@@ -33,10 +33,11 @@ def _make_conn() -> sqlite3.Connection:
 def _insert(conn, txn_id, description, category, *, source="manual",
             txn_date="2026-01-15") -> None:
     """Insert a transaction + its annotation as a prior data point."""
+    from src.pipeline.counterparty import normalize_identity
     conn.execute(
-        "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
-        "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?)",
-        (txn_id, txn_date, description),
+        "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+        "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, ?)",
+        (txn_id, txn_date, description, normalize_identity(description)),
     )
     insert_annotation(conn, Annotation(
         transaction_id=txn_id, category=category, confidence=0.95, source=source,
@@ -262,10 +263,11 @@ class TestCounterpartyPriorInPipeline:
 
     def _insert_donor(self, txn_id, description, category, subcategory=None,
                       source="manual", txn_date="2026-01-15"):
+        from src.pipeline.counterparty import normalize_identity
         self.conn.execute(
-            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
-            "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?)",
-            (txn_id, txn_date, description),
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+            "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, ?)",
+            (txn_id, txn_date, description, normalize_identity(description)),
         )
         insert_annotation(self.conn, Annotation(
             transaction_id=txn_id, category=category, subcategory=subcategory,
@@ -287,8 +289,8 @@ class TestCounterpartyPriorInPipeline:
                                "Family", txn_date=f"2026-01-0{i+1}")
         # Target: another KARABI BORA txn, dated after the history.
         self.conn.execute(
-            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
-            "VALUES ('target_kb', 'stmt_01', '2026-02-01', 100.0, 'debit', 'UPI/KARABI BORA/9/UPI')"
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+            "VALUES ('target_kb', 'stmt_01', '2026-02-01', 100.0, 'debit', 'UPI/KARABI BORA/9/UPI', 'KARABI BORA')"
         )
         self.conn.commit()
 

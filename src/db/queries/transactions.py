@@ -26,11 +26,13 @@ def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
     """Insert a transaction row. txn.statement_id must be set before calling."""
     if txn.statement_id is None:
         raise ValueError("transaction.statement_id must be set before inserting")
+    from src.pipeline.counterparty import normalize_identity
+
     conn.execute(
         """
         INSERT INTO transactions
-            (id, statement_id, txn_date, amount, debit_credit, raw_description, running_balance, upi_meta)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, statement_id, txn_date, amount, debit_credit, raw_description, running_balance, upi_meta, counterparty_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             txn.id,
@@ -41,6 +43,7 @@ def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
             txn.raw_description,
             txn.running_balance,
             txn.upi_meta,
+            normalize_identity(txn.raw_description),
         ),
     )
 
