@@ -35,6 +35,11 @@ class ReasoningTrace(BaseModel):
     agreement_factor: Optional[float] = None
     margin_factor: Optional[float] = None
     caps_applied: list[str] = Field(default_factory=list)  # e.g. ["off_example", "defer"]
+    # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
+    counterparty_prior_category: Optional[str] = None
+    counterparty_prior_probability: Optional[float] = None
+    counterparty_prior_n: Optional[int] = None       # prior observations for this counterparty
+    counterparty_prior_effect: Optional[str] = None  # "rescue" | "tighten" | "neutral"
     # LLM paths (rag_prompted + llm)
     llm_reasoning: Optional[str] = None      # the one-sentence "why" from the model
     raw_confidence: Optional[float] = None   # before dampening

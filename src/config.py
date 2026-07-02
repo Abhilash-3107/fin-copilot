@@ -37,6 +37,25 @@ class Settings(BaseSettings):
     # confidence). A confident, merchant-grounded LLM answer (e.g. 'Zomato') is
     # never deferred just because the amount-driven neighbor vote is split.
     rag_defer_llm_confidence: float = 0.85
+    # --- Counterparty recurrence prior (late-fused out-of-band signal) ---
+    # Empirical-Bayes pseudo-count: the weight of the uninformed base rate relative
+    # to observed labels. Higher = more evidence needed before a counterparty's own
+    # history dominates. With this >0, a single observation can't pin probability to
+    # 1.0 — recurrence (several consistent labels) is required to clear the floor.
+    counterparty_prior_weight: float = 2.0
+    # Minimum prior observations before the recurrence prior may influence routing.
+    # Below this the prior is inert → cold-start / first-time counterparties behave
+    # exactly like today. Tuned on the Dec–Mar 2026 causal backtest sweep
+    # (scripts/backtest_counterparty_prior.py --sweep): min_obs=2, floor=0.65 gave
+    # the best precision (~85%) at comparable coverage. The ~85% ceiling is the
+    # irreducible "recurring contact's occasional off-category spend" — which the
+    # late-fusion layer (prior vs LLM disagreement → review) catches, not the floor.
+    counterparty_min_observations: int = 2
+    # The shrunk P(category | counterparty) must reach this for the prior to count
+    # as a dominant, established signal.
+    counterparty_dominance_floor: float = 0.65
+    # Master switch for the counterparty recurrence prior in the rag_prompted stage.
+    counterparty_prior_enabled: bool = True
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
     # When on (DEV_MODE=true), the annotation pipeline captures a per-annotation

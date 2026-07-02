@@ -26,6 +26,7 @@ from src.models.annotation import (
 )
 from src.models.transaction import TxnRow
 from src.pipeline.calibration import get_calibrated_dampening
+from src.pipeline.counterparty import CounterpartyPrior, counterparty_prior
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import (
     annotate_transaction_llm,
@@ -410,6 +411,41 @@ def _compute_margin_factor(top_distance: float, next_diff_distance: float | None
     return 0.85 + 0.15 * (margin / settings.rag_margin_safe)
 
 
+def _fuse_counterparty_prior(
+    confidence: float,
+    chosen_category: str,
+    prior: CounterpartyPrior,
+) -> tuple[float, str]:
+    """Late-fuse the counterparty recurrence prior into a rag_prompted confidence.
+
+    Out-of-band signal: the embedding/KNN can't see that a counterparty recurs, but
+    the user's own history can. We adjust *confidence/routing only* — never the label
+    — consistent with the prior being a weak-but-orthogonal evidence source.
+
+    - established prior AGREES with the chosen label → "rescue": lift confidence
+      toward prior.probability so genuine recurring transfers (which category-level
+      calibration over-punishes, e.g. KARABI BORA) clear the review threshold.
+    - established prior DISAGREES → "tighten": cap below threshold so it routes to
+      review. Catches both the cab-misfire and a recurring contact's occasional
+      off-category spend (the irreducible ~15% the floor can't fix).
+    - not established (cold start / first-time counterparty) → "neutral": no change.
+
+    Returns (new_confidence, effect) where effect ∈ {"rescue","tighten","neutral"}.
+    """
+    if not settings.counterparty_prior_enabled or not prior.established:
+        return confidence, "neutral"
+
+    if prior.category == chosen_category:
+        # Rescue: don't reduce an already-confident score; only raise a dampened one,
+        # bounded by how strongly the counterparty supports this category.
+        rescued = max(confidence, round(prior.probability, 4))
+        return rescued, ("rescue" if rescued > confidence else "neutral")
+
+    # Disagreement: an established counterparty prior contradicts the per-txn pick.
+    capped = min(confidence, settings.rag_defer_confidence_cap)
+    return capped, ("tighten" if capped < confidence else "neutral")
+
+
 def _try_rag_annotation(
     conn: sqlite3.Connection,
     txn: TxnRow,
@@ -566,6 +602,11 @@ def _try_rag_annotation(
             confidence = round(llm_result.confidence * dampening, 4)
             caps_applied: list[str] = []
 
+            # Seam A: counterparty recurrence prior — out-of-band, computed from the
+            # user's own prior labels (causal: bounded by this txn's date, excludes
+            # self). Inert for unknown/first-time counterparties.
+            prior = counterparty_prior(conn, txn)
+
             # Off-example backstop: if the LLM picked a category that none of the
             # retrieved examples used, it's likely falling back on its prior rather
             # than the evidence. Don't override it (the example majority can itself
@@ -602,6 +643,19 @@ def _try_rag_annotation(
                 confidence = capped
                 caps_applied.append("defer")
 
+            # Seam B: fuse the counterparty prior. Applied after the existing caps so
+            # it can rescue a genuine recurring transfer past category-calibration
+            # dampening, or tighten further when an established prior disagrees with
+            # the per-txn pick. Adjusts confidence/routing only, never the label.
+            confidence, prior_effect = _fuse_counterparty_prior(confidence, category, prior)
+            if prior_effect != "neutral":
+                caps_applied.append(f"counterparty_{prior_effect}")
+                logger.info(
+                    "rag_prompted counterparty %s | txn=%s  → %s  prior=%s (n=%d p=%.2f)  conf→%.4f",
+                    prior_effect, txn["id"], category, prior.category,
+                    prior.n_prior, prior.probability, confidence,
+                )
+
             logger.debug(
                 "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
                 txn["id"], category, llm_result.subcategory, llm_result.confidence, confidence,
@@ -615,6 +669,10 @@ def _try_rag_annotation(
                 vote_share=round(vote_share, 4) if vote_share is not None else None,
                 trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
                 caps_applied=caps_applied,
+                counterparty_prior_category=prior.category if prior.established else None,
+                counterparty_prior_probability=prior.probability if prior.established else None,
+                counterparty_prior_n=prior.n_prior if prior.established else None,
+                counterparty_prior_effect=prior_effect,
                 llm_reasoning=llm_result.reasoning,
                 raw_confidence=llm_result.confidence,
                 dampening_factor=round(dampening, 4),
