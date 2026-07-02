@@ -1853,3 +1853,37 @@ class TestPersonHistoryGate:
         result, trace = rule_annotation(conn, txn, [])
         assert result is not None
         assert result.confidence == 0.95
+
+
+class TestPersonTokenMatching:
+    """_person_token_matches: explicit token semantics (VPA vs name fragment)."""
+
+    def _m(self, token, vpa=None, key=None, desc=""):
+        from src.pipeline.annotate import _person_token_matches
+        return _person_token_matches(token, vpa, key, desc)
+
+    def test_name_token_prefix_matches_counterparty_word(self):
+        assert self._m("karabi", key="KARABI BORA")
+        assert self._m("sanya", key="SANYA PRASHANT")
+
+    def test_name_token_matches_second_word_prefix(self):
+        assert self._m("bora", key="KARABI BORA")
+
+    def test_name_token_does_not_substring_match_merchant(self):
+        # old behavior: 'sanya' in 'upi/vasanya foods/...' would fire
+        assert not self._m("sanya", key="VASANYA FOODS", desc="upi/vasanya foods/123/upi")
+
+    def test_short_token_no_longer_fires_mid_word(self):
+        assert not self._m("ma", key="AABID ALI SO NA", desc="upi/aabid ali so na/1/salaman")
+        assert self._m("ma", key="MA KITCHEN")  # still a legitimate word prefix
+
+    def test_vpa_token_exact_only_when_vpa_present(self):
+        assert self._m("rahul@okaxis", vpa="rahul@okaxis")
+        assert not self._m("rahul@okaxis", vpa="notrahul@okaxis")
+
+    def test_vpa_token_falls_back_to_desc_substring_without_vpa(self):
+        assert self._m("rahul@okaxis", desc="imps rahul@okaxis transfer")
+
+    def test_name_token_word_boundary_fallback_without_key(self):
+        assert self._m("karabi", desc="imps to karabi bora ref 12")
+        assert not self._m("karabi", desc="imps to notkarabi ref 12")

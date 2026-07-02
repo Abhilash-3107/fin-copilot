@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import re
 import sqlite3
 from collections import Counter
 
@@ -26,7 +27,7 @@ from src.models.annotation import (
 )
 from src.models.transaction import TxnRow
 from src.pipeline.calibration import get_calibrated_dampening
-from src.pipeline.counterparty import CounterpartyPrior, counterparty_prior
+from src.pipeline.counterparty import CounterpartyPrior, counterparty_prior, normalize_identity
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import (
     annotate_transaction_llm,
@@ -89,13 +90,36 @@ def _normalize_subcategory(
     return None
 
 
+def _person_token_matches(
+    token: str, vpa: str | None, counterparty_key: str | None, desc: str
+) -> bool:
+    """Decide whether one person match-token matches a transaction.
+
+    Token semantics are explicit by shape:
+    - VPA tokens (contain '@'): exact VPA equality when the txn has a VPA, else
+      substring in the description (legacy rows ingested before VPA extraction).
+      Never a substring of another VPA ('rahul@x' must not match 'notrahul@x').
+    - Name tokens: word-prefix match against the counterparty name segment only
+      ('karabi' matches 'KARABI BORA'), never a bare substring of the whole
+      description — a short token must not fire inside an unrelated merchant
+      string. Falls back to word-boundary matching in the description for
+      non-UPI rows (which have no counterparty_key).
+    """
+    if "@" in token:
+        if vpa:
+            return vpa == token
+        return token in desc
+    if counterparty_key:
+        return any(word.startswith(token) for word in counterparty_key.lower().split())
+    return re.search(rf"\b{re.escape(token)}", desc) is not None
+
+
 def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
     """Return a Peer Transfer annotation if the transaction matches a known person.
 
-    known_people is a list of (display_name, match_token) where match_token is the
-    person's UPI handle, already lowercased. When the transaction has an extracted
-    counterparty VPA, match it exactly; otherwise fall back to substring search in
-    the description (older rows ingested before VPA extraction).
+    known_people is a list of (display_name, match_token) where match_token is
+    the person's UPI handle or a name fragment, already lowercased. Matching
+    semantics live in _person_token_matches.
     """
     vpa = None
     upi_meta = txn.get("upi_meta")
@@ -107,9 +131,9 @@ def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> Ann
             pass
 
     desc = (txn.get("raw_description") or "").lower()
+    counterparty_key = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
     for name, token in known_people:
-        matched = vpa == token if vpa else token in desc
-        if matched:
+        if _person_token_matches(token, vpa, counterparty_key, desc):
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=name,

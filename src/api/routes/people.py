@@ -19,6 +19,18 @@ from src.db.queries.people import (
 router = APIRouter()
 
 
+def _validate_match_token(upi: Optional[str]) -> None:
+    """A short match-token is a collision hazard: name tokens are word-prefix
+    matched against counterparty names, so 'ma' would fire on MAHESH, MANOJ,
+    MAX Fashion, … Require 3+ characters (VPA tokens with '@' are exact-match
+    and exempt)."""
+    if upi and "@" not in upi and len(upi.strip()) < 3:
+        raise HTTPException(
+            status_code=422,
+            detail="Match token must be at least 3 characters (it matches by name prefix).",
+        )
+
+
 class PersonCreate(BaseModel):
     name: str
     upi: Optional[str] = None
@@ -26,6 +38,7 @@ class PersonCreate(BaseModel):
 
 @router.post("", status_code=201)
 def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
+    _validate_match_token(body.upi)
     person = create_person(conn, body.name, body.upi)
     conn.commit()
     return person
@@ -43,6 +56,7 @@ class PersonUpdate(BaseModel):
 
 @router.patch("/{person_id}")
 def update(person_id: str, body: PersonUpdate, conn: sqlite3.Connection = Depends(get_db)):
+    _validate_match_token(body.upi)
     person = update_person(conn, person_id, body.name, body.upi or None)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
