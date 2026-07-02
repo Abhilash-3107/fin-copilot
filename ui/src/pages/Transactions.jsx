@@ -183,6 +183,8 @@ export default function Transactions() {
           tags: full.tags,
           confidence: full.confidence,
           source: full.source,
+          // dev mode only: backend attaches the reasoning trace when DEV_MODE is on
+          reasoning: full.reasoning ?? null,
         })
       } else {
         setActiveAnnotation(null)

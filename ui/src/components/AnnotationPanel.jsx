@@ -6,6 +6,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
 import TagInput from './TagInput.jsx'
 import { SOURCE_PILL, formatAmount } from './TransactionTable.jsx'
+import ReasoningPanel from './ReasoningPanel.jsx'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -275,6 +276,9 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
             </div>
           )}
         </div>
+
+        {/* Dev mode: collapsible reasoning trace (backend only sends it when DEV_MODE is on) */}
+        {annotation?.reasoning && <ReasoningPanel reasoning={annotation.reasoning} />}
 
         {/* Form */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
