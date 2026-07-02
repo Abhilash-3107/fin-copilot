@@ -18,14 +18,40 @@ class TraceNeighbour(BaseModel):
     similarity: float  # 1.0 - distance
 
 
-class ReasoningTrace(BaseModel):
-    """Why the pipeline chose what it did — captured at annotation time for dev mode.
+class TraceExample(BaseModel):
+    """One few-shot example as it was sent to the rag_prompted LLM call.
 
-    All fields are optional so each stage fills only what applies. Serialized to the
-    annotations.reasoning JSON column (only when settings.dev_mode is on).
+    Distinct from TraceNeighbour: neighbours are the deduped vote donors, examples
+    are what the LLM actually saw (wide-pool + diversity selection + source ordering
+    can make the two sets differ).
+    """
+    transaction_id: Optional[str] = None
+    raw_description: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    source: Optional[str] = None
+
+
+class ReasoningTrace(BaseModel):
+    """Why the pipeline chose what it did — captured at annotation time.
+
+    Always stored (annotations.reasoning JSON column); dev mode only gates whether
+    the API/UI surface it. This is a persistence format read long after settings
+    change, so keep it strictly additive: every new field must be optional.
+
+    All fields are optional so each stage fills only what applies.
     """
     stage: str  # "rule" | "learned_rule" | "rag_direct" | "rag_knn" | "rag_prompted" | "llm"
     final_confidence: float
+    # Snapshot of the settings each measured value was gated against, taken at
+    # annotation time (settings drift; the trace must stay self-explanatory).
+    # Keys are setting names, e.g. {"rag_direct_threshold": 0.92, ...}.
+    thresholds: dict[str, float] = Field(default_factory=dict)
+    # Routing trail: why earlier stages fell through before this one decided,
+    # e.g. ["rule: no match", "rag_direct: donor source 'llm' untrusted"].
+    skips: list[str] = Field(default_factory=list)
+    # The exact string that was embedded for retrieval (build_embed_text output).
+    embed_text: Optional[str] = None
     # RAG paths (rag_direct + rag_prompted)
     best_similarity: Optional[float] = None
     neighbours: list[TraceNeighbour] = Field(default_factory=list)
@@ -44,6 +70,17 @@ class ReasoningTrace(BaseModel):
     llm_reasoning: Optional[str] = None      # the one-sentence "why" from the model
     raw_confidence: Optional[float] = None   # before dampening
     dampening_factor: Optional[float] = None
+    calibration_bucket: Optional[str] = None  # (source, category) feedback bucket, e.g. "llm/Food & Dining"
+    # LLM call telemetry
+    llm_model: Optional[str] = None
+    prompt_tokens: Optional[int] = None        # prompt_eval_count / usage.prompt_tokens
+    prompt_truncated: Optional[bool] = None    # prompt_tokens ~ num_ctx → front-truncation likely
+    verbalized_confidence: Optional[float] = None  # the number the model wrote
+    logprob_confidence: Optional[float] = None     # token-logprob mass (when enabled/available)
+    # Few-shot prompt content (rag_prompted)
+    prompt_examples: list[TraceExample] = Field(default_factory=list)
+    majority_category: Optional[str] = None  # the hint passed to the LLM
+    majority_count: Optional[int] = None
     # rule path
     matched_rule: Optional[str] = None
 

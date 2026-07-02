@@ -1338,7 +1338,7 @@ class TestUpiParsing:
 
 class TestKnownPersonMatching:
     def _people(self):
-        return [("Rahul", "rahul@okaxis")]
+        return [("Rahul", "rahul@okaxis", None)]
 
     def test_exact_vpa_match(self):
         from src.pipeline.annotate import _match_known_person
@@ -1626,8 +1626,9 @@ class TestEmbeddingsEndpoint:
 # ---------------------------------------------------------------------------
 
 class TestReasoningTrace:
-    """The pipeline captures a per-annotation reasoning trace into the reasoning
-    column, but only when dev mode is on (the runtime app_settings value)."""
+    """The pipeline always captures a per-annotation reasoning trace into the
+    reasoning column; dev mode (the runtime app_settings value) only gates
+    whether the API surfaces it."""
 
     def setup_method(self):
         self.conn = _make_conn()
@@ -1646,15 +1647,17 @@ class TestReasoningTrace:
         assert ann is not None
         return ann.get("reasoning"), ann
 
-    def test_no_trace_when_dev_mode_off(self):
-        """With dev_mode off (default), the reasoning column stays NULL."""
+    def test_trace_captured_even_with_dev_mode_off(self):
+        """Traces are stored unconditionally so flipping dev mode on later
+        explains past decisions; only the API surface is gated."""
         from src.pipeline.annotate import auto_annotate
 
         _insert_txn(self.conn, "t_off", "Swiggy food order")
         auto_annotate(self.conn, transaction_ids=["t_off"])
 
         reasoning, _ = self._stored_reasoning("t_off")
-        assert reasoning is None
+        assert reasoning is not None
+        assert json.loads(reasoning)["stage"] == "rule"
 
     def test_rule_trace_captured(self):
         from src.pipeline.annotate import auto_annotate
@@ -1705,6 +1708,16 @@ class TestReasoningTrace:
         assert trace["llm_reasoning"] == "Looks like a retail purchase."
         assert trace["raw_confidence"] == pytest.approx(0.8)
         assert trace["final_confidence"] == pytest.approx(ann["confidence"])
+        # New trace fields: threshold snapshot, routing trail, prompt content.
+        assert trace["thresholds"]["rag_direct_threshold"] == pytest.approx(0.92)
+        assert trace["thresholds"]["confidence_threshold"] == pytest.approx(0.85)
+        assert any(s.startswith("rule:") for s in trace["skips"])
+        assert any("rag_direct" in s for s in trace["skips"])
+        assert trace["embed_text"]
+        assert len(trace["prompt_examples"]) == 1
+        assert trace["prompt_examples"][0]["category"] == "Shopping"
+        assert trace["majority_category"] == "Shopping"
+        assert trace["calibration_bucket"] == "rag_prompted/Shopping"
 
     def test_plain_llm_trace_has_dampening(self):
         from src.pipeline.annotate import auto_annotate
@@ -1726,6 +1739,34 @@ class TestReasoningTrace:
         assert trace["dampening_factor"] is not None
         assert trace["llm_reasoning"] == "No close history; best guess."
         assert trace["final_confidence"] == pytest.approx(ann["confidence"])
+        # Routing trail explains why RAG never happened.
+        assert any("embedding failed" in s for s in trace["skips"])
+        assert trace["calibration_bucket"] == "llm/Shopping"
+        assert trace["thresholds"]["confidence_threshold"] == pytest.approx(0.85)
+
+    def test_llm_telemetry_lands_in_trace(self):
+        """AnnotationResult telemetry (model, prompt tokens, truncation flag,
+        verbalized vs logprob confidence) is carried into the stored trace."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResult
+
+        _insert_txn(self.conn, "t_tel", "mystery vendor telemetry")
+        llm_result = AnnotationResult(
+            category="Shopping", confidence=0.9312, reasoning="why",
+            model_name="qwen3.5:4b", prompt_tokens=1990, prompt_truncated=True,
+            verbalized_confidence=0.9, logprob_confidence=0.9312,
+        )
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["t_tel"])
+
+        reasoning, _ = self._stored_reasoning("t_tel")
+        trace = json.loads(reasoning)
+        assert trace["llm_model"] == "qwen3.5:4b"
+        assert trace["prompt_tokens"] == 1990
+        assert trace["prompt_truncated"] is True
+        assert trace["verbalized_confidence"] == pytest.approx(0.9)
+        assert trace["logprob_confidence"] == pytest.approx(0.9312)
 
     def test_review_queue_endpoint_exposes_trace_in_dev_mode(self):
         """The review-queue endpoint parses the stored JSON only when dev_mode is on."""
@@ -1758,6 +1799,89 @@ class TestReasoningTrace:
             resp = client.get("/api/annotations/review-queue")
             item = next(i for i in resp.json() if i["transaction_id"] == "t_q")
             assert "reasoning" not in item
+        finally:
+            app.dependency_overrides.pop(api_get_db, None)
+
+
+class TestRunSummary:
+    """The run-level summary aggregates stored traces into a stage funnel,
+    distributions, and near-miss lists; the endpoint is gated behind dev mode."""
+
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def _annotate_mixed(self):
+        """A rule hit (auto-accepted) + a low-confidence llm miss (routed to
+        review), so the funnel spans two stages and the review path is exercised."""
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResult
+
+        _insert_txn(self.conn, "s_rule", "Netflix subscription")
+        _insert_txn(self.conn, "s_llm", "mystery vendor zzz")
+        # Verbalized 0.5 → after ~0.85 dampening lands well below the review
+        # threshold, i.e. a clear review-queue miss regardless of exact factor.
+        llm_result = AnnotationResult(
+            category="Shopping", confidence=0.5, reasoning="guess",
+            model_name="m", prompt_tokens=900, prompt_truncated=False,
+        )
+        with patch("src.pipeline.annotate.get_embedding_single", side_effect=Exception("down")), \
+             patch("src.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            auto_annotate(self.conn, transaction_ids=["s_rule", "s_llm"])
+
+    def test_run_summary_funnel_and_histograms(self):
+        from src.pipeline.run_summary import run_summary
+
+        self._annotate_mixed()
+        s = run_summary(self.conn)
+        assert s["total"] == 2
+        stages = {row["stage"]: row for row in s["stage_funnel"]}
+        assert stages["rule"]["count"] == 1
+        assert stages["rule"]["auto_accepted"] == 1
+        assert stages["llm"]["count"] == 1
+        assert stages["llm"]["review"] == 1
+        assert s["review_count"] == 1
+        assert s["auto_accepted_count"] == 1
+        assert sum(s["confidence"]["counts"]) == 2
+
+    def test_run_summary_near_miss_confidence(self):
+        """A model annotation whose confidence sits just under the review
+        threshold is surfaced as a near-auto-accept tuning candidate."""
+        from src.pipeline.run_summary import run_summary
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+
+        _insert_txn(self.conn, "s_near", "borderline vendor")
+        # rag_direct is inserted un-dampened, so we control the exact confidence:
+        # 0.82 is within the 0.05 band below the 0.85 review threshold.
+        insert_annotation(self.conn, Annotation(
+            transaction_id="s_near", category="Shopping", confidence=0.82,
+            source="rag_direct",
+        ))
+        self.conn.commit()
+
+        s = run_summary(self.conn)
+        assert any(m["transaction_id"] == "s_near" for m in s["near_miss_confidence"])
+
+    def test_run_summary_endpoint_gated_by_dev_mode(self):
+        from src.main import app
+        from src.api.deps import get_db as api_get_db
+        from src.db.queries.app_settings import set_dev_mode
+
+        self._annotate_mixed()
+        app.dependency_overrides[api_get_db] = lambda: self.conn
+        try:
+            client = TestClient(app)
+            # Dev mode off → 404.
+            assert client.get("/api/annotations/run-summary").status_code == 404
+            set_dev_mode(self.conn, True)
+            self.conn.commit()
+            resp = client.get("/api/annotations/run-summary")
+            assert resp.status_code == 200
+            assert resp.json()["total"] == 2
         finally:
             app.dependency_overrides.pop(api_get_db, None)
 
@@ -1837,7 +1961,7 @@ class TestPersonHistoryGate:
                 "txn_date": "2026-02-01", "amount": 500.0, "debit_credit": "debit"}
 
     def _people(self):
-        return [("Sanya", "sanya@okhdfc")]
+        return [("Sanya", "sanya@okhdfc", None)]
 
     def test_non_transfers_history_routes_to_review(self):
         from src.config import settings
@@ -2045,6 +2169,6 @@ class TestLearnedRules:
         txn = {"id": "new", "raw_description": "UPI/KARABI BORA/9/UPI",
                "counterparty_key": "KARABI BORA", "upi_meta": None,
                "txn_date": "2026-02-01", "amount": 100.0, "debit_credit": "debit"}
-        result, _ = rule_annotation(conn, txn, [("ma", "karabi")])
+        result, _ = rule_annotation(conn, txn, [("ma", "karabi", None)])
         assert result.source == "rule"
         assert result.subcategory == "Peer Transfer"

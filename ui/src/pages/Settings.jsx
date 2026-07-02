@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import RunSummary from '../components/RunSummary.jsx'
 
 function Toggle({ checked, disabled, onChange }) {
   return (
@@ -26,6 +28,7 @@ function LearnedRules() {
   const toast = useToast()
   const [rules, setRules] = useState([])
   const [loading, setLoading] = useState(true)
+  const [dismissing, setDismissing] = useState(null)
 
   useEffect(() => {
     api.get('/annotations/learned-rules')
@@ -34,13 +37,27 @@ function LearnedRules() {
       .finally(() => setLoading(false))
   }, [])
 
+  async function dismiss(rule) {
+    setDismissing(rule.counterparty_key)
+    try {
+      await api.delete(`/annotations/learned-rules/${encodeURIComponent(rule.counterparty_key)}`)
+      setRules(rs => rs.filter(r => r.counterparty_key !== rule.counterparty_key))
+      toast(`Stopped learning "${rule.merchant || rule.counterparty_key}"`, 'info')
+    } catch (e) {
+      toast(`Couldn't dismiss - ${e.message}`, 'error')
+    } finally {
+      setDismissing(null)
+    }
+  }
+
   return (
     <div className="mt-8">
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Learned from your corrections</h2>
       <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
         When you verify a merchant enough times and agree on a category, your copilot
         starts categorizing it automatically - no AI needed. These rules update as you
-        review; correcting a merchant is how you change or retire one.
+        review; correcting a merchant is how you change one. Dismiss (×) a rule to stop
+        it - useful once you've added that contact to People and they're handled there.
       </p>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
@@ -58,6 +75,7 @@ function LearnedRules() {
                 <th className="font-medium px-5 py-2.5">Merchant</th>
                 <th className="font-medium px-5 py-2.5">Categorized as</th>
                 <th className="font-medium px-5 py-2.5 text-right">Confidence</th>
+                <th className="font-medium px-5 py-2.5 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#2d3148]">
@@ -76,6 +94,16 @@ function LearnedRules() {
                   <td className="px-5 py-3 text-right text-[#64748b] tabular-nums">
                     {Math.round(r.purity * 100)}%
                     <span className="ml-1.5 text-[#475569]">({r.support}/{r.total})</span>
+                  </td>
+                  <td className="px-2 py-3 text-right">
+                    <button
+                      onClick={() => dismiss(r)}
+                      disabled={dismissing === r.counterparty_key}
+                      title="Stop learning this merchant"
+                      className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
+                    >
+                      <X size={15} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -123,14 +151,30 @@ export default function Settings() {
           <div>
             <p className="text-sm font-medium text-[#e2e8f0]">Developer mode</p>
             <p className="text-xs text-[#64748b] mt-0.5 leading-relaxed">
-              Capture and show the reasoning behind each auto-categorization
-              (neighbours, similarity math, and the model's explanation) in the review
-              queue. Only affects transactions categorized while this is on.
+              Show the reasoning behind each auto-categorization — the neighbours,
+              similarity math against each threshold, the model's explanation, and a
+              run-level summary below. The reasoning is always recorded, so turning
+              this on also explains transactions categorized earlier.
             </p>
           </div>
           <Toggle checked={devMode} disabled={loading || saving} onChange={setDev} />
         </div>
       </div>
+
+      {devMode && (
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Auto-categorization insights</h2>
+          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+            Where your annotated transactions sit relative to the pipeline's thresholds:
+            which stage decided each, how the similarity and confidence scores are
+            distributed against their cutoffs, and the transactions sitting just below a
+            gate. This is what to look at when deciding how to tune those thresholds.
+          </p>
+          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+            <RunSummary />
+          </div>
+        </div>
+      )}
 
       <LearnedRules />
     </div>

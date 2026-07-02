@@ -110,11 +110,13 @@ class Settings(BaseSettings):
     apply_similar_floor: float = 0.9
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
-    # When on (DEV_MODE=true), the annotation pipeline captures a per-annotation
-    # reasoning trace (neighbours, similarity math, donor vote, raw vs dampened
-    # confidence, LLM "why") into annotations.reasoning, and the review queue UI
-    # exposes a "Why this annotation?" panel. Off by default — regular users never
-    # see it and no trace is stored.
+    # The annotation pipeline always captures a per-annotation reasoning trace
+    # (routing trail, neighbours, similarity math vs thresholds, donor vote,
+    # embed text, few-shot prompt content, LLM telemetry, raw vs dampened
+    # confidence) into annotations.reasoning. DEV_MODE only gates the surface:
+    # when on, the API returns the trace and the UI shows the "Why this
+    # annotation?" panel. Off by default — regular users never see it, but
+    # flipping it on explains past decisions too.
     dev_mode: bool = False
 
     # Last-segment values in UPI descriptions that carry no meaningful note.

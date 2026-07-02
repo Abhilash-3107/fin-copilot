@@ -365,6 +365,25 @@ def apply_to_similar(
     return {"applied": applied, "skipped": skipped}
 
 
+@router.get("/run-summary")
+def run_summary_endpoint(
+    statement_id: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Run-level aggregation over stored reasoning traces (dev-mode insight surface).
+
+    Stage funnel, similarity/confidence distributions drawn against their
+    thresholds, and near-miss lists. Gated behind dev mode: without it, the trace
+    detail this summarizes is never shown, so the summary would be misleading.
+    Optional statement_id scopes it to one statement.
+    """
+    from src.pipeline.run_summary import run_summary
+
+    if not get_dev_mode(conn):
+        raise HTTPException(status_code=404, detail="Developer mode is off")
+    return run_summary(conn, statement_id)
+
+
 @router.get("/learned-rules")
 def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
     """Merchant memories the pipeline would apply deterministically right now.

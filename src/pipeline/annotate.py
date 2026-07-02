@@ -12,18 +12,18 @@ logger = logging.getLogger(__name__)
 
 from src.config import settings
 from src.db.queries.annotations import insert_annotation
-from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
 from src.db.queries.learned_rules import lookup_learned_rule
-from src.db.queries.people import list_people
+from src.db.queries.people import list_people, relationship_subcategory
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import (
     Annotation,
     AnnotationCreate,
     AutoAnnotateResult,
     ReasoningTrace,
+    TraceExample,
     TraceNeighbour,
 )
 from src.models.transaction import TxnRow
@@ -91,6 +91,30 @@ def _normalize_subcategory(
     return None
 
 
+def _threshold_snapshot(*names: str) -> dict[str, float]:
+    """Snapshot current settings values into a trace, keyed by setting name.
+
+    Traces are read long after settings change, so every measured value in a
+    trace carries the threshold it was compared against at annotation time.
+    """
+    return {n: float(getattr(settings, n)) for n in names}
+
+
+def _llm_telemetry_fields(llm_result) -> dict:
+    """Extract call-telemetry trace fields from an LLM result.
+
+    getattr with defaults so a plain AnnotationResponse (tests, older callers)
+    works as well as the telemetry-carrying AnnotationResult.
+    """
+    return {
+        "llm_model": getattr(llm_result, "model_name", None),
+        "prompt_tokens": getattr(llm_result, "prompt_tokens", None),
+        "prompt_truncated": getattr(llm_result, "prompt_truncated", None),
+        "verbalized_confidence": getattr(llm_result, "verbalized_confidence", None),
+        "logprob_confidence": getattr(llm_result, "logprob_confidence", None),
+    }
+
+
 def _person_token_matches(
     token: str, vpa: str | None, counterparty_key: str | None, desc: str
 ) -> bool:
@@ -115,12 +139,16 @@ def _person_token_matches(
     return re.search(rf"\b{re.escape(token)}", desc) is not None
 
 
-def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
-    """Return a Peer Transfer annotation if the transaction matches a known person.
+def _match_known_person(
+    txn: TxnRow, known_people: list[tuple[str, str, str | None]]
+) -> AnnotationCreate | None:
+    """Return a Transfers annotation if the transaction matches a known person.
 
-    known_people is a list of (display_name, match_token) where match_token is
-    the person's UPI handle or a name fragment, already lowercased. Matching
-    semantics live in _person_token_matches.
+    known_people is a list of (display_name, match_token, relationship) where
+    match_token is the person's UPI handle or a name fragment, already lowercased,
+    and relationship drives the subcategory: family relationships (dad/mom/…) map
+    to Transfers › Family, everything else (including unlabelled) to Peer Transfer.
+    Matching semantics live in _person_token_matches.
     """
     vpa = None
     upi_meta = txn.get("upi_meta")
@@ -133,14 +161,16 @@ def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> Ann
 
     desc = (txn.get("raw_description") or "").lower()
     counterparty_key = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
-    for name, token in known_people:
+    for name, token, relationship in known_people:
         if _person_token_matches(token, vpa, counterparty_key, desc):
+            subcategory = relationship_subcategory(relationship)
+            is_family = subcategory == "Family"
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=name,
                 category="Transfers",
-                subcategory="Peer Transfer",
-                tags=["transfer", "peer"],
+                subcategory=subcategory,
+                tags=["transfer", "family"] if is_family else ["transfer", "peer"],
                 confidence=0.95,
                 source="rule",
             )
@@ -150,7 +180,7 @@ def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> Ann
 def rule_annotation(
     conn: sqlite3.Connection,
     txn: TxnRow,
-    known_people: list[tuple[str, str]],
+    known_people: list[tuple[str, str, str | None]],
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Stage 1: known-person match or keyword rule, with the person-history gate.
 
@@ -195,6 +225,11 @@ def rule_annotation(
                 stage="learned_rule",
                 final_confidence=ann.confidence,
                 matched_rule=f"{learned.counterparty_key} ({learned.support}/{learned.total} verified, purity {learned.purity})",
+                thresholds=_threshold_snapshot(
+                    "learned_rule_min_support", "learned_rule_purity",
+                    "learned_rule_confidence", "confidence_threshold",
+                ),
+                skips=["rule: no person/keyword match"],
             )
             return ann, trace
 
@@ -219,7 +254,13 @@ def rule_annotation(
         matched_rule=result.merchant or result.category,
         caps_applied=caps,
         counterparty_prior_category=prior.category if prior is not None and prior.established else None,
+        counterparty_prior_probability=prior.probability if prior is not None and prior.established else None,
+        counterparty_prior_n=prior.n_prior if prior is not None and prior.established else None,
         counterparty_prior_effect="tighten" if caps else "neutral",
+        thresholds=_threshold_snapshot(
+            "confidence_threshold", "rag_defer_confidence_cap",
+            "counterparty_min_observations", "counterparty_dominance_floor",
+        ),
     )
     return result, trace
 
@@ -241,10 +282,6 @@ def auto_annotate(
     so callers (e.g. background jobs) can report progress.
     """
     logger.info("auto_annotate start | statement_id=%s", statement_id)
-
-    # Runtime, UI-toggleable: capture the reasoning trace only when dev mode is on.
-    # Read once per run (the setting won't flip mid-run).
-    dev_mode = get_dev_mode(conn)
 
     all_txns = list_transactions(conn, statement_id=statement_id)
     unannotated = list_transactions(conn, statement_id=statement_id, unannotated=True)
@@ -274,8 +311,9 @@ def auto_annotate(
 
     def _persist(ann_create: AnnotationCreate, trace: ReasoningTrace | None = None) -> None:
         nonlocal uncommitted
-        # Only store the reasoning trace in dev mode — regular runs leave it NULL.
-        reasoning = trace.model_dump_json() if (trace is not None and dev_mode) else None
+        # Always store the reasoning trace — dev mode only gates whether the
+        # API/UI surface it, so flipping it on later explains past decisions too.
+        reasoning = trace.model_dump_json() if trace is not None else None
         annotation = Annotation(
             transaction_id=ann_create.transaction_id,
             merchant=ann_create.merchant,
@@ -293,7 +331,11 @@ def auto_annotate(
             uncommitted = 0
 
     # Load known people once — used for peer transfer matching before merchant rules
-    known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
+    known_people = [
+        (p["name"], p["upi"].lower(), p.get("relationship"))
+        for p in list_people(conn)
+        if p.get("upi")
+    ]
 
     # A transaction counts as processed once its final outcome is decided
     # (annotated or failed) — stage-1 misses are still pending.
@@ -305,6 +347,10 @@ def auto_annotate(
         processed += 1
         if progress_cb is not None:
             progress_cb(processed, total)
+
+    # Routing trail per txn: why each earlier stage fell through, carried into
+    # whichever stage finally decides so its trace explains the whole path.
+    rag_ctx_by_txn: dict[str, dict] = {}
 
     # --- Stage 1: Rule pass ---
     logger.info("stage 1 | rules | %d txns", len(unannotated))
@@ -326,6 +372,14 @@ def auto_annotate(
                 result.confidence, result.source,
             )
         else:
+            rag_ctx_by_txn[txn["id"]] = {
+                "skips": [
+                    "rule: no person/keyword match",
+                    "learned_rule: no established rule"
+                    if settings.learned_rule_enabled else "learned_rule: disabled",
+                ],
+                "embed_text": None,
+            }
             needs_rag.append(txn)
 
     # --- Stages 2 + 3: RAG passes ---
@@ -336,7 +390,9 @@ def auto_annotate(
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
         category_list = get_category_names_flat(conn)
         for txn in needs_rag:
-            rag_result, rag_trace = _try_rag_annotation(conn, txn, category_list)
+            rag_result, rag_trace = _try_rag_annotation(
+                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]]
+            )
             if rag_result is not None:
                 _persist(rag_result, rag_trace)
                 _tick()
@@ -386,12 +442,18 @@ def auto_annotate(
                     confidence=round(llm_result.confidence * dampening, 4),
                     source="llm",
                 )
+                ctx = rag_ctx_by_txn.get(txn["id"], {})
                 trace = ReasoningTrace(
                     stage="llm",
                     final_confidence=ann.confidence,
                     llm_reasoning=llm_result.reasoning,
                     raw_confidence=llm_result.confidence,
                     dampening_factor=round(dampening, 4),
+                    calibration_bucket=f"llm/{category}",
+                    thresholds=_threshold_snapshot("confidence_threshold"),
+                    skips=ctx.get("skips", []),
+                    embed_text=ctx.get("embed_text"),
+                    **_llm_telemetry_fields(llm_result),
                 )
                 _persist(ann, trace)
                 llm_annotated += 1
@@ -577,6 +639,7 @@ def _try_rag_annotation(
     txn: TxnRow,
     category_list: list[str],
     before_txn_date: str | None = None,
+    ctx: dict | None = None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
 
@@ -587,13 +650,24 @@ def _try_rag_annotation(
 
     before_txn_date is set only by the time-split eval harness: it restricts
     retrieval and the counterparty prior to history strictly before that date.
+
+    ctx, when given, is the per-txn routing-trail accumulator ({"skips": [...],
+    "embed_text": ...}): this function appends why each RAG branch fell through
+    and records the embed text, so the trace of whichever stage finally decides
+    (including the plain-LLM fallback in the caller) explains the whole path.
     """
+    if ctx is None:
+        ctx = {"skips": [], "embed_text": None}
+    skips: list[str] = ctx["skips"]
+
     try:
         embed_text = build_embed_text(txn)
         query_vec = get_embedding_single(embed_text)
     except Exception as e:
         logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
+        skips.append(f"rag: embedding failed ({e})")
         return None, None  # embedding service down — fall through to plain LLM
+    ctx["embed_text"] = embed_text
 
     # With diversity-aware example selection on, fetch a wider candidate pool so
     # there is something to diversify over; vote/margin logic still sees only the
@@ -610,6 +684,7 @@ def _try_rag_annotation(
 
     if not similar:
         logger.debug("rag | no similar found | txn=%s  desc=%r", txn["id"], txn["raw_description"])
+        skips.append("rag: no embedded transactions to retrieve from")
         return None, None
 
     # Novelty gate: if the best match is too far away, the examples are noise
@@ -618,6 +693,10 @@ def _try_rag_annotation(
         logger.debug(
             "rag | novelty gate | txn=%s  best_sim=%.4f < floor=%.4f → skip RAG",
             txn["id"], best_similarity, settings.rag_similarity_floor,
+        )
+        skips.append(
+            f"rag: novelty gate — best similarity {best_similarity:.4f} < "
+            f"rag_similarity_floor {settings.rag_similarity_floor}"
         )
         return None, None
 
@@ -706,6 +785,13 @@ def _try_rag_annotation(
                 trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
                 agreement_factor=round(agreement_factor, 4),
                 margin_factor=round(margin_factor, 4),
+                thresholds=_threshold_snapshot(
+                    "rag_similarity_floor", "rag_direct_threshold", "rag_margin_safe",
+                    "rag_agreement_exponent", "rag_machine_donor_weight",
+                    "confidence_threshold",
+                ),
+                skips=skips,
+                embed_text=embed_text,
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -721,6 +807,20 @@ def _try_rag_annotation(
                 "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
                 txn["id"], donor_ann.get("source"),
             )
+            skips.append(
+                f"rag_direct: nearest donor source '{donor_ann.get('source')}' untrusted "
+                f"(similarity {cosine_similarity:.4f} ≥ rag_direct_threshold "
+                f"{settings.rag_direct_threshold})"
+            )
+        else:
+            skips.append(
+                f"rag_direct: similarity {cosine_similarity:.4f} ≥ threshold but nearest donor has no annotation"
+            )
+    else:
+        skips.append(
+            f"rag_direct: best similarity {cosine_similarity:.4f} < "
+            f"rag_direct_threshold {settings.rag_direct_threshold}"
+        )
 
     # Stage 2.5 (experimental, settings.rag_knn_enabled): a decisive trusted kNN
     # vote is accepted without any LLM call. Distance-weighted voting over
@@ -756,6 +856,12 @@ def _try_rag_annotation(
                 vote_category=vote_category,
                 vote_share=round(vote_share, 4),
                 trusted_weight=round(trusted_weight, 4),
+                thresholds=_threshold_snapshot(
+                    "rag_knn_similarity_floor", "rag_knn_vote_share",
+                    "rag_knn_min_trusted_weight", "confidence_threshold",
+                ),
+                skips=skips,
+                embed_text=embed_text,
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -766,6 +872,14 @@ def _try_rag_annotation(
                 confidence=confidence,
                 source="rag_knn",
             ), trace
+        skips.append("rag_knn: decisive vote but no trusted donor for the winning category")
+    elif settings.rag_knn_enabled:
+        skips.append(
+            f"rag_knn: gate not met (best_sim {best_similarity:.4f} vs floor "
+            f"{settings.rag_knn_similarity_floor}, vote_share {vote_share:.2f} vs "
+            f"{settings.rag_knn_vote_share}, trusted_weight {trusted_weight:.2f} vs "
+            f"{settings.rag_knn_min_trusted_weight})"
+        )
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     if settings.rag_example_diversity:
@@ -866,6 +980,28 @@ def _try_rag_annotation(
                 llm_reasoning=llm_result.reasoning,
                 raw_confidence=llm_result.confidence,
                 dampening_factor=round(dampening, 4),
+                calibration_bucket=f"rag_prompted/{category}",
+                thresholds=_threshold_snapshot(
+                    "rag_similarity_floor", "rag_direct_threshold",
+                    "rag_consensus_floor", "rag_defer_llm_confidence",
+                    "rag_defer_confidence_cap", "rag_offexample_confidence_cap",
+                    "counterparty_min_observations", "counterparty_dominance_floor",
+                    "confidence_threshold",
+                ),
+                skips=skips,
+                embed_text=embed_text,
+                prompt_examples=[
+                    TraceExample(
+                        raw_description=e.get("raw_description"),
+                        category=e.get("category"),
+                        subcategory=e.get("subcategory"),
+                        source=e.get("source"),
+                    )
+                    for e in examples
+                ],
+                majority_category=majority_category,
+                majority_count=majority_count,
+                **_llm_telemetry_fields(llm_result),
             )
             return AnnotationCreate(
                 transaction_id=txn["id"],
@@ -877,7 +1013,10 @@ def _try_rag_annotation(
                 source="rag_prompted",
             ), trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
+        skips.append("rag_prompted: llm returned nothing")
+        return None, None
 
+    skips.append("rag_prompted: no annotated examples to prompt with")
     return None, None
 
 

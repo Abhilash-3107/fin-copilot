@@ -78,6 +78,20 @@ class AnnotationResponse(BaseModel):
         return v
 
 
+class AnnotationResult(AnnotationResponse):
+    """AnnotationResponse plus call telemetry for the reasoning trace.
+
+    A subclass (not extra fields on AnnotationResponse) because the response
+    JSON schema sent to the provider is generated from AnnotationResponse and
+    must not grow telemetry fields.
+    """
+    model_name: str | None = None
+    prompt_tokens: int | None = None
+    prompt_truncated: bool = False
+    verbalized_confidence: float | None = None  # what the model wrote
+    logprob_confidence: float | None = None     # token-logprob mass, when available
+
+
 def _logprob_category_confidence(data: dict, category: str) -> float | None:
     """Derive confidence from token logprobs over the category value span.
 
@@ -310,7 +324,7 @@ def _call_llm(
     log_prefix: str,
     timeout: float,
     max_retries: int,
-) -> AnnotationResponse | None:
+) -> AnnotationResult | None:
     """Shared provider chat call with retries and error taxonomy. Returns None on final failure."""
     if settings.llm_provider == "none":
         logger.debug("%s | txn=%s  llm_provider=none — skipping", log_prefix, txn_id)
@@ -352,11 +366,13 @@ def _call_llm(
             # Truncation is silent (Ollama drops from the front, i.e. the system
             # prompt) — log the actual prompt token count so it's observable.
             prompt_tokens = data.get("prompt_eval_count") or (data.get("usage") or {}).get("prompt_tokens")
-            if prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64:
+            truncated = prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64
+            if truncated:
                 logger.warning(
                     "%s | txn=%s  prompt_eval_count=%d ~ num_ctx=%d - prompt likely truncated",
                     log_prefix, txn_id, prompt_tokens, settings.ollama_num_ctx,
                 )
+            lp_conf = None
             if settings.llm_logprob_confidence:
                 lp_conf = _logprob_category_confidence(data, result.category)
                 if lp_conf is not None:
@@ -364,12 +380,22 @@ def _call_llm(
                         "%s | txn=%s  verbalized_conf=%.2f  logprob_conf=%.4f",
                         log_prefix, txn_id, result.confidence, lp_conf,
                     )
-                    result.confidence = lp_conf
             logger.debug(
                 "%s | txn=%s  attempt=%d  latency=%.2fs  prompt_tokens=%s  response=%s",
                 log_prefix, txn_id, attempt, elapsed, prompt_tokens, content,
             )
-            return result
+            fields = result.model_dump()
+            verbalized = fields["confidence"]
+            if lp_conf is not None:
+                fields["confidence"] = lp_conf
+            return AnnotationResult(
+                **fields,
+                model_name=payload.get("model"),
+                prompt_tokens=prompt_tokens,
+                prompt_truncated=truncated,
+                verbalized_confidence=verbalized,
+                logprob_confidence=lp_conf,
+            )
         except (httpx.HTTPError, httpx.TimeoutException) as e:
             elapsed = time.monotonic() - t0
             logger.warning(
@@ -411,7 +437,7 @@ def annotate_transaction_llm_with_examples(
     majority_count: int = 0,
     timeout: float = 60.0,
     max_retries: int = 2,
-) -> AnnotationResponse | None:
+) -> AnnotationResult | None:
     """Call the configured LLM provider with few-shot examples injected. Returns None on final failure."""
     return _call_llm(
         _build_fewshot_user_prompt(
@@ -430,7 +456,7 @@ def annotate_transaction_llm(
     category_list: list[str],
     timeout: float = 60.0,
     max_retries: int = 2,
-) -> AnnotationResponse | None:
+) -> AnnotationResult | None:
     """Call the configured LLM provider to annotate a transaction. Returns None on final failure."""
     return _call_llm(
         _build_user_prompt(txn, category_list),
