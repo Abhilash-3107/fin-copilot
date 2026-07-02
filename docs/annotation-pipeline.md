@@ -226,6 +226,28 @@ See `src/pipeline/counterparty.py` for the implementation.
 
 `normalize_description_for_embedding` strips only the numeric ref segment of a `UPI/...` description, keeps the merchant and any meaningful trailing note (e.g. `movie tickets`), drops the boilerplate `UPI` note, and leaves non-UPI descriptions (NEFT/PCD/VISA/plain text) untouched. After this change two visits to `OBEROIFC tucksh` embed identically (similarity 1.0), clearing both the novelty gate and the `rag_direct` threshold. **Changing this function invalidates the stored vector space** — re-embed all transactions (`scripts/reembed_all.py`) and re-annotate afterward.
 
+## Person-History Gate (stage 1)
+
+The known-person rule labels by *mechanism* (payment to a known person → Transfers/Peer Transfer, 0.95) while humans label by *purpose* (the same payment can be Entertainment when it settles a shared expense).
+`rule_annotation` therefore checks the person's counterparty prior: when an established prior contradicts the rule's category, confidence is capped to `rag_defer_confidence_cap` so the transaction routes to review.
+The label is never changed and cold start is unaffected.
+Eval note (e6, 2026-07-03): null on current data - wrong person-rule labels come from Transfers-dominant contacts' occasional purpose payments, which history cannot predict - but the gate is free and catches future non-transfer-dominant "people".
+
+## Apply-to-Similar (correction propagation)
+
+After a correction in the review queue, `GET /api/annotations/{id}/similar` returns machine-labeled neighbours (cosine ≥ `apply_similar_floor` (0.9) or same `counterparty_key`), and `POST .../apply-to-similar` copies the corrected label onto the user-selected subset.
+Human-sourced annotations are never offered for overwriting; each applied target records feedback against its original machine source and flips to `manual` with `original_source` preserved.
+This is the main accuracy lever: retrieval stages are 96-100% accurate when they fire, so quality grows by feeding them corrected donors.
+
+## BYOM Provider
+
+`llm_provider` selects the LLM backend behind a single code path (`src/pipeline/llm.py`): `ollama` (default, native API with grammar-constrained output and logprob confidence), `openai` (any OpenAI-compatible `/chat/completions` endpoint - LM Studio, vLLM, OpenRouter, OpenAI - via `llm_base_url`/`llm_api_key`/`llm_model`, using `response_format: json_schema`), or `none` (AI disabled: the pipeline degrades to rules + RAG-direct and routes the rest to review).
+
+## Evaluation
+
+`scripts/build_golden.py` exports all manual annotations; `scripts/eval.py --name <run>` replays the full cascade with time-split retrieval (donors strictly older than each transaction) and writes per-stage accuracy, Brier, auto-accept precision, and failure lists to `eval/results/`.
+`scripts/eval_diff.py <a> <b>` compares two runs and exits non-zero on regression - run it before landing any pipeline change.
+
 ## LLM Determinism
 
 Annotation is a deterministic classification task, so the Ollama calls run with `temperature: 0` and a fixed `seed` (`src/pipeline/llm.py`). This matters beyond reproducibility: at the default temperature (~0.8) a small model intermittently emits **malformed JSON in the free-text `reasoning` field** (escaped/single quotes, stray braces, or truncation), which fails schema validation, triggers retries, and silently degrades the label. With `temperature: 0`, re-annotating the same transactions is stable run-to-run (verified 19/19 stable, 0 validation errors via `scripts/diff_reannotate_april.py`). `num_predict` gives the reasoning sentence headroom to avoid mid-string truncation. The `reasoning` field is **truncated, not rejected**, when it exceeds 160 chars (a `field_validator` in `AnnotationResponse`): a slightly-too-long sentence from a small model must never drop an otherwise-valid classification.
