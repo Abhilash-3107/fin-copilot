@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { api, runAnnotationJob } from '../lib/api.js'
+import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
@@ -104,13 +105,16 @@ export default function Dashboard() {
   const thisMonth = selectedMonth
     ? transactions.filter(t => t.txn_date.startsWith(selectedMonth))
     : transactions
-  const totalSpend = thisMonth.filter(t => t.debit_credit === 'debit').reduce((s, t) => s + Number(t.amount), 0)
-  const totalIncome = thisMonth.filter(t => t.debit_credit === 'credit').reduce((s, t) => s + Number(t.amount), 0)
+  // Self-transfers move money between the user's own accounts — exclude them
+  // from spend and income so they don't inflate either side (or savings rate).
+  const totalSpend = thisMonth.filter(t => t.debit_credit === 'debit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
+  const totalIncome = thisMonth.filter(t => t.debit_credit === 'credit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
   // Spend by category (this statement's month, debits)
   const spendByCat = {}
   for (const txn of thisMonth) {
     if (txn.debit_credit !== 'debit') continue
     const cat = annMap[txn.id]?.category ?? 'Uncategorized'
+    if (!isRealFlow(cat)) continue
     spendByCat[cat] = (spendByCat[cat] ?? 0) + Number(txn.amount)
   }
   const totalMonthSpend = Object.values(spendByCat).reduce((s, v) => s + v, 0)

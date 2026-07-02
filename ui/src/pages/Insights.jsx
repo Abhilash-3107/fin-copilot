@@ -7,6 +7,7 @@ import {
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
+import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -83,20 +84,21 @@ export default function Insights() {
   const monthTxns = transactions.filter(t => t.txn_date.startsWith(selectedMonth))
   const monthDebits = monthTxns.filter(t => t.debit_credit === 'debit')
 
-  // Category breakdown
+  // Category breakdown — exclude self-transfers (money that stays with the user)
   const catTotals = {}
   for (const txn of monthDebits) {
     const ann = annMap[txn.id]
     const cat = ann?.category ?? 'Uncategorized'
+    if (!isRealFlow(cat)) continue
     catTotals[cat] = (catTotals[cat] ?? 0) + Number(txn.amount)
   }
   const catSorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1])
   const totalSpend = catSorted.reduce((s, [, v]) => s + v, 0)
 
-  // Monthly trend (6 months ending at selectedMonth)
+  // Monthly trend (6 months ending at selectedMonth) — same self-transfer exclusion
   const months6 = Array.from({ length: 6 }, (_, i) => dayjs(selectedMonth).subtract(5 - i, 'month').format('YYYY-MM'))
   const monthlyDebits = months6.map(m =>
-    transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'debit').reduce((s, t) => s + Number(t.amount), 0)
+    transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'debit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
   )
   const monthlyCredits = months6.map(m =>
     transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'credit').reduce((s, t) => s + Number(t.amount), 0)
