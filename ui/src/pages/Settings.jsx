@@ -22,6 +22,71 @@ function Toggle({ checked, disabled, onChange }) {
   )
 }
 
+function LearnedRules() {
+  const toast = useToast()
+  const [rules, setRules] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.get('/annotations/learned-rules')
+      .then(setRules)
+      .catch(e => toast(`Couldn't load learned rules - ${e.message}`, 'error'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  return (
+    <div className="mt-8">
+      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Learned from your corrections</h2>
+      <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+        When you verify a merchant enough times and agree on a category, your copilot
+        starts categorizing it automatically - no AI needed. These rules update as you
+        review; correcting a merchant is how you change or retire one.
+      </p>
+
+      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+        {loading ? (
+          <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
+        ) : rules.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-[#64748b]">
+            Nothing learned yet. As you verify transactions in the review queue, recurring
+            merchants will show up here.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-[#64748b] border-b border-[#2d3148]">
+                <th className="font-medium px-5 py-2.5">Merchant</th>
+                <th className="font-medium px-5 py-2.5">Categorized as</th>
+                <th className="font-medium px-5 py-2.5 text-right">Confidence</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#2d3148]">
+              {rules.map(r => (
+                <tr key={r.counterparty_key}>
+                  <td className="px-5 py-3 text-[#e2e8f0]">
+                    {r.merchant || r.counterparty_key}
+                    {r.merchant && (
+                      <span className="text-[#64748b] ml-2 text-xs">{r.counterparty_key}</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 text-[#cbd5e1]">
+                    {r.category}
+                    {r.subcategory && <span className="text-[#64748b]"> › {r.subcategory}</span>}
+                  </td>
+                  <td className="px-5 py-3 text-right text-[#64748b] tabular-nums">
+                    {Math.round(r.purity * 100)}%
+                    <span className="ml-1.5 text-[#475569]">({r.support}/{r.total})</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Settings() {
   const toast = useToast()
   const [devMode, setDevMode] = useState(false)
@@ -66,6 +131,8 @@ export default function Settings() {
           <Toggle checked={devMode} disabled={loading || saving} onChange={setDev} />
         </div>
       </div>
+
+      <LearnedRules />
     </div>
   )
 }
