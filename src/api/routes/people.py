@@ -34,12 +34,13 @@ def _validate_match_token(upi: Optional[str]) -> None:
 class PersonCreate(BaseModel):
     name: str
     upi: Optional[str] = None
+    relationship: Optional[str] = None
 
 
 @router.post("", status_code=201)
 def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
     _validate_match_token(body.upi)
-    person = create_person(conn, body.name, body.upi)
+    person = create_person(conn, body.name, body.upi, body.relationship or None)
     conn.commit()
     return person
 
@@ -52,12 +53,13 @@ def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
 class PersonUpdate(BaseModel):
     name: str
     upi: Optional[str] = None
+    relationship: Optional[str] = None
 
 
 @router.patch("/{person_id}")
 def update(person_id: str, body: PersonUpdate, conn: sqlite3.Connection = Depends(get_db)):
     _validate_match_token(body.upi)
-    person = update_person(conn, person_id, body.name, body.upi or None)
+    person = update_person(conn, person_id, body.name, body.upi or None, body.relationship or None)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
     conn.commit()

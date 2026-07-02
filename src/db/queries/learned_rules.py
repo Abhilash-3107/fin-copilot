@@ -36,6 +36,38 @@ from src.db.queries.common import parse_string_list
 _VERIFIED_SOURCES = ("manual", "imported")
 
 
+def is_suppressed(conn: sqlite3.Connection, counterparty_key: str) -> bool:
+    """Whether the user has explicitly dismissed the learned rule for this key."""
+    return (
+        conn.execute(
+            "SELECT 1 FROM learned_rule_suppressions WHERE counterparty_key = ?",
+            (counterparty_key,),
+        ).fetchone()
+        is not None
+    )
+
+
+def suppress_learned_rule(conn: sqlite3.Connection, counterparty_key: str) -> None:
+    """Dismiss the learned rule for a counterparty (idempotent).
+
+    Sticky: re-verifying the counterparty does not clear this; the user restores
+    it explicitly via restore_learned_rule.
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO learned_rule_suppressions (counterparty_key) VALUES (?)",
+        (counterparty_key,),
+    )
+
+
+def restore_learned_rule(conn: sqlite3.Connection, counterparty_key: str) -> bool:
+    """Undo a dismissal; returns True if a suppression existed and was removed."""
+    cur = conn.execute(
+        "DELETE FROM learned_rule_suppressions WHERE counterparty_key = ?",
+        (counterparty_key,),
+    )
+    return cur.rowcount > 0
+
+
 @dataclass
 class LearnedRule:
     counterparty_key: str
@@ -73,6 +105,10 @@ def lookup_learned_rule(
     labels that existed before it), mirroring the counterparty prior.
     """
     if not counterparty_key:
+        return None
+
+    # A user dismissal overrides the computed rule entirely — no firing, no display.
+    if is_suppressed(conn, counterparty_key):
         return None
 
     placeholders = ",".join("?" * len(_VERIFIED_SOURCES))

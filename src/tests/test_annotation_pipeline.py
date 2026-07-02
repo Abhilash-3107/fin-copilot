@@ -1363,6 +1363,24 @@ class TestKnownPersonMatching:
         assert result is not None
         assert result.merchant == "Rahul"
 
+    def test_family_relationship_maps_to_family_subcategory(self):
+        from src.pipeline.annotate import _match_known_person
+        txn = {"id": "t4", "raw_description": "UPI/ananta@oksbi/1/rent",
+               "upi_meta": json.dumps({"vpa": "ananta@oksbi", "ref": "1", "note": "rent"})}
+        result = _match_known_person(txn, [("Ananta", "ananta@oksbi", "dad")])
+        assert result is not None
+        assert result.category == "Transfers"
+        assert result.subcategory == "Family"
+        assert "family" in result.tags
+
+    def test_non_family_relationship_stays_peer_transfer(self):
+        from src.pipeline.annotate import _match_known_person
+        txn = {"id": "t5", "raw_description": "UPI/rahul@okaxis/1/x",
+               "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "1", "note": "x"})}
+        result = _match_known_person(txn, [("Rahul", "rahul@okaxis", "friend")])
+        assert result is not None
+        assert result.subcategory == "Peer Transfer"
+
 
 # ---------------------------------------------------------------------------
 # Stage-4 description dedup cache
@@ -1924,6 +1942,27 @@ class TestLearnedRules:
         assert rule.subcategory == "Delivery"
         assert rule.merchant == "Swiggy"
         assert rule.support == 3 and rule.total == 3 and rule.purity == 1.0
+
+    def test_suppressed_rule_not_returned(self):
+        from src.db.queries.learned_rules import (
+            lookup_learned_rule, list_learned_rules, suppress_learned_rule, restore_learned_rule,
+        )
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"s{i}", "SWIGGY", "Food & Dining", merchant="Swiggy")
+        assert lookup_learned_rule(conn, "SWIGGY") is not None
+
+        suppress_learned_rule(conn, "SWIGGY")
+        conn.commit()
+        assert lookup_learned_rule(conn, "SWIGGY") is None
+        assert all(r.counterparty_key != "SWIGGY" for r in list_learned_rules(conn))
+
+        # Idempotent, and restore brings it back.
+        suppress_learned_rule(conn, "SWIGGY")
+        assert restore_learned_rule(conn, "SWIGGY") is True
+        assert restore_learned_rule(conn, "SWIGGY") is False
+        conn.commit()
+        assert lookup_learned_rule(conn, "SWIGGY") is not None
 
     def test_below_support_not_promoted(self):
         from src.db.queries.learned_rules import lookup_learned_rule

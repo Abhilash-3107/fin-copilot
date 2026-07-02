@@ -390,6 +390,21 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
     ]
 
 
+@router.delete("/learned-rules/{counterparty_key:path}", status_code=204)
+def dismiss_learned_rule(counterparty_key: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Dismiss a learned merchant rule so it stops firing and drops off Settings.
+
+    Learned rules have no stored row (they're recomputed from verified labels), so
+    the dismissal is a sticky suppression keyed by counterparty_key. Typically used
+    once the user has added that counterparty to People and the person rule takes
+    over. Idempotent — dismissing an already-dismissed key is a no-op.
+    """
+    from src.db.queries.learned_rules import suppress_learned_rule
+
+    suppress_learned_rule(conn, counterparty_key)
+    conn.commit()
+
+
 @router.get("/review-queue")
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     dev_mode = get_dev_mode(conn)

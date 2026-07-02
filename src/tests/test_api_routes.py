@@ -549,3 +549,35 @@ class TestLearnedRulesEndpoint:
         rows = resp.json()
         assert [r["counterparty_key"] for r in rows] == ["SWIGGY"]
         assert rows[0]["support"] == 3 and rows[0]["category"] == "Food & Dining"
+
+    def test_dismiss_removes_rule_from_listing(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')")
+        for i in range(3):
+            conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) VALUES (?, 's1', '2026-01-10', 100, 'debit', ?, 'SWIGGY')", (f"sw{i}", f"UPI/SWIGGY/{i}/UPI"))
+            conn.execute("INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, 'Food & Dining', 1.0, 'manual')", (f"a{i}", f"sw{i}"))
+        conn.commit()
+        assert client.get("/api/annotations/learned-rules").json()
+
+        resp = client.delete("/api/annotations/learned-rules/SWIGGY")
+        assert resp.status_code == 204
+        assert client.get("/api/annotations/learned-rules").json() == []
+        # Idempotent.
+        assert client.delete("/api/annotations/learned-rules/SWIGGY").status_code == 204
+
+
+class TestPeopleRelationship:
+    def test_create_and_update_relationship(self, client_conn):
+        client, conn, _ = client_conn
+        resp = client.post("/api/people", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": "dad"})
+        assert resp.status_code == 201
+        pid = resp.json()["id"]
+        assert resp.json()["relationship"] == "dad"
+
+        upd = client.patch(f"/api/people/{pid}", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": "father"})
+        assert upd.status_code == 200
+        assert upd.json()["relationship"] == "father"
+
+        # Clearing the relationship.
+        cleared = client.patch(f"/api/people/{pid}", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": None})
+        assert cleared.json()["relationship"] is None

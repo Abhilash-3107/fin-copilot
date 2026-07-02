@@ -6,6 +6,14 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
+// Curated relationship choices. Family ones (dad/mom/…) make this person's
+// transfers land in Transfers › Family instead of the generic Peer Transfer;
+// the mapping lives server-side (people.relationship_subcategory).
+const RELATIONSHIPS = [
+  'dad', 'mom', 'sister', 'brother', 'wife', 'husband',
+  'son', 'daughter', 'family', 'friend', 'roommate', 'colleague', 'other',
+]
+
 export default function People() {
   const toast = useToast()
   const [people, setPeople] = useState([])
@@ -13,6 +21,7 @@ export default function People() {
   const [search, setSearch] = useState('')
   const [newName, setNewName] = useState('')
   const [newUpi, setNewUpi] = useState('')
+  const [newRel, setNewRel] = useState('')
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [editingId, setEditingId] = useState(null)
@@ -37,9 +46,10 @@ export default function People() {
     if (!newName.trim()) return
     setCreating(true)
     try {
-      await api.post('/people', { name: newName.trim(), upi: newUpi.trim() || null })
+      await api.post('/people', { name: newName.trim(), upi: newUpi.trim() || null, relationship: newRel || null })
       setNewName('')
       setNewUpi('')
+      setNewRel('')
       load(search)
       toast('Person added', 'success')
     } catch (e) {
@@ -86,6 +96,17 @@ export default function People() {
     }
   }
 
+  async function commitRelationship(p, relationship) {
+    const val = relationship || null
+    if (val === (p.relationship ?? null)) return
+    try {
+      const updated = await api.patch(`/people/${p.id}`, { name: p.name, upi: p.upi ?? null, relationship: val })
+      setPeople(ps => ps.map(x => x.id === p.id ? updated : x))
+    } catch (e) {
+      toast(`Failed: ${e.message}`, 'error')
+    }
+  }
+
   return (
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
@@ -118,6 +139,16 @@ export default function People() {
           placeholder="Statement name (To help us better match)"
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
         />
+        <select
+          value={newRel}
+          onChange={e => setNewRel(e.target.value)}
+          className={`bg-[#13151f] border border-[#2d3148] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-36 ${newRel ? 'text-[#e2e8f0]' : 'text-[#475569]'}`}
+        >
+          <option value="">Relationship…</option>
+          {RELATIONSHIPS.map(r => (
+            <option key={r} value={r} className="text-[#e2e8f0] capitalize">{r}</option>
+          ))}
+        </select>
         <button
           type="submit"
           disabled={creating || !newName.trim()}
@@ -150,6 +181,14 @@ export default function People() {
                     </Tooltip>
                   </span>
                 </th>
+                <th className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
+                  <span className="flex items-center gap-1">
+                    Relationship
+                    <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. Others are Peer Transfers." position="bottom">
+                      <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                    </Tooltip>
+                  </span>
+                </th>
                 <th className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]"></th>
               </tr>
             </thead>
@@ -174,6 +213,18 @@ export default function People() {
                         {p.upi ?? '— click to set'}
                       </span>
                     )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <select
+                      value={p.relationship ?? ''}
+                      onChange={e => commitRelationship(p, e.target.value)}
+                      className={`bg-transparent border border-transparent hover:border-[#2d3148] focus:border-[#6366f1] px-2 py-1 rounded text-sm outline-none capitalize ${p.relationship ? 'text-[#94a3b8]' : 'text-[#475569]'}`}
+                    >
+                      <option value="">— none</option>
+                      {RELATIONSHIPS.map(r => (
+                        <option key={r} value={r} className="text-[#e2e8f0] capitalize">{r}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button
