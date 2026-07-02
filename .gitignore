@@ -18,3 +18,5 @@ ui/dist/
 
 .venv/
 findings/
+
+eval/

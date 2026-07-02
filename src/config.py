@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     counterparty_dominance_floor: float = 0.65
     # Master switch for the counterparty recurrence prior in the rag_prompted stage.
     counterparty_prior_enabled: bool = True
+    # Context window for annotation LLM calls. The few-shot prompt (system + 5
+    # examples + full category list + txn) can exceed 2048 tokens, and Ollama
+    # truncates silently from the front (the system prompt) — prompt_eval_count is
+    # logged per call so truncation is observable.
+    ollama_num_ctx: int = 2048
+    # --- Experimental stages/flags (default off; enabled by the eval harness) ---
+    # Stage 2.5: accept a decisive trusted kNN vote without calling the LLM.
+    rag_knn_enabled: bool = False
+    rag_knn_similarity_floor: float = 0.80
+    rag_knn_vote_share: float = 0.80
+    rag_knn_min_trusted_weight: float = 2.0
+    # Diversity-aware few-shot selection (MMR-lite): top-2 nearest + nearest
+    # example from each not-yet-seen category, instead of raw top-5.
+    rag_example_diversity: bool = False
+    # Replace verbalized LLM confidence with token-logprob mass on the category
+    # value (requires an Ollama version that returns logprobs).
+    llm_logprob_confidence: bool = False
+    # Strip long numeric refs and dates from non-UPI descriptions before
+    # embedding (same noise class the UPI-ref fix addressed). Changing this
+    # invalidates the stored vector space — re-embed before querying.
+    embed_strip_non_upi_refs: bool = False
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
     # When on (DEV_MODE=true), the annotation pipeline captures a per-annotation

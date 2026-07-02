@@ -66,6 +66,29 @@ def _normalize_category(category: str, category_list: list[str]) -> str:
     return "Uncategorized"
 
 
+def _normalize_subcategory(
+    category: str, subcategory: str | None, category_list: list[str]
+) -> str | None:
+    """Validate an LLM-returned subcategory against the taxonomy for its category.
+
+    The JSON schema only constrains the top-level category; subcategory is free
+    text, so a small model can invent one. Exact/case-insensitive match → keep;
+    otherwise drop to None rather than persist a label outside the taxonomy.
+    """
+    if not subcategory:
+        return None
+    prefix = f"{category} > "
+    valid = [c[len(prefix):] for c in category_list if c.startswith(prefix)]
+    if subcategory in valid:
+        return subcategory
+    lower = subcategory.strip().lower()
+    for v in valid:
+        if v.lower() == lower:
+            return v
+    logger.warning("subcategory invalid | %r not under %r → None", subcategory, category)
+    return None
+
+
 def _match_known_person(txn: TxnRow, known_people: list[tuple[str, str]]) -> AnnotationCreate | None:
     """Return a Peer Transfer annotation if the transaction matches a known person.
 
@@ -256,7 +279,7 @@ def auto_annotate(
                     transaction_id=txn["id"],
                     merchant=llm_result.merchant,
                     category=category,
-                    subcategory=llm_result.subcategory,
+                    subcategory=_normalize_subcategory(category, llm_result.subcategory, category_list),
                     tags=llm_result.tags,
                     confidence=round(llm_result.confidence * dampening, 4),
                     source="llm",
@@ -450,12 +473,17 @@ def _try_rag_annotation(
     conn: sqlite3.Connection,
     txn: TxnRow,
     category_list: list[str],
+    before_txn_date: str | None = None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
 
-    Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct' or
-    'rag_prompted', or (None, None) if the embedding service is unavailable or no
-    similar annotated transactions exist (caller falls through to plain LLM).
+    Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct',
+    'rag_knn' or 'rag_prompted', or (None, None) if the embedding service is
+    unavailable or no similar annotated transactions exist (caller falls through
+    to plain LLM).
+
+    before_txn_date is set only by the time-split eval harness: it restricts
+    retrieval and the counterparty prior to history strictly before that date.
     """
     try:
         embed_text = build_embed_text(txn)
@@ -464,12 +492,18 @@ def _try_rag_annotation(
         logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
         return None, None  # embedding service down — fall through to plain LLM
 
-    similar = find_similar(
+    # With diversity-aware example selection on, fetch a wider candidate pool so
+    # there is something to diversify over; vote/margin logic still sees only the
+    # usual top-K (identical semantics either way).
+    fetch_k = settings.rag_top_k * 3 if settings.rag_example_diversity else settings.rag_top_k
+    similar_wide = find_similar(
         conn,
         query_vec,
-        top_k=settings.rag_top_k,
+        top_k=fetch_k,
         exclude_transaction_ids=[txn["id"]],
+        before_txn_date=before_txn_date,
     )
+    similar = similar_wide[: settings.rag_top_k]
 
     if not similar:
         logger.debug("rag | no similar found | txn=%s  desc=%r", txn["id"], txn["raw_description"])
@@ -585,13 +619,66 @@ def _try_rag_annotation(
                 txn["id"], donor_ann.get("source"),
             )
 
+    # Stage 2.5 (experimental, settings.rag_knn_enabled): a decisive trusted kNN
+    # vote is accepted without any LLM call. Distance-weighted voting over
+    # trusted neighbours is strictly more robust than single-donor copy
+    # (kNN-LM-style), and at ~1 ms it removes the LLM from the loop for the
+    # recurring bulk of a mature user's transactions.
+    if (
+        settings.rag_knn_enabled
+        and vote_category
+        and best_similarity >= settings.rag_knn_similarity_floor
+        and vote_share >= settings.rag_knn_vote_share
+        and trusted_weight >= settings.rag_knn_min_trusted_weight
+    ):
+        donor = next(
+            (
+                m for m in annotated_matches
+                if m.get("category") == vote_category and m.get("source") in _TRUSTED_SOURCES
+            ),
+            None,
+        )
+        if donor is not None:
+            donor_ann = donor["annotation"]
+            confidence = round(best_similarity * vote_share, 4)
+            logger.debug(
+                "rag_knn | txn=%s  → %s  best_sim=%.4f  vote_share=%.4f  conf=%.4f",
+                txn["id"], vote_category, best_similarity, vote_share, confidence,
+            )
+            trace = ReasoningTrace(
+                stage="rag_knn",
+                final_confidence=confidence,
+                best_similarity=round(best_similarity, 4),
+                neighbours=trace_neighbours,
+                vote_category=vote_category,
+                vote_share=round(vote_share, 4),
+                trusted_weight=round(trusted_weight, 4),
+            )
+            return AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=donor_ann.get("merchant"),
+                category=vote_category,
+                subcategory=donor_ann.get("subcategory"),
+                tags=parse_string_list(donor_ann.get("tags")),
+                confidence=confidence,
+                source="rag_knn",
+            ), trace
+
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
-    examples = _build_examples_from_similar(conn, similar, ann_by_txn)
+    if settings.rag_example_diversity:
+        ann_by_txn_wide = _annotations_by_transaction(
+            conn, [m["transaction_id"] for m in similar_wide]
+        )
+        examples = _build_examples_from_similar(conn, similar_wide, ann_by_txn_wide)
+    else:
+        examples = _build_examples_from_similar(conn, similar, ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
         # Pass the example-category majority as a hint so the LLM weighs the
-        # retrieved neighbors over its pretraining prior.
-        example_categories = [m["category"] for m in annotated_matches if m.get("category")]
+        # retrieved neighbors over its pretraining prior. Use the categories the
+        # LLM actually sees (the selected examples), so the off-example cap below
+        # judges against the real prompt content.
+        example_categories = [e["category"] for e in examples if e.get("category")]
         majority_category, majority_count = _majority_category(example_categories)
         llm_result = annotate_transaction_llm_with_examples(
             txn, category_list, examples, majority_category, majority_count
@@ -681,7 +768,7 @@ def _try_rag_annotation(
                 transaction_id=txn["id"],
                 merchant=llm_result.merchant,
                 category=category,
-                subcategory=llm_result.subcategory,
+                subcategory=_normalize_subcategory(category, llm_result.subcategory, category_list),
                 tags=llm_result.tags,
                 confidence=confidence,
                 source="rag_prompted",
@@ -766,6 +853,28 @@ def _build_examples_from_similar(
             "merchant": ann_row.get("merchant"),
             "source": ann_row.get("source"),
         })
+
+    # Experimental (settings.rag_example_diversity): the raw top-K are often K
+    # near-duplicates of one merchant/label — one bit of information that primes
+    # the model. MMR-lite: keep the 2 nearest unconditionally, then prefer the
+    # nearest example of each not-yet-represented category (retrieval order is
+    # ascending distance, so iteration order encodes nearness).
+    if settings.rag_example_diversity and len(examples) > 2:
+        kept = examples[:2]
+        seen_categories = {e["category"] for e in kept}
+        rest = examples[2:]
+        for e in rest:
+            if len(kept) >= settings.rag_top_k:
+                break
+            if e["category"] not in seen_categories:
+                kept.append(e)
+                seen_categories.add(e["category"])
+        for e in rest:
+            if len(kept) >= settings.rag_top_k:
+                break
+            if e not in kept:
+                kept.append(e)
+        examples = kept
 
     # Prioritize human-verified examples first — LLMs are sensitive to example ordering
     _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}

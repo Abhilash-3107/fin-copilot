@@ -6,6 +6,8 @@ import struct
 
 import ulid
 
+from src.config import settings
+
 
 def _serialize_embedding(embedding: list[float]) -> bytes:
     """Pack a list of floats into a compact binary blob for sqlite-vec."""
@@ -69,16 +71,23 @@ def find_similar(
     query_embedding: list[float],
     top_k: int = 5,
     exclude_transaction_ids: list[str] | None = None,
+    before_txn_date: str | None = None,
 ) -> list[dict]:
     """Return top-k most similar transactions by cosine distance.
 
     Returns list of {transaction_id, distance} dicts.
     sqlite-vec MATCH returns cosine distance — lower means more similar.
     Cosine similarity = 1.0 - distance.
+
+    before_txn_date restricts donors to transactions dated strictly earlier —
+    used by the time-split eval harness to prevent retrieval leakage (a replayed
+    transaction must never retrieve donors that didn't exist yet).
     """
     blob = _serialize_embedding(query_embedding)
     excluded = set(exclude_transaction_ids or [])
-    fetch_limit = top_k + len(excluded)
+    # Over-fetch when time-filtering: an arbitrary share of the nearest
+    # neighbours may be dated after the cutoff.
+    fetch_limit = (top_k + len(excluded)) if before_txn_date is None else max(50, top_k * 10)
     rows = conn.execute(
         "SELECT transaction_id, distance FROM vec_items WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
         (blob, fetch_limit),
@@ -92,12 +101,18 @@ def find_similar(
         return []
 
     placeholders = ",".join("?" * len(candidate_ids))
-    existing_ids = {
-        r[0]
-        for r in conn.execute(
-            f"SELECT id FROM transactions WHERE id IN ({placeholders})", candidate_ids
-        ).fetchall()
-    }
+    # The model-version join guards against mixing incompatible vector spaces:
+    # vectors embedded by a different model must never match a query vector.
+    query = (
+        f"SELECT t.id FROM transactions t "
+        f"JOIN embedding_meta em ON em.transaction_id = t.id "
+        f"WHERE t.id IN ({placeholders}) AND em.model_version = ?"
+    )
+    params: list = list(candidate_ids) + [settings.ollama_embedding_model]
+    if before_txn_date is not None:
+        query += " AND t.txn_date < ?"
+        params.append(before_txn_date)
+    existing_ids = {r[0] for r in conn.execute(query, params).fetchall()}
 
     results = []
     for row in rows:

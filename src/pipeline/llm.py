@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import time
 
@@ -75,6 +76,44 @@ class AnnotationResponse(BaseModel):
         if v and len(v) > 160:
             return v[:157].rstrip() + "..."
         return v
+
+
+def _logprob_category_confidence(data: dict, category: str) -> float | None:
+    """Derive confidence from token logprobs over the category value span.
+
+    With an enum-constrained grammar, the probability the model assigns to the
+    chosen category's tokens is a direct, continuous confidence signal (vs the
+    quantized verbalized number). Locates the `"category"` value span in the
+    reconstructed output and sums the logprobs of the tokens overlapping it.
+    Returns None when logprobs are missing or the span can't be located.
+    """
+    logprobs = (data.get("message") or {}).get("logprobs") or data.get("logprobs")
+    if not logprobs or not category:
+        return None
+    try:
+        tokens = [(lp["token"], lp["logprob"]) for lp in logprobs]
+    except (KeyError, TypeError):
+        return None
+    text = "".join(t for t, _ in tokens)
+    key_idx = text.find('"category"')
+    if key_idx < 0:
+        return None
+    val_idx = text.find(category, key_idx)
+    if val_idx < 0:
+        return None
+    val_end = val_idx + len(category)
+    total = 0.0
+    pos = 0
+    for tok, lp in tokens:
+        tok_start, tok_end = pos, pos + len(tok)
+        pos = tok_end
+        if tok_end <= val_idx:
+            continue
+        if tok_start >= val_end:
+            break
+        total += lp
+    prob = math.exp(total)
+    return max(0.0, min(1.0, prob))
 
 
 def top_level_categories(category_list: list[str]) -> list[str]:
@@ -215,9 +254,12 @@ def _call_ollama(
     payload = {
         "model": settings.ollama_model,
         "stream": False,
+        # Keep the model resident between calls — cold-loading a 4B model costs
+        # 5-15 s and auto-annotate runs are bursty.
+        "keep_alive": "30m",
         "format": _response_schema(category_list),
         "options": {
-            "num_ctx": 2048,
+            "num_ctx": settings.ollama_num_ctx,
             "num_predict": 512,  # headroom for the one-sentence reasoning field
             # Categorization is deterministic, not creative: temperature 0 + a fixed
             # seed make the structured output stable run-to-run. Without this, the
@@ -235,6 +277,9 @@ def _call_ollama(
         ],
     }
 
+    if settings.llm_logprob_confidence:
+        payload["logprobs"] = True
+
     logger.debug(
         "%s | txn=%s  model=%s  prompt=\n%s",
         log_prefix, txn_id, settings.ollama_model, user_prompt,
@@ -242,6 +287,7 @@ def _call_ollama(
 
     for attempt in range(max_retries + 1):
         t0 = time.monotonic()
+        content = ""
         try:
             response = httpx.post(url, json=payload, timeout=timeout)
             elapsed = time.monotonic() - t0
@@ -260,9 +306,25 @@ def _call_ollama(
                     "%s | txn=%s  attempt=%d  salvaged classification by dropping malformed reasoning",
                     log_prefix, txn_id, attempt,
                 )
+            # Truncation is silent (Ollama drops from the front, i.e. the system
+            # prompt) — log the actual prompt token count so it's observable.
+            prompt_tokens = data.get("prompt_eval_count")
+            if prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64:
+                logger.warning(
+                    "%s | txn=%s  prompt_eval_count=%d ~ num_ctx=%d - prompt likely truncated",
+                    log_prefix, txn_id, prompt_tokens, settings.ollama_num_ctx,
+                )
+            if settings.llm_logprob_confidence:
+                lp_conf = _logprob_category_confidence(data, result.category)
+                if lp_conf is not None:
+                    logger.debug(
+                        "%s | txn=%s  verbalized_conf=%.2f  logprob_conf=%.4f",
+                        log_prefix, txn_id, result.confidence, lp_conf,
+                    )
+                    result.confidence = lp_conf
             logger.debug(
-                "%s | txn=%s  attempt=%d  latency=%.2fs  response=%s",
-                log_prefix, txn_id, attempt, elapsed, content,
+                "%s | txn=%s  attempt=%d  latency=%.2fs  prompt_tokens=%s  response=%s",
+                log_prefix, txn_id, attempt, elapsed, prompt_tokens, content,
             )
             return result
         except (httpx.HTTPError, httpx.TimeoutException) as e:
@@ -271,6 +333,9 @@ def _call_ollama(
                 "%s | txn=%s  attempt=%d  latency=%.2fs  http_error=%s",
                 log_prefix, txn_id, attempt, elapsed, e,
             )
+            if attempt < max_retries:
+                time.sleep(1.0)
+            continue
         except KeyError as e:
             logger.warning("%s | txn=%s  attempt=%d  missing_key=%s  raw=%s", log_prefix, txn_id, attempt, e, response.text)
         except json.JSONDecodeError as e:
@@ -278,8 +343,18 @@ def _call_ollama(
         except ValidationError as e:
             logger.warning("%s | txn=%s  attempt=%d  validation_error=%s  raw=%s", log_prefix, txn_id, attempt, e, content)
 
+        # Parse/validation failure: at temperature 0 with a fixed seed, resending
+        # the identical payload deterministically fails identically. Feed the bad
+        # output and the requirement back instead (one-shot self-repair).
         if attempt < max_retries:
-            time.sleep(1.0)
+            payload["messages"] = payload["messages"][:2] + [
+                {"role": "assistant", "content": content},
+                {
+                    "role": "user",
+                    "content": "Your previous response was not valid JSON for the schema. "
+                    "Return ONLY the corrected JSON object, nothing else.",
+                },
+            ]
 
     logger.error("%s | txn=%s  all %d attempts failed", log_prefix, txn_id, max_retries + 1)
     return None
