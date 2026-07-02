@@ -241,15 +241,33 @@ def _build_fewshot_user_prompt(
     return "\n\n".join(parts)
 
 
-def _call_ollama(
-    user_prompt: str,
-    category_list: list[str],
-    txn_id: str,
-    log_prefix: str,
-    timeout: float,
-    max_retries: int,
-) -> AnnotationResponse | None:
-    """Shared Ollama chat call with retries and error taxonomy. Returns None on final failure."""
+def _build_provider_request(
+    messages: list[dict], category_list: list[str]
+) -> tuple[str, dict, dict]:
+    """Return (url, headers, payload) for the configured provider.
+
+    Both providers get token-level structured output: Ollama via `format`,
+    OpenAI-compatible endpoints via `response_format: json_schema` (supported by
+    OpenAI, vLLM, LM Studio, OpenRouter; endpoints that ignore it still hit the
+    server-side validation backstop in annotate.py).
+    """
+    schema = _response_schema(category_list)
+    if settings.llm_provider == "openai":
+        url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+        headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
+        payload = {
+            "model": settings.llm_model,
+            "temperature": 0,
+            "seed": 42,
+            "max_tokens": 512,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "annotation", "schema": schema, "strict": False},
+            },
+            "messages": messages,
+        }
+        return url, headers, payload
+
     url = f"{settings.ollama_url}/api/chat"
     payload = {
         "model": settings.ollama_model,
@@ -257,7 +275,7 @@ def _call_ollama(
         # Keep the model resident between calls — cold-loading a 4B model costs
         # 5-15 s and auto-annotate runs are bursty.
         "keep_alive": "30m",
-        "format": _response_schema(category_list),
+        "format": schema,
         "options": {
             "num_ctx": settings.ollama_num_ctx,
             "num_predict": 512,  # headroom for the one-sentence reasoning field
@@ -271,29 +289,54 @@ def _call_ollama(
             "seed": 42,
         },
         "think": False,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
     }
-
     if settings.llm_logprob_confidence:
         payload["logprobs"] = True
+    return url, {}, payload
+
+
+def _extract_content(data: dict) -> str:
+    """Pull the assistant text out of an Ollama or OpenAI-shaped chat response."""
+    if "choices" in data:  # OpenAI-compatible
+        return data["choices"][0]["message"]["content"] or ""
+    return data["message"]["content"]
+
+
+def _call_llm(
+    user_prompt: str,
+    category_list: list[str],
+    txn_id: str,
+    log_prefix: str,
+    timeout: float,
+    max_retries: int,
+) -> AnnotationResponse | None:
+    """Shared provider chat call with retries and error taxonomy. Returns None on final failure."""
+    if settings.llm_provider == "none":
+        logger.debug("%s | txn=%s  llm_provider=none — skipping", log_prefix, txn_id)
+        return None
+
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    url, headers, payload = _build_provider_request(messages, category_list)
 
     logger.debug(
-        "%s | txn=%s  model=%s  prompt=\n%s",
-        log_prefix, txn_id, settings.ollama_model, user_prompt,
+        "%s | txn=%s  provider=%s  model=%s  prompt=\n%s",
+        log_prefix, txn_id, settings.llm_provider,
+        payload.get("model"), user_prompt,
     )
 
     for attempt in range(max_retries + 1):
         t0 = time.monotonic()
         content = ""
         try:
-            response = httpx.post(url, json=payload, timeout=timeout)
+            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
             elapsed = time.monotonic() - t0
             response.raise_for_status()
             data = response.json()
-            content = _strip_code_fence(data["message"]["content"])
+            content = _strip_code_fence(_extract_content(data))
             try:
                 result = AnnotationResponse.model_validate_json(content)
             except (ValidationError, json.JSONDecodeError):
@@ -308,7 +351,7 @@ def _call_ollama(
                 )
             # Truncation is silent (Ollama drops from the front, i.e. the system
             # prompt) — log the actual prompt token count so it's observable.
-            prompt_tokens = data.get("prompt_eval_count")
+            prompt_tokens = data.get("prompt_eval_count") or (data.get("usage") or {}).get("prompt_tokens")
             if prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64:
                 logger.warning(
                     "%s | txn=%s  prompt_eval_count=%d ~ num_ctx=%d - prompt likely truncated",
@@ -369,8 +412,8 @@ def annotate_transaction_llm_with_examples(
     timeout: float = 60.0,
     max_retries: int = 2,
 ) -> AnnotationResponse | None:
-    """Call Ollama with few-shot examples injected into the prompt. Returns None on final failure."""
-    return _call_ollama(
+    """Call the configured LLM provider with few-shot examples injected. Returns None on final failure."""
+    return _call_llm(
         _build_fewshot_user_prompt(
             txn, category_list, similar_examples, majority_category, majority_count
         ),
@@ -388,8 +431,8 @@ def annotate_transaction_llm(
     timeout: float = 60.0,
     max_retries: int = 2,
 ) -> AnnotationResponse | None:
-    """Call Ollama to annotate a transaction. Returns None on final failure."""
-    return _call_ollama(
+    """Call the configured LLM provider to annotate a transaction. Returns None on final failure."""
+    return _call_llm(
         _build_user_prompt(txn, category_list),
         category_list,
         txn_id=txn.get("id", "?"),

@@ -64,3 +64,36 @@ class TestNonUpiNormalization:
         monkeypatch.setattr(settings, "embed_strip_non_upi_refs", True)
         assert "24x7" not in normalize_description_for_embedding("POS 123456789012 STORE 24 7").split()
         assert "STORE" in normalize_description_for_embedding("POS 123456789012 STORE 24 7")
+
+
+class TestProviderAbstraction:
+    def test_provider_none_skips_llm(self, monkeypatch):
+        from src.pipeline.llm import annotate_transaction_llm
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        assert annotate_transaction_llm({"id": "t1", "raw_description": "x"}, ["Food & Dining"]) is None
+
+    def test_openai_request_shape(self, monkeypatch):
+        from src.pipeline.llm import _build_provider_request
+        monkeypatch.setattr(settings, "llm_provider", "openai")
+        monkeypatch.setattr(settings, "llm_base_url", "https://api.example.com/v1/")
+        monkeypatch.setattr(settings, "llm_api_key", "sk-test")
+        monkeypatch.setattr(settings, "llm_model", "gpt-test")
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        url, headers, payload = _build_provider_request(msgs, ["Food & Dining > Restaurants"])
+        assert url == "https://api.example.com/v1/chat/completions"
+        assert headers["Authorization"] == "Bearer sk-test"
+        assert payload["model"] == "gpt-test"
+        assert payload["response_format"]["type"] == "json_schema"
+        assert payload["response_format"]["json_schema"]["schema"]["properties"]["category"]["enum"] == ["Food & Dining"]
+
+    def test_ollama_request_shape_default(self):
+        from src.pipeline.llm import _build_provider_request
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        url, headers, payload = _build_provider_request(msgs, ["Food & Dining"])
+        assert url.endswith("/api/chat")
+        assert "format" in payload and payload["options"]["temperature"] == 0
+
+    def test_extract_content_both_shapes(self):
+        from src.pipeline.llm import _extract_content
+        assert _extract_content({"message": {"content": "a"}}) == "a"
+        assert _extract_content({"choices": [{"message": {"content": "b"}}]}) == "b"
