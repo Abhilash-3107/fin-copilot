@@ -16,6 +16,7 @@ from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.categories import get_category_names_flat
 from src.db.queries.embeddings import find_similar
+from src.db.queries.learned_rules import lookup_learned_rule
 from src.db.queries.people import list_people
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import (
@@ -163,6 +164,40 @@ def rule_annotation(
     """
     person_result = _match_known_person(txn, known_people)
     result = person_result or apply_rules(txn)
+
+    # Stage 1.5 — learned merchant memory. Only when the hand-authored person /
+    # keyword rules didn't fire: a counterparty the user has verified enough times
+    # at high purity gets a deterministic label with no embedding/LLM call. Causal
+    # (bounded by this txn's date, excludes self) so production == eval.
+    if result is None and settings.learned_rule_enabled:
+        learned = lookup_learned_rule(
+            conn,
+            txn.get("counterparty_key") or normalize_identity(txn.get("raw_description")),
+            before_txn_date=txn.get("txn_date"),
+            exclude_transaction_id=txn.get("id"),
+        )
+        if learned is not None:
+            logger.info(
+                "learned_rule | txn=%s  → %s/%s  support=%d/%d purity=%.2f",
+                txn["id"], learned.category, learned.subcategory,
+                learned.support, learned.total, learned.purity,
+            )
+            ann = AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=learned.merchant,
+                category=learned.category,
+                subcategory=learned.subcategory,
+                tags=learned.tags,
+                confidence=settings.learned_rule_confidence,
+                source="learned_rule",
+            )
+            trace = ReasoningTrace(
+                stage="learned_rule",
+                final_confidence=ann.confidence,
+                matched_rule=f"{learned.counterparty_key} ({learned.support}/{learned.total} verified, purity {learned.purity})",
+            )
+            return ann, trace
+
     if result is None:
         return None, None
 
@@ -225,6 +260,7 @@ def auto_annotate(
     )
 
     rule_matched = 0
+    learned_rule_annotated = 0
     rag_direct_annotated = 0
     rag_prompted_annotated = 0
     llm_annotated = 0
@@ -278,12 +314,16 @@ def auto_annotate(
         if result is not None:
             _persist(result, trace)
             _tick()
-            rule_matched += 1
+            if result.source == "learned_rule":
+                learned_rule_annotated += 1
+            else:
+                rule_matched += 1
             if result.confidence < settings.confidence_threshold:
                 low_confidence += 1
             logger.debug(
-                "rule match | txn=%s  desc=%r  → category=%s/%s  conf=%.2f",
-                txn["id"], txn["raw_description"], result.category, result.subcategory, result.confidence,
+                "rule match | txn=%s  desc=%r  → category=%s/%s  conf=%.2f  source=%s",
+                txn["id"], txn["raw_description"], result.category, result.subcategory,
+                result.confidence, result.source,
             )
         else:
             needs_rag.append(txn)
@@ -370,14 +410,15 @@ def auto_annotate(
 
     conn.commit()  # flush the final partial batch
     logger.info(
-        "auto_annotate done | total_processed=%d  rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
-        len(unannotated), rule_matched, rag_direct_annotated, rag_prompted_annotated,
-        llm_annotated, llm_failed, low_confidence, already_annotated_count,
+        "auto_annotate done | total_processed=%d  rule=%d  learned_rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
+        len(unannotated), rule_matched, learned_rule_annotated, rag_direct_annotated,
+        rag_prompted_annotated, llm_annotated, llm_failed, low_confidence, already_annotated_count,
     )
 
     return AutoAnnotateResult(
         total_processed=len(unannotated),
         rule_matched=rule_matched,
+        learned_rule_annotated=learned_rule_annotated,
         rag_direct_annotated=rag_direct_annotated,
         rag_prompted_annotated=rag_prompted_annotated,
         llm_annotated=llm_annotated,

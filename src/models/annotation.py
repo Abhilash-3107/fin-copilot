@@ -24,7 +24,7 @@ class ReasoningTrace(BaseModel):
     All fields are optional so each stage fills only what applies. Serialized to the
     annotations.reasoning JSON column (only when settings.dev_mode is on).
     """
-    stage: str  # "rule" | "rag_direct" | "rag_prompted" | "llm"
+    stage: str  # "rule" | "learned_rule" | "rag_direct" | "rag_knn" | "rag_prompted" | "llm"
     final_confidence: float
     # RAG paths (rag_direct + rag_prompted)
     best_similarity: Optional[float] = None
@@ -56,7 +56,7 @@ class Annotation(BaseModel):
     subcategory: Optional[str] = None
     tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
     annotated_at: Optional[datetime] = None
     reasoning: Optional[str] = None  # JSON-serialized ReasoningTrace, dev mode only
 
@@ -68,7 +68,7 @@ class AnnotationCreate(BaseModel):
     subcategory: Optional[str] = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
 
 
 class AnnotationPatch(BaseModel):
@@ -82,6 +82,7 @@ class AnnotationPatch(BaseModel):
 class AutoAnnotateResult(BaseModel):
     total_processed: int
     rule_matched: int
+    learned_rule_annotated: int = 0
     rag_direct_annotated: int = 0
     rag_prompted_annotated: int = 0
     llm_annotated: int

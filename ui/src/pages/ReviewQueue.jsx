@@ -412,6 +412,7 @@ export default function ReviewQueue() {
             <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
               {src === 'rag_direct' || src === 'rag_prompted' ? 'from history'
                 : src === 'llm' ? 'AI guess'
+                : src === 'learned_rule' ? 'learned merchant'
                 : src === 'rule' ? 'rule match'
                 : src === 'manual' ? 'you set this'
                 : src}

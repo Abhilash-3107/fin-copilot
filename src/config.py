@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     # embedding (same noise class the UPI-ref fix addressed). Changing this
     # invalidates the stored vector space — re-embed before querying.
     embed_strip_non_upi_refs: bool = False
+    # --- Learned merchant memory (stage 1.5) ---
+    # A counterparty is promoted to a deterministic rule once it has
+    # >= learned_rule_min_support human-verified labels for its modal category at
+    # >= learned_rule_purity purity. Computed on-demand from annotations (no
+    # materialized table); rules demote automatically when a correction lowers
+    # purity. Personal counterparties are handled by the stage-1 person rule and
+    # never reach here; the purity bar blocks mixed-purpose names. Default off
+    # until the causal eval validates it (see scripts/eval.py).
+    learned_rule_enabled: bool = False
+    learned_rule_min_support: int = 3
+    learned_rule_purity: float = 0.9
+    learned_rule_confidence: float = 0.95
     # Similarity floor for "apply to similar": neighbours at or above this cosine
     # similarity (or sharing the same UPI counterparty identity) are offered for
     # bulk re-annotation after a human correction.

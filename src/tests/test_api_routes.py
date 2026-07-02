@@ -531,3 +531,21 @@ class TestApplyToSimilar:
         assert resp.json() == {"applied": 0, "skipped": 1}
         row = conn.execute("SELECT category FROM annotations WHERE id='a2'").fetchone()
         assert row["category"] == "Transfers"
+
+
+class TestLearnedRulesEndpoint:
+    def test_lists_established_merchants_only(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')")
+        # SWIGGY: 3 verified Food → established. ONEOFF: 1 verified → not.
+        for i in range(3):
+            conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) VALUES (?, 's1', '2026-01-10', 100, 'debit', ?, 'SWIGGY')", (f"sw{i}", f"UPI/SWIGGY/{i}/UPI"))
+            conn.execute("INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, 'Food & Dining', 1.0, 'manual')", (f"a{i}", f"sw{i}"))
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) VALUES ('o0', 's1', '2026-01-10', 50, 'debit', 'UPI/ONEOFF/1/UPI', 'ONEOFF')")
+        conn.execute("INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES ('ao', 'o0', 'Shopping', 1.0, 'manual')")
+        conn.commit()
+        resp = client.get("/api/annotations/learned-rules")
+        assert resp.status_code == 200
+        rows = resp.json()
+        assert [r["counterparty_key"] for r in rows] == ["SWIGGY"]
+        assert rows[0]["support"] == 3 and rows[0]["category"] == "Food & Dining"

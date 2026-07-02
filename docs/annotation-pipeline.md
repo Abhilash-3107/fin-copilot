@@ -233,6 +233,16 @@ The known-person rule labels by *mechanism* (payment to a known person → Trans
 The label is never changed and cold start is unaffected.
 Eval note (e6, 2026-07-03): null on current data - wrong person-rule labels come from Transfers-dominant contacts' occasional purpose payments, which history cannot predict - but the gate is free and catches future non-transfer-dominant "people".
 
+## Learned Merchant Memory (stage 1.5)
+
+Between the hand-authored rules (stage 1) and RAG (stage 2), a counterparty the user has verified enough times gets a deterministic label with no embedding or LLM call.
+A merchant is *promoted* when it has >= `learned_rule_min_support` (3) human-verified labels (`manual`/`imported` only - machine sources never promote, so a recurring mislabel can't bootstrap itself) for its modal category at >= `learned_rule_purity` (0.9) purity; the label copies the most recent verified annotation's category/subcategory/merchant/tags at `learned_rule_confidence` (0.95), `source=learned_rule`.
+
+Rules are **computed on-demand** from the annotations table (indexed by `counterparty_key`), not materialized: single source of truth, no staleness, automatic demotion (a correction lowers purity on the next lookup), and identical code in production and the causal eval (`before_txn_date` bounds it to labels older than the scored transaction).
+Personal counterparties are handled by the stage-1 person rule and never reach here; the purity bar blocks mixed-purpose names.
+`GET /api/annotations/learned-rules` lists the currently-established rules for transparency; correcting a transaction is how a user retires or changes one.
+Gated by `learned_rule_enabled` (default off pending causal-eval validation).
+
 ## Apply-to-Similar (correction propagation)
 
 After a correction in the review queue, `GET /api/annotations/{id}/similar` returns machine-labeled neighbours (cosine ≥ `apply_similar_floor` (0.9) or same `counterparty_key`), and `POST .../apply-to-similar` copies the corrected label onto the user-selected subset.

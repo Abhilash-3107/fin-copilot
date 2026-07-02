@@ -1887,3 +1887,125 @@ class TestPersonTokenMatching:
     def test_name_token_word_boundary_fallback_without_key(self):
         assert self._m("karabi", desc="imps to karabi bora ref 12")
         assert not self._m("karabi", desc="imps to notkarabi ref 12")
+
+
+# ---------------------------------------------------------------------------
+# Learned merchant memory (stage 1.5)
+# ---------------------------------------------------------------------------
+
+class TestLearnedRules:
+    def _conn(self):
+        conn = _make_conn()
+        _insert_statement(conn)
+        return conn
+
+    def _add(self, conn, txn_id, key, category, source="manual", subcategory=None,
+             merchant=None, tags="", txn_date="2026-01-10", annotated_at="2026-01-10"):
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+            "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, ?)",
+            (txn_id, txn_date, f"UPI/{key}/1/UPI", key),
+        )
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, category, subcategory, merchant, tags, confidence, source, annotated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1.0, ?, ?)",
+            (f"ann_{txn_id}", txn_id, category, subcategory, merchant, tags, source, annotated_at),
+        )
+        conn.commit()
+
+    def test_promotes_at_support_and_purity(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"s{i}", "SWIGGY", "Food & Dining", subcategory="Delivery", merchant="Swiggy")
+        rule = lookup_learned_rule(conn, "SWIGGY")
+        assert rule is not None
+        assert rule.category == "Food & Dining"
+        assert rule.subcategory == "Delivery"
+        assert rule.merchant == "Swiggy"
+        assert rule.support == 3 and rule.total == 3 and rule.purity == 1.0
+
+    def test_below_support_not_promoted(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        self._add(conn, "s0", "SWIGGY", "Food & Dining")
+        self._add(conn, "s1", "SWIGGY", "Food & Dining")
+        assert lookup_learned_rule(conn, "SWIGGY") is None  # only 2 < min_support 3
+
+    def test_low_purity_not_promoted(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        # 3 Food, 2 Shopping → purity 0.6 < 0.9
+        for i in range(3):
+            self._add(conn, f"f{i}", "MIXED", "Food & Dining")
+        for i in range(2):
+            self._add(conn, f"sh{i}", "MIXED", "Shopping")
+        assert lookup_learned_rule(conn, "MIXED") is None
+
+    def test_machine_labels_do_not_promote(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        for i in range(4):
+            self._add(conn, f"m{i}", "BOTMERCH", "Shopping", source="llm")
+        assert lookup_learned_rule(conn, "BOTMERCH") is None  # no verified labels
+
+    def test_causal_cutoff_excludes_future_labels(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"c{i}", "SWIGGY", "Food & Dining", txn_date=f"2026-02-0{i+1}")
+        # Scoring a txn dated before the history sees nothing.
+        assert lookup_learned_rule(conn, "SWIGGY", before_txn_date="2026-01-15") is None
+        # Dated after, it fires.
+        assert lookup_learned_rule(conn, "SWIGGY", before_txn_date="2026-03-01") is not None
+
+    def test_excludes_self(self):
+        from src.db.queries.learned_rules import lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"e{i}", "SWIGGY", "Food & Dining")
+        # Excluding one of the 3 drops support to 2 → not established.
+        assert lookup_learned_rule(conn, "SWIGGY", exclude_transaction_id="e0") is None
+
+    def test_pipeline_stage_applies_when_enabled(self, monkeypatch):
+        from src.config import settings
+        from src.pipeline.annotate import rule_annotation
+        monkeypatch.setattr(settings, "learned_rule_enabled", True)
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"s{i}", "LICIOUS", "Food & Dining", merchant="Licious",
+                      txn_date="2026-01-05")
+        txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
+               "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
+        result, trace = rule_annotation(conn, txn, [])
+        assert result is not None
+        assert result.source == "learned_rule"
+        assert result.category == "Food & Dining"
+        assert trace.stage == "learned_rule"
+
+    def test_pipeline_stage_inert_when_disabled(self, monkeypatch):
+        from src.config import settings
+        from src.pipeline.annotate import rule_annotation
+        monkeypatch.setattr(settings, "learned_rule_enabled", False)
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"s{i}", "LICIOUS", "Food & Dining")
+        txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
+               "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
+        result, trace = rule_annotation(conn, txn, [])
+        assert result is None  # falls through to RAG
+
+    def test_person_rule_takes_priority(self, monkeypatch):
+        from src.config import settings
+        from src.pipeline.annotate import rule_annotation
+        monkeypatch.setattr(settings, "learned_rule_enabled", True)
+        conn = self._conn()
+        # Even if a merchant-style history exists, a known person wins stage 1.
+        for i in range(3):
+            self._add(conn, f"s{i}", "KARABI BORA", "Food & Dining")
+        txn = {"id": "new", "raw_description": "UPI/KARABI BORA/9/UPI",
+               "counterparty_key": "KARABI BORA", "upi_meta": None,
+               "txn_date": "2026-02-01", "amount": 100.0, "debit_credit": "debit"}
+        result, _ = rule_annotation(conn, txn, [("ma", "karabi")])
+        assert result.source == "rule"
+        assert result.subcategory == "Peer Transfer"

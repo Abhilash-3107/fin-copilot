@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 export const SOURCE_PILL = {
   manual:       'bg-[#14532d] text-[#86efac]',
   rule:         'bg-[#1e3a5f] text-[#7dd3fc]',
+  learned_rule: 'bg-[#1e3a5f] text-[#7dd3fc]',
   rag_direct:   'bg-[#164e63] text-[#67e8f9]',
   rag_prompted: 'bg-[#164e63] text-[#67e8f9]',
   llm:          'bg-[#3b1f5e] text-[#c4b5fd]',
@@ -13,6 +14,7 @@ export const SOURCE_PILL = {
 
 function sourceLabel(src) {
   if (src === 'rag_direct' || src === 'rag_prompted') return 'from history'
+  if (src === 'learned_rule') return 'learned merchant'
   return src ?? 'pending'
 }
 

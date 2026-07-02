@@ -57,7 +57,7 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     rule_result, _rule_trace = rule_annotation(conn, txn, known_people)
     if rule_result is not None:
         return {
-            "stage": "rule",
+            "stage": rule_result.source,  # "rule" or "learned_rule"
             "category": rule_result.category,
             "subcategory": rule_result.subcategory,
             "confidence": rule_result.confidence,

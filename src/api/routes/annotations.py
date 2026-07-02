@@ -37,7 +37,7 @@ router = APIRouter()
 # Pipeline sources whose outcomes feed calibration. Corrections to rag_direct and
 # rule annotations are tracked too: they tune thresholds and expose bad donors,
 # even though only llm/rag_prompted confidences are dampened today.
-_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rule")
+_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rag_knn", "rule", "learned_rule")
 
 
 class AutoAnnotateRequest(BaseModel):
@@ -248,7 +248,7 @@ class ApplySimilarRequest(BaseModel):
     transaction_ids: list[str]
 
 
-_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "rag_knn"}
+_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "rag_knn", "learned_rule"}
 
 
 @router.get("/{annotation_id}/similar")
@@ -363,6 +363,31 @@ def apply_to_similar(
     for txn_id in body.transaction_ids:
         embed_transaction(conn, txn_id)
     return {"applied": applied, "skipped": skipped}
+
+
+@router.get("/learned-rules")
+def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
+    """Merchant memories the pipeline would apply deterministically right now.
+
+    Transparency for the learned-rule stage: each entry is a counterparty the
+    user has verified enough times at high purity. Computed live from present-day
+    annotations (no stored table), so correcting transactions is how a user
+    changes or retires one.
+    """
+    from src.db.queries.learned_rules import list_learned_rules
+
+    return [
+        {
+            "counterparty_key": r.counterparty_key,
+            "category": r.category,
+            "subcategory": r.subcategory,
+            "merchant": r.merchant,
+            "support": r.support,
+            "total": r.total,
+            "purity": r.purity,
+        }
+        for r in list_learned_rules(conn)
+    ]
 
 
 @router.get("/review-queue")
