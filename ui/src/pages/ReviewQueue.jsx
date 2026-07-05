@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
@@ -152,6 +152,7 @@ export default function ReviewQueue() {
   const [stats, setStats] = useState({ confirmed: 0, edited: 0, skipped: 0 })
   const [history, setHistory] = useState([]) // stack of {idx, stats} snapshots
   const [devMode, setDevMode] = useState(false)
+  const [reviewBar, setReviewBar] = useState(0.85)  // confidence_threshold from /config
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
   const idxRef = useRef(0)
@@ -174,7 +175,10 @@ export default function ReviewQueue() {
     }
 
     // Fetch fresh each mount so a toggle on the Settings page takes effect.
-    api.get('/config').then(cfg => setDevMode(!!cfg.dev_mode)).catch(() => {})
+    api.get('/config').then(cfg => {
+      setDevMode(!!cfg.dev_mode)
+      if (typeof cfg.confidence_threshold === 'number') setReviewBar(cfg.confidence_threshold)
+    }).catch(() => {})
   }, [])
 
   const current = queue[idx]
@@ -192,6 +196,21 @@ export default function ReviewQueue() {
     })
     setShowTags(false)
   }, [idx, current?.annotation_id])
+
+  // Single source of truth for "has the user changed this card?"
+  // Used by both the keyboard handler and the render body so Enter/c never
+  // disagree with the buttons (a merchant- or tags-only edit still counts).
+  const isDirty = useMemo(() => {
+    if (!current) return false
+    return (
+      form.category !== (current.category ?? '') ||
+      form.subcategory !== (current.subcategory ?? '') ||
+      form.merchant !== (current.merchant ?? '') ||
+      JSON.stringify(form.tags) !== JSON.stringify(
+        Array.isArray(current.tags) ? current.tags : (current.tags ? current.tags.split(',').filter(Boolean) : [])
+      )
+    )
+  }, [current, form])
 
   function pushHistory() {
     setHistory(h => [...h, { idx, stats }])
@@ -277,19 +296,15 @@ export default function ReviewQueue() {
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (propagate) return // dialog owns the keyboard
       if (e.key === 'b') goBack()
-      else if (e.key === 'c') confirm()
+      // Both c and Enter save when the card is dirty; confirming a stale
+      // machine label would discard the edit and poison calibration.
+      else if (e.key === 'c') isDirty ? saveEdit() : confirm()
       else if (e.key === 's') skip()
-      else if (e.key === 'Enter') {
-        const isDirty =
-          form.category !== (current?.category ?? '') ||
-          form.subcategory !== (current?.subcategory ?? '')
-        if (isDirty) saveEdit()
-        else confirm()
-      }
+      else if (e.key === 'Enter') isDirty ? saveEdit() : confirm()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [idx, queue, form, current, propagate])
+  }, [idx, queue, form, current, propagate, isDirty])
 
   async function applyPropagation(transactionIds) {
     setApplying(true)
@@ -355,21 +370,13 @@ export default function ReviewQueue() {
   const isDebit = item.debit_credit === 'debit'
   const src = item.source ?? 'pending'
 
-  const isDirty =
-    form.category !== (item.category ?? '') ||
-    form.subcategory !== (item.subcategory ?? '') ||
-    form.merchant !== (item.merchant ?? '') ||
-    JSON.stringify(form.tags) !== JSON.stringify(
-      Array.isArray(item.tags) ? item.tags : (item.tags ? item.tags.split(',').filter(Boolean) : [])
-    )
-
   return (
     <div className="flex flex-col h-full px-4 py-5">
       {propagateDialog}
       {/* Progress */}
       <div className="max-w-2xl mx-auto w-full mb-5">
         <div className="flex justify-between text-xs text-[#64748b] mb-1.5">
-          <span>Teaching your copilot</span>
+          <span>Teach Me</span>
           <span>{idx} / {total}</span>
         </div>
         <div className="h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
@@ -417,6 +424,14 @@ export default function ReviewQueue() {
                 : src === 'manual' ? 'you set this'
                 : src}
             </span>
+          </div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
+            {item.confidence != null && item.confidence < reviewBar && (
+              <span className="text-[10px] text-amber-400/90">
+                below {Math.round(reviewBar * 100)}% review bar — that's why it's here
+              </span>
+            )}
           </div>
           <Tooltip content="How sure the AI is about this guess. Below 60% means it's mostly guessing." position="bottom">
             <ConfidenceBar confidence={item.confidence} />
