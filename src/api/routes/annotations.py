@@ -37,7 +37,7 @@ router = APIRouter()
 # Pipeline sources whose outcomes feed calibration. Corrections to rag_direct and
 # rule annotations are tracked too: they tune thresholds and expose bad donors,
 # even though only llm/rag_prompted confidences are dampened today.
-_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rag_knn", "rule", "learned_rule")
+_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rule", "learned_rule")
 
 
 class AutoAnnotateRequest(BaseModel):
@@ -114,7 +114,20 @@ def start_auto_annotate_job(
     background_tasks: BackgroundTasks,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress."""
+    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress.
+
+    Single-user app: only one annotation job may be in flight at a time. A second
+    request (e.g. a double-click or a click from another open tab) re-attaches to
+    the running job instead of starting a duplicate, which would burn duplicate LLM
+    calls and could overwrite a manual label created mid-run.
+    """
+    inflight = conn.execute(
+        "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
+        "ORDER BY created_at LIMIT 1"
+    ).fetchone()
+    if inflight is not None:
+        return {"job_id": inflight["id"], "status": inflight["status"]}
+
     job_id = str(ulid.ULID())
     conn.execute(
         "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
@@ -248,7 +261,7 @@ class ApplySimilarRequest(BaseModel):
     transaction_ids: list[str]
 
 
-_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "rag_knn", "learned_rule"}
+_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "learned_rule"}
 
 
 @router.get("/{annotation_id}/similar")
@@ -284,11 +297,15 @@ def similar_candidates(
     except Exception as e:
         logger.warning("apply-similar | embedding unavailable, identity-only | %s", e)
 
-    identity = normalize_identity(txn.get("raw_description"))
+    # Same-counterparty candidates via the indexed counterparty_key (migration 017),
+    # not a full scan of every UPI row. The Python-side normalize_identity check
+    # stays as an exactness guard for the few matched rows, matching
+    # counterparty_history() so the two identity paths never diverge.
+    identity = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
     if identity is not None:
         rows = conn.execute(
-            "SELECT id, raw_description FROM transactions WHERE raw_description LIKE 'UPI/%' AND id != ?",
-            (txn["id"],),
+            "SELECT id, raw_description FROM transactions WHERE counterparty_key = ? AND id != ?",
+            (identity, txn["id"]),
         ).fetchall()
         for r in rows:
             if normalize_identity(r["raw_description"]) == identity:

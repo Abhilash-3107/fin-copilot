@@ -395,6 +395,23 @@ class TestAnnotationJobs:
         client, _ = file_db_client
         assert client.get("/api/annotations/jobs/missing").status_code == 404
 
+    def test_inflight_job_is_not_duplicated(self, file_db_client):
+        """A second start request re-attaches to a running job instead of
+        launching a duplicate, which would burn duplicate LLM calls and could
+        overwrite a manual label created mid-run."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('running1','running',10,4)"
+        )
+        conn.commit()
+
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={})
+        assert resp.json()["job_id"] == "running1"
+        assert resp.json()["status"] == "running"
+
+        count = conn.execute("SELECT COUNT(*) AS n FROM annotation_jobs").fetchone()["n"]
+        assert count == 1
+
 
 class TestStatementUploadDedup:
     def _fake_parser(self):
@@ -470,13 +487,18 @@ class TestStatementUploadDedup:
 # ---------------------------------------------------------------------------
 
 def _seed_upi_txn(conn, txn_id, ann_id, name, source="llm", category="Miscellaneous", date="2026-01-10"):
+    from src.pipeline.counterparty import normalize_identity
+
     conn.execute(
         "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
     )
+    raw_description = f"UPI/{name}/123456789012/UPI"
+    # Populate counterparty_key exactly as production ingest does, so the
+    # indexed same-counterparty lookup in /similar is exercised faithfully.
     conn.execute(
-        """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
-           VALUES (?, 's1', ?, 250.0, 'debit', ?)""",
-        (txn_id, date, f"UPI/{name}/123456789012/UPI"),
+        """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key)
+           VALUES (?, 's1', ?, 250.0, 'debit', ?, ?)""",
+        (txn_id, date, raw_description, normalize_identity(raw_description)),
     )
     ann = Annotation(id=ann_id, transaction_id=txn_id, category=category,
                      confidence=0.5, source=source)
