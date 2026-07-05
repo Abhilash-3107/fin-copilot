@@ -79,8 +79,14 @@ ollama pull nomic-embed-text
 uv sync
 
 # Start the API server (runs migrations automatically on startup)
-uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+# Binds to 127.0.0.1 by default — loopback only, so your statements are not
+# exposed on the network. Set RELOAD=1 for auto-reload during development.
+RELOAD=1 uv run python -m src
 ```
+
+> The server binds to `127.0.0.1` by default. It has no authentication yet, so
+> only expose it on your LAN deliberately: set `HOST=0.0.0.0` (you will get a
+> startup warning). `PORT` defaults to `8000`.
 
 ### Frontend
 
