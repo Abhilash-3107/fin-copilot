@@ -5,7 +5,6 @@ import { api, runAnnotationJob } from '../lib/api.js'
 import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
-import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import AnnotationProgress from '../components/AnnotationProgress.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { HelpCircle } from 'lucide-react'
@@ -29,8 +28,6 @@ export default function Dashboard() {
   const [annMap, setAnnMap] = useState({})
   const [reviewCount, setReviewCount] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [activeTxn, setActiveTxn] = useState(null)
-  const [activeAnnotation, setActiveAnnotation] = useState(null)
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const [annotateProgress, setAnnotateProgress] = useState(null)
   const [amountsVisible, setAmountsVisible] = useState(false)
@@ -86,17 +83,6 @@ export default function Dashboard() {
       setAutoAnnotating(false)
       setAnnotateProgress(null)
     }
-  }
-
-  async function openPanel(txn) {
-    setActiveTxn(txn)
-    try {
-      const full = await api.get(`/transactions/${txn.id}`)
-      setActiveAnnotation(full.annotation_id ? {
-        id: full.annotation_id, category: full.category, subcategory: full.subcategory,
-        merchant: full.merchant, tags: full.tags, confidence: full.confidence, source: full.source,
-      } : null)
-    } catch (_) { setActiveAnnotation(null) }
   }
 
   // The selected month comes from the active statement
@@ -445,14 +431,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {activeTxn && (
-        <AnnotationPanel
-          txn={activeTxn}
-          annotation={activeAnnotation}
-          onClose={() => { setActiveTxn(null); setActiveAnnotation(null) }}
-          onSaved={() => {}}
-        />
-      )}
     </div>
   )
 }

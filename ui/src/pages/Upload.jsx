@@ -154,7 +154,7 @@ export default function Upload() {
   async function clearEmbeddings() {
     if (!clearEmbedTarget) return
     try {
-      const result = await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
+      await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
       toast(`Memory cleared — rebuild it when you're ready`, 'info')
       setClearEmbedTarget(null)
       loadStatements()
