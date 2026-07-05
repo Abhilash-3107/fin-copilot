@@ -9,6 +9,7 @@ import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { isRealFlow, isShopping } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import Amount from '../components/Amount.jsx'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
 
@@ -224,7 +225,7 @@ export default function Insights() {
                       <tr key={merchant} className="border-b border-[#1a1d27]">
                         <td className="px-4 py-2 text-[#e2e8f0]">{merchant}</td>
                         <td className="px-4 py-2 text-right text-red-400 tabular-nums">
-                          ₹{total.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          <Amount value={total} decimals={0} />
                         </td>
                       </tr>
                     ))}
@@ -254,7 +255,7 @@ export default function Insights() {
                       <tr key={cat} className="border-b border-[#1a1d27]">
                         <td className="px-4 py-2 text-[#e2e8f0]">{cat}</td>
                         <td className="px-4 py-2 text-right text-red-400 tabular-nums">
-                          ₹{total.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          <Amount value={total} decimals={0} />
                         </td>
                         <td className="px-4 py-2 text-right text-[#94a3b8] tabular-nums">
                           {totalSpend > 0 ? Math.round((total / totalSpend) * 100) : 0}%

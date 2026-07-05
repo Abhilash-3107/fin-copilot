@@ -5,7 +5,8 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
 import TagInput from './TagInput.jsx'
-import { SOURCE_PILL, formatAmount } from './TransactionTable.jsx'
+import { SOURCE_PILL } from './TransactionTable.jsx'
+import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
@@ -255,9 +256,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         <div className="px-5 py-4 bg-[#13151f] border-b border-[#2d3148] shrink-0">
           <div className="flex items-start justify-between gap-4 mb-2">
             <span className="text-xs text-[#64748b]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
-            <span className={`text-lg font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
-              {formatAmount(txn.amount, txn.debit_credit)}
-            </span>
+            <Amount value={txn.amount} debitCredit={txn.debit_credit} className={`text-lg font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
           </div>
           <p className="text-sm text-[#cbd5e1] break-words leading-relaxed">{txn.raw_description}</p>
           {upiMeta?.note && (

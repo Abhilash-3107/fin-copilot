@@ -4,7 +4,8 @@ import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import TagInput from '../components/TagInput.jsx'
-import { SOURCE_PILL, formatAmount } from '../components/TransactionTable.jsx'
+import { SOURCE_PILL } from '../components/TransactionTable.jsx'
+import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import ReasoningPanel from '../components/ReasoningPanel.jsx'
 
@@ -113,7 +114,7 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
               <span className="flex-1 min-w-0">
                 <span className="block text-[#cbd5e1] truncate">{it.raw_description}</span>
                 <span className="text-[#64748b]">
-                  {dayjs(it.txn_date).format('DD MMM')} · {formatAmount(it.amount, it.debit_credit)} · currently {it.category}
+                  {dayjs(it.txn_date).format('DD MMM')} · <Amount value={it.amount} debitCredit={it.debit_credit} /> · currently {it.category}
                   {it.similarity != null && ` · ${Math.round(it.similarity * 100)}% similar`}
                 </span>
               </span>
@@ -396,9 +397,7 @@ export default function ReviewQueue() {
         <div className="px-6 py-5 border-b border-[#2d3148]">
           <div className="flex items-start justify-between gap-4 mb-2">
             <span className="text-sm text-[#64748b]">{dayjs(item.txn_date).format('DD MMM YYYY')}</span>
-            <span className={`text-xl font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
-              {formatAmount(item.amount, item.debit_credit)}
-            </span>
+            <Amount value={item.amount} debitCredit={item.debit_credit} className={`text-xl font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
           </div>
           <p className="text-sm text-[#cbd5e1] leading-relaxed">{item.raw_description}</p>
         </div>

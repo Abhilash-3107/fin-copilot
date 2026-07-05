@@ -1,4 +1,5 @@
 import dayjs from 'dayjs'
+import Amount from './Amount.jsx'
 
 export const SOURCE_PILL = {
   manual:       'bg-[#14532d] text-[#86efac]',
@@ -17,11 +18,6 @@ function sourceLabel(src) {
   if (src === 'learned_rule') return 'learned merchant'
   if (src === 'llm' || src === 'model') return 'AI'  // match the review card's "AI guess"
   return src ?? 'pending'
-}
-
-export function formatAmount(amount, debitCredit) {
-  const formatted = Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })
-  return debitCredit === 'debit' ? `−₹${formatted}` : `+₹${formatted}`
 }
 
 export default function TransactionTable({ transactions, annotationMap = {}, activeId, onSelect }) {
@@ -75,7 +71,7 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
                 )}
               </td>
               <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums font-medium ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
-                {formatAmount(txn.amount, txn.debit_credit)}
+                <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
               <td className="px-3 py-2.5">
                 {ann ? (

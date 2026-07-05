@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Trash2, HelpCircle } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { formatAmount } from './TransactionTable.jsx'
+import Amount from './Amount.jsx'
 import Tooltip from './Tooltip.jsx'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
@@ -115,7 +115,7 @@ export default function GroupCard({ group, onDelete }) {
                     <td className="px-3 py-2 text-[#94a3b8] whitespace-nowrap">{dayjs(m.txn_date).format('DD MMM YY')}</td>
                     <td className="px-3 py-2 text-[#cbd5e1] max-w-[160px] truncate">{m.raw_description}</td>
                     <td className={`px-3 py-2 tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
-                      {formatAmount(m.amount, m.debit_credit)}
+                      <Amount value={m.amount} debitCredit={m.debit_credit} />
                     </td>
                     <td className="px-3 py-2">
                       <select
