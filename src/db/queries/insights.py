@@ -82,13 +82,15 @@ def _merge_merchant_keys(keys: list[str]) -> dict[str, str]:
     return canonical
 
 
-def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict]:
+def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict, set[str]]:
     """Compute spend offsets across the full ledger.
 
-    Returns (category_offsets, month_offsets):
+    Returns (category_offsets, month_offsets, used_credit_ids):
     - category_offsets: {(month, category): amount} for offsets attributable
       to a spend category.
     - month_offsets: {month: amount} for offsets where no category is knowable.
+    - used_credit_ids: credit transactions consumed as offsets, so other
+      panels (the people ledger) can avoid counting a settled share twice.
     """
     category_offsets: dict[tuple[str, str], float] = defaultdict(float)
     month_offsets: dict[str, float] = defaultdict(float)
@@ -197,8 +199,9 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict]:
             category_offsets[(row["month"], category)] += row["amount"]
         else:
             month_offsets[row["month"]] += row["amount"]
+        used_credit_ids.add(row["id"])
 
-    return dict(category_offsets), dict(month_offsets)
+    return dict(category_offsets), dict(month_offsets), used_credit_ids
 
 
 def _verdict(conn: sqlite3.Connection, month: str, cat_offsets: dict, month_offsets: dict) -> dict:
@@ -354,7 +357,7 @@ def _days_between(earlier: str, later: str) -> int:
     return (d2 - d1).days
 
 
-def _people_ledger(conn: sqlite3.Connection) -> dict:
+def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
     """Net position per person over the full history of Transfers.
 
     Transactions carry no person foreign key; the annotation pipeline labels
@@ -362,11 +365,15 @@ def _people_ledger(conn: sqlite3.Connection) -> dict:
     Match each Transfers row to a person by exact merchant name, then by the
     person's name/UPI appearing in the counterparty or merchant string
     (4+ characters, so short names like "ma" only match exactly).
+
+    Credits already consumed as spend offsets (a friend paying back their
+    share of a linked/grouped expense) are settlements of that expense, not
+    money the person gave the user, so they are excluded here.
     """
     people = conn.execute("SELECT id, name, upi, relationship FROM people").fetchall()
     rows = conn.execute(
         """
-        SELECT t.amount, t.debit_credit, t.txn_date,
+        SELECT t.id, t.amount, t.debit_credit, t.txn_date,
                LOWER(COALESCE(t.counterparty_key, '')) AS cpk,
                LOWER(COALESCE(a.merchant, '')) AS merchant
         FROM transactions t
@@ -374,6 +381,7 @@ def _people_ledger(conn: sqlite3.Connection) -> dict:
         WHERE a.category = 'Transfers'
         """
     ).fetchall()
+    rows = [r for r in rows if r["id"] not in settled_ids]
 
     def match(row) -> str | None:
         for p in people:
@@ -508,7 +516,7 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
         month = months[-1]
     prev = _prev_month(month)
 
-    cat_offsets, month_offsets = _spend_offsets(conn)
+    cat_offsets, month_offsets, settled_ids = _spend_offsets(conn)
 
     current = _categories_for_month(conn, month, cat_offsets)
     previous = _categories_for_month(conn, prev, cat_offsets)
@@ -553,7 +561,7 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
         "what_changed": deltas[:3],
         "categories": categories,
         "recurring": _recurring(conn, latest_date),
-        "people": _people_ledger(conn),
+        "people": _people_ledger(conn, settled_ids),
         "merchants": _merchants(conn, month),
         "balance": _balance_series(conn),
         "unexplained": _unexplained(conn, month),
