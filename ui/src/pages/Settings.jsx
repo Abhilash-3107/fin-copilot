@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import RunSummary from '../components/RunSummary.jsx'
+import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
   return (
@@ -82,7 +84,14 @@ function LearnedRules() {
               {rules.map(r => (
                 <tr key={r.counterparty_key}>
                   <td className="px-5 py-3 text-[#e2e8f0]">
-                    {r.merchant || r.counterparty_key}
+                    <Link
+                      to={txnFilterPath(
+                        r.merchant ? { merchant: r.merchant } : { category: r.category }
+                      )}
+                      className="hover:text-[#a5b4fc] transition-colors"
+                    >
+                      {r.merchant || r.counterparty_key}
+                    </Link>
                     {r.merchant && (
                       <span className="text-[#64748b] ml-2 text-xs">{r.counterparty_key}</span>
                     )}
