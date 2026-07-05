@@ -416,8 +416,9 @@ class TestAnnotationJobs:
 class TestStatementUploadDedup:
     def _fake_parser(self):
         from src.models.transaction import Transaction
+        from src.parsers.base import StatementParser
 
-        class FakeParser:
+        class FakeParser(StatementParser):
             bank_name = "fake"
             version = "1"
 

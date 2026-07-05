@@ -74,6 +74,7 @@ export default function Upload() {
       if (password) form.append('password', password)
       const result = await api.upload('/statements/upload', form)
       toast(`Uploaded: ${result.bank_name} — ${result.statement_month}`, 'success')
+      for (const w of result.warnings ?? []) toast(w, 'error', 8000)
       setFile(null)
       setPassword('')
       loadStatements()
@@ -153,7 +154,7 @@ export default function Upload() {
   async function clearEmbeddings() {
     if (!clearEmbedTarget) return
     try {
-      const result = await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
+      await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
       toast(`Memory cleared — rebuild it when you're ready`, 'info')
       setClearEmbedTarget(null)
       loadStatements()

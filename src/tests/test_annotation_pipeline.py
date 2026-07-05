@@ -110,6 +110,23 @@ class TestRuleEngine:
         assert result is not None
         assert result.source == "rule"
 
+    def test_interest_paid_matches_despite_closing_balance_text(self):
+        txn = {
+            "id": "t-int",
+            "raw_description": "Int.Pd:3250508074:01-01-2026 to 31-03-2026 Closing Balance",
+            "upi_meta": None,
+        }
+        result = apply_rules(txn)
+        assert result is not None
+        assert result.category == "Income"
+        assert result.subcategory == "Interest & Dividends"
+
+    def test_opening_balance_has_no_rule(self):
+        # Balance-artifact rows are folded into statement metadata at ingest and
+        # never reach annotation; no rule should exist to label them as income.
+        txn = {"id": "t-ob", "raw_description": "OPENING BALANCE ...", "upi_meta": None}
+        assert apply_rules(txn) is None
+
     def test_irctc_maps_to_travel(self):
         txn = {"id": "t8", "raw_description": "IRCTC ticket booking", "upi_meta": None}
         result = apply_rules(txn)

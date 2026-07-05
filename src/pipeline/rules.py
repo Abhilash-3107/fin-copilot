@@ -110,7 +110,10 @@ MERCHANT_RULES: list[MerchantRule] = [
     MerchantRule(["income tax", "tds payment", "advance tax", "gst payment"], "Finances", "Tax Payment", None, ["tax"]),
 
     # --- Income ---
-    MerchantRule(["opening balance"], "Income", "Opening Balance", None, ["opening-balance"], ["raw_description"]),
+    # Balance-artifact rows (opening balance / B/F) never reach annotation: ingest
+    # folds them into statements.opening_balance. Interest-paid lines are real
+    # income; matched here so "…Closing Balance" in the text can't confuse later stages.
+    MerchantRule(["int.pd", "interest paid", "interest credit"], "Income", "Interest & Dividends", None, ["interest"], ["raw_description"]),
 
     # --- Investments (brokers / SIP debits) ---
     MerchantRule(["indmoney", "ind money"], "Investments", "Mutual Fund SIP", "INDmoney", ["investment"]),

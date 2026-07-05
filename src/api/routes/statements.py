@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from src.api.deps import get_db
 from src.db.queries.embeddings import delete_embeddings
 from src.db.queries.transactions import list_transactions
-from src.pipeline.ingest import DuplicateStatementError, ingest_pdf
+from src.pipeline.ingest import DuplicateStatementError, check_continuity, ingest_pdf
 
 router = APIRouter()
 
@@ -39,7 +39,7 @@ def upload_statement(
     finally:
         os.unlink(tmp_path)
 
-    return statement.model_dump()
+    return {**statement.model_dump(), "warnings": check_continuity(conn, statement)}
 
 
 @router.get("")
