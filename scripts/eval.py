@@ -1,6 +1,6 @@
 """Time-split evaluation harness for the auto-annotation pipeline.
 
-Replays the full cascade (rules → rag_direct → [rag_knn] → rag_prompted → llm)
+Replays the full cascade (rules → rag_direct → rag_prompted → llm)
 over the golden set (human-verified labels, scripts/build_golden.py), with all
 retrieval and priors restricted to history strictly before each transaction's
 date — the same causality rule as scripts/backtest_counterparty_prior.py, so a
@@ -141,8 +141,6 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
         "settings": {
             "ollama_model": settings.ollama_model,
             "ollama_num_ctx": settings.ollama_num_ctx,
-            "rag_knn_enabled": settings.rag_knn_enabled,
-            "rag_example_diversity": settings.rag_example_diversity,
             "llm_logprob_confidence": settings.llm_logprob_confidence,
         },
         "accuracy": round(sum(r["correct"] for r in records) / n, 4) if n else 0.0,

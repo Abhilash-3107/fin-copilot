@@ -80,7 +80,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
         SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE a.source IN ('model','rule','learned_rule','rag_direct','rag_knn','rag_prompted','llm') AND a.confidence < ?
+        WHERE a.source IN ('model','rule','learned_rule','rag_direct','rag_prompted','llm') AND a.confidence < ?
         -- Uncertainty × impact ordering: a wrong label on a large transaction
         -- costs more than one on a small one, so weight by log-amount instead of
         -- ranking purely by confidence.

@@ -41,7 +41,7 @@ class ReasoningTrace(BaseModel):
 
     All fields are optional so each stage fills only what applies.
     """
-    stage: str  # "rule" | "learned_rule" | "rag_direct" | "rag_knn" | "rag_prompted" | "llm"
+    stage: str  # "rule" | "learned_rule" | "rag_direct" | "rag_prompted" | "llm"
     final_confidence: float
     # Snapshot of the settings each measured value was gated against, taken at
     # annotation time (settings drift; the trace must stay self-explanatory).
@@ -93,7 +93,7 @@ class Annotation(BaseModel):
     subcategory: Optional[str] = None
     tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
     annotated_at: Optional[datetime] = None
     reasoning: Optional[str] = None  # JSON-serialized ReasoningTrace, dev mode only
 
@@ -105,7 +105,7 @@ class AnnotationCreate(BaseModel):
     subcategory: Optional[str] = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_knn", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
 
 
 class AnnotationPatch(BaseModel):

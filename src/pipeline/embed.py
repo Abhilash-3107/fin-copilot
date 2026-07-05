@@ -24,25 +24,16 @@ logger = logging.getLogger(__name__)
 _UPI_REF_RE = re.compile(r"^(UPI/[^/]+)/\d{4,}/(.*)$", re.IGNORECASE)
 
 
-# Non-UPI formats (NEFT/IMPS/POS/ATM/VISA) carry the same per-transaction noise
-# class as the UPI ref: long numeric references and dates. Experimental
-# (settings.embed_strip_non_upi_refs): collapse 6+-digit runs and dd/mm/yy-style
-# dates so two visits to the same non-UPI counterparty embed consistently.
-# No word boundaries: bank refs are often glued to letters (AXISCN0123456789).
-_NON_UPI_REF_RE = re.compile(r"\d{6,}")
-_DATE_RE = re.compile(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b")
-
-
 def normalize_description_for_embedding(raw_description: str) -> str:
-    """Drop the rotating UPI numeric reference so recurring merchants embed consistently."""
+    """Drop the rotating UPI numeric reference so recurring merchants embed consistently.
+
+    Non-UPI descriptions (NEFT/IMPS/POS/ATM/VISA) are left untouched: stripping
+    their numeric refs and dates was evaluated (E5, 2026-07-02) and rejected.
+    """
     if not raw_description:
         return ""
     m = _UPI_REF_RE.match(raw_description.strip())
     if not m:
-        if settings.embed_strip_non_upi_refs:
-            cleaned = _DATE_RE.sub(" ", raw_description)
-            cleaned = _NON_UPI_REF_RE.sub(" ", cleaned)
-            return " ".join(cleaned.split())
         return raw_description
     merchant, note = m.group(1), m.group(2).strip()
     # Collapse the boilerplate 'UPI' note to nothing; keep meaningful notes.

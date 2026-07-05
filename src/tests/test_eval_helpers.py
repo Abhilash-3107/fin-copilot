@@ -1,5 +1,5 @@
-"""Tests for the experiment-flag helpers added with the eval harness:
-logprob confidence extraction, non-UPI embed normalization, MMR-lite selection.
+"""Tests for eval-harness helpers: logprob confidence extraction, description
+embed normalization, and the provider abstraction.
 """
 from __future__ import annotations
 
@@ -41,29 +41,18 @@ class TestLogprobConfidence:
         assert conf == 1.0
 
 
-class TestNonUpiNormalization:
-    def test_upi_ref_stripped_regardless_of_flag(self):
+class TestDescriptionNormalization:
+    def test_upi_ref_stripped(self):
         assert (
             normalize_description_for_embedding("UPI/SWIGGY/512345678901/UPI")
             == "UPI/SWIGGY"
         )
 
-    def test_non_upi_untouched_when_flag_off(self, monkeypatch):
-        monkeypatch.setattr(settings, "embed_strip_non_upi_refs", False)
+    def test_non_upi_left_untouched(self):
+        # Stripping refs/dates from non-UPI descriptions was evaluated (E5,
+        # 2026-07-02) and rejected; they must pass through verbatim.
         desc = "NEFT-AXISCN0123456789-ACME CORP-20/01/26"
         assert normalize_description_for_embedding(desc) == desc
-
-    def test_non_upi_refs_and_dates_stripped_when_flag_on(self, monkeypatch):
-        monkeypatch.setattr(settings, "embed_strip_non_upi_refs", True)
-        out = normalize_description_for_embedding("NEFT-AXISCN0123456789-ACME CORP-20/01/26")
-        assert "0123456789" not in out
-        assert "20/01/26" not in out
-        assert "ACME CORP" in out
-
-    def test_short_numbers_kept_when_flag_on(self, monkeypatch):
-        monkeypatch.setattr(settings, "embed_strip_non_upi_refs", True)
-        assert "24x7" not in normalize_description_for_embedding("POS 123456789012 STORE 24 7").split()
-        assert "STORE" in normalize_description_for_embedding("POS 123456789012 STORE 24 7")
 
 
 class TestProviderAbstraction:

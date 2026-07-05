@@ -71,24 +71,11 @@ class Settings(BaseSettings):
     # truncates silently from the front (the system prompt) — prompt_eval_count is
     # logged per call so truncation is observable.
     ollama_num_ctx: int = 2048
-    # --- Experimental stages/flags (default off; enabled by the eval harness) ---
-    # Stage 2.5: accept a decisive trusted kNN vote without calling the LLM.
-    rag_knn_enabled: bool = False
-    rag_knn_similarity_floor: float = 0.80
-    rag_knn_vote_share: float = 0.80
-    rag_knn_min_trusted_weight: float = 2.0
-    # Diversity-aware few-shot selection (MMR-lite): top-2 nearest + nearest
-    # example from each not-yet-seen category, instead of raw top-5.
-    rag_example_diversity: bool = False
     # Replace verbalized LLM confidence with token-logprob mass on the category
     # value (requires an Ollama version that returns logprobs; falls back to the
     # verbalized number when logprobs are absent). Adopted 2026-07-02: -9.5%
     # Brier at identical labels on the golden-set eval.
     llm_logprob_confidence: bool = True
-    # Strip long numeric refs and dates from non-UPI descriptions before
-    # embedding (same noise class the UPI-ref fix addressed). Changing this
-    # invalidates the stored vector space — re-embed before querying.
-    embed_strip_non_upi_refs: bool = False
     # --- Learned merchant memory (stage 1.5) ---
     # A counterparty is promoted to a deterministic rule once it has
     # >= learned_rule_min_support human-verified labels for its modal category at

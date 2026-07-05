@@ -20,7 +20,7 @@ from src.config import settings
 
 # Ordered so the funnel reads cheapest/most-certain → most-expensive, matching the
 # pipeline's own stage order (rule → learned_rule → rag_* → llm).
-_STAGE_ORDER = ["rule", "learned_rule", "rag_direct", "rag_knn", "rag_prompted", "llm"]
+_STAGE_ORDER = ["rule", "learned_rule", "rag_direct", "rag_prompted", "llm"]
 
 # Histogram resolution over the [0, 1] score range. 20 bins = 0.05 wide, fine
 # enough to see a threshold's neighbourhood without looking noisy on a few-hundred
