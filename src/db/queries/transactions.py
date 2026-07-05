@@ -11,14 +11,16 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
     conn.execute(
         """
         INSERT OR IGNORE INTO statements
-            (id, bank_name, parser_version, statement_month, period_start, period_end, file_sha256)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, bank_name, parser_version, statement_month, period_start, period_end,
+             file_sha256, opening_balance, closing_balance, account_ref)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (statement.id, statement.bank_name, statement.parser_version,
          statement.statement_month,
          statement.period_start.isoformat() if statement.period_start else None,
          statement.period_end.isoformat() if statement.period_end else None,
-         statement.file_sha256),
+         statement.file_sha256, statement.opening_balance, statement.closing_balance,
+         statement.account_ref),
     )
 
 
