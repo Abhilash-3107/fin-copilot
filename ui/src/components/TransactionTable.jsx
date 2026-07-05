@@ -15,6 +15,7 @@ export const SOURCE_PILL = {
 function sourceLabel(src) {
   if (src === 'rag_direct' || src === 'rag_prompted') return 'from history'
   if (src === 'learned_rule') return 'learned merchant'
+  if (src === 'llm' || src === 'model') return 'AI'  // match the review card's "AI guess"
   return src ?? 'pending'
 }
 

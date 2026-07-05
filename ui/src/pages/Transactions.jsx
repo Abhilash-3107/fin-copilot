@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, Zap, Cpu, ChevronDown, X } from 'lucide-react'
+import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
+import AnnotationProgress from '../components/AnnotationProgress.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
@@ -111,7 +112,6 @@ export default function Transactions() {
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const [annotateProgress, setAnnotateProgress] = useState(null)
-  const [embedding, setEmbedding] = useState(false)
   const loadRef = useRef(0)
 
   const loadTransactions = useCallback(async () => {
@@ -219,21 +219,6 @@ export default function Transactions() {
     }
   }
 
-  async function generateEmbeddings() {
-    if (!selectedStmt) {
-      toast('Select a statement first', 'error')
-      return
-    }
-    setEmbedding(true)
-    try {
-      const result = await api.post('/embeddings/generate', { statement_id: selectedStmt })
-      toast(`Embedded ${result.embedded} transactions`, 'success')
-    } catch (e) {
-      toast(`Embedding failed: ${e.message}`, 'error')
-    } finally {
-      setEmbedding(false)
-    }
-  }
 
   // Derive filter options from loaded data
   const sourceOptions = [...new Set(
@@ -255,6 +240,7 @@ export default function Transactions() {
 
   return (
     <div className="flex flex-col h-full">
+      <AnnotationProgress job={autoAnnotating ? annotateProgress : null} />
       {/* Filter bar */}
       <div className="sticky top-0 z-20 bg-[#0f1117] border-b border-[#2d3148] px-5 py-3 flex items-center gap-3 flex-wrap">
         <select
@@ -271,12 +257,22 @@ export default function Transactions() {
           ))}
         </select>
 
-        <input
-          type="month"
-          value={month}
-          onChange={e => setMonth(e.target.value)}
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-        />
+        {/* Native month inputs can't take a text placeholder; an empty one
+            renders as "---------- ----". Overlay a real label until a month is
+            picked so it reads as a filter, not a broken field. */}
+        <div className="relative">
+          <input
+            type="month"
+            value={month}
+            onChange={e => setMonth(e.target.value)}
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+          />
+          {!month && (
+            <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 pr-8 rounded-md bg-[#13151f] text-sm text-[#475569]">
+              Any month
+            </span>
+          )}
+        </div>
 
         <input
           type="search"
@@ -313,17 +309,6 @@ export default function Transactions() {
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        <Tooltip content="Convert categorized transactions into searchable patterns so the AI can learn from them">
-          <button
-            onClick={generateEmbeddings}
-            disabled={embedding || !selectedStmt}
-            className="flex items-center gap-1.5 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-3 py-1.5 rounded-md text-xs hover:text-[#e2e8f0] disabled:opacity-50 transition-colors"
-          >
-            <Cpu size={13} />
-            {embedding ? 'Embedding…' : 'Embed'}
-          </button>
-        </Tooltip>
-
         <Tooltip content="Use AI to automatically categorize transactions in this statement">
           <button
             onClick={autoAnnotate}
@@ -331,11 +316,7 @@ export default function Transactions() {
             className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Zap size={13} />
-            {autoAnnotating
-              ? annotateProgress?.total
-                ? `Annotating… ${annotateProgress.processed}/${annotateProgress.total}`
-                : 'Annotating…'
-              : 'Auto-annotate'}
+            {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
           </button>
         </Tooltip>
       </div>

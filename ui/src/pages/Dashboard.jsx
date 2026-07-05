@@ -6,6 +6,7 @@ import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
+import AnnotationProgress from '../components/AnnotationProgress.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { HelpCircle } from 'lucide-react'
 
@@ -194,6 +195,7 @@ export default function Dashboard() {
 
   return (
     <div className="px-6 py-5 space-y-6">
+      <AnnotationProgress job={autoAnnotating ? annotateProgress : null} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold text-[#e2e8f0]">Your Money at a Glance</h1>
@@ -222,15 +224,17 @@ export default function Dashboard() {
             Add statement
           </Link>
           <Tooltip content="Use AI to automatically categorize transactions in this statement">
+            {/* Primary only when nothing is pending review; when the queue is
+                non-empty, Teach Me is the primary action and this steps back. */}
             <button
               onClick={runAutoAnnotate}
               disabled={autoAnnotating}
-              className="bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors"
+              className={reviewCount > 0
+                ? 'bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-1.5 rounded-lg text-sm font-medium hover:text-[#e2e8f0] disabled:opacity-50 transition-colors'
+                : 'bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors'}
             >
               {autoAnnotating
-                ? annotateProgress?.total
-                  ? `Categorizing… ${annotateProgress.processed}/${annotateProgress.total}`
-                  : 'Categorizing…'
+                ? 'Categorizing…'
                 : activeStatement
                   ? 'Auto-categorize'
                   : 'Auto-categorize all'
@@ -302,7 +306,12 @@ export default function Dashboard() {
                   </span>
                   <span className="text-lg text-[#94a3b8]">%</span>
                 </div>
-                <p className="text-xs text-[#64748b] mt-1">
+                <p className="text-xs text-[#94a3b8] mt-1">
+                  {amountsVisible
+                    ? `You ${totalIncome - totalSpend >= 0 ? 'kept' : 'overspent'} ${fmtAmount(Math.abs(totalIncome - totalSpend))} this month`
+                    : 'Net cash flow hidden'}
+                </p>
+                <p className="text-xs text-[#64748b] mt-0.5">
                   {savingsRate >= 20 ? 'Nice! You\'re ahead of the curve' : savingsRate >= 0 ? 'Room to grow — small wins add up' : 'Heads up — you spent more than you earned'}
                 </p>
               </>
@@ -410,7 +419,7 @@ export default function Dashboard() {
                 {amountsVisible ? '' : 'Tap show to reveal amounts'}
               </p>
               <Link to="/insights" className="text-xs text-[#6366f1] hover:text-[#818cf8] transition-colors">
-                See the full picture →
+                Money Map →
               </Link>
             </div>
           </div>
@@ -429,9 +438,9 @@ export default function Dashboard() {
           </div>
           <Link
             to="/review"
-            className="bg-[#1e2235] border border-[#2d3148] text-[#e2e8f0] text-sm font-semibold px-4 py-2 rounded-lg hover:bg-[#252a3d] transition-colors whitespace-nowrap"
+            className="bg-[#7c3aed] text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-[#6d28d9] transition-colors whitespace-nowrap"
           >
-            Teach me →
+            Teach Me →
           </Link>
         </div>
       )}

@@ -35,6 +35,7 @@ export default function Upload() {
   const [resetTarget, setResetTarget] = useState(null)
   const [clearEmbedTarget, setClearEmbedTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
+  const [embeddingId, setEmbeddingId] = useState(null)
   const [lastResult, setLastResult] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editingName, setEditingName] = useState('')
@@ -153,17 +154,32 @@ export default function Upload() {
     if (!clearEmbedTarget) return
     try {
       const result = await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
-      toast(`Search index cleared — rebuild it when you're ready`, 'info')
+      toast(`Memory cleared — rebuild it when you're ready`, 'info')
       setClearEmbedTarget(null)
       loadStatements()
     } catch (e) {
-      toast(`Couldn't clear the index — ${e.message}`, 'error')
+      toast(`Couldn't clear the memory — ${e.message}`, 'error')
+    }
+  }
+
+  // Build the AI's memory (embeddings) for a statement so it can learn from the
+  // categories here. Invoked from the Memory status chip when it isn't full.
+  async function buildMemory(s) {
+    setEmbeddingId(s.id)
+    try {
+      const result = await api.post('/embeddings/generate', { statement_id: s.id })
+      toast(`Added ${result.embedded} transactions to memory`, 'success')
+      loadStatements()
+    } catch (e) {
+      toast(`Couldn't build memory — ${e.message}`, 'error')
+    } finally {
+      setEmbeddingId(null)
     }
   }
 
   return (
     <div className="px-6 py-5 space-y-6 max-w-4xl">
-      <h1 className="text-base font-semibold text-[#e2e8f0]">Add a Statement</h1>
+      <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
 
       {/* Drop zone */}
       <div
@@ -246,7 +262,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Categorized', 'Search index', 'Uploaded', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Categorized', 'Memory', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -294,9 +310,22 @@ export default function Upload() {
                     </Tooltip>
                   </td>
                   <td className="px-4 py-3">
-                    <Tooltip content="Transactions saved to the vector DB — these are what the AI learns from for future statements">
-                      <CoverageBadge done={s.embedded_count} total={s.txn_count} />
-                    </Tooltip>
+                    <div className="flex items-center gap-2">
+                      <Tooltip content="How much of this statement the AI has memorized. It learns from these to categorize your future statements.">
+                        <CoverageBadge done={s.embedded_count} total={s.txn_count} />
+                      </Tooltip>
+                      {s.txn_count > 0 && s.embedded_count < s.txn_count && (
+                        <Tooltip content="Add the rest of this statement to the AI's memory so it can learn from your categories here">
+                          <button
+                            onClick={() => buildMemory(s)}
+                            disabled={embeddingId === s.id}
+                            className="text-[10px] font-medium text-[#6366f1] hover:text-[#818cf8] disabled:opacity-50 transition-colors"
+                          >
+                            {embeddingId === s.id ? 'Building…' : 'Build'}
+                          </button>
+                        </Tooltip>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3">
@@ -311,7 +340,7 @@ export default function Upload() {
                           {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
                         </button>
                       </Tooltip>
-                      <Tooltip content="Rebuild search index — do this after making corrections">
+                      <Tooltip content="Rebuild the AI's memory — do this after making corrections">
                         <button
                           onClick={() => setClearEmbedTarget(s)}
                           className="text-[#475569] hover:text-sky-400 transition-colors"
@@ -346,9 +375,9 @@ export default function Upload() {
 
       <ConfirmDialog
         open={!!clearEmbedTarget}
-        title="Rebuild search index?"
-        description={`This will reset the search index for "${clearEmbedTarget?.bank_name} — ${clearEmbedTarget?.statement_month}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
-        confirmLabel="Rebuild index"
+        title="Rebuild the AI's memory?"
+        description={`This will reset the AI's memory for "${clearEmbedTarget?.bank_name} — ${clearEmbedTarget?.statement_month}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
+        confirmLabel="Rebuild memory"
         onConfirm={clearEmbeddings}
         onCancel={() => setClearEmbedTarget(null)}
         danger
@@ -357,7 +386,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This will remove all categories and the search index for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Your transactions stay — you can re-categorize anytime. This can't be undone.`}
+        description={`This will remove all categories and the AI's memory for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Your transactions stay — you can re-categorize anytime. This can't be undone.`}
         confirmLabel="Reset"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}

@@ -7,7 +7,7 @@ import {
 import { Bar, Doughnut, Line } from 'react-chartjs-2'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
-import { isRealFlow } from '../lib/categories.js'
+import { isRealFlow, isShopping } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -104,11 +104,12 @@ export default function Insights() {
     transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'credit').reduce((s, t) => s + Number(t.amount), 0)
   )
 
-  // Top merchants
+  // Top merchants — normalized merchant only, and exclude self-transfers +
+  // investments so "where you shop" isn't dominated by money moved to yourself.
   const merchantTotals = {}
   for (const txn of monthDebits) {
     const ann = annMap[txn.id]
-    if (!ann?.merchant) continue
+    if (!ann?.merchant || !isShopping(ann.category)) continue
     merchantTotals[ann.merchant] = (merchantTotals[ann.merchant] ?? 0) + Number(txn.amount)
   }
   const topMerchants = Object.entries(merchantTotals).sort((a, b) => b[1] - a[1]).slice(0, 10)
