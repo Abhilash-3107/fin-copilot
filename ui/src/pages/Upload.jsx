@@ -74,6 +74,7 @@ export default function Upload() {
       if (password) form.append('password', password)
       const result = await api.upload('/statements/upload', form)
       toast(`Uploaded: ${result.bank_name} — ${result.statement_month}`, 'success')
+      for (const w of result.warnings ?? []) toast(w, 'error', 8000)
       setFile(null)
       setPassword('')
       loadStatements()
