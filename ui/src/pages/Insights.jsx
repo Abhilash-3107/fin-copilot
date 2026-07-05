@@ -144,6 +144,23 @@ export default function Insights() {
     }],
   }
 
+  // Running account balance over the full history (verified balances on every
+  // parsed row, downsampled server-side).
+  const balanceSeries = insights?.balance ?? []
+  const balanceData = {
+    labels: balanceSeries.map(p => dayjs(p.date).format('DD MMM YY')),
+    datasets: [{
+      label: 'Balance',
+      data: balanceSeries.map(p => p.balance),
+      borderColor: '#6366f1',
+      backgroundColor: 'rgba(99,102,241,0.12)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 2,
+    }],
+  }
+
   // Clicking a category bar deep-links to that category's transactions.
   const catChartOptions = {
     ...CHART_OPTS,
@@ -217,6 +234,18 @@ export default function Insights() {
               <div className="h-60">
                 <Line data={trendData} options={CHART_OPTS} />
               </div>
+            </div>
+          </div>
+
+          {/* Balance over time */}
+          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
+            <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Account Balance Over Time</p>
+            <div className="h-56">
+              {balanceSeries.length > 1 ? (
+                <Line data={balanceData} options={CHART_OPTS} />
+              ) : (
+                <div className="flex items-center justify-center h-full text-sm text-[#475569]">Balance history appears once statements are imported</div>
+              )}
             </div>
           </div>
 
