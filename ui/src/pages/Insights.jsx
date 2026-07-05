@@ -9,6 +9,8 @@ import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { isRealFlow, isShopping } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
+import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount from '../components/Amount.jsx'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -53,7 +55,7 @@ function buildAnnotationMap(txns) {
 
 export default function Insights() {
   const toast = useToast()
-  const [selectedMonth, setSelectedMonth] = useState(dayjs().format('YYYY-MM'))
+  const { month } = usePeriod()
   const [transactions, setTransactions] = useState([])
   const [annMap, setAnnMap] = useState({})
   const [loading, setLoading] = useState(true)
@@ -65,13 +67,6 @@ export default function Insights() {
         const txns = await api.get('/transactions?include=annotation')
         setTransactions(txns)
         setAnnMap(buildAnnotationMap(txns))
-        if (txns.length > 0) {
-          const latestMonth = txns
-            .map(t => t.txn_date.slice(0, 7))
-            .sort()
-            .at(-1)
-          setSelectedMonth(latestMonth)
-        }
       } catch (e) {
         toast(`Couldn't load your data — ${e.message}`, 'error')
       } finally {
@@ -81,8 +76,18 @@ export default function Insights() {
     load()
   }, [])
 
-  // Filter to selected month
-  const monthTxns = transactions.filter(t => t.txn_date.startsWith(selectedMonth))
+  // The shared period drives the slice. "All time" aggregates every month; a
+  // specific month scopes the tables to it while the trend charts stay anchored
+  // at that month.
+  const isAll = !month || month === ALL_TIME
+  const latestMonth = transactions.length
+    ? transactions.map(t => t.txn_date.slice(0, 7)).sort().at(-1)
+    : dayjs().format('YYYY-MM')
+  const anchorMonth = isAll ? latestMonth : month
+  const periodLabel = isAll ? 'All time' : dayjs(anchorMonth).format('MMMM YYYY')
+
+  // Filter to the selected month (or all)
+  const monthTxns = isAll ? transactions : transactions.filter(t => t.txn_date.startsWith(anchorMonth))
   const monthDebits = monthTxns.filter(t => t.debit_credit === 'debit')
 
   // Category breakdown — exclude self-transfers (money that stays with the user)
@@ -96,8 +101,8 @@ export default function Insights() {
   const catSorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1])
   const totalSpend = catSorted.reduce((s, [, v]) => s + v, 0)
 
-  // Monthly trend (6 months ending at selectedMonth) — same self-transfer exclusion
-  const months6 = Array.from({ length: 6 }, (_, i) => dayjs(selectedMonth).subtract(5 - i, 'month').format('YYYY-MM'))
+  // Monthly trend (6 months ending at the anchor month) — same self-transfer exclusion
+  const months6 = Array.from({ length: 6 }, (_, i) => dayjs(anchorMonth).subtract(5 - i, 'month').format('YYYY-MM'))
   const monthlyDebits = months6.map(m =>
     transactions.filter(t => t.txn_date.startsWith(m) && t.debit_credit === 'debit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
   )
@@ -161,12 +166,7 @@ export default function Insights() {
     <div className="px-6 py-5 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">Money Map</h1>
-        <input
-          type="month"
-          value={selectedMonth}
-          onChange={e => setSelectedMonth(e.target.value)}
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-        />
+        <PeriodPicker />
       </div>
 
       {loading ? (
@@ -177,7 +177,7 @@ export default function Insights() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">
-                Where it went — {dayjs(selectedMonth).format('MMMM YYYY')}
+                Where it went — {periodLabel}
               </p>
               <div className="h-60">
                 {catSorted.length > 0 ? (
@@ -208,7 +208,7 @@ export default function Insights() {
             {/* Top merchants */}
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
               <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
-                Where You Shop Most — {dayjs(selectedMonth).format('MMMM YYYY')}
+                Where You Shop Most — {periodLabel}
               </p>
               {topMerchants.length === 0 ? (
                 <p className="px-4 py-3 text-sm text-[#475569]">No merchant data yet — categorize some transactions to unlock this</p>
