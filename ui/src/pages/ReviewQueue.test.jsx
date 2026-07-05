@@ -20,6 +20,7 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
 }))
 
 import { ToastProvider } from '../contexts/ToastContext.jsx'
+import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
 import ReviewQueue from './ReviewQueue.jsx'
 
 const CATEGORIES = [
@@ -62,7 +63,9 @@ function stubGet(queue) {
 async function renderQueue() {
   render(
     <ToastProvider>
-      <ReviewQueue />
+      <PrivacyProvider>
+        <ReviewQueue />
+      </PrivacyProvider>
     </ToastProvider>
   )
   await screen.findByText('SWIGGY ORDER 8842')

@@ -6,6 +6,7 @@ import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import AnnotationProgress from '../components/AnnotationProgress.jsx'
+import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { HelpCircle } from 'lucide-react'
 
@@ -30,7 +31,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const [annotateProgress, setAnnotateProgress] = useState(null)
-  const [amountsVisible, setAmountsVisible] = useState(false)
 
   // Reload transactions whenever the active statement changes
   useEffect(() => {
@@ -175,8 +175,6 @@ export default function Dashboard() {
     ? { cat: spendRanked[0][0], pct: totalMonthSpend > 0 ? Math.round((spendRanked[0][1] / totalMonthSpend) * 100) : 0 }
     : null
 
-  const fmtAmount = (v) => `₹${v.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-  const hiddenDots = '• • • • • •'
   const monthLabel = selectedMonth ? dayjs(selectedMonth).format('MMMM YYYY') : 'All time'
 
   return (
@@ -237,43 +235,13 @@ export default function Dashboard() {
           {/* You Spent */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money spent</p>
-            <div className="flex items-center gap-3">
-              <span className="text-[#94a3b8] text-xl">₹</span>
-              {amountsVisible ? (
-                <span className="text-2xl font-bold text-[#e2e8f0] tabular-nums">
-                  {totalSpend.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                </span>
-              ) : (
-                <span className="text-lg tracking-widest text-[#64748b]">{hiddenDots}</span>
-              )}
-              <button
-                onClick={() => setAmountsVisible(v => !v)}
-                className="ml-auto bg-[#e2e8f0] text-[#0f1117] text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-white transition-colors"
-              >
-                {amountsVisible ? 'Hide' : 'Show'}
-              </button>
-            </div>
+            <Amount value={totalSpend} decimals={0} className="text-2xl font-bold text-[#e2e8f0] tabular-nums" />
           </div>
 
           {/* You Earned */}
           <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money earned</p>
-            <div className="flex items-center gap-3">
-              <span className="text-[#94a3b8] text-xl">₹</span>
-              {amountsVisible ? (
-                <span className="text-2xl font-bold text-[#e2e8f0] tabular-nums">
-                  {totalIncome.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                </span>
-              ) : (
-                <span className="text-lg tracking-widest text-[#64748b]">{hiddenDots}</span>
-              )}
-              <button
-                onClick={() => setAmountsVisible(v => !v)}
-                className="ml-auto bg-[#e2e8f0] text-[#0f1117] text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-white transition-colors"
-              >
-                {amountsVisible ? 'Hide' : 'Show'}
-              </button>
-            </div>
+            <Amount value={totalIncome} decimals={0} className="text-2xl font-bold text-[#e2e8f0] tabular-nums" />
           </div>
 
           {/* Savings Rate */}
@@ -293,9 +261,8 @@ export default function Dashboard() {
                   <span className="text-lg text-[#94a3b8]">%</span>
                 </div>
                 <p className="text-xs text-[#94a3b8] mt-1">
-                  {amountsVisible
-                    ? `You ${totalIncome - totalSpend >= 0 ? 'kept' : 'overspent'} ${fmtAmount(Math.abs(totalIncome - totalSpend))} this month`
-                    : 'Net cash flow hidden'}
+                  You {totalIncome - totalSpend >= 0 ? 'kept' : 'overspent'}{' '}
+                  <Amount value={Math.abs(totalIncome - totalSpend)} decimals={0} /> this month
                 </p>
                 <p className="text-xs text-[#64748b] mt-0.5">
                   {savingsRate >= 20 ? 'Nice! You\'re ahead of the curve' : savingsRate >= 0 ? 'Room to grow — small wins add up' : 'Heads up — you spent more than you earned'}
@@ -391,19 +358,14 @@ export default function Dashboard() {
                       <div className="flex-1 h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
                         <div className="h-full rounded-full" style={{ width: `${barPct}%`, backgroundColor: color }} />
                       </div>
-                      <span className="text-sm text-[#64748b] w-16 text-right shrink-0">
-                        {amountsVisible ? fmtAmount(amount) : hiddenDots}
-                      </span>
+                      <Amount value={amount} decimals={0} className="text-sm text-[#64748b] w-16 text-right shrink-0" />
                       <span className="text-sm text-[#94a3b8] w-8 text-right shrink-0">{pct}%</span>
                     </div>
                   )
                 })}
               </div>
             )}
-            <div className="flex items-center justify-between mt-4 pt-3 border-t border-[#1e2235]">
-              <p className="text-xs text-[#64748b] italic">
-                {amountsVisible ? '' : 'Tap show to reveal amounts'}
-              </p>
+            <div className="flex items-center justify-end mt-4 pt-3 border-t border-[#1e2235]">
               <Link to="/insights" className="text-xs text-[#6366f1] hover:text-[#818cf8] transition-colors">
                 Money Map →
               </Link>

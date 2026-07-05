@@ -18,6 +18,7 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
 }))
 
 import { ToastProvider } from '../contexts/ToastContext.jsx'
+import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
 import AnnotationPanel from './AnnotationPanel.jsx'
 
 const CATEGORIES = [
@@ -47,7 +48,9 @@ beforeEach(() => {
 function renderPanel(props) {
   return render(
     <ToastProvider>
-      <AnnotationPanel txn={TXN} onClose={() => {}} onSaved={() => {}} {...props} />
+      <PrivacyProvider>
+        <AnnotationPanel txn={TXN} onClose={() => {}} onSaved={() => {}} {...props} />
+      </PrivacyProvider>
     </ToastProvider>
   )
 }
