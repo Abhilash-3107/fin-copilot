@@ -42,3 +42,6 @@ class Statement(BaseModel):
     period_start: Optional[date] = None # earliest transaction date in the statement
     period_end: Optional[date] = None   # latest transaction date in the statement
     file_sha256: Optional[str] = None   # content hash of the uploaded PDF, for dedup
+    opening_balance: Optional[float] = None  # balance before the first transaction
+    closing_balance: Optional[float] = None  # balance after the last transaction
+    account_ref: Optional[str] = None   # account number as printed on the statement

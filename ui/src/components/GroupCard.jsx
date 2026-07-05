@@ -9,7 +9,7 @@ import Tooltip from './Tooltip.jsx'
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
 const ROLES = ['paid', 'received', 'partial']
 
-export default function GroupCard({ group, allPeople = [], onDelete, onUpdated }) {
+export default function GroupCard({ group, onDelete }) {
   const toast = useToast()
   const [expanded, setExpanded] = useState(false)
   const [detail, setDetail] = useState(null)

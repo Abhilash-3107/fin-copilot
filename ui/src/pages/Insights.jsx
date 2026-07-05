@@ -4,7 +4,7 @@ import {
   ArcElement, CategoryScale, LinearScale, BarElement,
   PointElement, LineElement, Tooltip, Legend, Filler,
 } from 'chart.js'
-import { Bar, Doughnut, Line } from 'react-chartjs-2'
+import { Bar, Line } from 'react-chartjs-2'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { isRealFlow, isShopping } from '../lib/categories.js'
