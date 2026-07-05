@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { api, runAnnotationJob } from '../lib/api.js'
 import { isRealFlow } from '../lib/categories.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
+import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import AnnotationProgress from '../components/AnnotationProgress.jsx'
 import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -24,6 +25,8 @@ function confColor(pct) {
 export default function Dashboard() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: stmtLoading } = useStatement()
+  const { month: periodMonth, setMonth } = usePeriod()
+  const didInboundSync = useRef(false)
 
   const [transactions, setTransactions] = useState([])
   const [annMap, setAnnMap] = useState({})
@@ -70,6 +73,25 @@ export default function Dashboard() {
     }
     load()
   }, [activeStatement, stmtLoading])
+
+  // Inbound: honor a month chosen on another page once, by selecting the
+  // statement that matches it. Declared before the outbound sync so it reads the
+  // external period before the outbound effect overwrites it.
+  useEffect(() => {
+    if (didInboundSync.current) return
+    if (!statements.length || !periodMonth || periodMonth === ALL_TIME) return
+    didInboundSync.current = true
+    if (activeStatement?.statement_month !== periodMonth) {
+      const match = statements.find(s => s.statement_month === periodMonth)
+      if (match) setActiveStatement(match)
+    }
+  }, [statements, periodMonth, activeStatement, setActiveStatement])
+
+  // Outbound: keep the shared period in step with the chosen statement so the
+  // month follows the user to Money Map / Transactions.
+  useEffect(() => {
+    if (activeStatement?.statement_month) setMonth(activeStatement.statement_month)
+  }, [activeStatement, setMonth])
 
   async function runAutoAnnotate() {
     setAutoAnnotating(true)

@@ -3,6 +3,8 @@ import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
+import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
+import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import AnnotationProgress from '../components/AnnotationProgress.jsx'
@@ -98,8 +100,10 @@ function buildAnnotationMap(txns) {
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement } = useStatement()
+  const { month: periodMonth } = usePeriod()
   const selectedStmt = activeStatement?.id ?? ''
-  const [month, setMonth] = useState('')
+  // The shared period drives the month filter; ALL_TIME means "no month filter".
+  const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [search, setSearch] = useState('')
@@ -257,22 +261,7 @@ export default function Transactions() {
           ))}
         </select>
 
-        {/* Native month inputs can't take a text placeholder; an empty one
-            renders as "---------- ----". Overlay a real label until a month is
-            picked so it reads as a filter, not a broken field. */}
-        <div className="relative">
-          <input
-            type="month"
-            value={month}
-            onChange={e => setMonth(e.target.value)}
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-          />
-          {!month && (
-            <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 pr-8 rounded-md bg-[#13151f] text-sm text-[#475569]">
-              Any month
-            </span>
-          )}
-        </div>
+        <PeriodPicker />
 
         <input
           type="search"
