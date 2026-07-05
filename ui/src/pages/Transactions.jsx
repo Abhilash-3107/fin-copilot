@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api, runAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -100,12 +101,14 @@ function buildAnnotationMap(txns) {
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement } = useStatement()
-  const { month: periodMonth } = usePeriod()
+  const { month: periodMonth, setMonth } = usePeriod()
+  const [searchParams] = useSearchParams()
   const selectedStmt = activeStatement?.id ?? ''
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
+  const [merchantFilter, setMerchantFilter] = useState('')
   const [search, setSearch] = useState('')
   const [transactions, setTransactions] = useState([])
   const [annotationMap, setAnnotationMap] = useState({})
@@ -162,6 +165,25 @@ export default function Transactions() {
   }
 
   useEffect(() => { loadTransactions() }, [loadTransactions])
+
+  // Seed filters from the /transactions deep-link convention (category,
+  // merchant, source, q, month). Runs on mount and whenever a new deep link
+  // lands here; a month param is pushed into the shared period.
+  useEffect(() => {
+    const category = searchParams.get('category')
+    const source = searchParams.get('source')
+    const merchant = searchParams.get('merchant')
+    const q = searchParams.get('q')
+    const m = searchParams.get('month')
+    setCategoryFilter(category ? new Set(category.split(',')) : new Set())
+    setSourceFilter(source ? new Set(source.split(',')) : new Set())
+    setMerchantFilter(merchant ?? '')
+    setSearch(q ?? '')
+    if (m && m !== periodMonth) setMonth(m)
+    // Deliberately only re-seed when the URL changes, not when the period or
+    // user-edited filters change, so manual edits aren't clobbered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   // Keyboard navigation
   useEffect(() => {
@@ -238,6 +260,7 @@ export default function Transactions() {
     const ann = annotationMap[txn.id]
     if (sourceFilter.size > 0 && !sourceFilter.has(ann?.source)) return false
     if (categoryFilter.size > 0 && !categoryFilter.has(ann?.category)) return false
+    if (merchantFilter && ann?.merchant !== merchantFilter) return false
     if (search && !txn.raw_description.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
@@ -284,6 +307,16 @@ export default function Transactions() {
           selected={categoryFilter}
           onChange={setCategoryFilter}
         />
+
+        {merchantFilter && (
+          <button
+            onClick={() => setMerchantFilter('')}
+            className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
+          >
+            <span>{merchantFilter}</span>
+            <X size={12} className="opacity-60 hover:opacity-100" />
+          </button>
+        )}
 
         <span className="text-xs text-[#64748b] ml-auto">
           {loading ? 'Loading…' : `${displayed.length} of ${transactions.length}`}

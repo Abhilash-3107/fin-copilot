@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Chart as ChartJS,
   ArcElement, CategoryScale, LinearScale, BarElement,
@@ -12,6 +13,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount from '../components/Amount.jsx'
+import { txnFilterPath } from '../lib/txnLink.js'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
 
@@ -55,6 +57,7 @@ function buildAnnotationMap(txns) {
 
 export default function Insights() {
   const toast = useToast()
+  const navigate = useNavigate()
   const { month } = usePeriod()
   const [transactions, setTransactions] = useState([])
   const [annMap, setAnnMap] = useState({})
@@ -85,6 +88,8 @@ export default function Insights() {
     : dayjs().format('YYYY-MM')
   const anchorMonth = isAll ? latestMonth : month
   const periodLabel = isAll ? 'All time' : dayjs(anchorMonth).format('MMMM YYYY')
+  // Only carry a month into deep links when a specific month is selected.
+  const monthParam = isAll ? undefined : anchorMonth
 
   // Filter to the selected month (or all)
   const monthTxns = isAll ? transactions : transactions.filter(t => t.txn_date.startsWith(anchorMonth))
@@ -120,14 +125,26 @@ export default function Insights() {
   }
   const topMerchants = Object.entries(merchantTotals).sort((a, b) => b[1] - a[1]).slice(0, 10)
 
+  const catChartLabels = catSorted.slice(0, 10).map(([k]) => k)
   const catChartData = {
-    labels: catSorted.slice(0, 10).map(([k]) => k),
+    labels: catChartLabels,
     datasets: [{
       label: 'Amount',
       data: catSorted.slice(0, 10).map(([, v]) => v),
       backgroundColor: CHART_COLORS,
       borderWidth: 0,
     }],
+  }
+
+  // Clicking a category bar deep-links to that category's transactions.
+  const catChartOptions = {
+    ...CHART_OPTS,
+    indexAxis: 'y',
+    onClick: (_evt, elements) => {
+      if (!elements.length) return
+      const cat = catChartLabels[elements[0].index]
+      if (cat) navigate(txnFilterPath({ category: cat, month: monthParam }))
+    },
   }
 
   const trendData = {
@@ -181,7 +198,7 @@ export default function Insights() {
               </p>
               <div className="h-60">
                 {catSorted.length > 0 ? (
-                  <Bar data={catChartData} options={{ ...CHART_OPTS, indexAxis: 'y' }} />
+                  <Bar data={catChartData} options={catChartOptions} />
                 ) : (
                   <div className="flex items-center justify-center h-full text-sm text-[#475569]">Nothing here yet — categorize some transactions first</div>
                 )}
@@ -222,7 +239,11 @@ export default function Insights() {
                   </thead>
                   <tbody>
                     {topMerchants.map(([merchant, total]) => (
-                      <tr key={merchant} className="border-b border-[#1a1d27]">
+                      <tr
+                        key={merchant}
+                        onClick={() => navigate(txnFilterPath({ merchant, month: monthParam }))}
+                        className="border-b border-[#1a1d27] cursor-pointer hover:bg-[#1a1d27] transition-colors"
+                      >
                         <td className="px-4 py-2 text-[#e2e8f0]">{merchant}</td>
                         <td className="px-4 py-2 text-right text-red-400 tabular-nums">
                           <Amount value={total} decimals={0} />
@@ -252,7 +273,11 @@ export default function Insights() {
                   </thead>
                   <tbody>
                     {catSorted.map(([cat, total]) => (
-                      <tr key={cat} className="border-b border-[#1a1d27]">
+                      <tr
+                        key={cat}
+                        onClick={() => navigate(txnFilterPath({ category: cat, month: monthParam }))}
+                        className="border-b border-[#1a1d27] cursor-pointer hover:bg-[#1a1d27] transition-colors"
+                      >
                         <td className="px-4 py-2 text-[#e2e8f0]">{cat}</td>
                         <td className="px-4 py-2 text-right text-red-400 tabular-nums">
                           <Amount value={total} decimals={0} />

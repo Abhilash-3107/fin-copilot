@@ -9,6 +9,7 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import AnnotationProgress from '../components/AnnotationProgress.jsx'
 import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+import { txnFilterPath } from '../lib/txnLink.js'
 import { HelpCircle } from 'lucide-react'
 
 const CAT_COLORS = [
@@ -343,13 +344,17 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-3">
                 {confByCategory.map(({ cat, pct }) => (
-                  <div key={cat} className="flex items-center gap-3">
+                  <Link
+                    key={cat}
+                    to={txnFilterPath({ category: cat, month: selectedMonth ?? undefined })}
+                    className="flex items-center gap-3 rounded-md -mx-1 px-1 py-0.5 hover:bg-[#1a1d27] transition-colors"
+                  >
                     <span className="text-sm text-[#cbd5e1] w-36 shrink-0">{cat}</span>
                     <div className="flex-1 h-2 bg-[#1e2235] rounded-full overflow-hidden">
                       <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: confColor(pct) }} />
                     </div>
                     <span className="text-sm font-semibold w-10 text-right shrink-0" style={{ color: confColor(pct) }}>{pct}%</span>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}
@@ -374,7 +379,11 @@ export default function Dashboard() {
                   const color = CAT_COLORS[idx % CAT_COLORS.length]
                   const barPct = totalMonthSpend > 0 ? (amount / totalMonthSpend) * 100 : 0
                   return (
-                    <div key={cat} className="flex items-center gap-3">
+                    <Link
+                      key={cat}
+                      to={txnFilterPath({ category: cat, month: selectedMonth ?? undefined })}
+                      className="flex items-center gap-3 rounded-md -mx-1 px-1 py-0.5 hover:bg-[#1a1d27] transition-colors"
+                    >
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
                       <span className="text-sm text-[#cbd5e1] w-28 shrink-0 truncate">{cat}</span>
                       <div className="flex-1 h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
@@ -382,7 +391,7 @@ export default function Dashboard() {
                       </div>
                       <Amount value={amount} decimals={0} className="text-sm text-[#64748b] w-16 text-right shrink-0" />
                       <span className="text-sm text-[#94a3b8] w-8 text-right shrink-0">{pct}%</span>
-                    </div>
+                    </Link>
                   )
                 })}
               </div>
