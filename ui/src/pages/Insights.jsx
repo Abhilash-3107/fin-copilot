@@ -13,6 +13,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount from '../components/Amount.jsx'
+import RecurringPanel from '../components/RecurringPanel.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -61,15 +62,22 @@ export default function Insights() {
   const { month } = usePeriod()
   const [transactions, setTransactions] = useState([])
   const [annMap, setAnnMap] = useState({})
+  const [insights, setInsights] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
-        const txns = await api.get('/transactions?include=annotation')
+        // The /insights payload carries server-computed recurrence, running
+        // balance and category deltas that aren't worth recomputing client-side.
+        const [txns, summary] = await Promise.all([
+          api.get('/transactions?include=annotation'),
+          api.get('/insights'),
+        ])
         setTransactions(txns)
         setAnnMap(buildAnnotationMap(txns))
+        setInsights(summary)
       } catch (e) {
         toast(`Couldn't load your data — ${e.message}`, 'error')
       } finally {
@@ -292,6 +300,9 @@ export default function Insights() {
               )}
             </div>
           </div>
+
+          {/* Recurring & subscriptions (full-history commitments) */}
+          <RecurringPanel items={insights?.recurring ?? []} />
         </>
       )}
     </div>
