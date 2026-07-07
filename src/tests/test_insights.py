@@ -50,34 +50,52 @@ def seed_txn(conn, date, amount, dc, desc="X", category=None, subcategory=None,
 
 
 class TestVerdict:
-    def test_earned_excludes_refunds_and_opening_balance(self, conn):
+    def test_in_counts_every_credit_except_self_and_opening(self, conn):
         seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
         seed_txn(conn, "2026-01-01", 20000, "credit", category="Income", subcategory="Opening Balance")
         seed_txn(conn, "2026-01-10", 500, "credit", category="Income", subcategory="Refund")
+        seed_txn(conn, "2026-01-12", 4000, "credit", category="Transfers")
+        seed_txn(conn, "2026-01-15", 9000, "credit", category="Self Transfers")
         s = summarize_insights(conn, "2026-01")
-        assert s["verdict"]["earned"] == 50000
+        assert s["verdict"]["money_in"] == 54500
+        assert s["verdict"]["earned"] == 50000  # true income only
+        assert s["verdict"]["other_in"] == 4500  # refund + friend's payback
 
-    def test_spend_excludes_transfers_investments_self(self, conn):
+    def test_out_counts_transfers_but_not_self_or_investments(self, conn):
         seed_txn(conn, "2026-01-05", 1000, "debit", category="Food & Dining")
         seed_txn(conn, "2026-01-06", 30000, "debit", category="Investments")
         seed_txn(conn, "2026-01-07", 5000, "debit", category="Transfers")
         seed_txn(conn, "2026-01-08", 9000, "debit", category="Self Transfers")
         s = summarize_insights(conn, "2026-01")
-        assert s["verdict"]["spent_gross"] == 1000
+        assert s["verdict"]["money_out"] == 6000
         assert s["verdict"]["invested"] == 30000
 
-    def test_unannotated_debit_counts_as_spend(self, conn):
+    def test_unannotated_debit_counts_as_out(self, conn):
         seed_txn(conn, "2026-01-05", 750, "debit")
         s = summarize_insights(conn, "2026-01")
-        assert s["verdict"]["spent_gross"] == 750
+        assert s["verdict"]["money_out"] == 750
         assert s["unexplained"] == {"count": 1, "total": 750}
 
-    def test_saved_and_rate(self, conn):
+    def test_kept_and_rate(self, conn):
         seed_txn(conn, "2026-01-31", 40000, "credit", category="Income", subcategory="Salary")
         seed_txn(conn, "2026-01-05", 10000, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-01")
-        assert s["verdict"]["saved"] == 30000
-        assert s["verdict"]["savings_rate"] == 0.75
+        assert s["verdict"]["kept"] == 30000
+        assert s["verdict"]["kept_rate"] == 0.75
+
+    def test_identity_holds_with_unmatched_paybacks(self, conn):
+        # The failure mode the cash view exists for: money fronted for friends
+        # whose paybacks are never linked, grouped or labeled as refunds.
+        seed_txn(conn, "2026-01-31", 40000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-05", 45000, "debit", category="Shopping")
+        seed_txn(conn, "2026-01-06", 10000, "debit", category="Investments")
+        for _ in range(3):
+            seed_txn(conn, "2026-01-10", 10000, "credit", category="Transfers")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["money_in"] == 70000
+        assert v["money_out"] == 45000
+        assert v["kept"] == 15000
+        assert v["money_in"] == v["money_out"] + v["invested"] + v["kept"]
 
 
 class TestOffsets:
@@ -96,7 +114,6 @@ class TestOffsets:
         ent = next(c for c in s["categories"] if c["category"] == "Entertainment")
         assert ent["gross"] == 10000
         assert ent["net"] == 2000
-        assert s["verdict"]["spent"] == 2000
 
     def test_linked_refund_nets_in_credit_month(self, conn):
         debit = seed_txn(conn, "2026-01-10", 3000, "debit", category="Shopping")
@@ -108,10 +125,10 @@ class TestOffsets:
         )
         jan = summarize_insights(conn, "2026-01")
         feb = summarize_insights(conn, "2026-02")
-        assert jan["verdict"]["spent"] == 3000
+        shopping_jan = next(c for c in jan["categories"] if c["category"] == "Shopping")
+        assert shopping_jan["net"] == 3000
         shopping_feb = next(c for c in feb["categories"] if c["category"] == "Shopping")
         assert shopping_feb["net"] == -3000
-        assert feb["verdict"]["spent"] == -3000
 
     def test_unlinked_refund_attributed_by_counterparty(self, conn):
         seed_txn(conn, "2026-01-10", 800, "debit", category="Health", counterparty="MEDKART")
@@ -122,13 +139,72 @@ class TestOffsets:
         assert health["net"] == 0
         assert s["verdict"]["earned"] == 0
 
-    def test_unlinked_refund_without_counterparty_offsets_month(self, conn):
+    def test_unlinked_refund_without_counterparty_nets_nothing(self, conn):
         seed_txn(conn, "2026-01-10", 2000, "debit", category="Shopping")
         seed_txn(conn, "2026-01-20", 500, "credit", category="Income", subcategory="Refund")
         s = summarize_insights(conn, "2026-01")
         shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
         assert shopping["net"] == 2000  # no category attribution possible
-        assert s["verdict"]["spent"] == 1500  # but the month total is corrected
+        assert s["verdict"]["earned"] == 0  # not income either
+        assert s["verdict"]["money_in"] == 500  # the cash view still sees it
+
+    def test_spend_categorized_credit_nets_its_category(self, conn):
+        # A friend's payback the annotator labeled with the spend category
+        # nets that category without any link or group.
+        seed_txn(conn, "2026-01-10", 5000, "debit", category="Entertainment")
+        seed_txn(conn, "2026-01-11", 1200, "credit", category="Entertainment")
+        s = summarize_insights(conn, "2026-01")
+        ent = next(c for c in s["categories"] if c["category"] == "Entertainment")
+        assert ent["net"] == 3800
+        assert s["verdict"]["earned"] == 0
+
+    def test_unlinked_refund_amount_matched_to_debit(self, conn):
+        # Refund arrives from a different counterparty (card refunds often
+        # do) but exactly matches a recent charge - attribute by amount.
+        seed_txn(conn, "2026-01-10", 4487, "debit", category="Entertainment",
+                 counterparty="ETERNAL LIMITED")
+        seed_txn(conn, "2026-02-05", 4487, "credit", category="Income",
+                 subcategory="Refund", counterparty="WASTELAND ENTERTAINMENT")
+        feb = summarize_insights(conn, "2026-02")
+        ent = next(c for c in feb["categories"] if c["category"] == "Entertainment")
+        assert ent["net"] == -4487
+
+    def test_offsets_per_debit_capped_across_group_and_refund(self, conn):
+        # Cancelled concert: friends' shares net the charge in the group,
+        # then the full refund arrives. Only the user's own share may net
+        # again - the debit is never offset beyond its amount.
+        debit = seed_txn(conn, "2026-01-10", 10000, "debit", category="Entertainment")
+        c1 = seed_txn(conn, "2026-01-10", 4000, "credit", category="Transfers")
+        c2 = seed_txn(conn, "2026-01-11", 4000, "credit", category="Transfers")
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g1', 'concert')")
+        for txn, ttype in ((debit, "split"), (c1, "split"), (c2, "split")):
+            conn.execute(
+                "INSERT INTO transaction_group_members (group_id, transaction_id, txn_type) VALUES ('g1', ?, ?)",
+                (txn, ttype),
+            )
+        seed_txn(conn, "2026-02-05", 10000, "credit", category="Income", subcategory="Refund")
+        jan = summarize_insights(conn, "2026-01")
+        feb = summarize_insights(conn, "2026-02")
+        ent_jan = next(c for c in jan["categories"] if c["category"] == "Entertainment")
+        assert ent_jan["net"] == 2000  # own share after friends paid
+        ent_feb = next(c for c in feb["categories"] if c["category"] == "Entertainment")
+        assert ent_feb["net"] == -2000  # refund nets only that share
+        assert ent_feb["offsets"] == 2000
+
+    def test_group_credit_beyond_capacity_nets_nothing(self, conn):
+        # Friends overpaying (or a data mistake) must not push spend negative.
+        debit = seed_txn(conn, "2026-01-10", 3000, "debit", category="Food & Dining")
+        credit = seed_txn(conn, "2026-01-11", 5000, "credit", category="Transfers")
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g1', 'dinner')")
+        for txn, ttype in ((debit, "split"), (credit, "split")):
+            conn.execute(
+                "INSERT INTO transaction_group_members (group_id, transaction_id, txn_type) VALUES ('g1', ?, ?)",
+                (txn, ttype),
+            )
+        s = summarize_insights(conn, "2026-01")
+        food = next(c for c in s["categories"] if c["category"] == "Food & Dining")
+        assert food["net"] == 0
+        assert s["verdict"]["money_in"] == 5000  # the overpay is still cash in
 
 
 class TestWhatChanged:
@@ -271,6 +347,24 @@ class TestBalanceAndShape:
         s = summarize_insights(conn, "2026-01")
         food = next(c for c in s["categories"] if c["category"] == "Food & Dining")
         assert food["subcategories"] == [{"name": "Restaurants", "total": 300, "count": 2}]
+
+
+class TestAnnotationCoverage:
+    def test_fresh_month_reports_zero_annotated(self, conn):
+        # A just-uploaded statement: transactions exist, the pipeline never ran.
+        seed_txn(conn, "2026-01-05", 500, "debit")
+        seed_txn(conn, "2026-01-06", 300, "credit")
+        s = summarize_insights(conn, "2026-01")
+        assert s["annotation"] == {"total": 2, "annotated": 0}
+
+    def test_coverage_is_month_scoped(self, conn):
+        seed_txn(conn, "2026-01-05", 500, "debit", category="Food & Dining")
+        seed_txn(conn, "2026-01-06", 300, "debit")
+        seed_txn(conn, "2026-02-01", 100, "debit")
+        jan = summarize_insights(conn, "2026-01")
+        feb = summarize_insights(conn, "2026-02")
+        assert jan["annotation"] == {"total": 2, "annotated": 1}
+        assert feb["annotation"] == {"total": 1, "annotated": 0}
 
 
 class TestRoute:
