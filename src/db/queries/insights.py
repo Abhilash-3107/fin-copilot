@@ -3,17 +3,32 @@
 Every number on the Insights page is computed here so the client receives one
 small summary payload instead of the whole transaction table. Definitions:
 
-- Spend excludes Self Transfers (money staying with the user), Investments
-  (allocation, not consumption), Transfers (money to people, covered by the
-  people ledger) and Income. Unannotated debits count as spend (Uncategorized).
-- Earned is Income credits excluding the Refund and Opening Balance
-  subcategories; refunds offset spend instead of counting as income.
+- The verdict tiles are a cash view: In is every credit that arrived (except
+  Self Transfers and Opening Balance artifacts), Out is every debit that left
+  (except Self Transfers and Investments), Invested is Investment debits, and
+  Kept is In - Out - Invested. The identity In = Out + Invested + Kept holds
+  by construction, so the tiles can never contradict each other no matter how
+  well credits are linked or annotated. Earned (true income: Income credits
+  excluding the Refund and Opening Balance subcategories) rides along so the
+  UI can disclose how much of In was income vs money coming back.
+- The category breakdown uses net spend instead: spend excludes Self
+  Transfers, Investments, Transfers (money to people, covered by the people
+  ledger) and Income. Unannotated debits count as spend (Uncategorized).
 - Net spend is gross debits minus offsets. Offsets come from, in order:
   credits linked to a debit via transaction_links, credit members of expense
   groups typed split/reimbursement/refund (allocated across the group's spend
-  debits pro rata), and unlinked Income > Refund credits (attributed to the
-  category of the most recent debit with the same counterparty, else to the
-  month only). Offsets land in the month the credit arrives (cash view).
+  debits pro rata), unlinked credits annotated with a spend category (the
+  label itself asserts "money coming back for this kind of spending"), and
+  unlinked Income > Refund credits (attributed to the category of the most
+  recent debit with the same counterparty, else to the most recent spend
+  debit of the exact same amount; a credit attributable to no category nets
+  nothing). Offsets land in the month the credit arrives (cash view).
+- Offsets attributed to a specific debit are capped at that debit's amount,
+  so a charge is never netted below zero across mechanisms (e.g. a grouped
+  concert charge whose friends' shares came in and which was then fully
+  refunded after cancellation). Counterparty-matched refunds are exempt from
+  the cap because one refund credit can cover several past debits from the
+  same merchant.
 """
 from __future__ import annotations
 
@@ -82,19 +97,31 @@ def _merge_merchant_keys(keys: list[str]) -> dict[str, str]:
     return canonical
 
 
-def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict, set[str]]:
+def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     """Compute spend offsets across the full ledger.
 
-    Returns (category_offsets, month_offsets, used_credit_ids):
+    Returns (category_offsets, used_credit_ids):
     - category_offsets: {(month, category): amount} for offsets attributable
-      to a spend category.
-    - month_offsets: {month: amount} for offsets where no category is knowable.
+      to a spend category. A credit attributable to no category nets nothing;
+      it still shows up in the verdict's cash view as money in.
     - used_credit_ids: credit transactions consumed as offsets, so other
       panels (the people ledger) can avoid counting a settled share twice.
     """
     category_offsets: dict[tuple[str, str], float] = defaultdict(float)
-    month_offsets: dict[str, float] = defaultdict(float)
     used_credit_ids: set[str] = set()
+
+    # Remaining offsettable amount per debit id, seeded lazily with the debit
+    # amount. Every offset attributed to a specific debit consumes capacity so
+    # the debit is never netted below zero across mechanisms.
+    remaining: dict[str, float] = {}
+
+    def _capacity(debit_id: str, debit_amount: float) -> float:
+        return remaining.setdefault(debit_id, debit_amount)
+
+    def _consume(debit_id: str, debit_amount: float, credit_amount: float) -> float:
+        take = min(credit_amount, max(_capacity(debit_id, debit_amount), 0.0))
+        remaining[debit_id] -= take
+        return take
 
     # 1. Explicit links: a refund/reimbursement/split credit against a debit.
     link_rows = conn.execute(
@@ -119,13 +146,15 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict, set[str]]:
             credit, debit = ("b", "a")
         else:
             continue
-        amount = row[f"{credit}_amount"]
         used_credit_ids.add(row[f"{credit}_id"])
+        amount = _consume(
+            row[f"{debit}_id"], row[f"{debit}_amount"], row[f"{credit}_amount"]
+        )
+        if amount <= 0:
+            continue
         debit_category = row[f"{debit}_category"]
         if _is_spend(debit_category):
             category_offsets[(row[f"{credit}_month"], debit_category or "Uncategorized")] += amount
-        else:
-            month_offsets[row[f"{credit}_month"]] += amount
 
     # 2. Group credits: shares friends paid back inside an expense group,
     #    allocated pro rata across the group's spend debits.
@@ -150,37 +179,58 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict, set[str]]:
             m for m in members
             if m["debit_credit"] == "credit" and m["txn_type"] in OFFSET_TYPES
         ]
-        debit_total = sum(m["amount"] for m in spend_debits)
         for cred in credits:
             used_credit_ids.add(cred["id"])
-            if debit_total <= 0:
-                month_offsets[cred["month"]] += cred["amount"]
+            if not spend_debits:
                 continue
-            attributable = min(cred["amount"], debit_total)
-            for deb in spend_debits:
-                share = attributable * deb["amount"] / debit_total
+            # Allocate against remaining capacity so shares plus a later
+            # refund can't offset the same debit twice. Anything beyond the
+            # group's remaining capacity is money owed onward, not spend
+            # coming back, so it nets nothing.
+            capacities = [
+                (deb, max(_capacity(deb["id"], deb["amount"]), 0.0))
+                for deb in spend_debits
+            ]
+            total_capacity = sum(cap for _, cap in capacities)
+            if total_capacity <= 0:
+                continue
+            attributable = min(cred["amount"], total_capacity)
+            for deb, cap in capacities:
+                if cap <= 0:
+                    continue
+                share = attributable * cap / total_capacity
+                remaining[deb["id"]] -= share
                 category_offsets[(cred["month"], deb["category"] or "Uncategorized")] += share
-            leftover = cred["amount"] - attributable
-            if leftover > 0:
-                month_offsets[cred["month"]] += leftover
 
-    # 3. Unlinked refunds: Income > Refund credits nobody linked. Attribute to
-    #    the category of the most recent debit from the same counterparty when
-    #    one exists; otherwise only the month total can be corrected.
-    refund_rows = conn.execute(
-        """
+    # 3. Unlinked credits nobody grouped or linked. A credit annotated with a
+    #    spend category nets that category directly - the label already
+    #    asserts it is money coming back for spending. Income > Refund
+    #    credits are attributed to the category of the most recent debit from
+    #    the same counterparty when one exists, else to the most recent spend
+    #    debit of the exact same amount (capped at that debit's remaining
+    #    capacity - a fully-shared charge refunded after cancellation nets
+    #    only the user's own share); otherwise the credit nets nothing and
+    #    the verdict's cash view already counts it as money in.
+    placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
+    credit_rows = conn.execute(
+        f"""
         SELECT t.id, t.amount, t.counterparty_key, t.txn_date,
-               strftime('%Y-%m', t.txn_date) AS month
+               strftime('%Y-%m', t.txn_date) AS month, a.category
         FROM transactions t
         JOIN annotations a ON a.transaction_id = t.id
         WHERE t.debit_credit = 'credit'
-          AND a.category = 'Income' AND a.subcategory = 'Refund'
-        """
+          AND ((a.category = 'Income' AND a.subcategory = 'Refund')
+               OR a.category NOT IN ({placeholders}))
+        """,
+        NON_SPEND_CATEGORIES,
     ).fetchall()
-    for row in refund_rows:
+    for row in credit_rows:
         if row["id"] in used_credit_ids:
             continue
-        category = None
+        used_credit_ids.add(row["id"])
+        if row["category"] != "Income":
+            category_offsets[(row["month"], row["category"])] += row["amount"]
+            continue
         if row["counterparty_key"]:
             match = conn.execute(
                 """
@@ -194,48 +244,70 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, dict, set[str]]:
                 (row["counterparty_key"], row["txn_date"]),
             ).fetchone()
             if match and _is_spend(match["category"]):
-                category = match["category"] or "Uncategorized"
-        if category:
-            category_offsets[(row["month"], category)] += row["amount"]
-        else:
-            month_offsets[row["month"]] += row["amount"]
-        used_credit_ids.add(row["id"])
+                category_offsets[(row["month"], match["category"] or "Uncategorized")] += row["amount"]
+                continue
+        amount_match = conn.execute(
+            f"""
+            SELECT t.id, t.amount, a.category
+            FROM transactions t
+            LEFT JOIN annotations a ON a.transaction_id = t.id
+            WHERE t.debit_credit = 'debit' AND t.amount = ?
+              AND t.txn_date <= ? AND t.txn_date >= date(?, '-60 days')
+              AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
+            ORDER BY t.txn_date DESC LIMIT 1
+            """,
+            (row["amount"], row["txn_date"], row["txn_date"], *NON_SPEND_CATEGORIES),
+        ).fetchone()
+        if amount_match:
+            take = _consume(amount_match["id"], amount_match["amount"], row["amount"])
+            if take > 0:
+                category_offsets[
+                    (row["month"], amount_match["category"] or "Uncategorized")
+                ] += take
 
-    return dict(category_offsets), dict(month_offsets), used_credit_ids
+    return dict(category_offsets), used_credit_ids
 
 
-def _verdict(conn: sqlite3.Connection, month: str, cat_offsets: dict, month_offsets: dict) -> dict:
-    placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
+def _verdict(conn: sqlite3.Connection, month: str) -> dict:
+    """Cash-view tiles for one month; see the module docstring for the model.
+
+    No linking, netting or heuristics feed these numbers, so a missed
+    reimbursement can never make the tiles contradict each other - a friend's
+    unmatched payback simply shows up inside In (and other_in).
+    """
     row = conn.execute(
-        f"""
+        """
         SELECT
+          COALESCE(SUM(CASE WHEN t.debit_credit = 'credit'
+              AND COALESCE(a.category, '') != 'Self Transfers'
+              AND NOT (COALESCE(a.category, '') = 'Income'
+                       AND COALESCE(a.subcategory, '') = 'Opening Balance')
+              THEN t.amount END), 0) AS money_in,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' AND a.category = 'Income'
               AND COALESCE(a.subcategory, '') NOT IN ('Refund', 'Opening Balance')
               THEN t.amount END), 0) AS earned,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'
-              AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
-              THEN t.amount END), 0) AS spent_gross,
+              AND COALESCE(a.category, '') NOT IN ('Self Transfers', 'Investments')
+              THEN t.amount END), 0) AS money_out,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit' AND a.category = 'Investments'
               THEN t.amount END), 0) AS invested
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE strftime('%Y-%m', t.txn_date) = ?
         """,
-        (*NON_SPEND_CATEGORIES, month),
+        (month,),
     ).fetchone()
-    offsets = sum(v for (m, _), v in cat_offsets.items() if m == month)
-    offsets += month_offsets.get(month, 0.0)
-    earned, spent_gross = row["earned"], row["spent_gross"]
-    spent = spent_gross - offsets
-    saved = earned - spent
+    money_in, money_out = row["money_in"], row["money_out"]
+    invested = row["invested"]
+    kept = money_in - money_out - invested
     return {
-        "earned": round(earned, 2),
-        "spent": round(spent, 2),
-        "spent_gross": round(spent_gross, 2),
-        "offsets": round(offsets, 2),
-        "invested": round(row["invested"], 2),
-        "saved": round(saved, 2),
-        "savings_rate": round(saved / earned, 4) if earned > 0 else None,
+        "money_in": round(money_in, 2),
+        "money_out": round(money_out, 2),
+        "invested": round(invested, 2),
+        "kept": round(kept, 2),
+        "kept_rate": round(kept / money_in, 4) if money_in > 0 else None,
+        "earned": round(row["earned"], 2),
+        "other_in": round(money_in - row["earned"], 2),
     }
 
 
@@ -504,6 +576,23 @@ def _unexplained(conn: sqlite3.Connection, month: str) -> dict:
     return {"count": row["n"], "total": round(row["total"], 2)}
 
 
+def _annotation_coverage(conn: sqlite3.Connection, month: str) -> dict:
+    """How much of the month the pipeline has touched. annotated == 0 with
+    transactions present means auto-annotation never ran for this month; the
+    dashboard uses that to hold back insights until the user starts it."""
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT t.id) AS total,
+               COUNT(DISTINCT a.transaction_id) AS annotated
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        WHERE strftime('%Y-%m', t.txn_date) = ?
+        """,
+        (month,),
+    ).fetchone()
+    return {"total": row["total"], "annotated": row["annotated"]}
+
+
 def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> dict:
     months = [
         r[0] for r in conn.execute(
@@ -516,7 +605,7 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
         month = months[-1]
     prev = _prev_month(month)
 
-    cat_offsets, month_offsets, settled_ids = _spend_offsets(conn)
+    cat_offsets, settled_ids = _spend_offsets(conn)
 
     current = _categories_for_month(conn, month, cat_offsets)
     previous = _categories_for_month(conn, prev, cat_offsets)
@@ -555,8 +644,8 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
         "prev_month": prev,
         "months": months,
         "verdict": {
-            **_verdict(conn, month, cat_offsets, month_offsets),
-            "prev": _verdict(conn, prev, cat_offsets, month_offsets),
+            **_verdict(conn, month),
+            "prev": _verdict(conn, prev),
         },
         "what_changed": deltas[:3],
         "categories": categories,
@@ -565,4 +654,5 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
         "merchants": _merchants(conn, month),
         "balance": _balance_series(conn),
         "unexplained": _unexplained(conn, month),
+        "annotation": _annotation_coverage(conn, month),
     }
