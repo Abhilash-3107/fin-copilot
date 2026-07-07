@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
-import { api, runAnnotationJob } from '../lib/api.js'
+import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useStatement } from '../contexts/StatementContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
-import AnnotationProgress from '../components/AnnotationProgress.jsx'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 
@@ -117,8 +117,8 @@ export default function Transactions() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
+  const { startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
-  const [annotateProgress, setAnnotateProgress] = useState(null)
   const loadRef = useRef(0)
 
   const loadTransactions = useCallback(async () => {
@@ -180,10 +180,39 @@ export default function Transactions() {
     setMerchantFilter(merchant ?? '')
     setSearch(q ?? '')
     if (m && m !== periodMonth) setMonth(m)
+    // A deep link means "this slice of everything": a lingering statement
+    // selection would AND with the link's month and silently empty the list.
+    if (category || source || merchant || q || m) clearStatementForDeepLink.current = true
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
+
+  // The statement scope may already be set (in-session navigation) or arrive
+  // later (hard load: StatementContext defaults to the latest statement once
+  // /statements resolves), so the clear has to chase it. One-shot: a manual
+  // statement pick after the deep link sticks.
+  const clearStatementForDeepLink = useRef(false)
+  useEffect(() => {
+    if (clearStatementForDeepLink.current && activeStatement) {
+      setActiveStatement(null)
+      clearStatementForDeepLink.current = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStatement, searchParams])
+
+  // PeriodPicker is shared across pages, so the period may already be set to
+  // a month (eg. carried over from Dashboard) before this page's statement
+  // scope resolves (StatementContext defaults to the latest statement once
+  // /statements loads) or before the user changes the period directly. Either
+  // way, a stale statement_id + month combo would AND into an empty result
+  // with no explanation, so drop the stale scope whenever they disagree.
+  useEffect(() => {
+    if (activeStatement && month && activeStatement.statement_month !== month) {
+      setActiveStatement(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [month, activeStatement])
 
   // Keyboard navigation
   useEffect(() => {
@@ -227,10 +256,7 @@ export default function Transactions() {
     }
     setAutoAnnotating(true)
     try {
-      const result = await runAnnotationJob(
-        { statement_id: selectedStmt },
-        job => setAnnotateProgress(job),
-      )
+      const result = await startAnnotation({ statement_id: selectedStmt })
       toast(
         `Done — ${result.rule_matched ?? 0} rule, ${result.rag_direct_annotated ?? 0} rag, ${result.llm_annotated ?? 0} llm`,
         'success',
@@ -241,7 +267,6 @@ export default function Transactions() {
       toast(`Auto-annotate failed: ${e.message}`, 'error')
     } finally {
       setAutoAnnotating(false)
-      setAnnotateProgress(null)
     }
   }
 
@@ -267,7 +292,6 @@ export default function Transactions() {
 
   return (
     <div className="flex flex-col h-full">
-      <AnnotationProgress job={autoAnnotating ? annotateProgress : null} />
       {/* Filter bar */}
       <div className="sticky top-0 z-20 bg-[#0f1117] border-b border-[#2d3148] px-5 py-3 flex items-center gap-3 flex-wrap">
         <select
@@ -275,6 +299,10 @@ export default function Transactions() {
           onChange={e => {
             const stmt = statements.find(s => s.id === e.target.value) ?? null
             setActiveStatement(stmt)
+            // Picking a statement is picking a month; keep the shared period in
+            // sync so it doesn't silently AND against a different month and
+            // empty the list (or clear it entirely for "All statements").
+            setMonth(stmt ? stmt.statement_month : ALL_TIME)
           }}
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
         >

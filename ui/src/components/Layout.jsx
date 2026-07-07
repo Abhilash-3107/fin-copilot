@@ -1,8 +1,11 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar.jsx'
 import TopBar from './TopBar.jsx'
+import AnnotationProgress from './AnnotationProgress.jsx'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 
 export default function Layout() {
+  const { job } = useAnnotationJob()
   return (
     <div className="flex h-screen bg-[#0f1117] overflow-hidden">
       <Sidebar />
@@ -12,6 +15,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+      <AnnotationProgress job={job} />
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { ToastProvider } from './contexts/ToastContext.jsx'
 import { StatementProvider } from './contexts/StatementContext.jsx'
 import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
+import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
 import Layout from './components/Layout.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Transactions from './pages/Transactions.jsx'
@@ -19,6 +20,7 @@ export default function App() {
       <StatementProvider>
       <PrivacyProvider>
       <PeriodProvider>
+      <AnnotationJobProvider>
       <HashRouter>
         <Routes>
           <Route path="/" element={<Layout />}>
@@ -34,6 +36,7 @@ export default function App() {
           </Route>
         </Routes>
       </HashRouter>
+      </AnnotationJobProvider>
       </PeriodProvider>
       </PrivacyProvider>
       </StatementProvider>

@@ -27,7 +27,16 @@ UI_DIR = Path(__file__).parent.parent / "ui"
 async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
     conn = get_db()
-    conn.close()
+    try:
+        # Jobs still marked in-flight at boot were orphaned by the previous
+        # process; fail them or they block the single-job guard forever.
+        reaped = annotations.reap_interrupted_jobs(conn)
+        if reaped:
+            logging.getLogger(__name__).warning(
+                "failed %d annotation job(s) orphaned by the previous process", reaped
+            )
+    finally:
+        conn.close()
     yield
 
 
