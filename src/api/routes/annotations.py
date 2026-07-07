@@ -61,6 +61,27 @@ def _open_job_connection() -> sqlite3.Connection:
     return get_connection()
 
 
+# A live job heartbeats updated_at roughly once per second via its progress
+# callback; the longest silent stretch is a single slow LLM call. A job quiet
+# for this long has no worker behind it.
+STALE_JOB_MINUTES = 10
+
+
+def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
+    """Fail every queued/running job. Called at startup: this is a
+    single-process app, so any job still marked in-flight when the process
+    boots was orphaned by a restart and will never finish. Left alone it would
+    satisfy start_auto_annotate_job's single-job guard forever and block all
+    future annotation runs."""
+    cur = conn.execute(
+        "UPDATE annotation_jobs SET status='failed', "
+        "error='Interrupted by a server restart', updated_at=datetime('now') "
+        "WHERE status IN ('queued','running')"
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def _run_annotation_job(
     job_id: str,
     statement_id: str | None,
@@ -121,6 +142,17 @@ def start_auto_annotate_job(
     the running job instead of starting a duplicate, which would burn duplicate LLM
     calls and could overwrite a manual label created mid-run.
     """
+    # An in-flight row with a quiet heartbeat is an orphan (worker died or the
+    # task never got scheduled), not a running job. Fail it here rather than
+    # re-attach, or it would block every future run until the next restart.
+    conn.execute(
+        "UPDATE annotation_jobs SET status='failed', "
+        "error='Went stale without a worker', updated_at=datetime('now') "
+        f"WHERE status IN ('queued','running') "
+        f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+    )
+    conn.commit()
+
     inflight = conn.execute(
         "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
         "ORDER BY created_at LIMIT 1"

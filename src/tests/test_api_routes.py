@@ -412,6 +412,54 @@ class TestAnnotationJobs:
         count = conn.execute("SELECT COUNT(*) AS n FROM annotation_jobs").fetchone()["n"]
         assert count == 1
 
+    def test_stale_inflight_job_is_failed_not_reattached(self, file_db_client):
+        """A 'running' row whose heartbeat went quiet is an orphan (its worker
+        died). Re-attaching to it would block annotation forever; a new start
+        request must fail it and launch a fresh job."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed, updated_at) "
+            "VALUES ('zombie','running',95,72, datetime('now','-4 days'))"
+        )
+        conn.commit()
+
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={})
+        assert resp.status_code == 202
+        assert resp.json()["job_id"] != "zombie"
+
+        zombie = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='zombie'").fetchone()
+        assert zombie["status"] == "failed"
+        assert "stale" in zombie["error"]
+
+    def test_startup_reaps_orphaned_jobs(self, file_db_client):
+        """Restarting the server fails any job the previous process left
+        in-flight, even a fresh one - a single-process app can't have live
+        jobs at boot."""
+        from src.main import app
+        from src.api.routes.annotations import reap_interrupted_jobs
+
+        client, conn = file_db_client
+        conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q1','queued')")
+        conn.execute("INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('r1','running',10,4)")
+        conn.commit()
+
+        assert reap_interrupted_jobs(conn) == 2
+        statuses = {
+            row["id"]: row["status"]
+            for row in conn.execute("SELECT id, status FROM annotation_jobs").fetchall()
+        }
+        assert statuses == {"q1": "failed", "r1": "failed"}
+
+        # And the lifespan actually invokes it: entering the client context
+        # runs startup against the same file-backed DB.
+        conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q2','queued')")
+        conn.commit()
+        with TestClient(app):
+            pass
+        row = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='q2'").fetchone()
+        assert row["status"] == "failed"
+        assert "restart" in row["error"]
+
 
 class TestStatementUploadDedup:
     def _fake_parser(self):
