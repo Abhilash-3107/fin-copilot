@@ -2,7 +2,8 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 
 // Single source of truth for rendering a rupee amount as a string.
 // `debitCredit` adds the signed prefix used in the transaction views; when it
-// is omitted the value is rendered as a plain magnitude (no + / −).
+// is omitted, a negative value still carries its − (a Kept tile in a month
+// that went over, a category net after a big refund) but positives stay bare.
 export function formatRupees(amount, { decimals = 2, debitCredit } = {}) {
   const n = Number(amount)
   const magnitude = Math.abs(n).toLocaleString('en-IN', {
@@ -11,7 +12,7 @@ export function formatRupees(amount, { decimals = 2, debitCredit } = {}) {
   })
   if (debitCredit === 'debit') return `−₹${magnitude}`
   if (debitCredit === 'credit') return `+₹${magnitude}`
-  return `₹${magnitude}`
+  return n < 0 ? `−₹${magnitude}` : `₹${magnitude}`
 }
 
 // Renders a rupee amount, honoring the global privacy mode. When privacy is on

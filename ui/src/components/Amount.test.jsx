@@ -28,6 +28,13 @@ describe('formatRupees', () => {
   it('renders the magnitude regardless of the raw value sign', () => {
     expect(formatRupees(-250, { decimals: 0, debitCredit: 'debit' })).toBe('−₹250')
   })
+
+  it('keeps the minus on a plain negative value', () => {
+    // A Kept tile in a month that went over, or a category net after a big
+    // refund, must not read as a positive amount.
+    expect(formatRupees(-20543, { decimals: 0 })).toBe('−₹20,543')
+    expect(formatRupees(20543, { decimals: 0 })).toBe('₹20,543')
+  })
 })
 
 describe('<Amount>', () => {
