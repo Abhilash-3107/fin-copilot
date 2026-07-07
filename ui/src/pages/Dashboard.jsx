@@ -1,429 +1,565 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import {
+  Chart as ChartJS, CategoryScale, LinearScale,
+  PointElement, LineElement, Tooltip as ChartTooltip, Filler,
+} from 'chart.js'
+import { Line } from 'react-chartjs-2'
 import dayjs from 'dayjs'
-import { api, runAnnotationJob } from '../lib/api.js'
-import { isRealFlow } from '../lib/categories.js'
+import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useStatement } from '../contexts/StatementContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
-import AnnotationProgress from '../components/AnnotationProgress.jsx'
-import Amount from '../components/Amount.jsx'
-import Tooltip from '../components/Tooltip.jsx'
+import { usePrivacy } from '../contexts/PrivacyContext.jsx'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
+import PeriodPicker from '../components/PeriodPicker.jsx'
+import Amount, { formatRupees } from '../components/Amount.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { HelpCircle } from 'lucide-react'
+import {
+  GraduationCap, FilePlus2, TrendingUp, HelpCircle, Users,
+  CheckCircle2, CalendarClock, ArrowRight, Sparkles,
+} from 'lucide-react'
 
-const CAT_COLORS = [
-  '#3b82f6', '#ef4444', '#10b981', '#a855f7', '#f59e0b',
-  '#ec4899', '#14b8a6', '#6366f1', '#f97316',
-]
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ChartTooltip, Filler)
 
-function confColor(pct) {
-  if (pct >= 75) return '#22c55e'
-  if (pct >= 60) return '#f59e0b'
-  return '#ef4444'
+const card = 'bg-[#13151f] border border-[#2d3148] rounded-xl'
+const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#64748b]'
+
+function ordinal(n) {
+  const rest = n % 100
+  if (rest >= 11 && rest <= 13) return `${n}th`
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`
+}
+
+// The one sentence the page exists for: how the month went, in plain words.
+// Tone (color + verb) carries the judgment so no chart-reading is needed.
+// "Kept" here is everything that didn't leave (invested + kept in the bank),
+// as a share of all money in - the cash-view analogue of a savings rate.
+function VerdictHero({ verdict, month }) {
+  const held = verdict.invested + verdict.kept
+  const rate = verdict.money_in > 0 ? held / verdict.money_in : null
+  const monthName = dayjs(month).format('MMMM')
+  const tone = rate == null
+    ? { color: '#94a3b8' }
+    : rate >= 0.2
+      ? { color: '#34d399' }
+      : rate >= 0
+        ? { color: '#fbbf24' }
+        : { color: '#f87171' }
+  return (
+    <div className={`${card} relative overflow-hidden p-6`}>
+      <div
+        className="absolute inset-x-0 top-0 h-1"
+        style={{ background: `linear-gradient(90deg, #6366f1, ${tone.color})` }}
+      />
+      {verdict.money_in <= 0 ? (
+        <p className="text-xl text-[#e2e8f0]">
+          No money came in during {monthName} - here is where it went.
+        </p>
+      ) : (
+        <p className="text-xl leading-relaxed text-[#e2e8f0]">
+          In {monthName}, you {held >= 0 ? 'kept' : 'went over by'}{' '}
+          <Amount value={Math.abs(held)} decimals={0} className="font-semibold tabular-nums" />
+          {rate != null && (
+            <>
+              {' '}-{' '}
+              <span className="font-semibold" style={{ color: tone.color }}>
+                {Math.round(Math.abs(rate) * 100)}%
+              </span>
+              {held >= 0 ? ' of what came in stayed with you.' : ' more than came in.'}
+            </>
+          )}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// A freshly imported month has no annotations, so every insight the page
+// could show would be empty or wrong. Until the pipeline runs, hold back
+// everything except the honest cash totals - raw credits in, raw debits out -
+// and the button that starts the sort. Same card shell as the verdict hero,
+// so finishing feels like this surface waking up, not a page swap.
+function SetupStage({ annotation, verdict, month, annotating, onSort }) {
+  const many = annotation.total !== 1
+  return (
+    <>
+      <div className={`${card} relative overflow-hidden p-6`}>
+        <div
+          className="absolute inset-x-0 top-0 h-1"
+          style={{ background: 'linear-gradient(90deg, #6366f1, #a78bfa)' }}
+        />
+        <p className="text-xl leading-relaxed text-[#e2e8f0]">
+          {annotation.total} transaction{many ? 's' : ''} from {dayjs(month).format('MMMM')} {many ? 'are' : 'is'} in.
+        </p>
+        <p className="mt-1 text-sm text-[#94a3b8]">
+          Your copilot hasn't sorted them yet - run it to see the full picture.
+        </p>
+        <button
+          onClick={onSort}
+          disabled={annotating}
+          className="mt-4 inline-flex items-center gap-2 rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9] disabled:cursor-default disabled:opacity-60"
+        >
+          <Sparkles size={15} /> {annotating ? 'Sorting…' : 'Sort my transactions'}
+        </button>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {[['In', verdict.money_in], ['Out', verdict.money_out]].map(([label, value]) => (
+          <div key={label} className={`${card} p-4`}>
+            <p className={cardTitle}>{label}</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums text-[#e2e8f0]">
+              <Amount value={value} decimals={0} />
+            </p>
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function StatTile({ label, value, delta, goodWhenDown, sub, hint }) {
+  const up = delta > 0
+  const good = goodWhenDown ? !up : up
+  return (
+    <Link to="/insights" className={`${card} group p-4 transition-colors hover:border-[#6366f1]`} title={hint}>
+      <p className={cardTitle}>{label}</p>
+      <p className="mt-1 text-xl font-semibold tabular-nums text-[#e2e8f0]">
+        <Amount value={value} decimals={0} />
+      </p>
+      <p className="mt-1 text-xs">
+        {delta ? (
+          <span className={`tabular-nums ${good ? 'text-emerald-400' : 'text-red-400'}`}>
+            {up ? '▲' : '▼'} <Amount value={Math.abs(delta)} decimals={0} /> vs last month
+          </span>
+        ) : (
+          <span className="text-[#475569]">same as last month</span>
+        )}
+      </p>
+      {sub && <p className="mt-0.5 text-xs text-[#475569]">{sub}</p>}
+    </Link>
+  )
+}
+
+// One ranked list of things worth doing, each a sentence and a doorway into
+// the page where it gets done. Never more than four; an empty list is a
+// reward ("all caught up"), not blank space.
+function AttentionList({ items }) {
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>Needs your attention</p>
+      {items.length === 0 ? (
+        <div className="flex items-center gap-3 px-4 py-6">
+          <CheckCircle2 size={20} className="shrink-0 text-emerald-400" />
+          <p className="text-sm text-[#94a3b8]">All caught up - nothing needs you right now.</p>
+        </div>
+      ) : (
+        <ul>
+          {items.map(item => (
+            <li key={item.key} className="border-b border-[#1a1d27] last:border-0">
+              <Link
+                to={item.to}
+                className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[#1a1d27]"
+              >
+                <span
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                  style={{ backgroundColor: `${item.color}1f`, color: item.color }}
+                >
+                  <item.icon size={16} />
+                </span>
+                <span className="min-w-0 flex-1 text-sm text-[#e2e8f0]">{item.text}</span>
+                <span className="hidden shrink-0 items-center gap-1 text-xs text-[#6366f1] group-hover:text-[#a5b4fc] sm:flex">
+                  {item.cta} <ArrowRight size={13} />
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// Balance over time, scoped to the selected month - the same chart Money Map
+// shows across all months, narrowed here to how the balance moved through this
+// one. The full multi-month view lives on Money Map.
+function BalanceCard({ balance, month }) {
+  const { hidden } = usePrivacy()
+  const start = dayjs(month).startOf('month').format('YYYY-MM-DD')
+  const end = dayjs(month).endOf('month').format('YYYY-MM-DD')
+  const points = balance.filter(p => p.date >= start && p.date <= end)
+  const data = {
+    labels: points.map(p => p.date),
+    datasets: [{
+      data: points.map(p => p.balance),
+      borderColor: '#6366f1',
+      backgroundColor: 'rgba(99,102,241,0.12)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHitRadius: 12,
+      borderWidth: 2,
+    }],
+  }
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      tooltip: {
+        backgroundColor: '#1e2235', titleColor: '#e2e8f0', bodyColor: '#94a3b8',
+        borderColor: '#2d3148', borderWidth: 1, displayColors: false,
+        callbacks: {
+          title: items => dayjs(items[0].label).format('D MMM YYYY'),
+          label: item => formatRupees(item.raw, { decimals: 0 }),
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: {
+          color: '#64748b', font: { size: 11 }, maxTicksLimit: 6,
+          callback(value) {
+            return dayjs(this.getLabelForValue(value)).format('D MMM')
+          },
+        },
+        grid: { display: false },
+      },
+      y: {
+        ticks: {
+          color: '#64748b', font: { size: 11 }, maxTicksLimit: 5,
+          callback: v => hidden ? '••' : `₹${Math.round(v / 1000)}k`,
+        },
+        grid: { color: '#1e2235' },
+      },
+    },
+  }
+  return (
+    <Link to="/insights" className={`${card} group flex flex-col p-4 transition-colors hover:border-[#6366f1]`}>
+      <p className={`${cardTitle} mb-3`}>Balance over time</p>
+      <div className={`h-52 flex-1 ${hidden ? 'blur-[6px] select-none' : ''}`}>
+        {points.length > 1 ? (
+          <Line data={data} options={options} />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-[#475569]">
+            Balance history appears once statements are imported
+          </div>
+        )}
+      </div>
+    </Link>
+  )
+}
+
+// Committed money: the charges that will show up again next month whether or
+// not the user does anything. Data arrives as whole monthly statements, so
+// this projects the known commitments, never a partial-month pace.
+function CommittedCard({ recurring }) {
+  // One row per counterparty: the four SIP legs of one platform read as a
+  // single commitment to a person, not four look-alike rows.
+  const byName = new Map()
+  for (const r of recurring.filter(r => r.active)) {
+    const g = byName.get(r.name) ?? { ...r, amount: 0, units: 0 }
+    g.amount += r.amount
+    g.units += 1
+    if (r.last_date > g.last_date) g.last_date = r.last_date
+    byName.set(r.name, g)
+  }
+  const committed = [...byName.values()].sort((a, b) => b.amount - a.amount)
+  const total = committed.reduce((s, r) => s + r.amount, 0)
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <div className="flex items-baseline justify-between px-4 py-3 border-b border-[#2d3148]">
+        <p className={cardTitle}>Spoken for each month</p>
+        {committed.length > 0 && (
+          <p className="text-sm font-semibold tabular-nums text-[#e2e8f0]">
+            <Amount value={total} decimals={0} />
+          </p>
+        )}
+      </div>
+      {committed.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-[#475569]">
+          No monthly commitments spotted yet - they show up after a few months of statements.
+        </p>
+      ) : (
+        <ul>
+          {committed.slice(0, 5).map(r => (
+            <li
+              key={`${r.name}-${r.amount}`}
+              className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm border-b border-[#1a1d27] last:border-0"
+            >
+              <div className="flex min-w-0 items-center gap-2.5">
+                <CalendarClock size={14} className="shrink-0 text-[#64748b]" />
+                <span className="truncate text-[#e2e8f0]">{r.name}</span>
+                <span className="hidden text-xs text-[#64748b] sm:inline">
+                  {r.units > 1
+                    ? `${r.units} ${r.category === 'Investments' ? 'SIPs' : 'charges'}`
+                    : r.cadence === 'monthly'
+                      ? `around the ${ordinal(dayjs(r.last_date).date())}`
+                      : 'most months'}
+                </span>
+              </div>
+              <span className="tabular-nums text-[#94a3b8]">
+                <Amount value={r.amount} decimals={0} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Link
+        to="/insights"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+      >
+        All subscriptions and SIPs on Money Map →
+      </Link>
+    </div>
+  )
+}
+
+// One glance backward - the top three spending categories, net of refunds and
+// paid-back shares - then a hand-off to Money Map for the full picture.
+function TopSpendingCard({ categories, month }) {
+  const top = categories.slice(0, 3)
+  const maxNet = Math.max(1, ...top.map(c => c.net))
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
+        Where {dayjs(month).format('MMMM')}'s money went
+      </p>
+      {top.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-[#475569]">No spending recorded this month.</p>
+      ) : (
+        <ul className="px-4 py-2">
+          {top.map(c => (
+            <li key={c.category}>
+              <Link
+                to={txnFilterPath({ category: c.category, month })}
+                className="group -mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_5rem] items-center gap-3 rounded-md px-1 py-2 text-sm transition-colors hover:bg-[#1a1d27]"
+              >
+                <span className="truncate text-[#e2e8f0] group-hover:text-[#a5b4fc]">{c.category}</span>
+                <span className="h-2 overflow-hidden rounded bg-[#1e2235]">
+                  <span
+                    className="block h-full rounded bg-[#6366f1]"
+                    style={{ width: `${Math.min(100, (Math.max(c.net, 0) / maxNet) * 100)}%` }}
+                  />
+                </span>
+                <span className="text-right tabular-nums text-[#e2e8f0]">
+                  <Amount value={c.net} decimals={0} />
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Link
+        to="/insights"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+      >
+        See the full picture on Money Map →
+      </Link>
+    </div>
+  )
 }
 
 export default function Dashboard() {
   const toast = useToast()
-  const { statements, activeStatement, setActiveStatement, loading: stmtLoading } = useStatement()
-  const { month: periodMonth, setMonth } = usePeriod()
-  const didInboundSync = useRef(false)
-
-  const [transactions, setTransactions] = useState([])
-  const [annMap, setAnnMap] = useState({})
+  const { month: periodMonth } = usePeriod()
+  const [data, setData] = useState(null)
   const [reviewCount, setReviewCount] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [autoAnnotating, setAutoAnnotating] = useState(false)
-  const [annotateProgress, setAnnotateProgress] = useState(null)
+  const { startAnnotation } = useAnnotationJob()
+  const [annotating, setAnnotating] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
-  // Reload transactions whenever the active statement changes
+  // Month-anchored like Money Map: "All time" falls back to the latest month
+  // with data (the server's default), because statements arrive as whole
+  // months and the latest complete month is the freshest truth we have.
+  const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
+
   useEffect(() => {
-    if (stmtLoading) return
+    let cancelled = false
     async function load() {
       setLoading(true)
       try {
-        const params = new URLSearchParams()
-        params.set('include', 'annotation')
-        if (activeStatement) params.set('statement_id', activeStatement.id)
-
-        const [txns, queue] = await Promise.all([
-          api.get(`/transactions?${params}`),
+        const [summary, queue] = await Promise.all([
+          api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
           api.get('/annotations/review-queue'),
         ])
-        setTransactions(txns)
+        if (cancelled) return
+        setData(summary)
         setReviewCount(queue.length)
-
-        const map = {}
-        for (const t of txns) {
-          if (t.annotation_id) {
-            map[t.id] = {
-              id: t.annotation_id,
-              category: t.category,
-              subcategory: t.subcategory,
-              source: t.source,
-              confidence: t.confidence,
-            }
-          }
-        }
-        setAnnMap(map)
       } catch (e) {
-        toast(`Couldn't load your data — ${e.message}`, 'error')
+        if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     load()
-  }, [activeStatement, stmtLoading])
+    return () => { cancelled = true }
+  }, [requestMonth, toast, reloadKey])
 
-  // Inbound: honor a month chosen on another page once, by selecting the
-  // statement that matches it. Declared before the outbound sync so it reads the
-  // external period before the outbound effect overwrites it.
-  useEffect(() => {
-    if (didInboundSync.current) return
-    if (!statements.length || !periodMonth || periodMonth === ALL_TIME) return
-    didInboundSync.current = true
-    if (activeStatement?.statement_month !== periodMonth) {
-      const match = statements.find(s => s.statement_month === periodMonth)
-      if (match) setActiveStatement(match)
-    }
-  }, [statements, periodMonth, activeStatement, setActiveStatement])
-
-  // Outbound: keep the shared period in step with the chosen statement so the
-  // month follows the user to Money Map / Transactions.
-  useEffect(() => {
-    if (activeStatement?.statement_month) setMonth(activeStatement.statement_month)
-  }, [activeStatement, setMonth])
-
-  async function runAutoAnnotate() {
-    setAutoAnnotating(true)
+  // Sweep every pending transaction, not just one statement: a multi-statement
+  // upload should still resolve with one click. On success the refetch flips
+  // annotation.annotated above zero and the full dashboard takes over.
+  async function sortTransactions() {
+    setAnnotating(true)
     try {
-      const body = activeStatement ? { statement_id: activeStatement.id } : {}
-      const result = await runAnnotationJob(body, job => setAnnotateProgress(job))
-      toast(`All done! ${result.rule_matched ?? 0} matched by rules, ${result.llm_annotated ?? 0} figured out by AI`, 'success', 4000)
+      const result = await startAnnotation({})
+      toast(
+        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
+        'success',
+        5000
+      )
+      setReloadKey(k => k + 1)
     } catch (e) {
-      toast(`Something went wrong — ${e.message}`, 'error')
+      toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
-      setAutoAnnotating(false)
-      setAnnotateProgress(null)
+      setAnnotating(false)
     }
   }
 
-  // The selected month comes from the active statement
-  const selectedMonth = activeStatement?.statement_month ?? null
-
-  // Stats — scoped to the active statement's month
-  const thisMonth = selectedMonth
-    ? transactions.filter(t => t.txn_date.startsWith(selectedMonth))
-    : transactions
-  // Self-transfers move money between the user's own accounts — exclude them
-  // from spend and income so they don't inflate either side (or savings rate).
-  const totalSpend = thisMonth.filter(t => t.debit_credit === 'debit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
-  const totalIncome = thisMonth.filter(t => t.debit_credit === 'credit' && isRealFlow(annMap[t.id]?.category)).reduce((s, t) => s + Number(t.amount), 0)
-  // Spend by category (this statement's month, debits)
-  const spendByCat = {}
-  for (const txn of thisMonth) {
-    if (txn.debit_credit !== 'debit') continue
-    const cat = annMap[txn.id]?.category ?? 'Uncategorized'
-    if (!isRealFlow(cat)) continue
-    spendByCat[cat] = (spendByCat[cat] ?? 0) + Number(txn.amount)
-  }
-  const totalMonthSpend = Object.values(spendByCat).reduce((s, v) => s + v, 0)
-  const spendRanked = Object.entries(spendByCat).sort((a, b) => b[1] - a[1]).slice(0, 5)
-
-  // Confidence by category — scoped to the active statement's transactions
-  const catConfMap = {}
-  const catCountMap = {}
-  const scopedTxnIds = new Set(thisMonth.map(t => t.id))
-  for (const [txnId, ann] of Object.entries(annMap)) {
-    if (!scopedTxnIds.has(txnId)) continue
-    if (!ann.category || ann.confidence == null) continue
-    catConfMap[ann.category] = (catConfMap[ann.category] ?? 0) + Number(ann.confidence)
-    catCountMap[ann.category] = (catCountMap[ann.category] ?? 0) + 1
-  }
-  const confByCategory = Object.entries(catConfMap)
-    .map(([cat, total]) => ({ cat, pct: Math.round((total / catCountMap[cat]) * 100) }))
-    .sort((a, b) => b.pct - a.pct)
-    .slice(0, 5)
-  const lowestConf = confByCategory.at(-1) ?? null
-
-  // Savings rate
-  const savingsRate = totalIncome > 0 ? Math.round(((totalIncome - totalSpend) / totalIncome) * 100) : null
-
-  // Biggest spike: compare this month's per-category spend vs average across all other months
-  const allMonths = [...new Set(transactions.map(t => t.txn_date.slice(0, 7)))].sort()
-  const otherMonths = selectedMonth ? allMonths.filter(m => m !== selectedMonth) : []
-
-  let spikeResult = null
-  if (otherMonths.length >= 1) {
-    // Build per-category averages across other months
-    const otherCatTotals = {}
-    const otherCatMonthCount = {}
-    for (const txn of transactions) {
-      if (txn.debit_credit !== 'debit') continue
-      if (!otherMonths.includes(txn.txn_date.slice(0, 7))) continue
-      const cat = annMap[txn.id]?.category
-      if (!cat || cat === 'Uncategorized') continue
-      const m = txn.txn_date.slice(0, 7)
-      if (!otherCatMonthCount[cat]) otherCatMonthCount[cat] = new Set()
-      otherCatMonthCount[cat].add(m)
-      otherCatTotals[cat] = (otherCatTotals[cat] ?? 0) + Number(txn.amount)
+  const attention = []
+  if (data?.month) {
+    if (reviewCount > 0) {
+      attention.push({
+        key: 'review', icon: GraduationCap, color: '#a78bfa', to: '/review',
+        text: `${reviewCount} transaction${reviewCount === 1 ? '' : 's'} need a quick look - every answer makes your copilot smarter`,
+        cta: 'Teach me',
+      })
     }
-    const otherCatAvg = {}
-    for (const [cat, total] of Object.entries(otherCatTotals)) {
-      otherCatAvg[cat] = total / otherCatMonthCount[cat].size
+    // Statements land as whole months after the bank issues them, so "fresh"
+    // means "has last month's statement", not "has today's transactions".
+    const latestDataMonth = data.months.at(-1)
+    const expected = dayjs().subtract(1, 'month').format('YYYY-MM')
+    if (latestDataMonth < expected) {
+      const missing = dayjs(expected).format('MMMM')
+      attention.push({
+        key: 'freshness', icon: FilePlus2, color: '#38bdf8', to: '/upload',
+        text: `Your newest statement is ${dayjs(latestDataMonth).format('MMMM')} - add ${missing}'s to stay current`,
+        cta: 'Add statement',
+      })
     }
-
-    // Find the category with the biggest deviation from its average (up or down)
-    let bestCat = null, bestDeviation = 0
-    for (const [cat, thisAmt] of Object.entries(spendByCat)) {
-      if (cat === 'Uncategorized') continue
-      const avg = otherCatAvg[cat]
-      if (!avg || avg < 500) continue // skip tiny/new categories
-      const deviation = Math.abs(thisAmt / avg - 1) // e.g. 2x = 1.0 deviation, 0.3x = 0.7 deviation
-      if (deviation > bestDeviation) { bestDeviation = deviation; bestCat = cat }
+    const spike = data.what_changed.find(c => c.delta >= 2000 && c.current > 1.75 * Math.max(c.previous, 1))
+    if (spike) {
+      attention.push({
+        key: 'spike', icon: TrendingUp, color: '#fb7185',
+        to: txnFilterPath({ category: spike.category, month: data.month }),
+        text: (
+          <>
+            {spike.category} ran <Amount value={spike.delta} decimals={0} /> above{' '}
+            {dayjs(data.prev_month).format('MMMM')} - see what drove it
+          </>
+        ),
+        cta: 'Look closer',
+      })
     }
-
-    if (bestCat) {
-      const multiple = spendByCat[bestCat] / otherCatAvg[bestCat]
-      if (multiple > 1.2) {
-        spikeResult = { cat: bestCat, multiple, thisAmt: spendByCat[bestCat], type: 'spike' }
-      } else if (multiple < 0.8) {
-        spikeResult = { cat: bestCat, multiple, thisAmt: spendByCat[bestCat], type: 'drop' }
-      }
+    if (data.unexplained.count > 0) {
+      attention.push({
+        key: 'unexplained', icon: HelpCircle, color: '#fbbf24', to: '/review',
+        text: (
+          <>
+            <Amount value={data.unexplained.total} decimals={0} /> across {data.unexplained.count}{' '}
+            transaction{data.unexplained.count === 1 ? '' : 's'} has no category yet
+          </>
+        ),
+        cta: 'Sort it',
+      })
+    }
+    const person = data.people.items.find(p => Math.abs(p.net) >= 500)
+    if (person) {
+      attention.push({
+        key: 'people', icon: Users, color: '#34d399', to: '/people',
+        text: (
+          <>
+            Between you and {person.name}: <Amount value={Math.abs(person.net)} decimals={0} />{' '}
+            {person.net >= 0 ? 'more received than sent' : 'more sent than received'}
+          </>
+        ),
+        cta: 'People',
+      })
     }
   }
-
-  // Fallback: top category this month (when only 1 month of data)
-  const topCatFallback = spendRanked[0]
-    ? { cat: spendRanked[0][0], pct: totalMonthSpend > 0 ? Math.round((spendRanked[0][1] / totalMonthSpend) * 100) : 0 }
-    : null
-
-  const monthLabel = selectedMonth ? dayjs(selectedMonth).format('MMMM YYYY') : 'All time'
 
   return (
-    <div className="px-6 py-5 space-y-6">
-      <AnnotationProgress job={autoAnnotating ? annotateProgress : null} />
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-[#e2e8f0]">Your Money at a Glance</h1>
-        <div className="flex items-center gap-3">
-          {/* Statement picker */}
-          {statements.length > 0 && (
-            <select
-              value={activeStatement?.id ?? ''}
-              onChange={e => {
-                const stmt = statements.find(s => s.id === e.target.value) ?? null
-                setActiveStatement(stmt)
-              }}
-              className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] text-sm px-3 py-1.5 rounded-lg focus:outline-none focus:border-[#6366f1] cursor-pointer"
-            >
-              {statements.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.bank_name} — {dayjs(s.statement_month).format('MMM YYYY')}
-                </option>
-              ))}
-            </select>
+    <div className="px-6 py-5 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-base font-semibold text-[#e2e8f0]">
+          Your money at a glance
+          {data?.month && (
+            <span className="text-sm font-normal text-[#64748b]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
+        </h1>
+        <div className="flex items-center gap-3">
+          <PeriodPicker />
           <Link
             to="/upload"
-            className="bg-transparent border border-[#4b5268] text-[#e2e8f0] px-4 py-1.5 rounded-lg text-sm hover:border-[#6b7280] transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#7c3aed] px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
           >
-            Add statement
+            <FilePlus2 size={15} /> Add statement
           </Link>
-          <Tooltip content="Use AI to automatically categorize transactions in this statement">
-            {/* Primary only when nothing is pending review; when the queue is
-                non-empty, Teach Me is the primary action and this steps back. */}
-            <button
-              onClick={runAutoAnnotate}
-              disabled={autoAnnotating}
-              className={reviewCount > 0
-                ? 'bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-1.5 rounded-lg text-sm font-medium hover:text-[#e2e8f0] disabled:opacity-50 transition-colors'
-                : 'bg-[#7c3aed] text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-[#6d28d9] disabled:opacity-50 transition-colors'}
-            >
-              {autoAnnotating
-                ? 'Categorizing…'
-                : activeStatement
-                  ? 'Auto-categorize'
-                  : 'Auto-categorize all'
-              }
-            </button>
-          </Tooltip>
         </div>
       </div>
 
-      {/* Month section */}
-      <div>
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">{monthLabel}</p>
-        <div className="grid grid-cols-4 gap-4">
-          {/* You Spent */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money spent</p>
-            <Amount value={totalSpend} decimals={0} className="text-2xl font-bold text-[#e2e8f0] tabular-nums" />
-          </div>
-
-          {/* You Earned */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Money earned</p>
-            <Amount value={totalIncome} decimals={0} className="text-2xl font-bold text-[#e2e8f0] tabular-nums" />
-          </div>
-
-          {/* Savings Rate */}
-          <div className="bg-[#13151f] border border-[#2d3748] rounded-xl p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">You Saved</p>
-            {savingsRate === null ? (
-              <p className="text-sm text-[#475569] mt-1">No income yet to compare</p>
-            ) : (
-              <>
-                <div className="flex items-baseline gap-1">
-                  <span
-                    className="text-3xl font-bold tabular-nums"
-                    style={{ color: savingsRate >= 20 ? '#22c55e' : savingsRate >= 0 ? '#f59e0b' : '#ef4444' }}
-                  >
-                    {savingsRate}
-                  </span>
-                  <span className="text-lg text-[#94a3b8]">%</span>
-                </div>
-                <p className="text-xs text-[#94a3b8] mt-1">
-                  You {totalIncome - totalSpend >= 0 ? 'kept' : 'overspent'}{' '}
-                  <Amount value={Math.abs(totalIncome - totalSpend)} decimals={0} /> this month
-                </p>
-                <p className="text-xs text-[#64748b] mt-0.5">
-                  {savingsRate >= 20 ? 'Nice! You\'re ahead of the curve' : savingsRate >= 0 ? 'Room to grow — small wins add up' : 'Heads up — you spent more than you earned'}
-                </p>
-              </>
-            )}
-          </div>
-
-          {/* Biggest Spike / Top Category */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4 flex flex-col justify-between">
-            {spikeResult ? (
-              <>
-                <p className="text-xs text-[#94a3b8] leading-relaxed">
-                  {spikeResult.type === 'spike'
-                    ? `You spent more on ${spikeResult.cat} than usual`
-                    : `${spikeResult.cat} spending dropped — nice!`
-                  }
-                </p>
-                <div className="flex items-baseline gap-1 my-2">
-                  <span className={`text-3xl font-bold tabular-nums ${spikeResult.type === 'spike' ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {spikeResult.type === 'spike' ? '+' : '-'}{Math.abs(Math.round((spikeResult.multiple - 1) * 100))}%
-                  </span>
-                </div>
-              </>
-            ) : topCatFallback ? (
-              <>
-                <p className="text-xs text-[#94a3b8]">Most of your money went to {topCatFallback.cat}</p>
-                <div className="flex items-baseline gap-1 my-2">
-                  <span className="text-3xl font-bold tabular-nums text-[#2dd4bf]">{topCatFallback.pct}%</span>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-[#475569]">Categorize your transactions to unlock insights</p>
-            )}
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b]">Worth Noticing</p>
-          </div>
+      {loading ? (
+        <p className="text-sm text-[#475569]">Pulling it together…</p>
+      ) : !data?.month ? (
+        <div className={`${card} p-8 text-center`}>
+          <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>
+          <p className="mt-2 text-sm text-[#64748b]">
+            Upload a bank statement and your copilot will sort every transaction for you.
+          </p>
+          <Link
+            to="/upload"
+            className="mt-4 inline-block rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
+          >
+            Add your first statement
+          </Link>
         </div>
-      </div>
+      ) : data.annotation?.total > 0 && data.annotation.annotated === 0 ? (
+        <SetupStage
+          annotation={data.annotation}
+          verdict={data.verdict}
+          month={data.month}
+          annotating={annotating}
+          onSort={sortTransactions}
+        />
+      ) : (
+        <>
+          <VerdictHero verdict={data.verdict} month={data.month} />
 
-      {/* How well your copilot knows you */}
-      <div>
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-[#64748b] mb-3">Your Copilot is Learning</p>
-        <div className="grid grid-cols-2 gap-4">
-          {/* Confidence by category */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-5">
-            <p className="text-sm text-[#e2e8f0] mb-4 flex items-center gap-1.5">
-              Accuracy
-              <Tooltip content="How often the AI's auto-categorizations are correct">
-                <HelpCircle size={13} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
-              </Tooltip>
-            </p>
-            {loading ? (
-              <p className="text-sm text-[#475569]">Pulling it together…</p>
-            ) : confByCategory.length === 0 ? (
-              <p className="text-sm text-[#475569]">I haven't categorized anything yet — hit Categorize to get started</p>
-            ) : (
-              <div className="space-y-3">
-                {confByCategory.map(({ cat, pct }) => (
-                  <Link
-                    key={cat}
-                    to={txnFilterPath({ category: cat, month: selectedMonth ?? undefined })}
-                    className="flex items-center gap-3 rounded-md -mx-1 px-1 py-0.5 hover:bg-[#1a1d27] transition-colors"
-                  >
-                    <span className="text-sm text-[#cbd5e1] w-36 shrink-0">{cat}</span>
-                    <div className="flex-1 h-2 bg-[#1e2235] rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: confColor(pct) }} />
-                    </div>
-                    <span className="text-sm font-semibold w-10 text-right shrink-0" style={{ color: confColor(pct) }}>{pct}%</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-            {lowestConf && lowestConf.pct < 75 && (
-              <p className="text-xs text-[#64748b] italic mt-4">
-                I'm still learning about {lowestConf.cat} — a few corrections would help a lot
-              </p>
-            )}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatTile
+              label="In" value={data.verdict.money_in}
+              delta={data.verdict.money_in - data.verdict.prev.money_in}
+              sub={data.verdict.other_in > 0 ? `incl ${formatRupees(data.verdict.other_in, { decimals: 0 })} in reimbursements` : null}
+            />
+            <StatTile
+              label="Out" value={data.verdict.money_out} goodWhenDown
+              delta={data.verdict.money_out - data.verdict.prev.money_out}
+            />
+            <StatTile
+              label="Invested" value={data.verdict.invested}
+              delta={data.verdict.invested - data.verdict.prev.invested}
+            />
+            <StatTile
+              label="Kept" value={data.verdict.kept}
+              delta={data.verdict.kept - data.verdict.prev.kept}
+              hint="In - Out - Invested"
+            />
           </div>
 
-          {/* Where your money went */}
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-5">
-            <p className="text-sm text-[#e2e8f0] mb-4">Your top spendings in {monthLabel}</p>
-            {loading ? (
-              <p className="text-sm text-[#475569]">Pulling it together…</p>
-            ) : spendRanked.length === 0 ? (
-              <p className="text-sm text-[#475569]">No spending data for {monthLabel} yet</p>
-            ) : (
-              <div className="space-y-3">
-                {spendRanked.map(([cat, amount], idx) => {
-                  const pct = totalMonthSpend > 0 ? Math.round((amount / totalMonthSpend) * 100) : 0
-                  const color = CAT_COLORS[idx % CAT_COLORS.length]
-                  const barPct = totalMonthSpend > 0 ? (amount / totalMonthSpend) * 100 : 0
-                  return (
-                    <Link
-                      key={cat}
-                      to={txnFilterPath({ category: cat, month: selectedMonth ?? undefined })}
-                      className="flex items-center gap-3 rounded-md -mx-1 px-1 py-0.5 hover:bg-[#1a1d27] transition-colors"
-                    >
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                      <span className="text-sm text-[#cbd5e1] w-28 shrink-0 truncate">{cat}</span>
-                      <div className="flex-1 h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${barPct}%`, backgroundColor: color }} />
-                      </div>
-                      <Amount value={amount} decimals={0} className="text-sm text-[#64748b] w-16 text-right shrink-0" />
-                      <span className="text-sm text-[#94a3b8] w-8 text-right shrink-0">{pct}%</span>
-                    </Link>
-                  )
-                })}
-              </div>
-            )}
-            <div className="flex items-center justify-end mt-4 pt-3 border-t border-[#1e2235]">
-              <Link to="/insights" className="text-xs text-[#6366f1] hover:text-[#818cf8] transition-colors">
-                Money Map →
-              </Link>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
+            <div className="lg:col-span-3">
+              <AttentionList items={attention.slice(0, 4)} />
+            </div>
+            <div className="lg:col-span-2">
+              <BalanceCard balance={data.balance} month={data.month} />
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Review queue CTA */}
-      {reviewCount > 0 && (
-        <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-            <p className="text-sm text-[#e2e8f0]">
-              <span className="font-semibold">{reviewCount} transaction{reviewCount !== 1 ? 's' : ''}</span>
-              {' '}need your eye — a quick review makes me smarter every time
-            </p>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <CommittedCard recurring={data.recurring} />
+            <TopSpendingCard categories={data.categories} month={data.month} />
           </div>
-          <Link
-            to="/review"
-            className="bg-[#7c3aed] text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-[#6d28d9] transition-colors whitespace-nowrap"
-          >
-            Teach Me →
-          </Link>
-        </div>
+        </>
       )}
-
     </div>
   )
 }
