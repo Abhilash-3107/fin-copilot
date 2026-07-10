@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+
 from src.models.transaction import Transaction
 
 # "Account No. 3250508074", "A/c Number: XXXX-1234", "Account #: 1234567890" —

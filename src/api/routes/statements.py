@@ -4,17 +4,23 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.api.deps import get_db
+from src.config import settings
 from src.db.queries.embeddings import delete_embeddings
 from src.db.queries.transactions import list_transactions
 from src.pipeline.ingest import DuplicateStatementError, check_continuity, ingest_pdf
 
 router = APIRouter()
+
+# Bank statements are a few MB at most; refuse anything larger so a bad or hostile
+# upload can't exhaust memory (the file is buffered to read it).
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 @router.post("/upload")
@@ -25,9 +31,27 @@ def upload_statement(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(file.file.read())
-        tmp_path = tmp.name
+    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    # Stage the statement next to the DB with owner-only perms, not in the shared
+    # /tmp: this is the app's most sensitive data, and a crash between write and
+    # unlink must not leave a bank statement world-readable in a shared temp dir.
+    data_dir = Path(settings.db_path).parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file 0600 by default; write via its fd so the bytes
+    # never touch a wider-permissioned path.
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=data_dir)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(contents)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
     try:
         try:
@@ -110,6 +134,15 @@ def delete_statement(
         placeholders = ",".join("?" * len(txn_ids))
         conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
         delete_embeddings(conn, txn_ids)
+        # transaction_links references transactions(id) without ON DELETE CASCADE,
+        # so links must go before the transactions or the FK check (PRAGMA
+        # foreign_keys=ON) aborts the delete. A link can cross a statement
+        # boundary, so match on either endpoint.
+        conn.execute(
+            f"DELETE FROM transaction_links "
+            f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
+            txn_ids + txn_ids,
+        )
         conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
 
     conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
@@ -134,13 +167,17 @@ def reset_statement_data(
         ).fetchall()
     ]
 
+    annotations_deleted = 0
     if txn_ids:
         placeholders = ",".join("?" * len(txn_ids))
-        conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+        cur = conn.execute(
+            f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
+        )
+        annotations_deleted = cur.rowcount
         delete_embeddings(conn, txn_ids)
 
     conn.commit()
-    return {"reset": statement_id, "annotations_deleted": len(txn_ids)}
+    return {"reset": statement_id, "annotations_deleted": annotations_deleted}
 
 
 @router.get("/{statement_id}/transactions")

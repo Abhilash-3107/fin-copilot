@@ -242,7 +242,7 @@ def _chain_score(entries: list[_Entry]) -> tuple[float, int]:
 
 def _date_order_score(entries: list[_Entry]) -> float:
     """Fraction of consecutive date pairs in non-decreasing (chronological) order."""
-    pairs = list(zip(entries, entries[1:]))
+    pairs = list(zip(entries, entries[1:], strict=False))  # offset by one by design
     if not pairs:
         return 1.0
     good = sum(1 for a, b in pairs if a.txn_date <= b.txn_date)

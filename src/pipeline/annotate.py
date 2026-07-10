@@ -8,12 +8,10 @@ import re
 import sqlite3
 from collections import Counter
 
-logger = logging.getLogger(__name__)
-
 from src.config import settings
 from src.db.queries.annotations import insert_annotation
-from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.categories import get_category_names_flat
+from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.embeddings import find_similar
 from src.db.queries.learned_rules import lookup_learned_rule
 from src.db.queries.people import list_people, relationship_subcategory
@@ -36,6 +34,9 @@ from src.pipeline.llm import (
     top_level_categories,
 )
 from src.pipeline.rules import apply_rules
+from src.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_category(category: str, category_list: list[str]) -> str:
@@ -488,9 +489,6 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
     )
-
-
-_TRUSTED_SOURCES = {"manual", "rule", "imported"}
 
 
 def _donor_weight(source: str | None) -> float:

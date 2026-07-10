@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -19,7 +18,7 @@ from src.db.queries.people import (
 router = APIRouter()
 
 
-def _validate_match_token(upi: Optional[str]) -> None:
+def _validate_match_token(upi: str | None) -> None:
     """A short match-token is a collision hazard: name tokens are word-prefix
     matched against counterparty names, so 'ma' would fire on MAHESH, MANOJ,
     MAX Fashion, … Require 3+ characters (VPA tokens with '@' are exact-match
@@ -33,8 +32,8 @@ def _validate_match_token(upi: Optional[str]) -> None:
 
 class PersonCreate(BaseModel):
     name: str
-    upi: Optional[str] = None
-    relationship: Optional[str] = None
+    upi: str | None = None
+    relationship: str | None = None
 
 
 @router.post("", status_code=201)
@@ -52,8 +51,8 @@ def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
 
 class PersonUpdate(BaseModel):
     name: str
-    upi: Optional[str] = None
-    relationship: Optional[str] = None
+    upi: str | None = None
+    relationship: str | None = None
 
 
 @router.patch("/{person_id}")

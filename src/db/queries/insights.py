@@ -97,8 +97,42 @@ def _merge_merchant_keys(keys: list[str]) -> dict[str, str]:
     return canonical
 
 
+# Memo for _spend_offsets, keyed by database file. The computation walks the
+# whole ledger (correctness needs the full set of settled credit ids for the
+# people ledger), so it can't be scoped to the requested month; instead cache it
+# and invalidate on a cheap fingerprint of everything that can change an offset.
+# Dashboard + Money Map load it back-to-back for the same state, which this
+# collapses to one walk. Keyed by db path so distinct databases (notably each
+# in-memory test DB) never collide on a coincidentally-equal fingerprint.
+_offsets_cache: dict = {}
+
+
+def _db_identity(conn: sqlite3.Connection) -> str | None:
+    """The main database's file path, or None for an in-memory DB (uncacheable:
+    many short-lived in-memory DBs would share the None key and collide)."""
+    for _seq, name, file in conn.execute("PRAGMA database_list"):
+        if name == "main":
+            return file or None
+    return None
+
+
+def _offsets_fingerprint(conn: sqlite3.Connection) -> tuple:
+    """Signature of every input to _spend_offsets, sensitive to *any* row change.
+
+    Two independent change counters make it complete:
+    - conn.total_changes: SQLite's running count of rows inserted/updated/deleted
+      through *this* connection. Catches same-connection edits — including a
+      category re-label that leaves all row counts unchanged — which a
+      count/timestamp fingerprint misses at datetime()'s one-second resolution.
+    - data_version (PRAGMA): bumps when *another* connection commits, catching
+      writes this connection didn't make.
+    Together they change on every committed modification from any source."""
+    data_version = conn.execute("PRAGMA data_version").fetchone()[0]
+    return (conn.total_changes, data_version)
+
+
 def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
-    """Compute spend offsets across the full ledger.
+    """Compute spend offsets across the full ledger (memoized on a ledger fingerprint).
 
     Returns (category_offsets, used_credit_ids):
     - category_offsets: {(month, category): amount} for offsets attributable
@@ -107,6 +141,13 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     - used_credit_ids: credit transactions consumed as offsets, so other
       panels (the people ledger) can avoid counting a settled share twice.
     """
+    db_id = _db_identity(conn)
+    fingerprint = _offsets_fingerprint(conn)
+    cached = _offsets_cache.get(db_id) if db_id is not None else None
+    if cached is not None and cached[0] == fingerprint:
+        cached_offsets, cached_ids = cached[1]
+        # Hand back copies so callers can't mutate the memo.
+        return dict(cached_offsets), set(cached_ids)
     category_offsets: dict[tuple[str, str], float] = defaultdict(float)
     used_credit_ids: set[str] = set()
 
@@ -265,7 +306,11 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                     (row["month"], amount_match["category"] or "Uncategorized")
                 ] += take
 
-    return dict(category_offsets), used_credit_ids
+    result = (dict(category_offsets), used_credit_ids)
+    if db_id is not None:
+        _offsets_cache[db_id] = (fingerprint, result)
+    # Return copies so a caller mutating its result can't corrupt the memo.
+    return dict(result[0]), set(result[1])
 
 
 def _verdict(conn: sqlite3.Connection, month: str) -> dict:
@@ -339,7 +384,7 @@ def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dic
         sub["count"] += row["n"]
     # Offsets can land in a month where the category had no debit (e.g. a
     # refund arriving a month later); surface those as negative-net rows.
-    for (m, category), amount in cat_offsets.items():
+    for (m, category), _amount in cat_offsets.items():
         if m == month and category not in categories:
             categories[category] = {
                 "gross": 0.0, "count": 0,
@@ -624,7 +669,11 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240) -> dict:
         if sampled[-1]["date"] != series[-1]["date"]:
             sampled.append(series[-1])
         series = sampled
-    return series
+
+    label = bank_name
+    if account_ref:
+        label = f"{label} ····{str(account_ref)[-4:]}"
+    return {"account": label, "series": series}
 
 
 def _unexplained(conn: sqlite3.Connection, month: str) -> dict:

@@ -36,7 +36,6 @@ from src.pipeline.annotate import (
 )
 from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.pipeline.llm import (
-    _build_fewshot_user_prompt,
     annotate_transaction_llm_with_examples,
 )
 

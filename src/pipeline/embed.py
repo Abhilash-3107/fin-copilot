@@ -150,7 +150,9 @@ def embed_annotated_transactions(
         except (httpx.HTTPError, httpx.TimeoutException):
             continue
 
-        for txn, vec in zip(batch, vectors):
+        # One vector per txn; strict= surfaces a count mismatch instead of
+        # silently dropping the tail.
+        for txn, vec in zip(batch, vectors, strict=True):
             upsert_embedding(conn, txn["id"], vec, model_version)
             embedded_count += 1
 

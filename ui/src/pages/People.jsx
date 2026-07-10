@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Trash2, Search, HelpCircle } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -28,7 +28,7 @@ export default function People() {
   const [editValue, setEditValue] = useState('')
   const editRef = useRef(null)
 
-  async function load(q = '') {
+  const load = useCallback(async (q = '') => {
     try {
       const data = await api.get(`/people${q ? `?q=${encodeURIComponent(q)}` : ''}`)
       setPeople(data)
@@ -37,9 +37,9 @@ export default function People() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [toast])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   async function create(e) {
     e.preventDefault()

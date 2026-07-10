@@ -10,6 +10,8 @@ const { mockApi, mockRunAnnotationJob } = vi.hoisted(() => ({
 vi.mock('../lib/api.js', () => ({
   api: mockApi,
   runAnnotationJob: mockRunAnnotationJob,
+  pollAnnotationJob: vi.fn(),
+  getActiveAnnotationJob: vi.fn().mockResolvedValue(null),
   ApiError: class ApiError extends Error {},
 }))
 // The stub must be referentially stable: the page keeps toast in its fetch
@@ -62,12 +64,15 @@ const SUMMARY = {
     unmatched: { sent: 0, received: 0, count: 0 },
   },
   merchants: [],
-  balance: [
-    { date: '2026-04-30', balance: 71000 },
-    { date: '2026-05-10', balance: 80000 },
-    { date: '2026-05-20', balance: 85000 },
-    { date: '2026-05-31', balance: 90770 },
-  ],
+  balance: {
+    account: 'Kotak',
+    series: [
+      { date: '2026-04-30', balance: 71000 },
+      { date: '2026-05-10', balance: 80000 },
+      { date: '2026-05-20', balance: 85000 },
+      { date: '2026-05-31', balance: 90770 },
+    ],
+  },
   unexplained: { count: 3, total: 620 },
   annotation: { total: 120, annotated: 117 },
 }

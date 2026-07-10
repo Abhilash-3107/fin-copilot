@@ -10,8 +10,6 @@ import ulid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
-
 from src.api.deps import get_db
 from src.config import settings
 from src.db.queries.annotations import (
@@ -21,23 +19,21 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
-from src.db.queries.embeddings import find_similar
-from src.pipeline.counterparty import normalize_identity
-from src.pipeline.embed import build_embed_text, get_embedding_single
 from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.categories import resolve_category_ids
 from src.db.queries.common import dump_string_list, parse_string_list
+from src.db.queries.embeddings import find_similar
 from src.db.queries.feedback_stats import record_feedback
 from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
 from src.pipeline.annotate import auto_annotate
-from src.pipeline.embed import embed_transaction
+from src.pipeline.counterparty import normalize_identity
+from src.pipeline.embed import build_embed_text, embed_transaction, get_embedding_single
+from src.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
+from src.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Pipeline sources whose outcomes feed calibration. Corrections to rag_direct and
-# rule annotations are tracked too: they tune thresholds and expose bad donors,
-# even though only llm/rag_prompted confidences are dampened today.
-_MODEL_SOURCES = ("llm", "rag_prompted", "rag_direct", "rule", "learned_rule")
 
 
 class AutoAnnotateRequest(BaseModel):
@@ -65,6 +61,23 @@ def _open_job_connection() -> sqlite3.Connection:
 # callback; the longest silent stretch is a single slow LLM call. A job quiet
 # for this long has no worker behind it.
 STALE_JOB_MINUTES = 10
+
+
+def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
+    """Fail in-flight jobs whose heartbeat has gone quiet past STALE_JOB_MINUTES.
+
+    A live job heartbeats updated_at ~once per second; a longer silence means the
+    worker died (or the task never got scheduled). Any observer — a status poll, a
+    new job request, a page mount — can flip these to failed so nothing polls a
+    zombie forever. Returns the number of jobs reaped. Caller commits.
+    """
+    cur = conn.execute(
+        "UPDATE annotation_jobs SET status='failed', "
+        "error='Went stale without a worker', updated_at=datetime('now') "
+        f"WHERE status IN ('queued','running') "
+        f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+    )
+    return cur.rowcount
 
 
 def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
@@ -142,36 +155,78 @@ def start_auto_annotate_job(
     the running job instead of starting a duplicate, which would burn duplicate LLM
     calls and could overwrite a manual label created mid-run.
     """
-    # An in-flight row with a quiet heartbeat is an orphan (worker died or the
-    # task never got scheduled), not a running job. Fail it here rather than
-    # re-attach, or it would block every future run until the next restart.
-    conn.execute(
-        "UPDATE annotation_jobs SET status='failed', "
-        "error='Went stale without a worker', updated_at=datetime('now') "
-        f"WHERE status IN ('queued','running') "
-        f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
-    )
-    conn.commit()
+    # Reap + guard + insert must be atomic against a concurrent request (a
+    # double-click or a second tab). SQLite serializes writes but not a
+    # read-then-write across two connections: without a write lock held up
+    # front, both requests could see no in-flight job and both insert +
+    # schedule, which is the duplicate-LLM-burn the single-job guard exists to
+    # prevent. BEGIN IMMEDIATE takes the write lock now, so the second request
+    # blocks (busy_timeout) until the first commits and then sees its row.
+    scheduled_job_id: str | None = None
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # An in-flight row with a quiet heartbeat is an orphan (worker died or
+        # the task never got scheduled), not a running job. Fail it here rather
+        # than re-attach, or it would block every future run until restart.
+        _reap_stale_jobs(conn)
 
-    inflight = conn.execute(
-        "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
-        "ORDER BY created_at LIMIT 1"
-    ).fetchone()
-    if inflight is not None:
-        return {"job_id": inflight["id"], "status": inflight["status"]}
+        inflight = conn.execute(
+            "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if inflight is not None:
+            conn.commit()
+            return {"job_id": inflight["id"], "status": inflight["status"]}
 
-    job_id = str(ulid.ULID())
-    conn.execute(
-        "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
-        (job_id, body.statement_id),
+        job_id = str(ulid.ULID())
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
+            (job_id, body.statement_id),
+        )
+        conn.commit()
+        scheduled_job_id = job_id
+    except Exception:
+        conn.rollback()
+        raise
+
+    # Schedule the worker only after the row is committed and the lock released,
+    # so the background task's own connection can't deadlock on our write lock.
+    background_tasks.add_task(
+        _run_annotation_job, scheduled_job_id, body.statement_id, body.transaction_ids
     )
-    conn.commit()
-    background_tasks.add_task(_run_annotation_job, job_id, body.statement_id, body.transaction_ids)
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": scheduled_job_id, "status": "queued"}
+
+
+@router.get("/jobs")
+def list_active_annotation_jobs(active: int = 0, conn: sqlite3.Connection = Depends(get_db)):
+    """List annotation jobs; with ?active=1 return only the in-flight one (if any).
+
+    Lets the UI re-attach its progress card after a page reload: the server keeps
+    working through a background job, but React job state is lost on refresh. Reaps
+    stale jobs first so a refresh never resurfaces a zombie's progress card.
+    """
+    if _reap_stale_jobs(conn):
+        conn.commit()
+    where = "WHERE status IN ('queued','running')" if active else ""
+    rows = conn.execute(
+        f"SELECT * FROM annotation_jobs {where} ORDER BY created_at DESC"
+    ).fetchall()
+    jobs = []
+    for row in rows:
+        job = dict(row)
+        if job.get("result"):
+            job["result"] = json.loads(job["result"])
+        jobs.append(job)
+    return jobs
 
 
 @router.get("/jobs/{job_id}")
 def get_annotation_job(job_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    # Apply the stale-heartbeat check so a client polling an orphaned job (worker
+    # died, server still up) sees it resolve to 'failed' instead of spinning
+    # forever on a zombie 'running' row.
+    if _reap_stale_jobs(conn):
+        conn.commit()
     row = conn.execute("SELECT * FROM annotation_jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -291,9 +346,6 @@ def confirm_annotation(
 
 class ApplySimilarRequest(BaseModel):
     transaction_ids: list[str]
-
-
-_MACHINE_SOURCES = {"llm", "rag_prompted", "rag_direct", "learned_rule"}
 
 
 @router.get("/{annotation_id}/similar")

@@ -34,9 +34,9 @@ from dataclasses import dataclass, field
 from src.config import settings
 
 # Sources whose labels are trustworthy enough to seed a counterparty prior at full
-# weight. Mirrors annotate._TRUSTED_SOURCES; machine guesses are downweighted so a
-# recurring RAG-mislabeled counterparty can't bootstrap its own bad prior.
-_TRUSTED_SOURCES = {"manual", "rule", "imported"}
+# weight; machine guesses are downweighted so a recurring RAG-mislabeled
+# counterparty can't bootstrap its own bad prior.
+from src.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
 
 
 def normalize_identity(raw_description: str | None) -> str | None:

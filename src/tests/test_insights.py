@@ -9,12 +9,12 @@ import ulid
 from fastapi.testclient import TestClient
 
 from src.db.connection import init_db
+from src.db.queries.annotations import insert_annotation
 from src.db.queries.insights import (
     _merge_merchant_keys,
     _prev_month,
     summarize_insights,
 )
-from src.db.queries.annotations import insert_annotation
 from src.models.annotation import Annotation
 
 
@@ -422,6 +422,49 @@ class TestBalanceAndShape:
         assert food["subcategories"] == [{"name": "Restaurants", "total": 300, "count": 2}]
 
 
+class TestOffsetsMemo:
+    """The offset memo is keyed on a ledger fingerprint. A file-backed DB (unlike
+    :memory:) is cacheable, so verify the memo both caches and invalidates."""
+
+    def _file_conn(self, tmp_path):
+        from src.db.connection import init_db
+
+        c = sqlite3.connect(str(tmp_path / "memo.db"))
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA foreign_keys=ON")
+        init_db(c)
+        c.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) "
+            "VALUES ('s1','test','1','2026-01')"
+        )
+        return c
+
+    def test_edit_invalidates_memo(self, tmp_path):
+        conn = self._file_conn(tmp_path)
+        try:
+            # A friend's payback labeled with the spend category nets it.
+            seed_txn(conn, "2026-01-10", 5000, "debit", category="Entertainment")
+            credit = seed_txn(conn, "2026-01-11", 1200, "credit", category="Entertainment")
+
+            first = summarize_insights(conn, "2026-01")
+            ent = next(c for c in first["categories"] if c["category"] == "Entertainment")
+            assert ent["net"] == 3800  # 5000 gross - 1200 offset
+
+            # Re-label the credit out of the spend category: the offset must vanish.
+            conn.execute(
+                "UPDATE annotations SET category='Income', subcategory='Salary', "
+                "annotated_at=datetime('now') WHERE transaction_id=?",
+                (credit,),
+            )
+            conn.commit()
+
+            second = summarize_insights(conn, "2026-01")
+            ent2 = next(c for c in second["categories"] if c["category"] == "Entertainment")
+            assert ent2["net"] == 5000  # offset gone; memo did not go stale
+        finally:
+            conn.close()
+
+
 class TestAnnotationCoverage:
     def test_fresh_month_reports_zero_annotated(self, conn):
         # A just-uploaded statement: transactions exist, the pipeline never ran.
@@ -442,8 +485,8 @@ class TestAnnotationCoverage:
 
 class TestRoute:
     def test_endpoint(self, conn):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         seed_txn(conn, "2026-01-31", 1000, "credit", category="Income", subcategory="Salary")
         app.dependency_overrides[api_get_db] = lambda: conn

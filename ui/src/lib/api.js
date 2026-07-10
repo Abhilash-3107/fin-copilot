@@ -46,16 +46,28 @@ export const api = {
   upload: (path, formData) => apiFetch(path, { method: 'POST', body: formData }),
 }
 
-// Start a background auto-annotate job and poll until it finishes.
+// Poll an existing job id until it finishes.
 // onProgress receives the job row ({status, processed, total, ...}) on each poll.
 // Resolves with the AutoAnnotateResult; rejects if the job fails.
-export async function runAnnotationJob(body, onProgress, pollMs = 1000) {
-  const { job_id } = await api.post('/annotations/auto-annotate/jobs', body)
+export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
   for (;;) {
     await new Promise(r => setTimeout(r, pollMs))
-    const job = await api.get(`/annotations/jobs/${job_id}`)
+    const job = await api.get(`/annotations/jobs/${jobId}`)
     onProgress?.(job)
     if (job.status === 'completed') return job.result
     if (job.status === 'failed') throw new ApiError(500, job.error || 'Annotation job failed')
   }
+}
+
+// Start a background auto-annotate job and poll until it finishes.
+export async function runAnnotationJob(body, onProgress, pollMs = 1000) {
+  const { job_id } = await api.post('/annotations/auto-annotate/jobs', body)
+  return pollAnnotationJob(job_id, onProgress, pollMs)
+}
+
+// Return the currently in-flight annotation job, or null. Used to re-attach the
+// progress card after a page reload (the server keeps working; React state was lost).
+export async function getActiveAnnotationJob() {
+  const jobs = await api.get('/annotations/jobs?active=1')
+  return jobs[0] ?? null
 }

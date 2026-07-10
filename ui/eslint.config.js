@@ -35,7 +35,11 @@ export default [
       // Deliberate best-effort swallows (`catch (_) {}`) are an intentional idiom here.
       'no-empty': ['error', { allowEmptyCatch: true }],
       'no-console': ['warn', { allow: ['warn', 'error'] }],
-      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // Off by choice: this codebase deliberately co-locates each context's hook
+      // with its provider and small helpers (formatRupees, SOURCE_PILL) with
+      // their component. That trips this HMR-only heuristic without any
+      // correctness cost, and the noise was drowning real exhaustive-deps signal.
+      'react-refresh/only-export-components': 'off',
     },
   },
   // Test files run under vitest globals and jsdom.

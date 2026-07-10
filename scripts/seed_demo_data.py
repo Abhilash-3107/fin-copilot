@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.db.connection import get_db
+from src.db.connection import get_migrated_db
 from src.pipeline.counterparty import normalize_identity
 
 DEFAULT_DB = str(Path(__file__).parent.parent / "data" / "demo.db")
@@ -504,7 +504,7 @@ def seed(conn, today: date) -> None:
     print("  DB_PATH=data/demo.db PORT=8080 uv run python -m src")
     print()
     print("Live auto-annotate during the demo (needs Ollama + embeddings, see docs/demo.md):")
-    print(f'  curl -X POST http://localhost:8080/api/annotations/auto-annotate \\')
+    print('  curl -X POST http://localhost:8080/api/annotations/auto-annotate \\')
     print(f'       -H "Content-Type: application/json" -d \'{{"statement_id": "{current_stmt}"}}\'')
 
 
@@ -514,7 +514,7 @@ def main() -> None:
     parser.add_argument("--wipe", action="store_true", help="delete existing demo rows instead of seeding")
     args = parser.parse_args()
 
-    conn = get_db(args.db)
+    conn = get_migrated_db(args.db)
     print(f"Target database: {args.db}")
     if args.wipe:
         wipe(conn)

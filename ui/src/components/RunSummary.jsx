@@ -160,7 +160,7 @@ export default function RunSummary() {
         if (e.status !== 404) toast(`Couldn't load run summary — ${e.message}`, 'error')
       })
       .finally(() => setLoading(false))
-  }, [])
+  }, [toast])
 
   if (loading) {
     return <p className="px-5 py-4 text-sm text-[#64748b]">Loading run summary…</p>

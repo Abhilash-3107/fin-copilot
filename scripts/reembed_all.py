@@ -55,7 +55,7 @@ def main() -> None:
         # sqlite-vec virtual tables don't honor INSERT OR REPLACE, so clear the
         # old vector rows for this batch before re-inserting.
         delete_embeddings(conn, [t["id"] for t in batch])
-        for t, vec in zip(batch, vectors):
+        for t, vec in zip(batch, vectors, strict=True):
             upsert_embedding(conn, t["id"], vec, model)
             done += 1
         conn.commit()

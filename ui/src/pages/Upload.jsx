@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
@@ -41,16 +41,16 @@ export default function Upload() {
   const [editingName, setEditingName] = useState('')
   const fileRef = useRef(null)
 
-  async function loadStatements() {
+  const loadStatements = useCallback(async () => {
     try {
       const data = await api.get('/statements')
       setStatements(data)
     } catch (e) {
       toast(`Couldn't load your statements — ${e.message}`, 'error')
     }
-  }
+  }, [toast])
 
-  useEffect(() => { loadStatements() }, [])
+  useEffect(() => { loadStatements() }, [loadStatements])
 
   function onDrop(e) {
     e.preventDefault()
