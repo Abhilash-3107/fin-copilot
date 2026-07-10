@@ -4,7 +4,7 @@ import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import TagInput from '../components/TagInput.jsx'
-import { SOURCE_PILL } from '../components/TransactionTable.jsx'
+import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import ReasoningPanel from '../components/ReasoningPanel.jsx'
@@ -153,7 +153,6 @@ export default function ReviewQueue() {
   const [stats, setStats] = useState({ confirmed: 0, edited: 0, skipped: 0 })
   const [history, setHistory] = useState([]) // stack of {idx, stats} snapshots
   const [devMode, setDevMode] = useState(false)
-  const [reviewBar, setReviewBar] = useState(0.85)  // confidence_threshold from /config
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
   const idxRef = useRef(0)
@@ -178,7 +177,6 @@ export default function ReviewQueue() {
     // Fetch fresh each mount so a toggle on the Settings page takes effect.
     api.get('/config').then(cfg => {
       setDevMode(!!cfg.dev_mode)
-      if (typeof cfg.confidence_threshold === 'number') setReviewBar(cfg.confidence_threshold)
     }).catch(() => {})
   }, [])
 
@@ -416,21 +414,12 @@ export default function ReviewQueue() {
               <span className="text-sm text-[#94a3b8]">{item.merchant}</span>
             )}
             <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-              {src === 'rag_direct' || src === 'rag_prompted' ? 'from history'
-                : src === 'llm' ? 'AI guess'
-                : src === 'learned_rule' ? 'learned merchant'
-                : src === 'rule' ? 'rule match'
-                : src === 'manual' ? 'you set this'
-                : src}
+              {/* Review-card voice: two contextual overrides, shared labels otherwise */}
+              {src === 'manual' ? 'you set this' : src === 'rule' ? 'rule match' : sourceLabel(src)}
             </span>
           </div>
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
-            {item.confidence != null && item.confidence < reviewBar && (
-              <span className="text-[10px] text-amber-400/90">
-                below {Math.round(reviewBar * 100)}% review bar — that's why it's here
-              </span>
-            )}
           </div>
           <Tooltip content="How sure the AI is about this guess. Below 60% means it's mostly guessing." position="bottom">
             <ConfidenceBar confidence={item.confidence} />

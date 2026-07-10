@@ -9,9 +9,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from src.api.deps import get_db
 from src.db.queries.app_settings import get_dev_mode
 from src.db.queries.common import parse_string_list
-from src.db.queries.transactions import list_transactions
+from src.db.queries.transactions import list_transaction_facets, list_transactions
 
 router = APIRouter()
+
+
+def _split_csv(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    parts = [p for p in value.split(",") if p]
+    return parts or None
 
 
 @router.get("")
@@ -19,6 +26,10 @@ def get_transactions(
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
+    q: str | None = Query(None, description="substring match on description, merchant, UPI note"),
+    category: str | None = Query(None, description="comma-separated annotation categories"),
+    source: str | None = Query(None, description="comma-separated annotation sources"),
+    merchant: str | None = Query(None, description="exact annotated merchant"),
     include: str | None = Query(None, description="'annotation' joins each row's annotation"),
     after: str | None = Query(None, description="cursor: id of the last row of the previous page"),
     limit: int | None = Query(None, ge=1, le=1000),
@@ -30,6 +41,10 @@ def get_transactions(
         month=month,
         unannotated=unannotated,
         include_annotation=include == "annotation",
+        q=q,
+        categories=_split_csv(category),
+        sources=_split_csv(source),
+        merchant=merchant,
         after=after,
         limit=limit,
     )
@@ -37,6 +52,16 @@ def get_transactions(
         for row in rows:
             row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
     return rows
+
+
+@router.get("/facets")
+def get_transaction_facets(
+    statement_id: str | None = None,
+    month: str | None = None,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Distinct annotation categories/sources in scope, for filter dropdowns."""
+    return list_transaction_facets(conn, statement_id=statement_id, month=month)
 
 
 @router.get("/{transaction_id}")

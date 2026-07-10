@@ -11,16 +11,9 @@ import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+import { sourceFilterOptions } from '../lib/sources.js'
 
 const PAGE_SIZE = 500
-
-function sourceLabel(s) {
-  if (s === 'rag_direct' || s === 'rag_prompted') return 'From history'
-  if (s === 'llm') return 'AI guess'
-  if (s === 'rule') return 'Rule match'
-  if (s === 'manual') return 'Manual'
-  return s
-}
 
 function MultiFilter({ label, options, selected, onChange }) {
   const [open, setOpen] = useState(false)
@@ -55,25 +48,33 @@ function MultiFilter({ label, options, selected, onChange }) {
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 z-30 bg-[#13151f] border border-[#2d3148] rounded-lg shadow-lg py-1 min-w-[160px]">
-          {options.map(opt => (
-            <label
-              key={opt.value}
-              className="flex items-center gap-2.5 px-3 py-1.5 text-sm cursor-pointer hover:bg-[#1e2235] text-[#cbd5e1]"
-            >
-              <input
-                type="checkbox"
-                checked={selected.has(opt.value)}
-                onChange={e => {
-                  const next = new Set(selected)
-                  if (e.target.checked) next.add(opt.value)
-                  else next.delete(opt.value)
-                  onChange(next)
-                }}
-                className="accent-[#6366f1]"
-              />
-              {opt.label}
-            </label>
-          ))}
+          {options.map(opt => {
+            // An option may stand for several raw values that share one label
+            // (e.g. rag_direct + rag_prompted → "from history"); they toggle
+            // as a unit.
+            const values = opt.values ?? [opt.value]
+            return (
+              <label
+                key={opt.label}
+                className="flex items-center gap-2.5 px-3 py-1.5 text-sm cursor-pointer hover:bg-[#1e2235] text-[#cbd5e1]"
+              >
+                <input
+                  type="checkbox"
+                  checked={values.every(v => selected.has(v))}
+                  onChange={e => {
+                    const next = new Set(selected)
+                    for (const v of values) {
+                      if (e.target.checked) next.add(v)
+                      else next.delete(v)
+                    }
+                    onChange(next)
+                  }}
+                  className="accent-[#6366f1]"
+                />
+                {opt.label}
+              </label>
+            )
+          })}
         </div>
       )}
     </div>
@@ -102,7 +103,7 @@ export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement } = useStatement()
   const { month: periodMonth, setMonth } = usePeriod()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const selectedStmt = activeStatement?.id ?? ''
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
@@ -110,6 +111,9 @@ export default function Transactions() {
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
   const [search, setSearch] = useState('')
+  // The query the server actually sees; trails `search` by the debounce delay.
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [facets, setFacets] = useState({ categories: [], sources: [] })
   const [transactions, setTransactions] = useState([])
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
@@ -121,16 +125,33 @@ export default function Transactions() {
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const loadRef = useRef(0)
 
+  // Stable serializations of the Set filters, for effect deps and API params.
+  const sourceCsv = [...sourceFilter].sort().join(',')
+  const categoryCsv = [...categoryFilter].sort().join(',')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  const buildFilterParams = useCallback(() => {
+    const params = new URLSearchParams()
+    params.set('include', 'annotation')
+    params.set('limit', PAGE_SIZE)
+    if (selectedStmt) params.set('statement_id', selectedStmt)
+    if (month) params.set('month', month)
+    if (debouncedSearch) params.set('q', debouncedSearch)
+    if (categoryCsv) params.set('category', categoryCsv)
+    if (sourceCsv) params.set('source', sourceCsv)
+    if (merchantFilter) params.set('merchant', merchantFilter)
+    return params
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter])
+
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
     setLoading(true)
     try {
-      const params = new URLSearchParams()
-      params.set('include', 'annotation')
-      params.set('limit', PAGE_SIZE)
-      if (selectedStmt) params.set('statement_id', selectedStmt)
-      if (month) params.set('month', month)
-      const txns = await api.get(`/transactions?${params}`)
+      const txns = await api.get(`/transactions?${buildFilterParams()}`)
       if (id !== loadRef.current) return
       setTransactions(txns)
       setAnnotationMap(buildAnnotationMap(txns))
@@ -140,19 +161,15 @@ export default function Transactions() {
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
-  }, [selectedStmt, month, toast])
+  }, [buildFilterParams, toast])
 
   async function loadMore() {
     const last = transactions.at(-1)
     if (!last) return
     setLoadingMore(true)
     try {
-      const params = new URLSearchParams()
-      params.set('include', 'annotation')
-      params.set('limit', PAGE_SIZE)
+      const params = buildFilterParams()
       params.set('after', last.id)
-      if (selectedStmt) params.set('statement_id', selectedStmt)
-      if (month) params.set('month', month)
       const more = await api.get(`/transactions?${params}`)
       setTransactions(prev => [...prev, ...more])
       setAnnotationMap(prev => ({ ...prev, ...buildAnnotationMap(more) }))
@@ -166,10 +183,30 @@ export default function Transactions() {
 
   useEffect(() => { loadTransactions() }, [loadTransactions])
 
+  // Filter dropdown options come from a scope-wide facets query, not from the
+  // loaded page, so options that first appear beyond the current page (or that
+  // an active filter would hide) are still offered.
+  const loadFacets = useCallback(async () => {
+    const params = new URLSearchParams()
+    if (selectedStmt) params.set('statement_id', selectedStmt)
+    if (month) params.set('month', month)
+    try {
+      setFacets(await api.get(`/transactions/facets?${params}`))
+    } catch (_) {
+      // Non-fatal: dropdowns just keep their previous options.
+    }
+  }, [selectedStmt, month])
+
+  useEffect(() => { loadFacets() }, [loadFacets])
+
   // Seed filters from the /transactions deep-link convention (category,
   // merchant, source, q, month). Runs on mount and whenever a new deep link
-  // lands here; a month param is pushed into the shared period.
+  // lands here; a month param is pushed into the shared period. Our own
+  // writeback below also changes searchParams — the ref lets us tell the two
+  // apart so a writeback never re-seeds (or clears the statement scope).
+  const lastWrittenParams = useRef(null)
   useEffect(() => {
+    if (searchParams.toString() === lastWrittenParams.current) return
     const category = searchParams.get('category')
     const source = searchParams.get('source')
     const merchant = searchParams.get('merchant')
@@ -179,6 +216,7 @@ export default function Transactions() {
     setSourceFilter(source ? new Set(source.split(',')) : new Set())
     setMerchantFilter(merchant ?? '')
     setSearch(q ?? '')
+    setDebouncedSearch(q ?? '') // skip the debounce so the load isn't briefly unfiltered
     if (m && m !== periodMonth) setMonth(m)
     // A deep link means "this slice of everything": a lingering statement
     // selection would AND with the link's month and silently empty the list.
@@ -187,6 +225,32 @@ export default function Transactions() {
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
+
+  // Reflect filter edits back into the URL so any filtered view survives a
+  // refresh and can be shared. `replace` keeps keystrokes out of history; the
+  // shared period deliberately isn't written (it lives in PeriodContext and
+  // follows the user across pages), so an incoming month param is absorbed
+  // into the period and then dropped from the URL.
+  const writebackArmed = useRef(false)
+  useEffect(() => {
+    // On mount this still sees pre-seed (empty) state — the seed effect's
+    // setState hasn't rendered yet — so writing here would erase a deep link.
+    // Skip once; the seeded state re-runs this effect with real values.
+    if (!writebackArmed.current) {
+      writebackArmed.current = true
+      return
+    }
+    const next = new URLSearchParams()
+    if (categoryCsv) next.set('category', categoryCsv)
+    if (sourceCsv) next.set('source', sourceCsv)
+    if (merchantFilter) next.set('merchant', merchantFilter)
+    if (search) next.set('q', search)
+    const s = next.toString()
+    if (s === searchParams.toString()) return
+    lastWrittenParams.current = s
+    setSearchParams(next, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryCsv, sourceCsv, merchantFilter, search])
 
   // The statement scope may already be set (in-session navigation) or arrive
   // later (hard load: StatementContext defaults to the latest statement once
@@ -258,11 +322,12 @@ export default function Transactions() {
     try {
       const result = await startAnnotation({ statement_id: selectedStmt })
       toast(
-        `Done — ${result.rule_matched ?? 0} rule, ${result.rag_direct_annotated ?? 0} rag, ${result.llm_annotated ?? 0} llm`,
+        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
         'success',
         4000
       )
       loadTransactions()
+      loadFacets()
     } catch (e) {
       toast(`Auto-annotate failed: ${e.message}`, 'error')
     } finally {
@@ -271,24 +336,34 @@ export default function Transactions() {
   }
 
 
-  // Derive filter options from loaded data
-  const sourceOptions = [...new Set(
-    Object.values(annotationMap).map(a => a.source).filter(Boolean)
-  )].map(s => ({ value: s, label: sourceLabel(s) }))
+  // Patch a saved annotation into the loaded rows in place. A full reload
+  // would reset to page one and lose the scroll position, which punishes the
+  // "walk down the list fixing categories" workflow. The edited row stays
+  // visible even if it no longer matches an active filter — it drops out on
+  // the next natural reload, which reads as less jarring than vanishing rows.
+  function applySavedAnnotation(txnId, saved) {
+    const ann = {
+      id: saved.id,
+      category: saved.category,
+      subcategory: saved.subcategory,
+      merchant: saved.merchant,
+      tags: saved.tags,
+      confidence: saved.confidence,
+      source: saved.source,
+    }
+    setAnnotationMap(prev => ({ ...prev, [txnId]: ann }))
+    setTransactions(prev => prev.map(t =>
+      t.id === txnId ? { ...t, ...ann, id: t.id, annotation_id: saved.id } : t
+    ))
+    loadFacets() // a manual save can introduce a category new to this scope
+  }
 
-  const categoryOptions = [...new Set(
-    Object.values(annotationMap).map(a => a.category).filter(Boolean)
-  )].sort().map(c => ({ value: c, label: c }))
+  const sourceOptions = sourceFilterOptions(facets.sources)
+  const categoryOptions = facets.categories.map(c => ({ value: c, label: c }))
 
-  // Client-side filtering
-  const displayed = transactions.filter(txn => {
-    const ann = annotationMap[txn.id]
-    if (sourceFilter.size > 0 && !sourceFilter.has(ann?.source)) return false
-    if (categoryFilter.size > 0 && !categoryFilter.has(ann?.category)) return false
-    if (merchantFilter && ann?.merchant !== merchantFilter) return false
-    if (search && !txn.raw_description.toLowerCase().includes(search.toLowerCase())) return false
-    return true
-  })
+  const filtersActive = Boolean(
+    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter
+  )
 
   return (
     <div className="flex flex-col h-full">
@@ -347,7 +422,7 @@ export default function Transactions() {
         )}
 
         <span className="text-xs text-[#64748b] ml-auto">
-          {loading ? 'Loading…' : `${displayed.length} of ${transactions.length}`}
+          {loading ? 'Loading…' : `${transactions.length}${hasMore ? '+' : ''} transaction${transactions.length === 1 ? '' : 's'}`}
         </span>
 
         <button
@@ -373,15 +448,15 @@ export default function Transactions() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
-        {!loading && displayed.length === 0 ? (
+        {!loading && transactions.length === 0 ? (
           <EmptyState
             title="No transactions"
-            description={transactions.length === 0 ? 'Upload a statement to get started.' : 'No transactions match the current filters.'}
+            description={filtersActive ? 'No transactions match the current filters.' : 'Upload a statement to get started.'}
           />
         ) : (
           <>
             <TransactionTable
-              transactions={displayed}
+              transactions={transactions}
               annotationMap={annotationMap}
               activeId={activeTxn?.id}
               onSelect={openAnnotationPanel}
@@ -407,7 +482,7 @@ export default function Transactions() {
           txn={activeTxn}
           annotation={activeAnnotation}
           onClose={() => { setActiveTxn(null); setActiveAnnotation(null) }}
-          onSaved={loadTransactions}
+          onSaved={applySavedAnnotation}
         />
       )}
     </div>

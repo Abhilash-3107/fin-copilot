@@ -5,7 +5,7 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
 import TagInput from './TagInput.jsx'
-import { SOURCE_PILL } from './TransactionTable.jsx'
+import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
 
@@ -207,10 +207,11 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         merchant:    form.merchant.trim() || null,
         tags:        form.tags,
       }
+      let saved
       if (annotation?.id) {
-        await api.patch(`/annotations/${annotation.id}`, payload)
+        saved = await api.patch(`/annotations/${annotation.id}`, payload)
       } else {
-        await api.post('/annotations', {
+        saved = await api.post('/annotations', {
           ...payload,
           transaction_id: txn.id,
           confidence: 1.0,
@@ -218,7 +219,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         })
       }
       toast('Saved', 'success')
-      onSaved?.()
+      onSaved?.(txn.id, saved)
       onClose?.()
     } catch (e) {
       toast(`Save failed: ${e.message}`, 'error')
@@ -267,11 +268,15 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
           {annotation && (
             <div className="mt-3 flex items-center gap-2">
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-                {src === 'rag_direct' || src === 'rag_prompted' ? 'from history' : src}
+                {sourceLabel(src)}
               </span>
-              <div className="flex-1">
-                <ConfidenceBar confidence={annotation.confidence} />
-              </div>
+              {/* Manual annotations are human truth; a leftover model
+                  confidence next to "manual" reads as a contradiction. */}
+              {src !== 'manual' && (
+                <div className="flex-1">
+                  <ConfidenceBar confidence={annotation.confidence} />
+                </div>
+              )}
             </div>
           )}
         </div>
