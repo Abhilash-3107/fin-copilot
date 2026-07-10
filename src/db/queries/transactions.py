@@ -50,12 +50,21 @@ def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
     )
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user input matches literally (ESCAPE '\\')."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def list_transactions(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
     include_annotation: bool = False,
+    q: str | None = None,
+    categories: list[str] | None = None,
+    sources: list[str] | None = None,
+    merchant: str | None = None,
     after: str | None = None,
     limit: int | None = None,
 ) -> list[TxnRow]:
@@ -63,6 +72,9 @@ def list_transactions(
 
     include_annotation joins each row's annotation (same shape as the per-id
     endpoint: annotation_id, category, ...) so list pages need one round-trip.
+    q is a case-insensitive substring match over the raw description, the
+    annotated merchant, and the UPI note. categories/sources/merchant filter
+    on annotation fields, so they only ever match annotated rows.
     after/limit give keyset pagination: pass the last row's id to get the next
     page in (txn_date, id) order.
     """
@@ -78,10 +90,38 @@ def list_transactions(
     params: list = []
     conditions: list[str] = []
 
+    needs_annotation_join = unannotated or q or categories or sources or merchant
+    if needs_annotation_join and not include_annotation:
+        query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
+
     if unannotated:
-        if not include_annotation:
-            query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
         conditions.append("a.id IS NULL")
+
+    if q:
+        pattern = f"%{_escape_like(q.lower())}%"
+        conditions.append(
+            """(
+                LOWER(t.raw_description) LIKE ? ESCAPE '\\'
+                OR LOWER(a.merchant) LIKE ? ESCAPE '\\'
+                OR (json_valid(t.upi_meta)
+                    AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')
+            )"""
+        )
+        params += [pattern, pattern, pattern]
+
+    if categories:
+        placeholders = ",".join("?" * len(categories))
+        conditions.append(f"a.category IN ({placeholders})")
+        params += categories
+
+    if sources:
+        placeholders = ",".join("?" * len(sources))
+        conditions.append(f"a.source IN ({placeholders})")
+        params += sources
+
+    if merchant:
+        conditions.append("a.merchant = ?")
+        params.append(merchant)
 
     if statement_id:
         conditions.append("t.statement_id = ?")
@@ -110,3 +150,37 @@ def list_transactions(
 
     rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_transaction_facets(
+    conn: sqlite3.Connection,
+    statement_id: str | None = None,
+    month: str | None = None,
+) -> dict[str, list[str]]:
+    """Distinct annotation categories and sources within the statement/month
+    scope, for populating filter options. Deliberately ignores the annotation
+    filters themselves so an active filter never hides its sibling options."""
+    conditions: list[str] = []
+    params: list = []
+    if statement_id:
+        conditions.append("t.statement_id = ?")
+        params.append(statement_id)
+    if month:
+        conditions.append("strftime('%Y-%m', t.txn_date) = ?")
+        params.append(month)
+    where = (" AND " + " AND ".join(conditions)) if conditions else ""
+
+    def distinct(column: str) -> list[str]:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT a.{column} AS v
+            FROM annotations a
+            JOIN transactions t ON t.id = a.transaction_id
+            WHERE a.{column} IS NOT NULL{where}
+            ORDER BY v
+            """,
+            params,
+        ).fetchall()
+        return [row["v"] for row in rows]
+
+    return {"categories": distinct("category"), "sources": distinct("source")}

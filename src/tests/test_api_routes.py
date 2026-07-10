@@ -286,6 +286,97 @@ class TestTransactionsList:
         assert len(rows) == 2
 
 
+class TestTransactionsFilters:
+    def _seed(self, conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        rows = [
+            ("t_food", "UPI-SWIGGY-ORDER", '{"note": "friday biryani"}'),
+            ("t_shop", "UPI-AMAZN-PAY", None),
+            ("t_bare", "NEFT SALARY CREDIT", None),
+        ]
+        for txn_id, desc, upi_meta in rows:
+            conn.execute(
+                """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, upi_meta)
+                   VALUES (?, 's1', '2026-01-15', 100.0, 'debit', ?, ?)""",
+                (txn_id, desc, upi_meta),
+            )
+        insert_annotation(conn, Annotation(
+            id="a_food", transaction_id="t_food", category="Food & Dining",
+            merchant="Swiggy", confidence=0.9, source="rule",
+        ))
+        insert_annotation(conn, Annotation(
+            id="a_shop", transaction_id="t_shop", category="Shopping",
+            merchant="Amazon", confidence=0.7, source="llm",
+        ))
+        conn.commit()
+
+    def _ids(self, client, query):
+        return {r["id"] for r in client.get(f"/api/transactions?{query}").json()}
+
+    def test_q_matches_description(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=swiggy") == {"t_food"}
+
+    def test_q_matches_annotated_merchant(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=amazon") == {"t_shop"}
+
+    def test_q_matches_upi_note(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=biryani") == {"t_food"}
+
+    def test_q_like_wildcards_are_literal(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=%25") == set()  # '%' matches nothing literally
+
+    def test_category_filter_multi(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        got = self._ids(client, "category=Food%20%26%20Dining,Shopping")
+        assert got == {"t_food", "t_shop"}
+        assert self._ids(client, "category=Shopping") == {"t_shop"}
+
+    def test_source_filter(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "source=llm") == {"t_shop"}
+
+    def test_merchant_filter_exact(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "merchant=Swiggy") == {"t_food"}
+
+    def test_filters_compose_with_pagination(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        page1 = client.get("/api/transactions?category=Food%20%26%20Dining,Shopping&limit=1").json()
+        assert len(page1) == 1
+        page2 = client.get(
+            f"/api/transactions?category=Food%20%26%20Dining,Shopping&limit=1&after={page1[0]['id']}"
+        ).json()
+        assert len(page2) == 1
+        assert {page1[0]["id"], page2[0]["id"]} == {"t_food", "t_shop"}
+
+    def test_facets_lists_scope_categories_and_sources(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        facets = client.get("/api/transactions/facets").json()
+        assert facets["categories"] == ["Food & Dining", "Shopping"]
+        assert facets["sources"] == ["llm", "rule"]
+
+    def test_facets_respect_month_scope(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        facets = client.get("/api/transactions/facets?month=2025-12").json()
+        assert facets == {"categories": [], "sources": []}
+
+
 class TestStatementDeleteCascade:
     def _seed_statement_with_data(self, conn, stmt_id="s_del"):
         conn.execute(

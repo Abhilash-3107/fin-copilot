@@ -1,24 +1,6 @@
 import dayjs from 'dayjs'
 import Amount from './Amount.jsx'
-
-export const SOURCE_PILL = {
-  manual:       'bg-[#14532d] text-[#86efac]',
-  rule:         'bg-[#1e3a5f] text-[#7dd3fc]',
-  learned_rule: 'bg-[#1e3a5f] text-[#7dd3fc]',
-  rag_direct:   'bg-[#164e63] text-[#67e8f9]',
-  rag_prompted: 'bg-[#164e63] text-[#67e8f9]',
-  llm:          'bg-[#3b1f5e] text-[#c4b5fd]',
-  model:        'bg-[#3b1f5e] text-[#c4b5fd]',
-  imported:     'bg-[#292524] text-[#d6d3d1]',
-  pending:      'bg-[#292524] text-[#a8a29e]',
-}
-
-function sourceLabel(src) {
-  if (src === 'rag_direct' || src === 'rag_prompted') return 'from history'
-  if (src === 'learned_rule') return 'learned merchant'
-  if (src === 'llm' || src === 'model') return 'AI'  // match the review card's "AI guess"
-  return src ?? 'pending'
-}
+import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 export default function TransactionTable({ transactions, annotationMap = {}, activeId, onSelect }) {
   if (!transactions.length) return null
@@ -30,7 +12,9 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
           {['Date', 'Description', 'Amount', 'Category', 'Source', 'Confidence'].map(h => (
             <th
               key={h}
-              className="sticky top-0 bg-[#13151f] px-3 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap"
+              className={`sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap ${
+                h === 'Amount' ? 'text-right' : 'text-left'
+              }`}
             >
               {h}
             </th>
@@ -46,7 +30,14 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
           let upiNote = null
           try {
             const meta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-            if (meta?.note && meta.note.length < 60) upiNote = meta.note
+            // Only show a note that adds information — bank descriptions often
+            // already embed it ("UPI/Blinkit/…/Blinkit Payment"), and repeating
+            // it as a second line is pure noise.
+            if (
+              meta?.note &&
+              meta.note.length < 60 &&
+              !txn.raw_description.toLowerCase().includes(meta.note.toLowerCase())
+            ) upiNote = meta.note
           } catch (_) {}
 
           return (
@@ -55,22 +46,22 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
               onClick={() => onSelect?.(txn)}
               className={`border-b border-[#1a1d27] cursor-pointer transition-colors duration-100 ${
                 isActive
-                  ? 'bg-[#1e2440] border-l-2 border-l-[#6366f1]'
+                  ? 'bg-[#1e2440] shadow-[inset_2px_0_0_#6366f1]' // inset accent, not a border: no 2px reflow
                   : 'hover:bg-[#1a1d27]'
               }`}
             >
               <td className="px-3 py-2.5 whitespace-nowrap text-[#94a3b8]">
                 {dayjs(txn.txn_date).format('DD MMM YY')}
               </td>
-              <td className="px-3 py-2.5 text-[#cbd5e1] max-w-xs">
-                <div className="truncate max-w-[320px]" title={txn.raw_description}>
+              <td className="px-3 py-2.5 text-[#cbd5e1] max-w-[480px]">
+                <div className="truncate max-w-[460px]" title={txn.raw_description}>
                   {txn.raw_description}
                 </div>
                 {upiNote && (
-                  <div className="text-xs text-[#818cf8] truncate max-w-[320px]">{upiNote}</div>
+                  <div className="text-xs text-[#818cf8] truncate max-w-[460px]">{upiNote}</div>
                 )}
               </td>
-              <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums font-medium ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
+              <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
                 <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
               <td className="px-3 py-2.5">
@@ -90,16 +81,22 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
                 </span>
               </td>
               <td className="px-3 py-2.5 whitespace-nowrap">
-                {ann?.confidence != null ? (
-                  <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium tabular-nums ${
-                    ann.confidence >= 0.8 ? 'bg-[#14532d] text-[#86efac]'
-                    : ann.confidence >= 0.5 ? 'bg-[#78350f] text-[#fcd34d]'
-                    : 'bg-[#450a0a] text-[#fca5a5]'
-                  }`}>
+                {/* Manual annotations are human truth: a stale model confidence
+                    next to a "manual" pill reads as a contradiction, so show
+                    nothing. High confidence is the norm — plain muted text —
+                    and color is reserved for the rows that need attention. */}
+                {ann?.confidence == null || src === 'manual' ? (
+                  <span className="text-[#475569]">—</span>
+                ) : ann.confidence >= 0.8 ? (
+                  <span className="text-xs tabular-nums text-[#64748b]">
                     {Math.round(ann.confidence * 100)}%
                   </span>
                 ) : (
-                  <span className="text-[#475569]">—</span>
+                  <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium tabular-nums ${
+                    ann.confidence >= 0.5 ? 'bg-[#78350f] text-[#fcd34d]' : 'bg-[#450a0a] text-[#fca5a5]'
+                  }`}>
+                    {Math.round(ann.confidence * 100)}%
+                  </span>
                 )}
               </td>
             </tr>
