@@ -440,7 +440,9 @@ def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
 
     Credits already consumed as spend offsets (a friend paying back their
     share of a linked/grouped expense) are settlements of that expense, not
-    money the person gave the user, so they are excluded here.
+    money the person gave the user, so they are excluded here. ATM
+    withdrawals live under Transfers in the taxonomy but are cash to self,
+    not money between people, so they are excluded too.
     """
     people = conn.execute("SELECT id, name, upi, relationship FROM people").fetchall()
     rows = conn.execute(
@@ -451,6 +453,7 @@ def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
         FROM transactions t
         JOIN annotations a ON a.transaction_id = t.id
         WHERE a.category = 'Transfers'
+          AND COALESCE(a.subcategory, '') != 'ATM Withdrawal'
         """
     ).fetchall()
     rows = [r for r in rows if r["id"] not in settled_ids]
