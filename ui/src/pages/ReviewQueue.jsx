@@ -150,8 +150,13 @@ export default function ReviewQueue() {
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [showTags, setShowTags] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [stats, setStats] = useState({ confirmed: 0, edited: 0, skipped: 0 })
-  const [history, setHistory] = useState([]) // stack of {idx, stats} snapshots
+  // Per-card outcome keyed by annotation_id ('confirmed' | 'edited' | 'skipped').
+  // Stats are derived from this, so going back to a card and changing your mind
+  // re-keys the same entry instead of double-counting — the server already
+  // no-ops a repeat confirm (source flips to 'manual', out of _MODEL_SOURCES),
+  // and the local counters must match that.
+  const [outcomes, setOutcomes] = useState({})
+  const [history, setHistory] = useState([]) // stack of visited idx values
   const [devMode, setDevMode] = useState(false)
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
@@ -178,7 +183,7 @@ export default function ReviewQueue() {
     api.get('/config').then(cfg => {
       setDevMode(!!cfg.dev_mode)
     }).catch(() => {})
-  }, [])
+  }, [toast])
 
   const current = queue[idx]
 
@@ -194,6 +199,10 @@ export default function ReviewQueue() {
         : (current.tags ? current.tags.split(',').filter(Boolean) : []),
     })
     setShowTags(false)
+    // Re-sync the form only when the card identity changes, not on every render
+    // where `current` is a fresh object from a new queue array — otherwise an
+    // in-progress edit would be clobbered mid-keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, current?.annotation_id])
 
   // Single source of truth for "has the user changed this card?"
@@ -211,8 +220,20 @@ export default function ReviewQueue() {
     )
   }, [current, form])
 
+  // Derived stats: one tally per resolved card, so a card revisited via "go
+  // back" and re-decided moves between buckets instead of being counted twice.
+  const stats = useMemo(() => {
+    const s = { confirmed: 0, edited: 0, skipped: 0 }
+    for (const outcome of Object.values(outcomes)) s[outcome] += 1
+    return s
+  }, [outcomes])
+
+  function record(annotationId, outcome) {
+    setOutcomes(o => ({ ...o, [annotationId]: outcome }))
+  }
+
   function pushHistory() {
-    setHistory(h => [...h, { idx, stats }])
+    setHistory(h => [...h, idx])
   }
 
   function advance() {
@@ -221,15 +242,14 @@ export default function ReviewQueue() {
 
   function goBack() {
     if (history.length === 0) return
-    const prev = history[history.length - 1]
+    const prevIdx = history[history.length - 1]
     setHistory(h => h.slice(0, -1))
-    setIdx(prev.idx)
-    setStats(prev.stats)
+    setIdx(prevIdx)
   }
 
   function skip() {
     pushHistory()
-    setStats(s => ({ ...s, skipped: s.skipped + 1 }))
+    record(current.annotation_id, 'skipped')
     advance()
   }
 
@@ -239,7 +259,7 @@ export default function ReviewQueue() {
     try {
       await api.post(`/annotations/${current.annotation_id}/confirm`, {})
       pushHistory()
-      setStats(s => ({ ...s, confirmed: s.confirmed + 1 }))
+      record(current.annotation_id, 'confirmed')
       toast('Got it, thanks!', 'success')
       advance()
     } catch (e) {
@@ -261,7 +281,7 @@ export default function ReviewQueue() {
         tags: payload.tags,
       })
       pushHistory()
-      setStats(s => ({ ...s, edited: s.edited + 1 }))
+      record(current.annotation_id, 'edited')
       toast("Noted — I'll remember that", 'success')
       advance()
       // One correction can fix many: offer the same label for similar
@@ -288,22 +308,26 @@ export default function ReviewQueue() {
     setForm(f => ({ ...f, category, subcategory, tags: [] }))
   }
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts. The handler closes over queue/form/idx state, so instead
+  // of a hand-maintained dep list (which has silently gone stale in this file
+  // before) keep the latest action in a ref and bind the listener exactly once.
+  const keyActionRef = useRef(null)
+  keyActionRef.current = e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    if (propagate) return // dialog owns the keyboard
+    if (e.key === 'b') goBack()
+    // Both c and Enter save when the card is dirty; confirming a stale
+    // machine label would discard the edit and poison calibration.
+    else if (e.key === 'c') isDirty ? saveEdit() : confirm()
+    else if (e.key === 's') skip()
+    else if (e.key === 'Enter') isDirty ? saveEdit() : confirm()
+  }
   useEffect(() => {
-    function handler(e) {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      if (propagate) return // dialog owns the keyboard
-      if (e.key === 'b') goBack()
-      // Both c and Enter save when the card is dirty; confirming a stale
-      // machine label would discard the edit and poison calibration.
-      else if (e.key === 'c') isDirty ? saveEdit() : confirm()
-      else if (e.key === 's') skip()
-      else if (e.key === 'Enter') isDirty ? saveEdit() : confirm()
-    }
+    const handler = e => keyActionRef.current?.(e)
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [idx, queue, form, current, propagate, isDirty])
+  }, [])
 
   async function applyPropagation(transactionIds) {
     setApplying(true)

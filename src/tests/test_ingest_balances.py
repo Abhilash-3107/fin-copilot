@@ -300,8 +300,8 @@ class TestAccountRefExtraction:
 
 class TestUploadRouteWarnings:
     def test_upload_response_includes_continuity_warnings(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         conn = _make_conn()
         conn.execute(

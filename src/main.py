@@ -17,8 +17,18 @@ logging.basicConfig(
 )
 from fastapi.staticfiles import StaticFiles
 
-from src.db.connection import get_db
-from src.api.routes import annotations, categories, config, embeddings, groups, insights, people, statements, transactions
+from src.api.routes import (
+    annotations,
+    categories,
+    config,
+    embeddings,
+    groups,
+    insights,
+    people,
+    statements,
+    transactions,
+)
+from src.db.connection import get_migrated_db
 
 UI_DIR = Path(__file__).parent.parent / "ui"
 
@@ -26,7 +36,7 @@ UI_DIR = Path(__file__).parent.parent / "ui"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
-    conn = get_db()
+    conn = get_migrated_db()
     try:
         # Jobs still marked in-flight at boot were orphaned by the previous
         # process; fail them or they block the single-job guard forever.

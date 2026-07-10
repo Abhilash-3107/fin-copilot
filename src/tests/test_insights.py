@@ -9,12 +9,12 @@ import ulid
 from fastapi.testclient import TestClient
 
 from src.db.connection import init_db
+from src.db.queries.annotations import insert_annotation
 from src.db.queries.insights import (
     _merge_merchant_keys,
     _prev_month,
     summarize_insights,
 )
-from src.db.queries.annotations import insert_annotation
 from src.models.annotation import Annotation
 
 
@@ -329,9 +329,82 @@ class TestBalanceAndShape:
         seed_txn(conn, "2026-01-05", 50, "debit", category="Shopping", balance=850)
         seed_txn(conn, "2026-01-06", 10, "debit", category="Shopping", balance=840)
         s = summarize_insights(conn, "2026-01")
-        assert s["balance"] == [
+        assert s["balance"]["account"] == "test"
+        assert s["balance"]["series"] == [
             {"date": "2026-01-05", "balance": 850},
             {"date": "2026-01-06", "balance": 840},
+        ]
+
+    def test_balance_series_scopes_to_primary_account(self, conn):
+        # Two genuinely distinct identified accounts at different banks: the
+        # second account's balances must not interleave into the series.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('s2','other','XX9999','1','2026-01')"
+        )
+        seed_txn(conn, "2026-01-05", 100, "debit", category="Shopping", balance=900)
+        seed_txn(conn, "2026-01-06", 100, "debit", category="Shopping", balance=800)
+        # Interloping second-account row on a day between the primary's points.
+        txn_id = str(ulid.ULID())
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+            "raw_description, running_balance) VALUES (?, 's2', '2026-01-05', 5, 'debit', 'Y', 5)",
+            (txn_id,),
+        )
+        s = summarize_insights(conn, "2026-01")
+        assert s["balance"]["account"] == "test"  # primary = more transactions
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-05", "balance": 900},
+            {"date": "2026-01-06", "balance": 800},
+        ]
+
+    def test_balance_series_folds_unknown_account_ref_into_identified(self, conn):
+        # The same bank account arriving with a number on the newer statement and
+        # NULL on the older one is one chain, not two: dropping the identified
+        # statement (or the unknown one) would blank out whole months. The
+        # default fixture statement 's1' (bank 'test', NULL account_ref) holds
+        # the older months; a later statement carries the account number.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('s2','test','3250508074','1','2026-02')"
+        )
+        seed_txn(conn, "2026-01-31", 100, "debit", category="Shopping", balance=900)
+        for d, bal in (("2026-02-05", 800), ("2026-02-06", 700)):
+            txn_id = str(ulid.ULID())
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+                "raw_description, running_balance) VALUES (?, 's2', ?, 100, 'debit', 'Z', ?)",
+                (txn_id, d, bal),
+            )
+        s = summarize_insights(conn, "2026-02")
+        # Series spans both statements and is labelled by the one known number.
+        assert s["balance"]["account"] == "test ····8074"
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-31", "balance": 900},
+            {"date": "2026-02-05", "balance": 800},
+            {"date": "2026-02-06", "balance": 700},
+        ]
+
+    def test_balance_series_splits_two_identified_accounts_same_bank(self, conn):
+        # Two real accounts at one bank (both with numbers) stay separate; the
+        # busiest wins and unknown-ref rows are not attributed to either.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('sa','test','1111','1','2026-01'), ('sb','test','2222','1','2026-01')"
+        )
+        for sid, d, bal in (("sa", "2026-01-05", 900), ("sa", "2026-01-06", 800),
+                            ("sb", "2026-01-05", 50)):
+            txn_id = str(ulid.ULID())
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+                "raw_description, running_balance) VALUES (?, ?, ?, 10, 'debit', 'Q', ?)",
+                (txn_id, sid, d, bal),
+            )
+        s = summarize_insights(conn, "2026-01")
+        assert s["balance"]["account"] == "test ····1111"  # account 'sa', more rows
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-05", "balance": 900},
+            {"date": "2026-01-06", "balance": 800},
         ]
 
     def test_empty_db(self, conn):
@@ -347,6 +420,49 @@ class TestBalanceAndShape:
         s = summarize_insights(conn, "2026-01")
         food = next(c for c in s["categories"] if c["category"] == "Food & Dining")
         assert food["subcategories"] == [{"name": "Restaurants", "total": 300, "count": 2}]
+
+
+class TestOffsetsMemo:
+    """The offset memo is keyed on a ledger fingerprint. A file-backed DB (unlike
+    :memory:) is cacheable, so verify the memo both caches and invalidates."""
+
+    def _file_conn(self, tmp_path):
+        from src.db.connection import init_db
+
+        c = sqlite3.connect(str(tmp_path / "memo.db"))
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA foreign_keys=ON")
+        init_db(c)
+        c.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) "
+            "VALUES ('s1','test','1','2026-01')"
+        )
+        return c
+
+    def test_edit_invalidates_memo(self, tmp_path):
+        conn = self._file_conn(tmp_path)
+        try:
+            # A friend's payback labeled with the spend category nets it.
+            seed_txn(conn, "2026-01-10", 5000, "debit", category="Entertainment")
+            credit = seed_txn(conn, "2026-01-11", 1200, "credit", category="Entertainment")
+
+            first = summarize_insights(conn, "2026-01")
+            ent = next(c for c in first["categories"] if c["category"] == "Entertainment")
+            assert ent["net"] == 3800  # 5000 gross - 1200 offset
+
+            # Re-label the credit out of the spend category: the offset must vanish.
+            conn.execute(
+                "UPDATE annotations SET category='Income', subcategory='Salary', "
+                "annotated_at=datetime('now') WHERE transaction_id=?",
+                (credit,),
+            )
+            conn.commit()
+
+            second = summarize_insights(conn, "2026-01")
+            ent2 = next(c for c in second["categories"] if c["category"] == "Entertainment")
+            assert ent2["net"] == 5000  # offset gone; memo did not go stale
+        finally:
+            conn.close()
 
 
 class TestAnnotationCoverage:
@@ -369,8 +485,8 @@ class TestAnnotationCoverage:
 
 class TestRoute:
     def test_endpoint(self, conn):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         seed_txn(conn, "2026-01-31", 1000, "credit", category="Income", subcategory="Salary")
         app.dependency_overrides[api_get_db] = lambda: conn

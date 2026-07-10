@@ -10,9 +10,7 @@ from fastapi.testclient import TestClient
 
 from src.db.connection import init_db
 from src.db.queries.annotations import get_annotation_by_transaction
-from src.models.annotation import AnnotationCreate
 from src.pipeline.rules import apply_rules
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -202,7 +200,7 @@ class TestLLMClient:
         return {"message": {"content": content}}
 
     def test_valid_response_parsed(self):
-        from src.pipeline.llm import annotate_transaction_llm, AnnotationResponse
+        from src.pipeline.llm import AnnotationResponse, annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "Some restaurant", "upi_meta": None,
                "amount": 500, "debit_credit": "debit", "txn_date": "2026-01-15"}
@@ -237,6 +235,7 @@ class TestLLMClient:
 
     def test_http_error_returns_none(self):
         import httpx as _httpx
+
         from src.pipeline.llm import annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "error case", "upi_meta": None,
@@ -250,6 +249,7 @@ class TestLLMClient:
 
     def test_timeout_returns_none(self):
         import httpx as _httpx
+
         from src.pipeline.llm import annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "slow response", "upi_meta": None,
@@ -334,9 +334,9 @@ class TestAutoAnnotatePipeline:
         assert get_annotation_by_transaction(self.conn, "t4") is None
 
     def test_skip_already_annotated(self):
-        from src.pipeline.annotate import auto_annotate
-        from src.models.annotation import Annotation
         from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+        from src.pipeline.annotate import auto_annotate
 
         _insert_txn(self.conn, "t5", "Amazon shopping")
         existing = Annotation(
@@ -397,8 +397,8 @@ class TestAutoAnnotatePipeline:
 
 class TestAutoAnnotateEndpoint:
     def setup_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         self.conn = _make_conn()
         _insert_statement(self.conn)
@@ -407,8 +407,8 @@ class TestAutoAnnotateEndpoint:
         self.client = TestClient(app)
 
     def teardown_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         app.dependency_overrides.pop(api_get_db, None)
         self.conn.close()
@@ -716,9 +716,9 @@ class TestRagPromptedOffExample:
     def test_off_example_category_confidence_capped(self):
         """LLM returns 'Transfers' but no example was Transfers → confidence capped
         below threshold so it lands in the review queue rather than auto-accepted."""
+        from src.config import settings
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.config import settings
 
         # All donors are Transport — none are Transfers.
         for i in range(4):
@@ -745,9 +745,9 @@ class TestRagPromptedOffExample:
 
     def test_in_example_category_not_capped(self):
         """When the LLM picks a category present in the examples, normal dampening applies."""
+        from src.config import settings
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.config import settings
 
         for i in range(4):
             self._insert_donor(f"donor_in{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
@@ -774,9 +774,9 @@ class TestRagPromptedOffExample:
 
         Mirrors the real ANSHU YADAV case: a small UPI to an unknown name whose
         amount-neighbors are part Transport (cab), part Transfers (family)."""
+        from src.config import settings
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.config import settings
 
         # 2 trusted Transport + 2 trusted Transfers → no clear winner (50/50).
         self._insert_donor("d_cab1", "UPI/DRIVER A/1/UPI", "Transport", "Cab & Auto")
@@ -808,9 +808,9 @@ class TestRagPromptedOffExample:
 
     def test_clear_trusted_majority_not_deferred(self):
         """A clear trusted majority (>= consensus floor) is not deferred."""
+        from src.config import settings
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.config import settings
 
         # 4 trusted Transport vs 0 others → unanimous, well above the floor.
         for i in range(4):
@@ -833,9 +833,9 @@ class TestRagPromptedOffExample:
     def test_confident_llm_not_deferred_despite_split_neighbors(self):
         """A confident, merchant-grounded LLM answer is NOT deferred even when the
         amount-driven neighbor vote is split (the Zomato/Miya Kebabs case)."""
+        from src.config import settings
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.config import settings
 
         # Split trusted donors: 2 Food, 2 Transport.
         self._insert_donor("ds_f1", "UPI/REST A/1/UPI", "Food & Dining", "Restaurants")
@@ -1029,8 +1029,8 @@ class TestMarginFactor:
 
 class TestDonorVoting:
     def test_donor_weight_trusted_vs_machine(self):
-        from src.pipeline.annotate import _donor_weight
         from src.config import settings
+        from src.pipeline.annotate import _donor_weight
         assert _donor_weight("manual") == 1.0
         assert _donor_weight("rule") == 1.0
         assert _donor_weight("imported") == 1.0
@@ -1155,10 +1155,10 @@ class TestNoveltyGate:
 
     def test_above_floor_proceeds_to_rag(self):
         """When best similarity >= rag_similarity_floor, RAG proceeds normally."""
-        from src.pipeline.annotate import auto_annotate
-        from src.pipeline.llm import AnnotationResponse
         from src.db.queries.annotations import insert_annotation
         from src.models.annotation import Annotation
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
 
         # Insert a real donor so _build_examples_from_similar returns examples
         _insert_txn(self.conn, "donor_known", "known merchant description")
@@ -1197,9 +1197,9 @@ class TestLLMDampening:
 
     def test_plain_llm_confidence_dampened(self):
         """Plain LLM confidence is multiplied by llm_confidence_dampen (0.85)."""
+        from src.db.queries.annotations import get_annotation_by_transaction
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.db.queries.annotations import get_annotation_by_transaction
 
         _insert_txn(self.conn, "t_llm", "mystery vendor")
         llm_result = AnnotationResponse(category="Shopping", confidence=0.9)
@@ -1214,10 +1214,10 @@ class TestLLMDampening:
 
     def test_rag_prompted_confidence_dampened(self):
         """RAG prompted confidence is multiplied by llm_confidence_dampen_rag (0.92)."""
-        from src.pipeline.annotate import auto_annotate
-        from src.pipeline.llm import AnnotationResponse
         from src.db.queries.annotations import get_annotation_by_transaction, insert_annotation
         from src.models.annotation import Annotation
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
 
         # Insert a real donor so _build_examples_from_similar returns examples
         _insert_txn(self.conn, "donor_rag", "known shopping vendor")
@@ -1265,8 +1265,8 @@ class TestRAGDirectAmbiguity:
 
     def test_rag_direct_discounted_when_category_disagreement(self):
         """When top-K matches disagree on category, rag_direct confidence is penalized."""
-        from src.pipeline.annotate import auto_annotate
         from src.db.queries.annotations import get_annotation_by_transaction
+        from src.pipeline.annotate import auto_annotate
 
         self._insert_donor("donor_shop_1", "online shopping", "Shopping")
         self._insert_donor("donor_shop_2", "buy stuff", "Shopping")
@@ -1296,8 +1296,8 @@ class TestRAGDirectAmbiguity:
 
     def test_rag_direct_unpenalized_when_all_agree(self):
         """When all top-K matches agree on category, confidence equals cosine similarity."""
-        from src.pipeline.annotate import auto_annotate
         from src.db.queries.annotations import get_annotation_by_transaction
+        from src.pipeline.annotate import auto_annotate
 
         for i in range(3):
             self._insert_donor(f"donor_a{i}", f"food delivery {i}", "Food & Dining")
@@ -1526,8 +1526,8 @@ class TestCalibration:
         self.conn.commit()
 
     def test_no_feedback_returns_static_base(self):
-        from src.pipeline.calibration import get_calibrated_dampening
         from src.config import settings
+        from src.pipeline.calibration import get_calibrated_dampening
         assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(settings.llm_confidence_dampen)
         assert get_calibrated_dampening(self.conn, "rag_prompted", "Shopping") == pytest.approx(settings.llm_confidence_dampen_rag)
 
@@ -1555,16 +1555,16 @@ class TestCalibration:
         assert get_calibrated_dampening(self.conn, "llm", "Shopping") == pytest.approx(5.25 / 6.0)
 
     def test_feedback_is_scoped_per_source_and_category(self):
-        from src.pipeline.calibration import get_calibrated_dampening
         from src.config import settings
+        from src.pipeline.calibration import get_calibrated_dampening
         self._record(5, "corrected", source="llm", category="Shopping")
         # other category and other source unaffected
         assert get_calibrated_dampening(self.conn, "llm", "Travel") == pytest.approx(settings.llm_confidence_dampen)
         assert get_calibrated_dampening(self.conn, "rag_prompted", "Shopping") == pytest.approx(settings.llm_confidence_dampen_rag)
 
     def test_single_event_does_not_swing_score(self):
-        from src.pipeline.calibration import get_calibrated_dampening
         from src.config import settings
+        from src.pipeline.calibration import get_calibrated_dampening
         self._record(1, "corrected")
         value = get_calibrated_dampening(self.conn, "llm", "Shopping")
         assert abs(value - settings.llm_confidence_dampen) < 0.15
@@ -1589,8 +1589,8 @@ class TestSystemPromptCalibration:
 
 class TestEmbeddingsEndpoint:
     def setup_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
 
         self.conn = _make_conn()
         _insert_statement(self.conn)
@@ -1598,8 +1598,8 @@ class TestEmbeddingsEndpoint:
         self.client = TestClient(app)
 
     def teardown_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
         app.dependency_overrides.pop(api_get_db, None)
         self.conn.close()
 
@@ -1691,10 +1691,10 @@ class TestReasoningTrace:
         assert trace["final_confidence"] == pytest.approx(ann["confidence"])
 
     def test_rag_prompted_trace_has_neighbours_and_llm_reasoning(self):
-        from src.pipeline.annotate import auto_annotate
-        from src.pipeline.llm import AnnotationResponse
         from src.db.queries.annotations import insert_annotation
         from src.models.annotation import Annotation
+        from src.pipeline.annotate import auto_annotate
+        from src.pipeline.llm import AnnotationResponse
 
         self._enable_dev_mode()
         _insert_txn(self.conn, "donor_tr", "known shopping vendor")
@@ -1787,9 +1787,9 @@ class TestReasoningTrace:
 
     def test_review_queue_endpoint_exposes_trace_in_dev_mode(self):
         """The review-queue endpoint parses the stored JSON only when dev_mode is on."""
-        from src.main import app
         from src.api.deps import get_db as api_get_db
         from src.db.queries.app_settings import set_dev_mode
+        from src.main import app
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
 
@@ -1867,9 +1867,9 @@ class TestRunSummary:
     def test_run_summary_near_miss_confidence(self):
         """A model annotation whose confidence sits just under the review
         threshold is surfaced as a near-auto-accept tuning candidate."""
-        from src.pipeline.run_summary import run_summary
         from src.db.queries.annotations import insert_annotation
         from src.models.annotation import Annotation
+        from src.pipeline.run_summary import run_summary
 
         _insert_txn(self.conn, "s_near", "borderline vendor")
         # rag_direct is inserted un-dampened, so we control the exact confidence:
@@ -1884,9 +1884,9 @@ class TestRunSummary:
         assert any(m["transaction_id"] == "s_near" for m in s["near_miss_confidence"])
 
     def test_run_summary_endpoint_gated_by_dev_mode(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
         from src.db.queries.app_settings import set_dev_mode
+        from src.main import app
 
         self._annotate_mixed()
         app.dependency_overrides[api_get_db] = lambda: self.conn
@@ -1905,15 +1905,15 @@ class TestRunSummary:
 
 class TestConfigEndpoint:
     def setup_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
         self.conn = _make_conn()
         app.dependency_overrides[api_get_db] = lambda: self.conn
         self.client = TestClient(app)
 
     def teardown_method(self):
-        from src.main import app
         from src.api.deps import get_db as api_get_db
+        from src.main import app
         app.dependency_overrides.pop(api_get_db, None)
         self.conn.close()
 
@@ -2086,7 +2086,10 @@ class TestLearnedRules:
 
     def test_suppressed_rule_not_returned(self):
         from src.db.queries.learned_rules import (
-            lookup_learned_rule, list_learned_rules, suppress_learned_rule, restore_learned_rule,
+            list_learned_rules,
+            lookup_learned_rule,
+            restore_learned_rule,
+            suppress_learned_rule,
         )
         conn = self._conn()
         for i in range(3):

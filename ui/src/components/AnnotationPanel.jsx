@@ -192,6 +192,9 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         ? (Array.isArray(annotation.tags) ? annotation.tags : annotation.tags.split(',').filter(Boolean))
         : [],
     })
+    // Keyed on the transaction id, not the txn object: re-syncing on every new
+    // txn reference would discard an in-progress edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txn?.id, annotation])
 
   async function handleSave() {

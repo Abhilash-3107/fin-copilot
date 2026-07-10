@@ -85,9 +85,14 @@ def find_similar(
     """
     blob = _serialize_embedding(query_embedding)
     excluded = set(exclude_transaction_ids or [])
-    # Over-fetch when time-filtering: an arbitrary share of the nearest
-    # neighbours may be dated after the cutoff.
-    fetch_limit = (top_k + len(excluded)) if before_txn_date is None else max(50, top_k * 10)
+    # Over-fetch because post-MATCH filters drop candidates the vector index
+    # already counted toward LIMIT: the model_version filter (always applied)
+    # and, in the eval harness, the before_txn_date cutoff. After an embedding
+    # model switch mid-re-embed, most nearest neighbours are stale-model rows;
+    # a tight fetch would then quietly return 0-2 donors and the pipeline would
+    # silently degrade to plain LLM. Widen the fetch whenever any post-filter is
+    # in play (i.e. always) so top_k eligible donors survive filtering.
+    fetch_limit = max(50, (top_k + len(excluded)) * 10)
     rows = conn.execute(
         "SELECT transaction_id, distance FROM vec_items WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
         (blob, fetch_limit),

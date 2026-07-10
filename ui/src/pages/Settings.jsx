@@ -37,7 +37,7 @@ function LearnedRules() {
       .then(setRules)
       .catch(e => toast(`Couldn't load learned rules - ${e.message}`, 'error'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [toast])
 
   async function dismiss(rule) {
     setDismissing(rule.counterparty_key)
@@ -135,7 +135,7 @@ export default function Settings() {
       .then(cfg => setDevMode(!!cfg.dev_mode))
       .catch(e => toast(`Couldn't load settings — ${e.message}`, 'error'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [toast])
 
   async function setDev(next) {
     setSaving(true)

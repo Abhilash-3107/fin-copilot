@@ -102,7 +102,7 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
     category_list = get_category_names_flat(conn)
     known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
 
-    golden = [json.loads(l) for l in Path(golden_path).read_text().splitlines() if l.strip()]
+    golden = [json.loads(line) for line in Path(golden_path).read_text().splitlines() if line.strip()]
     if limit:
         golden = golden[:limit]
 

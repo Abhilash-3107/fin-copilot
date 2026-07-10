@@ -67,10 +67,13 @@ const SUMMARY = {
   merchants: [
     { name: 'Zomato', total: 4470, count: 10, avg: 447 },
   ],
-  balance: [
-    { date: '2026-01-31', balance: 71000 },
-    { date: '2026-02-28', balance: 50000 },
-  ],
+  balance: {
+    account: 'Kotak ····1234',
+    series: [
+      { date: '2026-01-31', balance: 71000 },
+      { date: '2026-02-28', balance: 50000 },
+    ],
+  },
   unexplained: { count: 3, total: 620 },
 }
 

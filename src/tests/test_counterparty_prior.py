@@ -279,9 +279,10 @@ class TestCounterpartyPriorInPipeline:
         """A recurring KARABI BORA (4 prior Transfers) rescues a dampened
         rag_prompted Transfers prediction past the review threshold."""
         from unittest.mock import patch
+
+        from src.db.queries.annotations import get_annotation_by_transaction
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.db.queries.annotations import get_annotation_by_transaction
 
         # 4 prior trusted Transfers labels for KARABI BORA (establishes the prior).
         for i in range(4):
@@ -312,9 +313,10 @@ class TestCounterpartyPriorInPipeline:
     def test_cold_start_unaffected_through_pipeline(self):
         """A first-time counterparty gets no prior nudge — behaves exactly as before."""
         from unittest.mock import patch
+
+        from src.db.queries.annotations import get_annotation_by_transaction
         from src.pipeline.annotate import auto_annotate
         from src.pipeline.llm import AnnotationResponse
-        from src.db.queries.annotations import get_annotation_by_transaction
 
         self._insert_donor("d_shop", "UPI/SOME SHOP/1/UPI", "Shopping")
         self.conn.execute(

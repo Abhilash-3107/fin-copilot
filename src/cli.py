@@ -23,7 +23,7 @@ def review():
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         console.print(f"[red]Could not reach API at {base}: {exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     items = resp.json()
     if not items:

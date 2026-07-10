@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import cache
 
 from src.models.annotation import AnnotationCreate
 
 
-@lru_cache(maxsize=None)
+@cache
 def _compile_pattern(pattern: str) -> re.Pattern:
     """Compile a keyword to a word-boundary regex so 'emi' can't match 'premium'.
 
@@ -86,7 +86,9 @@ MERCHANT_RULES: list[MerchantRule] = [
     # --- Bills & Utilities ---
     MerchantRule(["jio", "reliance jio"], "Bills & Utilities", "Mobile Recharge", "Jio", ["telecom"]),
     MerchantRule(["airtel"], "Bills & Utilities", "Mobile Recharge", "Airtel", ["telecom"]),
-    MerchantRule(["vi", "vodafone", "idea cellular"], "Bills & Utilities", "Mobile Recharge", "Vi", ["telecom"]),
+    # "vi" alone is too false-positive-prone (matches the standalone word in
+    # names/notes even with word boundaries), so require telecom context.
+    MerchantRule(["vodafone", "idea cellular", "vodafone idea", "vi recharge"], "Bills & Utilities", "Mobile Recharge", "Vi", ["telecom"]),
     MerchantRule(["bsnl"], "Bills & Utilities", "Mobile Recharge", "BSNL", ["telecom"]),
     MerchantRule(["tata sky", "dish tv", "sun direct", "videocon d2h", "d2h"], "Bills & Utilities", "DTH", None, ["dth"]),
     MerchantRule(["bescom", "msedcl", "tneb", "tata power", "adani electricity", "electricity bill"], "Bills & Utilities", "Electricity", None, ["electricity"]),

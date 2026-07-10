@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-
 from typing import Literal
 
 FeedbackType = Literal["confirmed", "refined", "corrected"]

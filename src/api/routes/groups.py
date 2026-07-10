@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -28,21 +28,21 @@ ROLES = Literal["paid", "received", "partial"]
 
 class GroupCreate(BaseModel):
     name: str
-    note: Optional[str] = None
+    note: str | None = None
     labels: list[str] = []
 
 
 class MemberAdd(BaseModel):
     transaction_id: str
-    role: Optional[ROLES] = None
+    role: ROLES | None = None
     people: list[str] = []
-    txn_type: Optional[GROUP_TYPES] = None
+    txn_type: GROUP_TYPES | None = None
 
 
 class MemberPatch(BaseModel):
-    people: Optional[list[str]] = None
-    labels: Optional[list[str]] = None
-    txn_type: Optional[GROUP_TYPES] = None
+    people: list[str] | None = None
+    labels: list[str] | None = None
+    txn_type: GROUP_TYPES | None = None
 
 
 @router.post("", status_code=201)
@@ -69,7 +69,7 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 
 class GroupPatch(BaseModel):
-    labels: Optional[list[str]] = None
+    labels: list[str] | None = None
 
 
 @router.patch("/{group_id}")

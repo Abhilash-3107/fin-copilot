@@ -51,7 +51,7 @@ class KotakParser(StatementParser):
                     try:
                         transactions.append(self._row_to_transaction(row))
                     except Exception as exc:
-                        warnings.warn(f"KotakParser: skipping row {row!r}: {exc}")
+                        warnings.warn(f"KotakParser: skipping row {row!r}: {exc}", stacklevel=2)
         return transactions
 
     def _is_transaction_row(self, row: list) -> bool:

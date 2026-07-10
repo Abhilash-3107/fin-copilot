@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 import ulid
 from pydantic import BaseModel, Field
@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field
 class TraceNeighbour(BaseModel):
     """One RAG neighbour as surfaced in the dev-mode reasoning trace."""
     transaction_id: str
-    raw_description: Optional[str] = None
-    category: Optional[str] = None
-    source: Optional[str] = None
+    raw_description: str | None = None
+    category: str | None = None
+    source: str | None = None
     distance: float
     similarity: float  # 1.0 - distance
 
@@ -25,11 +25,11 @@ class TraceExample(BaseModel):
     are what the LLM actually saw (wide-pool + diversity selection + source ordering
     can make the two sets differ).
     """
-    transaction_id: Optional[str] = None
-    raw_description: Optional[str] = None
-    category: Optional[str] = None
-    subcategory: Optional[str] = None
-    source: Optional[str] = None
+    transaction_id: str | None = None
+    raw_description: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    source: str | None = None
 
 
 class ReasoningTrace(BaseModel):
@@ -51,69 +51,69 @@ class ReasoningTrace(BaseModel):
     # e.g. ["rule: no match", "rag_direct: donor source 'llm' untrusted"].
     skips: list[str] = Field(default_factory=list)
     # The exact string that was embedded for retrieval (build_embed_text output).
-    embed_text: Optional[str] = None
+    embed_text: str | None = None
     # RAG paths (rag_direct + rag_prompted)
-    best_similarity: Optional[float] = None
+    best_similarity: float | None = None
     neighbours: list[TraceNeighbour] = Field(default_factory=list)
-    vote_category: Optional[str] = None
-    vote_share: Optional[float] = None
-    trusted_weight: Optional[float] = None
-    agreement_factor: Optional[float] = None
-    margin_factor: Optional[float] = None
+    vote_category: str | None = None
+    vote_share: float | None = None
+    trusted_weight: float | None = None
+    agreement_factor: float | None = None
+    margin_factor: float | None = None
     caps_applied: list[str] = Field(default_factory=list)  # e.g. ["off_example", "defer"]
     # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
-    counterparty_prior_category: Optional[str] = None
-    counterparty_prior_probability: Optional[float] = None
-    counterparty_prior_n: Optional[int] = None       # prior observations for this counterparty
-    counterparty_prior_effect: Optional[str] = None  # "rescue" | "tighten" | "neutral"
+    counterparty_prior_category: str | None = None
+    counterparty_prior_probability: float | None = None
+    counterparty_prior_n: int | None = None       # prior observations for this counterparty
+    counterparty_prior_effect: str | None = None  # "rescue" | "tighten" | "neutral"
     # LLM paths (rag_prompted + llm)
-    llm_reasoning: Optional[str] = None      # the one-sentence "why" from the model
-    raw_confidence: Optional[float] = None   # before dampening
-    dampening_factor: Optional[float] = None
-    calibration_bucket: Optional[str] = None  # (source, category) feedback bucket, e.g. "llm/Food & Dining"
+    llm_reasoning: str | None = None      # the one-sentence "why" from the model
+    raw_confidence: float | None = None   # before dampening
+    dampening_factor: float | None = None
+    calibration_bucket: str | None = None  # (source, category) feedback bucket, e.g. "llm/Food & Dining"
     # LLM call telemetry
-    llm_model: Optional[str] = None
-    prompt_tokens: Optional[int] = None        # prompt_eval_count / usage.prompt_tokens
-    prompt_truncated: Optional[bool] = None    # prompt_tokens ~ num_ctx → front-truncation likely
-    verbalized_confidence: Optional[float] = None  # the number the model wrote
-    logprob_confidence: Optional[float] = None     # token-logprob mass (when enabled/available)
+    llm_model: str | None = None
+    prompt_tokens: int | None = None        # prompt_eval_count / usage.prompt_tokens
+    prompt_truncated: bool | None = None    # prompt_tokens ~ num_ctx → front-truncation likely
+    verbalized_confidence: float | None = None  # the number the model wrote
+    logprob_confidence: float | None = None     # token-logprob mass (when enabled/available)
     # Few-shot prompt content (rag_prompted)
     prompt_examples: list[TraceExample] = Field(default_factory=list)
-    majority_category: Optional[str] = None  # the hint passed to the LLM
-    majority_count: Optional[int] = None
+    majority_category: str | None = None  # the hint passed to the LLM
+    majority_count: int | None = None
     # rule path
-    matched_rule: Optional[str] = None
+    matched_rule: str | None = None
 
 
 class Annotation(BaseModel):
     id: str = Field(default_factory=lambda: str(ulid.ULID()))
     transaction_id: str
-    merchant: Optional[str] = None
+    merchant: str | None = None
     category: str
-    subcategory: Optional[str] = None
+    subcategory: str | None = None
     tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
-    annotated_at: Optional[datetime] = None
-    reasoning: Optional[str] = None  # JSON-serialized ReasoningTrace, dev mode only
+    annotated_at: datetime | None = None
+    reasoning: str | None = None  # JSON-serialized ReasoningTrace, dev mode only
 
 
 class AnnotationCreate(BaseModel):
     transaction_id: str
-    merchant: Optional[str] = None
+    merchant: str | None = None
     category: str
-    subcategory: Optional[str] = None
+    subcategory: str | None = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     source: Literal["manual", "model", "rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
 
 
 class AnnotationPatch(BaseModel):
-    merchant: Optional[str] = None
-    category: Optional[str] = None
-    subcategory: Optional[str] = None
-    tags: Optional[list[str]] = None
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    merchant: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    tags: list[str] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AutoAnnotateResult(BaseModel):
