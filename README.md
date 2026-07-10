@@ -214,6 +214,14 @@ Only needed when the generic parser can't handle a bank's layout:
 ![Insights](docs/insights.png)
 *Spending breakdowns and trends*
 
+### Groups
+![Groups](docs/groups.png)
+*Group shared expenses (trips, events) and track who paid vs. who settled their split*
+
+### People
+![People](docs/people.png)
+*Known counterparties with UPI handles and relationships, so transfers get categorized correctly*
+
 ## Testing
 
 ```bash
