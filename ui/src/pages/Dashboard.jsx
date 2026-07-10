@@ -13,6 +13,7 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
+import Tooltip from '../components/Tooltip.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 import {
   GraduationCap, FilePlus2, TrendingUp, HelpCircle, Users,
@@ -119,8 +120,8 @@ function SetupStage({ annotation, verdict, month, annotating, onSort }) {
 function StatTile({ label, value, delta, goodWhenDown, sub, hint }) {
   const up = delta > 0
   const good = goodWhenDown ? !up : up
-  return (
-    <Link to="/insights" className={`${card} group p-4 transition-colors hover:border-[#6366f1]`} title={hint}>
+  const body = (
+    <Link to="/insights" className={`${card} group block h-full p-4 transition-colors hover:border-[#6366f1]`}>
       <p className={cardTitle}>{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums text-[#e2e8f0]">
         <Amount value={value} decimals={0} />
@@ -136,6 +137,13 @@ function StatTile({ label, value, delta, goodWhenDown, sub, hint }) {
       </p>
       {sub && <p className="mt-0.5 text-xs text-[#475569]">{sub}</p>}
     </Link>
+  )
+  return hint ? (
+    <Tooltip content={hint} className="block h-full w-full">
+      {body}
+    </Tooltip>
+  ) : (
+    body
   )
 }
 
@@ -185,7 +193,7 @@ function BalanceCard({ balance, month }) {
   const { hidden } = usePrivacy()
   const start = dayjs(month).startOf('month').format('YYYY-MM-DD')
   const end = dayjs(month).endOf('month').format('YYYY-MM-DD')
-  const points = balance.filter(p => p.date >= start && p.date <= end)
+  const points = balance.series.filter(p => p.date >= start && p.date <= end)
   const data = {
     labels: points.map(p => p.date),
     datasets: [{

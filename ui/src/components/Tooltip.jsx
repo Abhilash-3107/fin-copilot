@@ -27,7 +27,7 @@ const TRANSFORM = {
   right: 'translateY(-50%)',
 }
 
-export default function Tooltip({ content, position = 'top', delay = 300, children }) {
+export default function Tooltip({ content, position = 'top', delay = 300, className = '', children }) {
   const [visible, setVisible] = useState(false)
   const [rect, setRect] = useState(null)
   const wrapperRef = useRef(null)
@@ -50,7 +50,7 @@ export default function Tooltip({ content, position = 'top', delay = 300, childr
   const style = getTooltipStyle(rect, position)
 
   return (
-    <span ref={wrapperRef} className="inline-flex" onMouseEnter={show} onMouseLeave={hide}>
+    <span ref={wrapperRef} className={className || 'inline-flex'} onMouseEnter={show} onMouseLeave={hide}>
       {children}
       {visible && rect && createPortal(
         <div
