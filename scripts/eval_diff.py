@@ -50,7 +50,7 @@ def main() -> int:
         if a["category"] != b["category"] or a["stage"] != b["stage"] or a["correct"] != b["correct"]:
             changed.append((tid, a, b))
     print(f"\n{len(changed)} transactions changed label/stage/outcome:")
-    for tid, a, b in changed[:30]:
+    for _tid, a, b in changed[:30]:
         mark = "✓" if (b["correct"] and not a["correct"]) else ("✗" if (a["correct"] and not b["correct"]) else "·")
         print(
             f"  {mark} {a['raw_description'][:48]:48}  "

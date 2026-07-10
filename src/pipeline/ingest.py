@@ -6,7 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from src.db.connection import get_db
+from src.db.connection import get_migrated_db
 from src.db.queries.transactions import insert_statement, insert_transaction
 from src.models.transaction import Statement, Transaction
 from src.parsers.registry import detect_parser
@@ -191,7 +191,7 @@ def ingest_pdf(
     """
     file_sha256 = hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest()
 
-    _conn = conn or get_db()
+    _conn = conn or get_migrated_db()
     try:
         existing = _conn.execute(
             "SELECT * FROM statements WHERE file_sha256 = ?", (file_sha256,)

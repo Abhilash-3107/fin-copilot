@@ -5,6 +5,7 @@ import sqlite3
 
 from src.db.queries.categories import resolve_category_ids
 from src.models.annotation import Annotation
+from src.pipeline.sources import REVIEWABLE_SOURCES
 
 
 def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
@@ -39,12 +40,25 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
     )
 
 
+# Columns a patch is allowed to set. The column names are interpolated into the
+# UPDATE (SQLite can't parameterize identifiers), so they must never come from
+# request-shaped data — validate against this allowlist to keep the injection
+# surface closed regardless of caller.
+_UPDATABLE_COLUMNS = frozenset(
+    {"merchant", "category", "subcategory", "tags", "confidence", "category_id", "subcategory_id"}
+)
+
+
 def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict) -> None:
     """Update an existing annotation, including explicit None values (clears the field).
 
     Sets source='manual', preserving the pipeline source in original_source on
     the first manual touch, and refreshes annotated_at.
     """
+    unknown = set(patch) - _UPDATABLE_COLUMNS
+    if unknown:
+        raise ValueError(f"update_annotation: disallowed column(s) {sorted(unknown)}")
+
     set_clauses = [f"{col} = ?" for col in patch]
     values = list(patch.values())
     set_clauses += [
@@ -75,17 +89,19 @@ def get_annotation_by_transaction(conn: sqlite3.Connection, transaction_id: str)
 
 def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     """Return model annotations below the confidence threshold, joined with their transactions."""
+    sources = sorted(REVIEWABLE_SOURCES)
+    placeholders = ",".join("?" for _ in sources)
     rows = conn.execute(
-        """
+        f"""
         SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE a.source IN ('model','rule','learned_rule','rag_direct','rag_prompted','llm') AND a.confidence < ?
+        WHERE a.source IN ({placeholders}) AND a.confidence < ?
         -- Uncertainty × impact ordering: a wrong label on a large transaction
         -- costs more than one on a small one, so weight by log-amount instead of
         -- ranking purely by confidence.
         ORDER BY (1.0 - a.confidence) * ln(1.0 + abs(t.amount)) DESC, a.annotated_at ASC
         """,
-        (threshold,),
+        (*sources, threshold),
     ).fetchall()
     return [dict(row) for row in rows]

@@ -133,8 +133,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             raise
 
 
-def get_db(db_path: str | None = None) -> sqlite3.Connection:
-    """Return a fully initialised, migration-applied connection."""
+def get_migrated_db(db_path: str | None = None) -> sqlite3.Connection:
+    """Return a fully initialised, migration-applied connection.
+
+    Named to distinguish it from api.deps.get_db, the per-request FastAPI
+    dependency that yields an already-migrated connection without running
+    migrations itself. Use this one from scripts and app startup.
+    """
     conn = get_connection(db_path)
     init_db(conn)
     return conn

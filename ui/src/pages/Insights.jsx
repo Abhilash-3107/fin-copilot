@@ -53,7 +53,7 @@ function StatTile({ label, value, delta, goodWhenDown, sub }) {
 function VerdictStrip({ verdict }) {
   const { money_in, money_out, invested, kept, kept_rate, other_in, prev } = verdict
   return (
-    <div className="grid grid-cols-4 gap-4">
+    <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
       <StatTile
         label="In" value={money_in} delta={money_in - prev.money_in}
         sub={other_in > 0 ? `incl ${formatRupees(other_in, { decimals: 0 })} paid back or from people` : null}
@@ -70,10 +70,12 @@ function VerdictStrip({ verdict }) {
 
 function BalanceChart({ balance }) {
   const { hidden } = usePrivacy()
+  const series = balance.series
+  const account = balance.account
   const data = {
-    labels: balance.map(p => p.date),
+    labels: series.map(p => p.date),
     datasets: [{
-      data: balance.map(p => p.balance),
+      data: series.map(p => p.balance),
       borderColor: '#6366f1',
       backgroundColor: 'rgba(99,102,241,0.12)',
       fill: true,
@@ -122,9 +124,12 @@ function BalanceChart({ balance }) {
   }
   return (
     <div className={`${card} p-4`}>
-      <p className={`${cardTitle} mb-3`}>Balance over time</p>
+      <div className="flex items-baseline justify-between mb-3">
+        <p className={cardTitle}>Balance over time</p>
+        {account && <span className="text-xs text-[#64748b]">{account}</span>}
+      </div>
       <div className={`h-52 ${hidden ? 'blur-[6px] select-none' : ''}`}>
-        {balance.length > 1 ? (
+        {series.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
           <div className="flex items-center justify-center h-full text-sm text-[#475569]">
@@ -399,14 +404,14 @@ export default function Insights() {
         <>
           <VerdictStrip verdict={data.verdict} />
 
-          <div className="grid grid-cols-[3fr_2fr] gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
             <BalanceChart balance={data.balance} />
             <WhatChanged changes={data.what_changed} month={data.month} prevMonth={data.prev_month} />
           </div>
 
           <CategoryBreakdown categories={data.categories} unexplained={data.unexplained} month={data.month} />
 
-          <div className="grid grid-cols-2 gap-4 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
             <RecurringPanel items={data.recurring} />
             <PeoplePanel people={data.people} />
           </div>

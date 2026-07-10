@@ -1,7 +1,6 @@
 """API route tests: annotation PATCH/confirm semantics, feedback recording, upload dedup."""
 from __future__ import annotations
 
-import json
 import sqlite3
 import tempfile
 from datetime import date
@@ -12,8 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.db.connection import init_db
-from src.models.annotation import Annotation
 from src.db.queries.annotations import insert_annotation
+from src.models.annotation import Annotation
 
 
 def _make_conn() -> sqlite3.Connection:
@@ -46,8 +45,8 @@ def _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", **ann_fiel
 
 @pytest.fixture
 def client_conn():
-    from src.main import app
     from src.api.deps import get_db as api_get_db
+    from src.main import app
 
     conn = _make_conn()
     app.dependency_overrides[api_get_db] = lambda: conn
@@ -418,6 +417,27 @@ class TestStatementDeleteCascade:
         assert count("transactions", "statement_id", "s_keep") == 1
         assert count("annotations", "transaction_id", "s_keep_t") == 1
 
+    def test_delete_statement_with_transaction_link(self, client_conn):
+        # transaction_links references transactions(id) with no ON DELETE CASCADE;
+        # with foreign_keys=ON, deleting the statement's transactions raises an FK
+        # violation (HTTP 500) unless the links are cleared first. The link crosses
+        # a statement boundary to also cover the "kept" side.
+        client, conn, _ = client_conn
+        self._seed_statement_with_data(conn, stmt_id="s_del")
+        self._seed_statement_with_data(conn, stmt_id="s_keep")
+        a, b = sorted(("s_del_t", "s_keep_t"))
+        conn.execute(
+            "INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('lnk', ?, ?, 'refund')",
+            (a, b),
+        )
+        conn.commit()
+
+        resp = client.delete("/api/statements/s_del")
+        assert resp.status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM transaction_links WHERE id='lnk'").fetchone()[0] == 0
+        # The surviving statement and its transaction are untouched.
+        assert conn.execute("SELECT COUNT(*) FROM transactions WHERE id='s_keep_t'").fetchone()[0] == 1
+
     def test_reset_keeps_statement_and_transactions(self, client_conn):
         client, conn, _ = client_conn
         self._seed_statement_with_data(conn)
@@ -437,14 +457,14 @@ class TestAnnotationJobs:
     def file_db_client(self, tmp_path, monkeypatch):
         """File-backed DB: the background job opens its own connection, so the
         usual shared in-memory connection can't be used here."""
-        from src.main import app
         from src.api.deps import get_db as api_get_db
-        from src.db import connection as dbc
         from src.config import settings
+        from src.db import connection as dbc
+        from src.main import app
 
         db_path = str(tmp_path / "jobs.db")
         monkeypatch.setattr(settings, "db_path", db_path)
-        conn = dbc.get_db(db_path)  # apply migrations
+        conn = dbc.get_migrated_db(db_path)  # apply migrations
 
         def override():
             c = dbc.get_connection(db_path)
@@ -486,6 +506,36 @@ class TestAnnotationJobs:
         client, _ = file_db_client
         assert client.get("/api/annotations/jobs/missing").status_code == 404
 
+    def test_get_job_reaps_orphan(self, file_db_client):
+        """Polling a zombie 'running' job (worker died, server up) resolves it to
+        'failed' rather than spinning forever."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed, updated_at) "
+            "VALUES ('zombie','running',95,72, datetime('now','-4 days'))"
+        )
+        conn.commit()
+        job = client.get("/api/annotations/jobs/zombie").json()
+        assert job["status"] == "failed"
+        assert "stale" in job["error"]
+
+    def test_active_jobs_listing_for_reattach(self, file_db_client):
+        """GET /jobs?active=1 returns the in-flight job so the UI can re-attach
+        its progress card after a reload; a fresh live job is returned, a stale
+        one is reaped and excluded."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed, updated_at) "
+            "VALUES ('live','running',10,3, datetime('now'))"
+        )
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, updated_at) "
+            "VALUES ('old_done','completed', datetime('now','-1 hour'))"
+        )
+        conn.commit()
+        active = client.get("/api/annotations/jobs?active=1").json()
+        assert [j["id"] for j in active] == ["live"]
+
     def test_inflight_job_is_not_duplicated(self, file_db_client):
         """A second start request re-attaches to a running job instead of
         launching a duplicate, which would burn duplicate LLM calls and could
@@ -526,8 +576,8 @@ class TestAnnotationJobs:
         """Restarting the server fails any job the previous process left
         in-flight, even a fresh one - a single-process app can't have live
         jobs at boot."""
-        from src.main import app
         from src.api.routes.annotations import reap_interrupted_jobs
+        from src.main import app
 
         client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q1','queued')")

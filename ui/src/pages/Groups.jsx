@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -15,7 +15,7 @@ export default function Groups() {
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
 
-  async function loadGroups(q = '') {
+  const loadGroups = useCallback(async (q = '') => {
     try {
       const data = await api.get(`/groups${q ? `?q=${encodeURIComponent(q)}` : ''}`)
       setGroups(data)
@@ -24,9 +24,9 @@ export default function Groups() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [toast])
 
-  useEffect(() => { loadGroups() }, [])
+  useEffect(() => { loadGroups() }, [loadGroups])
 
   async function createGroup(e) {
     e.preventDefault()
