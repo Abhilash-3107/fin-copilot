@@ -405,6 +405,12 @@ def wipe(conn) -> None:
     conn.execute(
         "DELETE FROM annotations WHERE transaction_id IN "
         "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
+    conn.execute(
+        "DELETE FROM embedding_meta WHERE transaction_id IN "
+        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
+    conn.execute(
+        "DELETE FROM vec_items WHERE transaction_id IN "
+        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
     conn.execute("DELETE FROM transactions WHERE statement_id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM statements WHERE id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM people WHERE id LIKE 'demo_p%'")

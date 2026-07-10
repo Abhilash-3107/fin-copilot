@@ -329,9 +329,82 @@ class TestBalanceAndShape:
         seed_txn(conn, "2026-01-05", 50, "debit", category="Shopping", balance=850)
         seed_txn(conn, "2026-01-06", 10, "debit", category="Shopping", balance=840)
         s = summarize_insights(conn, "2026-01")
-        assert s["balance"] == [
+        assert s["balance"]["account"] == "test"
+        assert s["balance"]["series"] == [
             {"date": "2026-01-05", "balance": 850},
             {"date": "2026-01-06", "balance": 840},
+        ]
+
+    def test_balance_series_scopes_to_primary_account(self, conn):
+        # Two genuinely distinct identified accounts at different banks: the
+        # second account's balances must not interleave into the series.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('s2','other','XX9999','1','2026-01')"
+        )
+        seed_txn(conn, "2026-01-05", 100, "debit", category="Shopping", balance=900)
+        seed_txn(conn, "2026-01-06", 100, "debit", category="Shopping", balance=800)
+        # Interloping second-account row on a day between the primary's points.
+        txn_id = str(ulid.ULID())
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+            "raw_description, running_balance) VALUES (?, 's2', '2026-01-05', 5, 'debit', 'Y', 5)",
+            (txn_id,),
+        )
+        s = summarize_insights(conn, "2026-01")
+        assert s["balance"]["account"] == "test"  # primary = more transactions
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-05", "balance": 900},
+            {"date": "2026-01-06", "balance": 800},
+        ]
+
+    def test_balance_series_folds_unknown_account_ref_into_identified(self, conn):
+        # The same bank account arriving with a number on the newer statement and
+        # NULL on the older one is one chain, not two: dropping the identified
+        # statement (or the unknown one) would blank out whole months. The
+        # default fixture statement 's1' (bank 'test', NULL account_ref) holds
+        # the older months; a later statement carries the account number.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('s2','test','3250508074','1','2026-02')"
+        )
+        seed_txn(conn, "2026-01-31", 100, "debit", category="Shopping", balance=900)
+        for d, bal in (("2026-02-05", 800), ("2026-02-06", 700)):
+            txn_id = str(ulid.ULID())
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+                "raw_description, running_balance) VALUES (?, 's2', ?, 100, 'debit', 'Z', ?)",
+                (txn_id, d, bal),
+            )
+        s = summarize_insights(conn, "2026-02")
+        # Series spans both statements and is labelled by the one known number.
+        assert s["balance"]["account"] == "test ····8074"
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-31", "balance": 900},
+            {"date": "2026-02-05", "balance": 800},
+            {"date": "2026-02-06", "balance": 700},
+        ]
+
+    def test_balance_series_splits_two_identified_accounts_same_bank(self, conn):
+        # Two real accounts at one bank (both with numbers) stay separate; the
+        # busiest wins and unknown-ref rows are not attributed to either.
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
+            "VALUES ('sa','test','1111','1','2026-01'), ('sb','test','2222','1','2026-01')"
+        )
+        for sid, d, bal in (("sa", "2026-01-05", 900), ("sa", "2026-01-06", 800),
+                            ("sb", "2026-01-05", 50)):
+            txn_id = str(ulid.ULID())
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
+                "raw_description, running_balance) VALUES (?, ?, ?, 10, 'debit', 'Q', ?)",
+                (txn_id, sid, d, bal),
+            )
+        s = summarize_insights(conn, "2026-01")
+        assert s["balance"]["account"] == "test ····1111"  # account 'sa', more rows
+        assert s["balance"]["series"] == [
+            {"date": "2026-01-05", "balance": 900},
+            {"date": "2026-01-06", "balance": 800},
         ]
 
     def test_empty_db(self, conn):
