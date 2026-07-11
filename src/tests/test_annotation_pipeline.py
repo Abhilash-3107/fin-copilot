@@ -2015,11 +2015,11 @@ class TestPersonHistoryGate:
 
 
 class TestPersonTokenMatching:
-    """_person_token_matches: explicit token semantics (VPA vs name fragment)."""
+    """person_token_matches: explicit token semantics (VPA vs name fragment)."""
 
     def _m(self, token, vpa=None, key=None, desc=""):
-        from src.pipeline.annotate import _person_token_matches
-        return _person_token_matches(token, vpa, key, desc)
+        from src.db.queries.people import person_token_matches
+        return person_token_matches(token, vpa, key, desc)
 
     def test_name_token_prefix_matches_counterparty_word(self):
         assert self._m("karabi", key="KARABI BORA")

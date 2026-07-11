@@ -1,6 +1,8 @@
 """CRUD helpers for people/contacts."""
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 
 import ulid
@@ -81,3 +83,97 @@ def update_person(
 def delete_person(conn: sqlite3.Connection, person_id: str) -> bool:
     cursor = conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
     return cursor.rowcount > 0
+
+
+def person_token_matches(
+    token: str, vpa: str | None, counterparty_key: str | None, desc: str
+) -> bool:
+    """Whether one person match-token matches a transaction.
+
+    Single source of truth for person→transaction matching, shared by the
+    annotation pipeline (stage-1 person rule) and the People page stats.
+
+    - VPA tokens (contain '@'): exact VPA equality when the txn has a VPA, else
+      substring in the description (legacy rows ingested before VPA extraction).
+    - Name tokens: word-prefix match against the counterparty name segment
+      ('karabi' matches 'KARABI BORA'); word-boundary in the description for
+      non-UPI rows that have no counterparty_key.
+    """
+    if "@" in token:
+        if vpa:
+            return vpa == token
+        return token in desc
+    if counterparty_key:
+        return any(word.startswith(token) for word in counterparty_key.lower().split())
+    return re.search(rf"\b{re.escape(token)}", desc) is not None
+
+
+def _txn_vpa(upi_meta) -> str | None:
+    if not upi_meta:
+        return None
+    try:
+        meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+        return (meta.get("vpa") or "").lower() or None
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def matched_transaction_ids(conn: sqlite3.Connection, token: str) -> list[str]:
+    """Transaction ids whose counterparty matches this person's match-token.
+
+    Reuses the pipeline's matching predicate so the People page and the auto
+    annotation agree on "this is a payment to/from this person".
+    """
+    if not token:
+        return []
+    token = token.strip().lower()
+    rows = conn.execute(
+        "SELECT id, raw_description, counterparty_key, upi_meta FROM transactions"
+    ).fetchall()
+    matched = []
+    for r in rows:
+        desc = (r["raw_description"] or "").lower()
+        if person_token_matches(token, _txn_vpa(r["upi_meta"]), r["counterparty_key"], desc):
+            matched.append(r["id"])
+    return matched
+
+
+def people_transaction_stats(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Per-person match count and net sent/received over all transactions.
+
+    Returns {person_id: {matched, sent, received, net}}. `sent` is money that
+    left the account to this person (debits), `received` is money that came from
+    them (credits); net = received - sent. People with no match token, or whose
+    token matches nothing, get zeroes.
+    """
+    people = list_people(conn)
+    # One scan of transactions, matched against every token, so the whole page is
+    # O(people x txns) in Python but a single DB round-trip.
+    rows = conn.execute(
+        """
+        SELECT t.id, t.raw_description, t.counterparty_key, t.upi_meta,
+               t.amount, t.debit_credit
+        FROM transactions t
+        """
+    ).fetchall()
+    prepared = [
+        (r, (r["raw_description"] or "").lower(), _txn_vpa(r["upi_meta"]))
+        for r in rows
+    ]
+    stats: dict[str, dict] = {}
+    for p in people:
+        token = (p.get("upi") or "").strip().lower()
+        acc = {"matched": 0, "sent": 0.0, "received": 0.0}
+        if token:
+            for r, desc, vpa in prepared:
+                if person_token_matches(token, vpa, r["counterparty_key"], desc):
+                    acc["matched"] += 1
+                    if r["debit_credit"] == "debit":
+                        acc["sent"] += r["amount"]
+                    else:
+                        acc["received"] += r["amount"]
+        acc["sent"] = round(acc["sent"], 2)
+        acc["received"] = round(acc["received"], 2)
+        acc["net"] = round(acc["received"] - acc["sent"], 2)
+        stats[p["id"]] = acc
+    return stats

@@ -17,6 +17,8 @@ from src.db.queries.groups import (
     list_members_for_group,
     remove_member,
     search_groups,
+    settle_up_for_group,
+    summarize_groups,
     update_member,
 )
 
@@ -43,6 +45,7 @@ class MemberPatch(BaseModel):
     people: list[str] | None = None
     labels: list[str] | None = None
     txn_type: GROUP_TYPES | None = None
+    role: ROLES | None = None
 
 
 @router.post("", status_code=201)
@@ -54,9 +57,15 @@ def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
 
 @router.get("")
 def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
-    """List groups, optionally filtered by name search."""
+    """List groups (optionally name-filtered), each with a rollup for the
+    collapsed row: date range, spend/received totals, net position, member count."""
     from src.db.queries.groups import list_groups
-    return search_groups(conn, q) if q else list_groups(conn)
+    groups = search_groups(conn, q) if q else list_groups(conn)
+    summaries = summarize_groups(conn, [g["id"] for g in groups])
+    empty = {"member_count": 0, "first_date": None, "last_date": None, "spend": 0, "received": 0, "net": 0}
+    for g in groups:
+        g["summary"] = summaries.get(g["id"], empty)
+    return groups
 
 
 @router.get("/{group_id}")
@@ -65,6 +74,7 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     group["members"] = list_members_for_group(conn, group_id)
+    group["settle_up"] = settle_up_for_group(conn, group_id)
     return group
 
 
@@ -109,9 +119,9 @@ def patch_member(
 ):
     if not get_group(conn, group_id):
         raise HTTPException(status_code=404, detail="Group not found")
-    update_member(conn, group_id, transaction_id, body.people, body.labels, body.txn_type)
+    update_member(conn, group_id, transaction_id, body.people, body.labels, body.txn_type, body.role)
     conn.commit()
-    return {"group_id": group_id, "transaction_id": transaction_id, "people": body.people, "labels": body.labels, "txn_type": body.txn_type}
+    return {"group_id": group_id, "transaction_id": transaction_id, "people": body.people, "labels": body.labels, "txn_type": body.txn_type, "role": body.role}
 
 
 @router.delete("/{group_id}/members/{transaction_id}", status_code=204)

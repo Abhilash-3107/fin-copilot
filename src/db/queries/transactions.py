@@ -55,6 +55,21 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _parse_amount_query(q: str) -> float | None:
+    """Parse a search query as a rupee amount, tolerating ₹, commas, and spaces.
+
+    Returns the float when the whole query is numeric (so 'swiggy' isn't treated
+    as an amount), else None. Powers amount search from the global palette.
+    """
+    cleaned = q.strip().lstrip("₹").replace(",", "").replace(" ", "")
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def list_transactions(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
@@ -65,6 +80,7 @@ def list_transactions(
     categories: list[str] | None = None,
     sources: list[str] | None = None,
     merchant: str | None = None,
+    person_token: str | None = None,
     after: str | None = None,
     limit: int | None = None,
 ) -> list[TxnRow]:
@@ -99,15 +115,19 @@ def list_transactions(
 
     if q:
         pattern = f"%{_escape_like(q.lower())}%"
-        conditions.append(
-            """(
-                LOWER(t.raw_description) LIKE ? ESCAPE '\\'
-                OR LOWER(a.merchant) LIKE ? ESCAPE '\\'
-                OR (json_valid(t.upi_meta)
-                    AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')
-            )"""
-        )
+        clauses = [
+            "LOWER(t.raw_description) LIKE ? ESCAPE '\\'",
+            "LOWER(a.merchant) LIKE ? ESCAPE '\\'",
+            "(json_valid(t.upi_meta) AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')",
+        ]
         params += [pattern, pattern, pattern]
+        # A numeric query also matches on amount (exact or, for a whole-rupee
+        # query, the rupee part), so "1200" finds the ₹1,200 transaction.
+        amount = _parse_amount_query(q)
+        if amount is not None:
+            clauses.append("t.amount = ?")
+            params.append(amount)
+        conditions.append("(" + " OR ".join(clauses) + ")")
 
     if categories:
         placeholders = ",".join("?" * len(categories))
@@ -122,6 +142,21 @@ def list_transactions(
     if merchant:
         conditions.append("a.merchant = ?")
         params.append(merchant)
+
+    if person_token:
+        # Person→transaction matching is token-based (VPA-exact or name-prefix on
+        # counterparty_key), not a stored FK, so resolve to ids the same way the
+        # People page and the pipeline do, then filter on them. An empty match
+        # forces an empty result rather than matching everything.
+        from src.db.queries.people import matched_transaction_ids
+
+        ids = matched_transaction_ids(conn, person_token)
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            conditions.append(f"t.id IN ({placeholders})")
+            params += ids
+        else:
+            conditions.append("1 = 0")
 
     if statement_id:
         conditions.append("t.statement_id = ?")

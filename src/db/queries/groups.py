@@ -81,8 +81,10 @@ def update_member(
     people: list[str] | None = None,
     labels: list[str] | None = None,
     txn_type: str | None = None,
+    role: str | None = None,
 ) -> bool:
-    """Update people, labels, and/or txn_type on a membership. Only updates fields that are explicitly passed."""
+    """Update people, labels, txn_type, and/or role on a membership. Only updates
+    fields that are explicitly passed. An empty string clears role/txn_type."""
     clauses = []
     params: list = []
     if people is not None:
@@ -93,7 +95,10 @@ def update_member(
         params.append(dump_string_list(labels) if labels else None)
     if txn_type is not None:
         clauses.append("txn_type = ?")
-        params.append(txn_type)
+        params.append(txn_type or None)
+    if role is not None:
+        clauses.append("role = ?")
+        params.append(role or None)
     if not clauses:
         return False
     params.extend([group_id, transaction_id])
@@ -132,7 +137,7 @@ def list_members_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict
     """Return all transactions in a group with their basic fields."""
     rows = conn.execute(
         """
-        SELECT m.role, m.txn_type, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta
+        SELECT m.role, m.txn_type, m.people, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta
         FROM transaction_group_members m
         JOIN transactions t ON t.id = m.transaction_id
         WHERE m.group_id = ?
@@ -140,4 +145,64 @@ def list_members_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict
         """,
         (group_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_with_parsed_lists(dict(r), ("people",)) for r in rows]
+
+
+def summarize_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[str, dict]:
+    """Per-group rollup for the collapsed row: date range, spend/received totals,
+    net position, and member count. One query over all requested groups.
+
+    net = credits - debits across the group's transactions, i.e. money that came
+    to the user minus money that left. spend/received are the gross legs.
+    """
+    if not group_ids:
+        return {}
+    placeholders = ",".join("?" * len(group_ids))
+    rows = conn.execute(
+        f"""
+        SELECT m.group_id,
+               COUNT(*)                                                   AS member_count,
+               MIN(t.txn_date)                                            AS first_date,
+               MAX(t.txn_date)                                            AS last_date,
+               COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'  THEN t.amount ELSE 0 END), 0) AS spend,
+               COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' THEN t.amount ELSE 0 END), 0) AS received
+        FROM transaction_group_members m
+        JOIN transactions t ON t.id = m.transaction_id
+        WHERE m.group_id IN ({placeholders})
+        GROUP BY m.group_id
+        """,
+        group_ids,
+    ).fetchall()
+    summary: dict[str, dict] = {}
+    for r in rows:
+        d = dict(r)
+        d["net"] = round(d["received"] - d["spend"], 2)
+        summary[d.pop("group_id")] = d
+    return summary
+
+
+def settle_up_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict]:
+    """Per-person settle-up over a group's members.
+
+    Equal-split model: each transaction is divided evenly across the people named
+    on it plus the user (the account holder). When the user paid (debit), every
+    other named person owes their equal share back → positive `owes_you`. When a
+    person paid the user back (credit tagged to them), that reduces what they owe.
+    A person's `net` is what they owe you minus what you owe them; positive means
+    they still owe you.
+    """
+    balances: dict[str, float] = {}
+    for m in list_members_for_group(conn, group_id):
+        people = m.get("people") or []
+        if not people:
+            continue
+        # The user is an implicit sharer alongside the named people.
+        share = m["amount"] / (len(people) + 1)
+        sign = 1 if m["debit_credit"] == "debit" else -1
+        for person in people:
+            balances[person] = round(balances.get(person, 0.0) + sign * share, 2)
+    return [
+        {"person": person, "net": net}
+        for person, net in sorted(balances.items(), key=lambda kv: -abs(kv[1]))
+        if abs(net) >= 0.01
+    ]

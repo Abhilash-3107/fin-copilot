@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import RunSummary from '../components/RunSummary.jsx'
+import ModelSettings from '../components/ModelSettings.jsx'
+import DataSettings from '../components/DataSettings.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -53,7 +55,7 @@ function LearnedRules() {
   }
 
   return (
-    <div className="mt-8">
+    <div>
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Learned from your corrections</h2>
       <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
         When you verify a merchant enough times and agree on a category, your copilot
@@ -124,17 +126,115 @@ function LearnedRules() {
   )
 }
 
+// Insights tab: the review-bar slider with a live preview. Moving it repreviews
+// the run summary at the candidate threshold (dev mode) before saving.
+function InsightsSettings({ devMode, threshold, onSave }) {
+  const toast = useToast()
+  const [value, setValue] = useState(threshold)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setValue(threshold) }, [threshold])
+
+  const dirty = Math.abs(value - threshold) > 1e-9
+
+  async function save() {
+    setSaving(true)
+    try {
+      await onSave(value)
+      toast(`Review bar set to ${Math.round(value * 100)}%`, 'success')
+    } catch (e) {
+      toast(`Couldn't save - ${e.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Review bar</h2>
+        <p className="text-xs text-[#64748b] mb-4 leading-relaxed max-w-xl">
+          Auto-categorizations below this confidence go to the review queue for you to
+          verify; at or above it, they're accepted automatically. Raise it to catch more
+          borderline calls yourself; lower it to review less.
+        </p>
+        <div className="bg-[#13151f] border border-[#2d3148] rounded-xl px-5 py-5">
+          <div className="flex items-center gap-4">
+            <input
+              type="range"
+              min="0.5" max="0.99" step="0.01"
+              value={value}
+              onChange={e => setValue(parseFloat(e.target.value))}
+              className="flex-1 accent-[#6366f1]"
+            />
+            <span className="w-16 text-right tabular-nums text-lg font-semibold text-[#e2e8f0]">
+              {Math.round(value * 100)}%
+            </span>
+            <button
+              onClick={save}
+              disabled={!dirty || saving}
+              className="bg-[#6366f1] text-white px-4 py-1.5 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          {dirty && (
+            <p className="text-[11px] text-[#f59e0b] mt-2">
+              Preview below reflects {Math.round(value * 100)}% - not saved yet.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {devMode ? (
+        <div>
+          <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Auto-categorization insights</h2>
+          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+            Where your annotated transactions sit relative to the pipeline's thresholds:
+            which stage decided each, how the similarity and confidence scores are
+            distributed against their cutoffs, and the transactions sitting just below the
+            review bar. The lists and review rate update live as you drag the slider.
+          </p>
+          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+            <RunSummary threshold={value} />
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-[#64748b] max-w-xl">
+          Turn on Developer mode (General tab) to preview which transactions the current
+          review bar catches or lets through.
+        </p>
+      )}
+    </div>
+  )
+}
+
+const TABS = [
+  { id: 'general', label: 'General', icon: SlidersHorizontal },
+  { id: 'model', label: 'AI & Model', icon: Cpu },
+  { id: 'insights', label: 'Insights', icon: BarChart3 },
+  { id: 'rules', label: 'Learned Rules', icon: BookOpen },
+  { id: 'data', label: 'Data', icon: Database },
+]
+
 export default function Settings() {
   const toast = useToast()
+  const [tab, setTab] = useState('general')
   const [devMode, setDevMode] = useState(false)
+  const [threshold, setThreshold] = useState(0.85)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const mounted = useRef(true)
 
   useEffect(() => {
+    mounted.current = true
     api.get('/config')
-      .then(cfg => setDevMode(!!cfg.dev_mode))
-      .catch(e => toast(`Couldn't load settings — ${e.message}`, 'error'))
+      .then(cfg => {
+        setDevMode(!!cfg.dev_mode)
+        if (typeof cfg.confidence_threshold === 'number') setThreshold(cfg.confidence_threshold)
+      })
+      .catch(e => toast(`Couldn't load settings - ${e.message}`, 'error'))
       .finally(() => setLoading(false))
+    return () => { mounted.current = false }
   }, [toast])
 
   async function setDev(next) {
@@ -144,48 +244,76 @@ export default function Settings() {
       setDevMode(!!cfg.dev_mode)
       toast(next ? 'Developer mode on' : 'Developer mode off', 'success')
     } catch (e) {
-      toast(`Couldn't save — ${e.message}`, 'error')
+      toast(`Couldn't save - ${e.message}`, 'error')
     } finally {
       setSaving(false)
     }
   }
 
-  return (
-    <div className="max-w-2xl mx-auto w-full px-4 py-6">
-      <h1 className="text-lg font-semibold text-[#e2e8f0] mb-1">Settings</h1>
-      <p className="text-sm text-[#64748b] mb-6">Configure how your copilot behaves.</p>
+  async function saveThreshold(value) {
+    const cfg = await api.put('/config', { confidence_threshold: value })
+    if (typeof cfg.confidence_threshold === 'number') setThreshold(cfg.confidence_threshold)
+  }
 
-      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl divide-y divide-[#2d3148]">
-        <div className="flex items-center justify-between gap-6 px-5 py-4">
-          <div>
-            <p className="text-sm font-medium text-[#e2e8f0]">Developer mode</p>
-            <p className="text-xs text-[#64748b] mt-0.5 leading-relaxed">
-              Show the reasoning behind each auto-categorization — the neighbours,
-              similarity math against each threshold, the model's explanation, and a
-              run-level summary below. The reasoning is always recorded, so turning
-              this on also explains transactions categorized earlier.
-            </p>
-          </div>
-          <Toggle checked={devMode} disabled={loading || saving} onChange={setDev} />
-        </div>
+  return (
+    <div className="max-w-3xl mx-auto w-full px-4 py-6">
+      <h1 className="text-lg font-semibold text-[#e2e8f0] mb-1">Settings</h1>
+      <p className="text-sm text-[#64748b] mb-5">Configure how your copilot behaves.</p>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[#2d3148] mb-6 overflow-x-auto">
+        {TABS.map(t => {
+          const Icon = t.icon
+          const active = tab === t.id
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                active
+                  ? 'border-[#6366f1] text-[#e2e8f0]'
+                  : 'border-transparent text-[#64748b] hover:text-[#94a3b8]'
+              }`}
+            >
+              <Icon size={14} />
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      {devMode && (
-        <div className="mt-8">
-          <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Auto-categorization insights</h2>
-          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
-            Where your annotated transactions sit relative to the pipeline's thresholds:
-            which stage decided each, how the similarity and confidence scores are
-            distributed against their cutoffs, and the transactions sitting just below a
-            gate. This is what to look at when deciding how to tune those thresholds.
-          </p>
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-            <RunSummary />
-          </div>
-        </div>
-      )}
+      {loading ? (
+        <p className="text-sm text-[#475569]">Loading…</p>
+      ) : (
+        <>
+          {tab === 'general' && (
+            <div className="bg-[#13151f] border border-[#2d3148] rounded-xl divide-y divide-[#2d3148]">
+              <div className="flex items-center justify-between gap-6 px-5 py-4">
+                <div>
+                  <p className="text-sm font-medium text-[#e2e8f0]">Developer mode</p>
+                  <p className="text-xs text-[#64748b] mt-0.5 leading-relaxed">
+                    Show the reasoning behind each auto-categorization - the neighbours,
+                    similarity math against each threshold, the model's explanation, and a
+                    run-level summary in the Insights tab. The reasoning is always recorded,
+                    so turning this on also explains transactions categorized earlier.
+                  </p>
+                </div>
+                <Toggle checked={devMode} disabled={saving} onChange={setDev} />
+              </div>
+            </div>
+          )}
 
-      <LearnedRules />
+          {tab === 'model' && <ModelSettings />}
+
+          {tab === 'insights' && (
+            <InsightsSettings devMode={devMode} threshold={threshold} onSave={saveThreshold} />
+          )}
+
+          {tab === 'rules' && <LearnedRules />}
+
+          {tab === 'data' && <DataSettings />}
+        </>
+      )}
     </div>
   )
 }

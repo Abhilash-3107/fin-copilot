@@ -38,6 +38,11 @@ async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
     conn = get_migrated_db()
     try:
+        # Apply any stored BYOM/LLM overrides onto the live settings so the pipeline
+        # uses the user's runtime provider choice from the first request.
+        from src.db.queries.app_settings import apply_llm_config
+
+        apply_llm_config(conn)
         # Jobs still marked in-flight at boot were orphaned by the previous
         # process; fail them or they block the single-job guard forever.
         reaped = annotations.reap_interrupted_jobs(conn)

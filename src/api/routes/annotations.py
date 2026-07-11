@@ -7,7 +7,7 @@ import sqlite3
 import time
 
 import ulid
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from src.api.deps import get_db
@@ -19,7 +19,7 @@ from src.db.queries.annotations import (
     list_review_queue,
     update_annotation,
 )
-from src.db.queries.app_settings import get_dev_mode
+from src.db.queries.app_settings import get_confidence_threshold, get_dev_mode
 from src.db.queries.categories import resolve_category_ids
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.embeddings import find_similar
@@ -469,6 +469,7 @@ def apply_to_similar(
 @router.get("/run-summary")
 def run_summary_endpoint(
     statement_id: str | None = None,
+    threshold: float | None = Query(None, ge=0.0, le=1.0, description="review-bar override for a live preview"),
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Run-level aggregation over stored reasoning traces (dev-mode insight surface).
@@ -476,13 +477,16 @@ def run_summary_endpoint(
     Stage funnel, similarity/confidence distributions drawn against their
     thresholds, and near-miss lists. Gated behind dev mode: without it, the trace
     detail this summarizes is never shown, so the summary would be misleading.
-    Optional statement_id scopes it to one statement.
+    Optional statement_id scopes it to one statement. `threshold` previews a
+    candidate review bar (the Settings slider) without persisting it; when omitted
+    the stored runtime threshold is used.
     """
     from src.pipeline.run_summary import run_summary
 
     if not get_dev_mode(conn):
         raise HTTPException(status_code=404, detail="Developer mode is off")
-    return run_summary(conn, statement_id)
+    effective = threshold if threshold is not None else get_confidence_threshold(conn)
+    return run_summary(conn, statement_id, threshold=effective)
 
 
 @router.get("/learned-rules")
@@ -528,7 +532,7 @@ def dismiss_learned_rule(counterparty_key: str, conn: sqlite3.Connection = Depen
 @router.get("/review-queue")
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     dev_mode = get_dev_mode(conn)
-    items = list_review_queue(conn, settings.confidence_threshold)
+    items = list_review_queue(conn, get_confidence_threshold(conn))
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw

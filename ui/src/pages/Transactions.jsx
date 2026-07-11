@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useLocation } from 'react-router-dom'
 import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -104,12 +104,15 @@ export default function Transactions() {
   const { statements, activeStatement, setActiveStatement } = useStatement()
   const { month: periodMonth, setMonth } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
+  const location = useLocation()
   const selectedStmt = activeStatement?.id ?? ''
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
+  // Person filter carries {token, name}: token drives the query, name labels the chip.
+  const [personFilter, setPersonFilter] = useState(null)
   const [search, setSearch] = useState('')
   // The query the server actually sees; trails `search` by the debounce delay.
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -144,8 +147,9 @@ export default function Transactions() {
     if (categoryCsv) params.set('category', categoryCsv)
     if (sourceCsv) params.set('source', sourceCsv)
     if (merchantFilter) params.set('merchant', merchantFilter)
+    if (personFilter?.token) params.set('person', personFilter.token)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter])
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter])
 
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
@@ -210,17 +214,21 @@ export default function Transactions() {
     const category = searchParams.get('category')
     const source = searchParams.get('source')
     const merchant = searchParams.get('merchant')
+    const person = searchParams.get('person')
     const q = searchParams.get('q')
     const m = searchParams.get('month')
     setCategoryFilter(category ? new Set(category.split(',')) : new Set())
     setSourceFilter(source ? new Set(source.split(',')) : new Set())
     setMerchantFilter(merchant ?? '')
+    // A person label may ride along in navigation state so the chip reads as a
+    // name; on a cold link we only have the token, which is a fine chip label.
+    setPersonFilter(person ? { token: person, name: location.state?.personName ?? person } : null)
     setSearch(q ?? '')
     setDebouncedSearch(q ?? '') // skip the debounce so the load isn't briefly unfiltered
     if (m && m !== periodMonth) setMonth(m)
     // A deep link means "this slice of everything": a lingering statement
     // selection would AND with the link's month and silently empty the list.
-    if (category || source || merchant || q || m) clearStatementForDeepLink.current = true
+    if (category || source || merchant || person || q || m) clearStatementForDeepLink.current = true
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -244,13 +252,14 @@ export default function Transactions() {
     if (categoryCsv) next.set('category', categoryCsv)
     if (sourceCsv) next.set('source', sourceCsv)
     if (merchantFilter) next.set('merchant', merchantFilter)
+    if (personFilter?.token) next.set('person', personFilter.token)
     if (search) next.set('q', search)
     const s = next.toString()
     if (s === searchParams.toString()) return
     lastWrittenParams.current = s
     setSearchParams(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryCsv, sourceCsv, merchantFilter, search])
+  }, [categoryCsv, sourceCsv, merchantFilter, personFilter, search])
 
   // The statement scope may already be set (in-session navigation) or arrive
   // later (hard load: StatementContext defaults to the latest statement once
@@ -362,7 +371,7 @@ export default function Transactions() {
   const categoryOptions = facets.categories.map(c => ({ value: c, label: c }))
 
   const filtersActive = Boolean(
-    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter
+    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter || personFilter
   )
 
   return (
@@ -417,6 +426,16 @@ export default function Transactions() {
             className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
           >
             <span>{merchantFilter}</span>
+            <X size={12} className="opacity-60 hover:opacity-100" />
+          </button>
+        )}
+
+        {personFilter && (
+          <button
+            onClick={() => setPersonFilter(null)}
+            className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
+          >
+            <span>Person: {personFilter.name}</span>
             <X size={12} className="opacity-60 hover:opacity-100" />
           </button>
         )}

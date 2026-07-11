@@ -4,7 +4,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import re
 import sqlite3
 from collections import Counter
 
@@ -14,7 +13,11 @@ from src.db.queries.categories import get_category_names_flat
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.embeddings import find_similar
 from src.db.queries.learned_rules import lookup_learned_rule
-from src.db.queries.people import list_people, relationship_subcategory
+from src.db.queries.people import (
+    list_people,
+    person_token_matches,
+    relationship_subcategory,
+)
 from src.db.queries.transactions import list_transactions
 from src.models.annotation import (
     Annotation,
@@ -116,30 +119,6 @@ def _llm_telemetry_fields(llm_result) -> dict:
     }
 
 
-def _person_token_matches(
-    token: str, vpa: str | None, counterparty_key: str | None, desc: str
-) -> bool:
-    """Decide whether one person match-token matches a transaction.
-
-    Token semantics are explicit by shape:
-    - VPA tokens (contain '@'): exact VPA equality when the txn has a VPA, else
-      substring in the description (legacy rows ingested before VPA extraction).
-      Never a substring of another VPA ('rahul@x' must not match 'notrahul@x').
-    - Name tokens: word-prefix match against the counterparty name segment only
-      ('karabi' matches 'KARABI BORA'), never a bare substring of the whole
-      description — a short token must not fire inside an unrelated merchant
-      string. Falls back to word-boundary matching in the description for
-      non-UPI rows (which have no counterparty_key).
-    """
-    if "@" in token:
-        if vpa:
-            return vpa == token
-        return token in desc
-    if counterparty_key:
-        return any(word.startswith(token) for word in counterparty_key.lower().split())
-    return re.search(rf"\b{re.escape(token)}", desc) is not None
-
-
 def _match_known_person(
     txn: TxnRow, known_people: list[tuple[str, str, str | None]]
 ) -> AnnotationCreate | None:
@@ -149,7 +128,7 @@ def _match_known_person(
     match_token is the person's UPI handle or a name fragment, already lowercased,
     and relationship drives the subcategory: family relationships (dad/mom/…) map
     to Transfers › Family, everything else (including unlabelled) to Peer Transfer.
-    Matching semantics live in _person_token_matches.
+    Matching semantics live in people.person_token_matches.
     """
     vpa = None
     upi_meta = txn.get("upi_meta")
@@ -163,7 +142,7 @@ def _match_known_person(
     desc = (txn.get("raw_description") or "").lower()
     counterparty_key = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
     for name, token, relationship in known_people:
-        if _person_token_matches(token, vpa, counterparty_key, desc):
+        if person_token_matches(token, vpa, counterparty_key, desc):
             subcategory = relationship_subcategory(relationship)
             is_family = subcategory == "Family"
             return AnnotationCreate(

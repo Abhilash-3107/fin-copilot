@@ -334,6 +334,21 @@ class TestTransactionsFilters:
         self._seed(conn)
         assert self._ids(client, "q=%25") == set()  # '%' matches nothing literally
 
+    def test_q_matches_amount(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)  # all rows are 100.0
+        assert self._ids(client, "q=100") == {"t_food", "t_shop", "t_bare"}
+
+    def test_q_amount_tolerates_rupee_and_commas(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=%E2%82%B9100") == {"t_food", "t_shop", "t_bare"}
+
+    def test_q_non_matching_amount_empty(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        assert self._ids(client, "q=999") == set()
+
     def test_category_filter_multi(self, client_conn):
         client, conn, _ = client_conn
         self._seed(conn)

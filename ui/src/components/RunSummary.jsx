@@ -147,20 +147,24 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
 // the corpus sits relative to the pipeline's thresholds (stage mix, similarity /
 // confidence distributions, near-miss candidates) — the view that informs how the
 // knobs might be set, complementing the per-annotation "Why this annotation?" panel.
-export default function RunSummary() {
+// `threshold` (optional) previews a candidate review bar: it's passed to the
+// endpoint so the review rate, confidence histogram marker, and near-miss lists
+// recompute live as the Settings slider moves, without persisting the value.
+export default function RunSummary({ threshold }) {
   const toast = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.get('/annotations/run-summary')
+    const qs = threshold != null ? `?threshold=${threshold}` : ''
+    api.get(`/annotations/run-summary${qs}`)
       .then(setData)
       .catch(e => {
         // 404 = dev mode off; the section just won't render (parent gates it too).
         if (e.status !== 404) toast(`Couldn't load run summary — ${e.message}`, 'error')
       })
       .finally(() => setLoading(false))
-  }, [toast])
+  }, [toast, threshold])
 
   if (loading) {
     return <p className="px-5 py-4 text-sm text-[#64748b]">Loading run summary…</p>

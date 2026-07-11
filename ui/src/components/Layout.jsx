@@ -2,6 +2,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from './Sidebar.jsx'
 import TopBar from './TopBar.jsx'
 import AnnotationProgress from './AnnotationProgress.jsx'
+import CommandPalette from './CommandPalette.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 
@@ -21,6 +22,7 @@ export default function Layout() {
         </main>
       </div>
       <AnnotationProgress job={job} />
+      <CommandPalette />
     </div>
   )
 }

@@ -14,9 +14,10 @@ vi.mock('../lib/api.js', () => ({
 // Stub toasts to a noop: the real provider schedules a setTimeout to auto-dismiss,
 // which fires after the test ends and trips React's act() warning. These specs
 // assert behavior, not toast copy.
+const noopToast = () => {}
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
-  useToast: () => () => {},
+  useToast: () => noopToast,
 }))
 
 import { ToastProvider } from '../contexts/ToastContext.jsx'

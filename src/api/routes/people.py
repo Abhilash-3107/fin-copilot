@@ -11,6 +11,7 @@ from src.db.queries.people import (
     create_person,
     delete_person,
     list_people,
+    people_transaction_stats,
     search_people,
     update_person,
 )
@@ -46,7 +47,14 @@ def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
 
 @router.get("")
 def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
-    return search_people(conn, q) if q else list_people(conn)
+    """List people (optionally name/upi-filtered), each with match count and net
+    sent/received computed from the transactions their match-token matches."""
+    people = search_people(conn, q) if q else list_people(conn)
+    stats = people_transaction_stats(conn)
+    empty = {"matched": 0, "sent": 0, "received": 0, "net": 0}
+    for p in people:
+        p["stats"] = stats.get(p["id"], empty)
+    return people
 
 
 class PersonUpdate(BaseModel):

@@ -69,16 +69,24 @@ def _load_traces(conn: sqlite3.Connection, statement_id: str | None) -> list[dic
     return rows
 
 
-def run_summary(conn: sqlite3.Connection, statement_id: str | None = None) -> dict:
+def run_summary(
+    conn: sqlite3.Connection,
+    statement_id: str | None = None,
+    threshold: float | None = None,
+) -> dict:
     """Aggregate stored traces into the run-level insight payload.
 
     Only model-sourced annotations count toward the pipeline funnel/distributions;
     manual and imported labels are excluded (they weren't decided by the pipeline).
+    `threshold` overrides the review bar the summary is computed against (the
+    Settings slider passes the candidate value for a live preview); defaults to
+    the config value.
     """
     rows = [r for r in _load_traces(conn, statement_id) if r["source"] in _STAGE_ORDER]
     total = len(rows)
 
-    threshold = settings.confidence_threshold
+    if threshold is None:
+        threshold = settings.confidence_threshold
 
     # --- Stage funnel: count per stage, plus how many landed in review (below the
     #     confidence threshold) vs auto-accepted. review_rate is the headline the

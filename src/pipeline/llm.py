@@ -451,6 +451,45 @@ def annotate_transaction_llm_with_examples(
     )
 
 
+def test_connection(timeout: float = 10.0) -> dict:
+    """Probe the configured LLM provider with a trivial request.
+
+    Returns {ok, detail, models?}. Used by the Settings › AI & Model
+    test-connection button so a user can validate a BYOM endpoint before relying
+    on it. Never raises — connection/HTTP errors are reported in `detail`.
+    """
+    provider = settings.llm_provider
+    if provider == "none":
+        return {"ok": True, "detail": "AI is disabled (provider = none)."}
+
+    try:
+        if provider == "openai":
+            base = settings.llm_base_url.rstrip("/")
+            if not base:
+                return {"ok": False, "detail": "No endpoint URL set."}
+            headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
+            resp = httpx.get(f"{base}/models", headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            detail = f"Connected. {len(models)} model(s) available."
+            if settings.llm_model and models and settings.llm_model not in models:
+                detail += f" Warning: '{settings.llm_model}' not in the list."
+            return {"ok": True, "detail": detail, "models": models[:50]}
+
+        # ollama
+        resp = httpx.get(f"{settings.ollama_url}/api/tags", timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+        detail = f"Connected to Ollama. {len(models)} model(s) pulled."
+        if settings.ollama_model and models and settings.ollama_model not in models:
+            detail += f" Warning: '{settings.ollama_model}' is not pulled — run `ollama pull {settings.ollama_model}`."
+        return {"ok": True, "detail": detail, "models": models}
+    except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 def annotate_transaction_llm(
     txn: TxnRow,
     category_list: list[str],
