@@ -3,6 +3,12 @@ from __future__ import annotations
 
 import sqlite3
 
+import ulid
+
+
+class CategoryError(ValueError):
+    """A category mutation the caller should surface as a 4xx (bad request)."""
+
 
 def get_category_tree(conn: sqlite3.Connection) -> list[dict]:
     """Return all categories as flat list of dicts with id, name, parent_id."""
@@ -55,3 +61,80 @@ def get_category_names_flat(conn: sqlite3.Connection) -> list[str]:
             parent_name = by_id[row["parent_id"]]["name"]
             result.append(f"{parent_name} > {row['name']}")
     return result
+
+
+# --- Category management (4.13): add / rename / merge subcategories. -----------
+# Annotations store both the id (category_id/subcategory_id) and the denormalized
+# name (category/subcategory); every mutation keeps the two in lockstep so the
+# rest of the app - which reads the names - sees the change immediately.
+
+def _get_category(conn: sqlite3.Connection, category_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT id, name, parent_id FROM categories WHERE id = ?", (category_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def add_subcategory(conn: sqlite3.Connection, parent_id: str, name: str) -> dict:
+    """Create a subcategory under a top-level category. Caller commits."""
+    name = name.strip()
+    if not name:
+        raise CategoryError("Subcategory name can't be empty")
+    parent = _get_category(conn, parent_id)
+    if parent is None or parent["parent_id"] is not None:
+        raise CategoryError("Parent must be an existing top-level category")
+    dup = conn.execute(
+        "SELECT 1 FROM categories WHERE parent_id = ? AND name = ? COLLATE NOCASE",
+        (parent_id, name),
+    ).fetchone()
+    if dup:
+        raise CategoryError(f"'{name}' already exists under {parent['name']}")
+    new_id = str(ulid.ULID())
+    conn.execute(
+        "INSERT INTO categories (id, name, parent_id) VALUES (?, ?, ?)",
+        (new_id, name, parent_id),
+    )
+    return {"id": new_id, "name": name, "parent_id": parent_id}
+
+
+def rename_subcategory(conn: sqlite3.Connection, category_id: str, name: str) -> dict:
+    """Rename a subcategory and cascade the new name onto its annotations. Caller commits."""
+    name = name.strip()
+    if not name:
+        raise CategoryError("Subcategory name can't be empty")
+    cat = _get_category(conn, category_id)
+    if cat is None or cat["parent_id"] is None:
+        raise CategoryError("Only subcategories can be renamed here")
+    dup = conn.execute(
+        "SELECT 1 FROM categories WHERE parent_id = ? AND name = ? COLLATE NOCASE AND id != ?",
+        (cat["parent_id"], name, category_id),
+    ).fetchone()
+    if dup:
+        raise CategoryError(f"'{name}' already exists in this category")
+    conn.execute("UPDATE categories SET name = ? WHERE id = ?", (name, category_id))
+    # Keep the denormalized annotation name in sync with the id.
+    conn.execute(
+        "UPDATE annotations SET subcategory = ? WHERE subcategory_id = ?",
+        (name, category_id),
+    )
+    return {"id": category_id, "name": name, "parent_id": cat["parent_id"]}
+
+
+def merge_subcategory(conn: sqlite3.Connection, source_id: str, target_id: str) -> dict:
+    """Merge source subcategory into target: repoint every annotation from source
+    to target, then delete source. Both must be subcategories of the same parent.
+    Caller commits."""
+    if source_id == target_id:
+        raise CategoryError("Can't merge a subcategory into itself")
+    src = _get_category(conn, source_id)
+    tgt = _get_category(conn, target_id)
+    if src is None or tgt is None or src["parent_id"] is None or tgt["parent_id"] is None:
+        raise CategoryError("Both must be existing subcategories")
+    if src["parent_id"] != tgt["parent_id"]:
+        raise CategoryError("Can only merge subcategories within the same category")
+    moved = conn.execute(
+        "UPDATE annotations SET subcategory = ?, subcategory_id = ? WHERE subcategory_id = ?",
+        (tgt["name"], target_id, source_id),
+    ).rowcount
+    conn.execute("DELETE FROM categories WHERE id = ?", (source_id,))
+    return {"merged_into": target_id, "moved": moved}

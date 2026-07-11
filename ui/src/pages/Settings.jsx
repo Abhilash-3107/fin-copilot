@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database } from 'lucide-react'
+import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database, FolderTree } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import RunSummary from '../components/RunSummary.jsx'
 import ModelSettings from '../components/ModelSettings.jsx'
 import DataSettings from '../components/DataSettings.jsx'
+import CategorySettings from '../components/CategorySettings.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -221,6 +222,7 @@ const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
   { id: 'model', label: 'AI & Model', icon: Cpu },
   { id: 'insights', label: 'Insights', icon: BarChart3 },
+  { id: 'categories', label: 'Categories', icon: FolderTree },
   { id: 'rules', label: 'Learned Rules', icon: BookOpen },
   { id: 'data', label: 'Data', icon: Database },
 ]
@@ -317,6 +319,8 @@ export default function Settings() {
           {tab === 'insights' && (
             <InsightsSettings devMode={devMode} threshold={threshold} onSave={saveThreshold} />
           )}
+
+          {tab === 'categories' && <CategorySettings />}
 
           {tab === 'rules' && <LearnedRules />}
 

@@ -468,6 +468,67 @@ class TestTransactionsFilters:
         assert facets == {"categories": [], "sources": []}
 
 
+class TestCategoryManagement:
+    """4.13: add / rename / merge subcategories, keeping annotation names in sync."""
+
+    def _parent(self, client):
+        cats = client.get("/api/categories").json()
+        return next(c for c in cats if c["name"] == "Food & Dining" and c["parent_id"] is None)
+
+    def test_add_subcategory(self, client_conn):
+        client, conn, _ = client_conn
+        parent = self._parent(client)
+        resp = client.post("/api/categories/subcategories", json={"parent_id": parent["id"], "name": "Street Food"})
+        assert resp.status_code == 201
+        cats = client.get("/api/categories").json()
+        assert any(c["name"] == "Street Food" and c["parent_id"] == parent["id"] for c in cats)
+
+    def test_add_duplicate_rejected(self, client_conn):
+        client, conn, _ = client_conn
+        parent = self._parent(client)
+        client.post("/api/categories/subcategories", json={"parent_id": parent["id"], "name": "Zzz"})
+        dup = client.post("/api/categories/subcategories", json={"parent_id": parent["id"], "name": "zzz"})
+        assert dup.status_code == 422
+
+    def test_rename_cascades_to_annotations(self, client_conn):
+        client, conn, _ = client_conn
+        parent = self._parent(client)
+        sub_id = client.post(
+            "/api/categories/subcategories", json={"parent_id": parent["id"], "name": "Takeout"}
+        ).json()["id"]
+        # Annotate a txn with the new subcategory (resolves subcategory_id).
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                     "VALUES ('tx','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        client.post("/api/annotations", json={
+            "transaction_id": "tx", "category": "Food & Dining", "subcategory": "Takeout", "source": "manual",
+        })
+        client.patch(f"/api/categories/subcategories/{sub_id}", json={"name": "Takeaway"})
+        row = conn.execute("SELECT subcategory FROM annotations WHERE transaction_id='tx'").fetchone()
+        assert row["subcategory"] == "Takeaway"
+
+    def test_merge_repoints_annotations(self, client_conn):
+        client, conn, _ = client_conn
+        parent = self._parent(client)
+        a = client.post("/api/categories/subcategories", json={"parent_id": parent["id"], "name": "SrcSub"}).json()["id"]
+        b = client.post("/api/categories/subcategories", json={"parent_id": parent["id"], "name": "TgtSub"}).json()["id"]
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                     "VALUES ('tx','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        client.post("/api/annotations", json={
+            "transaction_id": "tx", "category": "Food & Dining", "subcategory": "SrcSub", "source": "manual",
+        })
+        resp = client.post(f"/api/categories/subcategories/{a}/merge", json={"target_id": b})
+        assert resp.json()["moved"] == 1
+        # Source gone, annotation now points at target.
+        cats = client.get("/api/categories").json()
+        assert all(c["id"] != a for c in cats)
+        row = conn.execute("SELECT subcategory, subcategory_id FROM annotations WHERE transaction_id='tx'").fetchone()
+        assert row["subcategory"] == "TgtSub" and row["subcategory_id"] == b
+
+
 class TestDataManagement:
     """4.14: delete-everything wipes user data but keeps the seeded categories."""
 
