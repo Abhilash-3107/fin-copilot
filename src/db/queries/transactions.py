@@ -136,6 +136,10 @@ def list_transactions(
     sources: list[str] | None = None,
     merchant: str | None = None,
     person_token: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
+    sort: str = "date",
+    order: str = "desc",
     after: str | None = None,
     limit: int | None = None,
 ) -> list[TxnRow]:
@@ -221,18 +225,32 @@ def list_transactions(
         conditions.append("strftime('%Y-%m', t.txn_date) = ?")
         params.append(month)
 
+    if min_amount is not None:
+        conditions.append("t.amount >= ?")
+        params.append(min_amount)
+    if max_amount is not None:
+        conditions.append("t.amount <= ?")
+        params.append(max_amount)
+
+    # Sort key + direction, always tie-broken by id for a stable keyset order.
+    sort_col = "t.amount" if sort == "amount" else "t.txn_date"
+    direction = "ASC" if order == "asc" else "DESC"
+    cmp = ">" if direction == "ASC" else "<"
+
     if after:
         cursor = conn.execute(
-            "SELECT txn_date, id FROM transactions WHERE id = ?", (after,)
+            "SELECT txn_date, amount, id FROM transactions WHERE id = ?", (after,)
         ).fetchone()
         if cursor is not None:
-            conditions.append("(t.txn_date, t.id) > (?, ?)")
-            params += [cursor["txn_date"], cursor["id"]]
+            cursor_val = cursor["amount"] if sort == "amount" else cursor["txn_date"]
+            # Keyset on (sort_col, id) so pagination follows the chosen order.
+            conditions.append(f"({sort_col}, t.id) {cmp} (?, ?)")
+            params += [cursor_val, cursor["id"]]
 
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
 
-    query += " ORDER BY t.txn_date, t.id"
+    query += f" ORDER BY {sort_col} {direction}, t.id {direction}"
 
     if limit is not None:
         query += " LIMIT ?"

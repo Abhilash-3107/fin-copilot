@@ -348,18 +348,77 @@ class TestTransactionsList:
     def test_cursor_pagination(self, client_conn):
         client, conn, _ = client_conn
         self._seed_many(conn, 5)
+        # Default sort is newest-first (date desc), tie-broken by id.
         page1 = client.get("/api/transactions?limit=2").json()
-        assert [r["id"] for r in page1] == ["t0", "t1"]
+        assert [r["id"] for r in page1] == ["t4", "t3"]
         page2 = client.get(f"/api/transactions?limit=2&after={page1[-1]['id']}").json()
-        assert [r["id"] for r in page2] == ["t2", "t3"]
+        assert [r["id"] for r in page2] == ["t2", "t1"]
         page3 = client.get(f"/api/transactions?limit=2&after={page2[-1]['id']}").json()
-        assert [r["id"] for r in page3] == ["t4"]
+        assert [r["id"] for r in page3] == ["t0"]
+
+    def test_ascending_sort_by_date(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed_many(conn, 3)
+        rows = client.get("/api/transactions?order=asc").json()
+        assert [r["id"] for r in rows] == ["t0", "t1", "t2"]
 
     def test_unknown_cursor_ignored(self, client_conn):
         client, conn, _ = client_conn
         self._seed_many(conn, 2)
         rows = client.get("/api/transactions?after=missing&limit=10").json()
         assert len(rows) == 2
+
+    def test_amount_filter_and_amount_sort(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        for i, amt in enumerate([10.0, 500.0, 2000.0]):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-10', ?, 'debit', ?)",
+                (f"a{i}", amt, f"row {i}"),
+            )
+        conn.commit()
+        # min/max window keeps only the middle row.
+        mid = client.get("/api/transactions?min_amount=100&max_amount=1000").json()
+        assert [r["id"] for r in mid] == ["a1"]
+        # Sort by amount ascending.
+        asc = client.get("/api/transactions?sort=amount&order=asc").json()
+        assert [r["amount"] for r in asc] == [10.0, 500.0, 2000.0]
+
+    def test_bulk_set_category(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-10', 10.0, 'debit', ?)",
+                (f"b{i}", f"row {i}"),
+            )
+        conn.commit()
+        # One already annotated by a model; two unannotated.
+        insert_annotation(conn, Annotation(id="pre", transaction_id="b0", category="Shopping", confidence=0.4, source="llm"))
+        conn.commit()
+
+        resp = client.post("/api/annotations/bulk-category", json={
+            "transaction_ids": ["b0", "b1", "b2"], "category": "Food & Dining", "subcategory": "Restaurants",
+        })
+        assert resp.json()["updated"] == 3
+        rows = client.get("/api/transactions?include=annotation").json()
+        by_id = {r["id"]: r for r in rows}
+        for tid in ("b0", "b1", "b2"):
+            assert by_id[tid]["category"] == "Food & Dining"
+            assert by_id[tid]["subcategory"] == "Restaurants"
+            assert by_id[tid]["source"] == "manual"
+        # The pre-existing model label's history is preserved.
+        assert by_id["b0"]["original_source"] == "llm"
+
+    def test_bulk_unknown_category_rejected(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) VALUES ('b0','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        resp = client.post("/api/annotations/bulk-category", json={"transaction_ids": ["b0"], "category": "Nope"})
+        assert resp.status_code == 422
 
 
 class TestTransactionsFilters:

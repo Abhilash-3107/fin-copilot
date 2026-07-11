@@ -354,6 +354,61 @@ def confirm_annotation(
     return _as_response(updated)
 
 
+class BulkCategoryRequest(BaseModel):
+    transaction_ids: list[str]
+    category: str
+    subcategory: str | None = None
+
+
+@router.post("/bulk-category")
+def bulk_set_category(body: BulkCategoryRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """Set a category on many transactions at once (4.12).
+
+    Each transaction is annotated as a manual label: an unannotated one gets a
+    new manual annotation, an already-annotated one is corrected via
+    update_annotation (preserving original_source/history). Confidence is 1.0 -
+    a human explicitly chose this."""
+    category_id, subcategory_id = resolve_category_ids(conn, body.category, body.subcategory)
+    if category_id is None:
+        raise HTTPException(status_code=422, detail=f"Unknown category: {body.category}")
+    if body.subcategory and subcategory_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown subcategory under {body.category}: {body.subcategory}",
+        )
+    if not body.transaction_ids:
+        return {"updated": 0}
+
+    updated = 0
+    for txn_id in body.transaction_ids:
+        existing = get_annotation_by_transaction(conn, txn_id)
+        if existing is None:
+            insert_annotation(conn, Annotation(
+                transaction_id=txn_id,
+                category=body.category,
+                subcategory=body.subcategory,
+                confidence=1.0,
+                source="manual",
+            ))
+        else:
+            if existing["source"] in _MODEL_SOURCES:
+                record_feedback(conn, existing["source"], existing["category"], "corrected")
+            update_annotation(conn, existing["id"], {
+                "category": body.category,
+                "subcategory": body.subcategory,
+                "category_id": category_id,
+                "subcategory_id": subcategory_id,
+                "confidence": 1.0,
+            })
+        updated += 1
+
+    conn.commit()
+    # Best-effort re-embed so the new labels serve as RAG donors.
+    for txn_id in body.transaction_ids:
+        embed_transaction(conn, txn_id)
+    return {"updated": updated}
+
+
 class ApplySimilarRequest(BaseModel):
     transaction_ids: list[str]
 

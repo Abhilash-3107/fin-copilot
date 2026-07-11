@@ -114,10 +114,16 @@ export default function Transactions() {
   const [merchantFilter, setMerchantFilter] = useState('')
   // Person filter carries {token, name}: token drives the query, name labels the chip.
   const [personFilter, setPersonFilter] = useState(null)
+  const [minAmount, setMinAmount] = useState('')
+  const [maxAmount, setMaxAmount] = useState('')
+  const [sort, setSort] = useState('date')     // 'date' | 'amount'
+  const [order, setOrder] = useState('desc')    // 'asc' | 'desc'
+  const [selected, setSelected] = useState(new Set()) // selected txn ids for bulk actions
   const [search, setSearch] = useState('')
   // The query the server actually sees; trails `search` by the debounce delay.
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [facets, setFacets] = useState({ categories: [], sources: [] })
+  const [categoryTree, setCategoryTree] = useState([])
   const [transactions, setTransactions] = useState([])
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
@@ -149,8 +155,12 @@ export default function Transactions() {
     if (sourceCsv) params.set('source', sourceCsv)
     if (merchantFilter) params.set('merchant', merchantFilter)
     if (personFilter?.token) params.set('person', personFilter.token)
+    if (minAmount !== '' && !Number.isNaN(Number(minAmount))) params.set('min_amount', minAmount)
+    if (maxAmount !== '' && !Number.isNaN(Number(maxAmount))) params.set('max_amount', maxAmount)
+    params.set('sort', sort)
+    params.set('order', order)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter])
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter, minAmount, maxAmount, sort, order])
 
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
@@ -161,6 +171,7 @@ export default function Transactions() {
       setTransactions(txns)
       setAnnotationMap(buildAnnotationMap(txns))
       setHasMore(txns.length === PAGE_SIZE)
+      setSelected(new Set()) // a fresh result set invalidates the old selection
     } catch (e) {
       toast(`Failed to load: ${e.message}`, 'error')
     } finally {
@@ -188,6 +199,49 @@ export default function Transactions() {
 
   useEffect(() => { loadTransactions() }, [loadTransactions])
 
+  function toggleSort(col) {
+    if (sort === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'))
+    else { setSort(col); setOrder(col === 'amount' ? 'desc' : 'desc') }
+  }
+
+  function toggleSelect(id) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    setSelected(prev =>
+      prev.size === transactions.length ? new Set() : new Set(transactions.map(t => t.id))
+    )
+  }
+
+  const [bulkCategory, setBulkCategory] = useState('')
+  const [bulkApplying, setBulkApplying] = useState(false)
+
+  async function applyBulkCategory() {
+    const [category, subcategory] = bulkCategory.includes(' › ')
+      ? bulkCategory.split(' › ')
+      : [bulkCategory, null]
+    if (!category) return
+    setBulkApplying(true)
+    try {
+      const { updated } = await api.post('/annotations/bulk-category', {
+        transaction_ids: [...selected], category, subcategory: subcategory || null,
+      })
+      toast(`Categorized ${updated} transaction${updated === 1 ? '' : 's'}`, 'success')
+      setSelected(new Set())
+      setBulkCategory('')
+      loadTransactions()
+    } catch (e) {
+      toast(`Couldn't apply - ${e.message}`, 'error')
+    } finally {
+      setBulkApplying(false)
+    }
+  }
+
   // Filter dropdown options come from a scope-wide facets query, not from the
   // loaded page, so options that first appear beyond the current page (or that
   // an active filter would hide) are still offered.
@@ -203,6 +257,20 @@ export default function Transactions() {
   }, [selectedStmt, month])
 
   useEffect(() => { loadFacets() }, [loadFacets])
+
+  // Full taxonomy for the bulk set-category picker (facets only list categories
+  // already present in data; here the user can assign any of them).
+  useEffect(() => {
+    api.get('/categories').then(setCategoryTree).catch(() => {})
+  }, [])
+
+  const bulkOptions = (() => {
+    const byId = Object.fromEntries(categoryTree.map(c => [c.id, c]))
+    return categoryTree
+      .filter(c => c.parent_id !== null)
+      .map(c => `${byId[c.parent_id]?.name ?? '?'} › ${c.name}`)
+      .sort()
+  })()
 
   // Seed filters from the /transactions deep-link convention (category,
   // merchant, source, q, month). Runs on mount and whenever a new deep link
@@ -407,6 +475,24 @@ export default function Transactions() {
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
         />
 
+        <div className="flex items-center gap-1">
+          <input
+            type="number"
+            value={minAmount}
+            onChange={e => setMinAmount(e.target.value)}
+            placeholder="Min ₹"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+          />
+          <span className="text-[#475569] text-xs">–</span>
+          <input
+            type="number"
+            value={maxAmount}
+            onChange={e => setMaxAmount(e.target.value)}
+            placeholder="Max ₹"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+          />
+        </div>
+
         <MultiFilter
           label="Source"
           options={sourceOptions}
@@ -466,6 +552,38 @@ export default function Transactions() {
         </Tooltip>
       </div>
 
+      {/* Bulk action bar (4.12) */}
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-20 bg-[#1e1b4b] border-b border-[#3730a3] px-5 py-2.5 flex items-center gap-3 flex-wrap">
+          <span className="text-sm text-[#c7d2fe] font-medium">
+            {selected.size} selected
+          </span>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="text-xs text-[#a5b4fc] hover:text-[#e0e7ff]"
+          >
+            Clear
+          </button>
+          <div className="flex items-center gap-2 ml-auto">
+            <select
+              value={bulkCategory}
+              onChange={e => setBulkCategory(e.target.value)}
+              className="bg-[#13151f] border border-[#4338ca] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none max-w-[220px]"
+            >
+              <option value="">Set category…</option>
+              {bulkOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+            </select>
+            <button
+              onClick={applyBulkCategory}
+              disabled={!bulkCategory || bulkApplying}
+              className="bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+            >
+              {bulkApplying ? 'Applying…' : 'Apply'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="flex-1 overflow-auto">
         {!loading && transactions.length === 0 ? (
@@ -480,6 +598,13 @@ export default function Transactions() {
               annotationMap={annotationMap}
               activeId={activeTxn?.id}
               onSelect={openAnnotationPanel}
+              selectable
+              selected={selected}
+              onToggle={toggleSelect}
+              onToggleAll={toggleSelectAll}
+              sort={sort}
+              order={order}
+              onSort={toggleSort}
             />
             {hasMore && (
               <div className="flex justify-center py-4">

@@ -1,23 +1,56 @@
 import dayjs from 'dayjs'
+import { ChevronUp, ChevronDown } from 'lucide-react'
 import Amount from './Amount.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
-export default function TransactionTable({ transactions, annotationMap = {}, activeId, onSelect }) {
+// Sortable header for the Date/Amount columns (4.12). Clicking toggles the
+// sort key; clicking the active key flips direction.
+function SortHeader({ label, col, sort, order, onSort, align = 'left' }) {
+  const active = sort === col
+  return (
+    <button
+      onClick={() => onSort(col)}
+      className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#a5b4fc]' : 'hover:text-[#94a3b8]'} ${align === 'right' ? 'flex-row-reverse' : ''}`}
+    >
+      {label}
+      {active && (order === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+    </button>
+  )
+}
+
+export default function TransactionTable({
+  transactions, annotationMap = {}, activeId, onSelect,
+  selectable = false, selected, onToggle, onToggleAll, sort, order, onSort,
+}) {
   if (!transactions.length) return null
+
+  const allSelected = selectable && transactions.every(t => selected?.has(t.id))
+  const th = 'sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap'
 
   return (
     <table className="w-full border-collapse text-sm">
       <thead>
         <tr>
-          {['Date', 'Description', 'Amount', 'Category', 'Source', 'Confidence'].map(h => (
-            <th
-              key={h}
-              className={`sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap ${
-                h === 'Amount' ? 'text-right' : 'text-left'
-              }`}
-            >
-              {h}
+          {selectable && (
+            <th className={`${th} w-8`}>
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={onToggleAll}
+                className="accent-[#6366f1] align-middle"
+                aria-label="Select all"
+              />
             </th>
+          )}
+          <th className={`${th} text-left`}>
+            {onSort ? <SortHeader label="Date" col="date" sort={sort} order={order} onSort={onSort} /> : 'Date'}
+          </th>
+          <th className={`${th} text-left`}>Description</th>
+          <th className={`${th} text-right`}>
+            {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
+          </th>
+          {['Category', 'Source', 'Confidence'].map(h => (
+            <th key={h} className={`${th} text-left`}>{h}</th>
           ))}
         </tr>
       </thead>
@@ -27,6 +60,7 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
           const isDebit = txn.debit_credit === 'debit'
           const src = ann?.source ?? 'pending'
           const isActive = txn.id === activeId
+          const isSelected = selectable && selected?.has(txn.id)
           let upiNote = null
           try {
             const meta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
@@ -47,9 +81,22 @@ export default function TransactionTable({ transactions, annotationMap = {}, act
               className={`border-b border-[#1a1d27] cursor-pointer transition-colors duration-100 ${
                 isActive
                   ? 'bg-[#1e2440] shadow-[inset_2px_0_0_#6366f1]' // inset accent, not a border: no 2px reflow
-                  : 'hover:bg-[#1a1d27]'
+                  : isSelected
+                    ? 'bg-[#171a2e]'
+                    : 'hover:bg-[#1a1d27]'
               }`}
             >
+              {selectable && (
+                <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={!!isSelected}
+                    onChange={() => onToggle(txn.id)}
+                    className="accent-[#6366f1] align-middle"
+                    aria-label="Select transaction"
+                  />
+                </td>
+              )}
               <td className="px-3 py-2.5 whitespace-nowrap text-[#94a3b8]">
                 {dayjs(txn.txn_date).format('DD MMM YY')}
               </td>
