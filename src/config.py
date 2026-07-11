@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # similarity (or sharing the same UPI counterparty identity) are offered for
     # bulk re-annotation after a human correction.
     apply_similar_floor: float = 0.9
+    # Cap on how many annotated rows run_summary scans + JSON-decodes in one
+    # request. The dev-mode insight aggregates are corpus-wide, but a full scan
+    # with per-row trace decode is CPU-heavy at scale; beyond this we take the
+    # most-recent N and flag the payload `truncated` so the UI can disclose it.
+    # Generous for the single-user local corpus this targets.
+    run_summary_max_rows: int = 20_000
     api_base_url: str = "http://localhost:8000"
     log_level: str = "INFO"
     # The annotation pipeline always captures a per-annotation reasoning trace

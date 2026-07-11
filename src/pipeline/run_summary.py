@@ -41,11 +41,18 @@ def _histogram(values: list[float]) -> list[int]:
     return counts
 
 
-def _load_traces(conn: sqlite3.Connection, statement_id: str | None) -> list[dict]:
+def _load_traces(
+    conn: sqlite3.Connection, statement_id: str | None
+) -> tuple[list[dict], bool]:
     """Fetch (annotation, transaction, parsed-trace) rows for annotated txns.
 
     Rows with no reasoning (annotated before trace capture existed) are kept but
     carry trace=None, so the funnel still counts them under their source.
+
+    Bounded by settings.run_summary_max_rows: the aggregates are corpus-wide, but
+    a full scan with per-row JSON decode is CPU-heavy at scale, so beyond the cap
+    we take the most-recent N and return truncated=True for the caller to
+    disclose. Returns (rows, truncated).
     """
     sql = """
         SELECT a.transaction_id, a.source, a.confidence, a.category, a.merchant,
@@ -53,12 +60,20 @@ def _load_traces(conn: sqlite3.Connection, statement_id: str | None) -> list[dic
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
     """
-    params: tuple = ()
+    params: list = []
     if statement_id:
         sql += " WHERE t.statement_id = ?"
-        params = (statement_id,)
+        params.append(statement_id)
+    # Most-recent-first so the cap keeps the freshest window; fetch one extra to
+    # detect whether more rows existed than the cap.
+    cap = settings.run_summary_max_rows
+    sql += " ORDER BY a.annotated_at DESC LIMIT ?"
+    params.append(cap + 1)
+
+    fetched = conn.execute(sql, params).fetchall()
+    truncated = len(fetched) > cap
     rows = []
-    for row in conn.execute(sql, params).fetchall():
+    for row in fetched[:cap]:
         d = dict(row)
         raw = d.pop("reasoning", None)
         try:
@@ -66,7 +81,7 @@ def _load_traces(conn: sqlite3.Connection, statement_id: str | None) -> list[dic
         except (TypeError, json.JSONDecodeError):
             d["trace"] = None
         rows.append(d)
-    return rows
+    return rows, truncated
 
 
 def run_summary(
@@ -82,7 +97,8 @@ def run_summary(
     Settings slider passes the candidate value for a live preview); defaults to
     the config value.
     """
-    rows = [r for r in _load_traces(conn, statement_id) if r["source"] in _STAGE_ORDER]
+    loaded, truncated = _load_traces(conn, statement_id)
+    rows = [r for r in loaded if r["source"] in _STAGE_ORDER]
     total = len(rows)
 
     if threshold is None:
@@ -148,6 +164,8 @@ def run_summary(
 
     return {
         "total": total,
+        "truncated": truncated,
+        "scan_cap": settings.run_summary_max_rows,
         "review_count": review_count,
         "auto_accepted_count": auto_count,
         "review_rate": round(review_count / total, 4) if total else 0.0,

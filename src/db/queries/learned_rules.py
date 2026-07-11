@@ -90,6 +90,37 @@ def _representative(rows: list[dict], category: str) -> dict:
     return max(of_cat, key=lambda r: r["annotated_at"] or "")
 
 
+def _promote(counterparty_key: str, rows: list[dict]) -> LearnedRule | None:
+    """Apply the support+purity promotion bar to one counterparty's verified rows.
+
+    The single source of truth for "is this an established rule": both the
+    per-key lookup and the bulk listing route through here so they can never
+    disagree. Callers pass only verified, causally-filtered rows.
+    """
+    total = len(rows)
+    if total == 0:
+        return None
+
+    counts = Counter(r["category"] for r in rows)
+    category, support = counts.most_common(1)[0]
+    purity = support / total
+
+    if support < settings.learned_rule_min_support or purity < settings.learned_rule_purity:
+        return None
+
+    rep = _representative(rows, category)
+    return LearnedRule(
+        counterparty_key=counterparty_key,
+        category=category,
+        subcategory=rep.get("subcategory"),
+        merchant=rep.get("merchant"),
+        tags=parse_string_list(rep.get("tags")),
+        support=support,
+        total=total,
+        purity=round(purity, 4),
+    )
+
+
 def lookup_learned_rule(
     conn: sqlite3.Connection,
     counterparty_key: str | None,
@@ -134,46 +165,44 @@ def lookup_learned_rule(
         ).fetchall()
     ]
 
-    total = len(rows)
-    if total == 0:
-        return None
-
-    counts = Counter(r["category"] for r in rows)
-    category, support = counts.most_common(1)[0]
-    purity = support / total
-
-    if support < settings.learned_rule_min_support or purity < settings.learned_rule_purity:
-        return None
-
-    rep = _representative(rows, category)
-    return LearnedRule(
-        counterparty_key=counterparty_key,
-        category=category,
-        subcategory=rep.get("subcategory"),
-        merchant=rep.get("merchant"),
-        tags=parse_string_list(rep.get("tags")),
-        support=support,
-        total=total,
-        purity=round(purity, 4),
-    )
+    return _promote(counterparty_key, rows)
 
 
 def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
     """All currently-established merchant rules (for the transparency endpoint).
 
     Computed live from present-day annotations (no causal cutoff) so the user
-    sees what the pipeline would apply right now.
+    sees what the pipeline would apply right now. Two queries total (verified
+    rows, then the suppression set); grouping and promotion happen in Python via
+    the same _promote() the per-key lookup uses, so the list can never diverge
+    from what the pipeline would actually fire.
     """
-    keys = [
+    placeholders = ",".join("?" * len(_VERIFIED_SOURCES))
+    rows = conn.execute(
+        f"""
+        SELECT t.counterparty_key AS counterparty_key,
+               a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
+        FROM annotations a
+        JOIN transactions t ON t.id = a.transaction_id
+        WHERE t.counterparty_key IS NOT NULL
+          AND a.category IS NOT NULL
+          AND a.source IN ({placeholders})
+        """,
+        _VERIFIED_SOURCES,
+    ).fetchall()
+
+    suppressed = {
         r["counterparty_key"]
-        for r in conn.execute(
-            "SELECT DISTINCT counterparty_key FROM transactions WHERE counterparty_key IS NOT NULL"
-        ).fetchall()
-    ]
-    out: list[LearnedRule] = []
-    for key in keys:
-        rule = lookup_learned_rule(conn, key)
-        if rule is not None:
-            out.append(rule)
+        for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions").fetchall()
+    }
+
+    by_key: dict[str, list[dict]] = {}
+    for r in rows:
+        key = r["counterparty_key"]
+        if key in suppressed:
+            continue
+        by_key.setdefault(key, []).append(dict(r))
+
+    out = [rule for key, key_rows in by_key.items() if (rule := _promote(key, key_rows)) is not None]
     out.sort(key=lambda r: (-r.support, r.counterparty_key))
     return out

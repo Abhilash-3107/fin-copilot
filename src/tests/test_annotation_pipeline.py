@@ -1903,6 +1903,28 @@ class TestRunSummary:
         assert s["review_count"] == 1
         assert s["auto_accepted_count"] == 1
         assert sum(s["confidence"]["counts"]) == 2
+        assert s["truncated"] is False
+
+    def test_run_summary_truncates_and_flags(self, monkeypatch):
+        # 4.3: beyond the scan cap the summary reports truncated=True and only
+        # aggregates the capped window rather than scanning the whole corpus.
+        from src.config import settings
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+        from src.pipeline.run_summary import run_summary
+
+        monkeypatch.setattr(settings, "run_summary_max_rows", 3)
+        for i in range(5):
+            _insert_txn(self.conn, f"c{i}", f"vendor {i}")
+            insert_annotation(self.conn, Annotation(
+                transaction_id=f"c{i}", category="Shopping", confidence=0.9, source="llm",
+            ))
+        self.conn.commit()
+
+        s = run_summary(self.conn)
+        assert s["truncated"] is True
+        assert s["scan_cap"] == 3
+        assert s["total"] == 3  # only the capped window is aggregated
 
     def test_run_summary_near_miss_confidence(self):
         """A model annotation whose confidence sits just under the review
@@ -2189,6 +2211,35 @@ class TestLearnedRules:
             self._add(conn, f"e{i}", "SWIGGY", "Food & Dining")
         # Excluding one of the 3 drops support to 2 → not established.
         assert lookup_learned_rule(conn, "SWIGGY", exclude_transaction_id="e0") is None
+
+    def test_list_matches_per_key_lookup(self):
+        # 4.2: the single-query listing must agree exactly with the per-key
+        # lookup for every counterparty, promoted or not.
+        from src.db.queries.learned_rules import list_learned_rules, lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):  # promoted
+            self._add(conn, f"sw{i}", "SWIGGY", "Food & Dining", merchant="Swiggy")
+        for i in range(4):  # promoted, higher support → sorts first
+            self._add(conn, f"li{i}", "LICIOUS", "Food & Dining", merchant="Licious")
+        for i in range(3):  # low purity → not promoted
+            self._add(conn, f"mf{i}", "MIXED", "Food & Dining")
+        for i in range(2):
+            self._add(conn, f"ms{i}", "MIXED", "Shopping")
+        self._add(conn, "bot0", "BOTMERCH", "Shopping", source="llm")  # unverified
+
+        listed = list_learned_rules(conn)
+        # Only the two established keys appear, support-desc.
+        assert [r.counterparty_key for r in listed] == ["LICIOUS", "SWIGGY"]
+        for r in listed:
+            direct = lookup_learned_rule(conn, r.counterparty_key)
+            assert direct is not None
+            assert (r.category, r.subcategory, r.merchant, r.support, r.total, r.purity) == (
+                direct.category, direct.subcategory, direct.merchant,
+                direct.support, direct.total, direct.purity,
+            )
+        for key in ("MIXED", "BOTMERCH"):
+            assert lookup_learned_rule(conn, key) is None
+            assert all(r.counterparty_key != key for r in listed)
 
     def test_pipeline_stage_applies_when_enabled(self, monkeypatch):
         from src.config import settings

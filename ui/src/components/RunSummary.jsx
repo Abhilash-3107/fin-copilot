@@ -199,6 +199,13 @@ export default function RunSummary({ threshold }) {
         </span>
       </div>
 
+      {data.truncated && (
+        <p className="text-[11px] text-[#64748b]">
+          Showing the most recent {data.scan_cap.toLocaleString()} annotations; older
+          ones are excluded from these aggregates.
+        </p>
+      )}
+
       {/* Stage funnel */}
       <div>
         <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-2.5">
