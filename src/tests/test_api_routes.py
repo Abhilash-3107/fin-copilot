@@ -527,6 +527,34 @@ class TestTransactionsFilters:
         assert facets == {"categories": [], "sources": []}
 
 
+class TestCategoryAccuracy:
+    """4.19: per-category accuracy from human feedback, weakest first + sample size."""
+
+    def _feedback(self, conn, category, confirmed, corrected, source="llm"):
+        conn.execute(
+            "INSERT INTO feedback_stats (source, category, confirmed, refined, corrected) VALUES (?, ?, ?, 0, ?)",
+            (source, category, confirmed, corrected),
+        )
+        conn.commit()
+
+    def test_ranks_weakest_first_with_sample_size(self, client_conn):
+        client, conn, _ = client_conn
+        self._feedback(conn, "Shopping", confirmed=9, corrected=1)   # 90%
+        self._feedback(conn, "Miscellaneous", confirmed=2, corrected=6)  # 25%
+        self._feedback(conn, "Food & Dining", confirmed=5, corrected=0)  # 100%
+        rows = client.get("/api/annotations/accuracy").json()
+        assert [r["category"] for r in rows] == ["Miscellaneous", "Shopping", "Food & Dining"]
+        misc = rows[0]
+        assert misc["reviewed"] == 8 and misc["changed"] == 6
+        assert abs(misc["accuracy"] - 0.25) < 1e-6
+
+    def test_below_min_reviews_excluded(self, client_conn):
+        client, conn, _ = client_conn
+        self._feedback(conn, "Travel", confirmed=1, corrected=1)  # only 2 reviews < 3
+        rows = client.get("/api/annotations/accuracy").json()
+        assert all(r["category"] != "Travel" for r in rows)
+
+
 class TestCategoryManagement:
     """4.13: add / rename / merge subcategories, keeping annotation names in sync."""
 

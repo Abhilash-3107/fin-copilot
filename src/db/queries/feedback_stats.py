@@ -49,3 +49,40 @@ def get_feedback_stats(
         (source, category),
     ).fetchone()
     return dict(row) if row else None
+
+
+def category_accuracy(conn: sqlite3.Connection, min_reviews: int = 3) -> list[dict]:
+    """Per-category review accuracy from human feedback, weakest first (4.19).
+
+    Accuracy = confirmed / reviewed for a category, aggregated across all model
+    sources (confirmed keeps the label, refined/corrected changed it). Only
+    categories with >= min_reviews reviewed transactions are included, so a
+    single correction can't read as "0% accurate". Each row carries its sample
+    size so the number is honest about how much it's based on.
+    """
+    rows = conn.execute(
+        """
+        SELECT category,
+               SUM(confirmed)                        AS confirmed,
+               SUM(refined)                          AS refined,
+               SUM(corrected)                        AS corrected,
+               SUM(confirmed + refined + corrected)  AS reviewed
+        FROM feedback_stats
+        GROUP BY category
+        HAVING reviewed >= ?
+        """,
+        (min_reviews,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        reviewed = r["reviewed"]
+        out.append({
+            "category": r["category"],
+            "confirmed": r["confirmed"],
+            "changed": r["refined"] + r["corrected"],
+            "reviewed": reviewed,
+            "accuracy": round(r["confirmed"] / reviewed, 4) if reviewed else 0.0,
+        })
+    # Weakest (lowest accuracy) first; ties broken by larger sample (more certain).
+    out.sort(key=lambda x: (x["accuracy"], -x["reviewed"]))
+    return out

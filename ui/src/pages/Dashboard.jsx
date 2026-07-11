@@ -366,11 +366,60 @@ function TopSpendingCard({ categories, month }) {
   )
 }
 
+// Where the copilot is shakiest: the categories your corrections most often
+// changed, weakest first, each with the sample size behind it (4.19). Clicking
+// through opens those transactions so you can teach it. Replaces the old filler
+// "most of your money went to…" card with something actionable.
+function AccuracyCard({ rows }) {
+  const weak = rows.slice(0, 4)
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
+        Where I need your help most
+      </p>
+      {weak.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-[#475569] leading-relaxed">
+          Not enough corrections yet to spot weak categories. Verify a few in Teach Me
+          and the shakiest ones will surface here.
+        </p>
+      ) : (
+        <ul className="px-4 py-2">
+          {weak.map(r => {
+            const pct = Math.round(r.accuracy * 100)
+            const good = pct >= 80
+            return (
+              <li key={r.category}>
+                <Link
+                  to={txnFilterPath({ category: r.category })}
+                  className="group -mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_4rem] items-center gap-3 rounded-md px-1 py-2 text-sm transition-colors hover:bg-[#1a1d27]"
+                >
+                  <span className="truncate text-[#e2e8f0] group-hover:text-[#a5b4fc]">{r.category}</span>
+                  <span className="h-2 overflow-hidden rounded bg-[#1e2235]" title={`${r.confirmed} kept, ${r.changed} changed`}>
+                    <span
+                      className={`block h-full rounded ${good ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </span>
+                  <span className="text-right tabular-nums text-[#94a3b8]">
+                    {pct}%
+                    <span className="block text-[10px] text-[#475569]">n={r.reviewed}</span>
+                  </span>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const toast = useToast()
   const { month: periodMonth } = usePeriod()
   const [data, setData] = useState(null)
   const [reviewCount, setReviewCount] = useState(0)
+  const [accuracy, setAccuracy] = useState([])
   const [loading, setLoading] = useState(true)
   const { startAnnotation } = useAnnotationJob()
   const [annotating, setAnnotating] = useState(false)
@@ -386,13 +435,15 @@ export default function Dashboard() {
     async function load() {
       setLoading(true)
       try {
-        const [summary, queue] = await Promise.all([
+        const [summary, queue, acc] = await Promise.all([
           api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
           api.get('/annotations/review-queue'),
+          api.get('/annotations/accuracy').catch(() => []),
         ])
         if (cancelled) return
         setData(summary)
         setReviewCount(queue.length)
+        setAccuracy(acc)
       } catch (e) {
         if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
       } finally {
@@ -566,6 +617,8 @@ export default function Dashboard() {
             <CommittedCard recurring={data.recurring} />
             <TopSpendingCard categories={data.categories} month={data.month} />
           </div>
+
+          <AccuracyCard rows={accuracy} />
         </>
       )}
     </div>

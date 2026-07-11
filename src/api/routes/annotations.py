@@ -26,7 +26,7 @@ from src.db.queries.app_settings import get_confidence_threshold, get_dev_mode
 from src.db.queries.categories import resolve_category_ids
 from src.db.queries.common import dump_string_list, parse_string_list
 from src.db.queries.embeddings import find_similar
-from src.db.queries.feedback_stats import record_feedback
+from src.db.queries.feedback_stats import category_accuracy, record_feedback
 from src.models.annotation import Annotation, AnnotationCreate, AnnotationPatch, AutoAnnotateResult
 from src.pipeline.annotate import auto_annotate
 from src.pipeline.counterparty import normalize_identity
@@ -577,6 +577,15 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
         }
         for r in list_learned_rules(conn)
     ]
+
+
+@router.get("/accuracy")
+def accuracy(conn: sqlite3.Connection = Depends(get_db)):
+    """Per-category review accuracy (weakest first) with sample sizes (4.19).
+
+    Built from human feedback on model labels; the dashboard shows the shakiest
+    categories so the user knows where their corrections help most."""
+    return category_accuracy(conn)
 
 
 @router.delete("/learned-rules/{counterparty_key:path}", status_code=204)
