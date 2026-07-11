@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from src.api.deps import get_db
 from src.config import settings
 from src.db.queries.embeddings import delete_embeddings
-from src.db.queries.transactions import list_transactions
+from src.db.queries.transactions import list_transactions, statement_balance_checks
 from src.pipeline.ingest import DuplicateStatementError, check_continuity, ingest_pdf
 
 router = APIRouter()
@@ -88,7 +88,15 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         ORDER BY s.uploaded_at DESC
         """
     ).fetchall()
-    return [dict(row) for row in rows]
+    # Per-statement running-balance reconciliation for the "N/N rows balanced"
+    # trust indicator (4.20). One extra windowed query, merged in by id.
+    checks = statement_balance_checks(conn)
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
+        result.append(d)
+    return result
 
 
 class StatementPatch(BaseModel):

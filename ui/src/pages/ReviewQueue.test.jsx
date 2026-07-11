@@ -52,6 +52,7 @@ function makeCard(overrides = {}) {
 function stubGet(queue) {
   mockApi.get.mockImplementation(path => {
     if (path === '/annotations/review-queue') return Promise.resolve(queue)
+    if (path === '/annotations/review-queue/snoozed-count') return Promise.resolve({ count: 0 })
     if (path === '/categories') return Promise.resolve(CATEGORIES)
     if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
     if (path.endsWith('/similar')) return Promise.resolve([]) // no propagation candidates
@@ -126,14 +127,16 @@ describe('ReviewQueue keyboard shortcuts', () => {
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', {})
   })
 
-  it('skips without saving anything', async () => {
+  it('skips persistently via the snooze endpoint without saving anything', async () => {
     stubGet([makeCard(), makeCard({ annotation_id: 11, raw_description: 'UBER TRIP' })])
     await renderQueue()
 
     fireEvent.keyDown(window, { key: 's' })
 
-    // Advances to the next card, and neither save endpoint was touched.
+    // Advances to the next card; the skip persists as a snooze (4.15), and
+    // neither save endpoint is touched.
     await screen.findByText('UBER TRIP')
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/skip', {})
     expect(mockApi.patch).not.toHaveBeenCalled()
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', {})
   })

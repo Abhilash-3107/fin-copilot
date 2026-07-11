@@ -73,6 +73,9 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
         "original_source = COALESCE(original_source, source)",
         "source = 'manual'",
         "annotated_at = datetime('now')",
+        # A correction is engagement; drop any lingering snooze so the flag never
+        # outlives the reason it was set.
+        "review_snoozed_at = NULL",
     ]
 
     conn.execute(
@@ -96,7 +99,11 @@ def get_annotation_by_transaction(conn: sqlite3.Connection, transaction_id: str)
 
 
 def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
-    """Return model annotations below the confidence threshold, joined with their transactions."""
+    """Return model annotations below the confidence threshold, joined with their transactions.
+
+    Snoozed rows (skipped by the user) are excluded so a skip sticks across
+    sessions instead of silently reappearing; see snooze_annotation / count_snoozed.
+    """
     sources = sorted(REVIEWABLE_SOURCES)
     placeholders = ",".join("?" for _ in sources)
     rows = conn.execute(
@@ -105,6 +112,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
         WHERE a.source IN ({placeholders}) AND a.confidence < ?
+          AND a.review_snoozed_at IS NULL
         -- Uncertainty × impact ordering: a wrong label on a large transaction
         -- costs more than one on a small one, so weight by log-amount instead of
         -- ranking purely by confidence.
@@ -113,3 +121,39 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
         (*sources, threshold),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def snooze_annotation(conn: sqlite3.Connection, annotation_id: str) -> bool:
+    """Snooze a low-confidence annotation out of the review queue (a "skip" that
+    sticks). Idempotent; returns True when a row was updated. Caller commits."""
+    cur = conn.execute(
+        "UPDATE annotations SET review_snoozed_at = datetime('now') WHERE id = ?",
+        (annotation_id,),
+    )
+    return cur.rowcount > 0
+
+
+def unsnooze_all(conn: sqlite3.Connection) -> int:
+    """Clear every snooze so skipped items return to the queue. Returns the count
+    cleared. Caller commits."""
+    cur = conn.execute(
+        "UPDATE annotations SET review_snoozed_at = NULL WHERE review_snoozed_at IS NOT NULL"
+    )
+    return cur.rowcount
+
+
+def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
+    """How many below-threshold model annotations are currently snoozed - the
+    count the queue surfaces so snoozed items are never fully hidden."""
+    sources = sorted(REVIEWABLE_SOURCES)
+    placeholders = ",".join("?" for _ in sources)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n
+        FROM annotations
+        WHERE source IN ({placeholders}) AND confidence < ?
+          AND review_snoozed_at IS NOT NULL
+        """,
+        (*sources, threshold),
+    ).fetchone()
+    return row["n"] if row else 0

@@ -245,6 +245,46 @@ class TestConfirmFlow:
         assert body["original_source"] == "llm"
 
 
+class TestReviewSnooze:
+    """4.15: skipping snoozes an item out of the queue persistently, with a
+    surfaced count and a restore-all path."""
+
+    def test_skip_removes_from_queue_and_counts(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", confidence=0.6)
+
+        assert any(i["annotation_id"] == "a1" for i in client.get("/api/annotations/review-queue").json())
+
+        resp = client.post("/api/annotations/a1/skip")
+        assert resp.status_code == 200
+
+        # Gone from the queue, counted as snoozed.
+        assert all(i["annotation_id"] != "a1" for i in client.get("/api/annotations/review-queue").json())
+        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 1
+
+    def test_unsnooze_restores(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", confidence=0.6)
+        client.post("/api/annotations/a1/skip")
+
+        resp = client.post("/api/annotations/review-queue/unsnooze")
+        assert resp.json()["restored"] == 1
+        assert any(i["annotation_id"] == "a1" for i in client.get("/api/annotations/review-queue").json())
+        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+
+    def test_skip_unknown_annotation_404s(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/annotations/nope/skip").status_code == 404
+
+    def test_correction_clears_snooze(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", confidence=0.6)
+        client.post("/api/annotations/a1/skip")
+        # Correcting the annotation should drop the lingering snooze flag.
+        client.patch("/api/annotations/a1", json={"category": "Food & Dining"})
+        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+
+
 class TestTransactionsList:
     def _seed_many(self, conn, n=5):
         conn.execute(
@@ -399,6 +439,62 @@ class TestTransactionsFilters:
         self._seed(conn)
         facets = client.get("/api/transactions/facets?month=2025-12").json()
         assert facets == {"categories": [], "sources": []}
+
+
+class TestStatementBalanceCheck:
+    """4.20: the statements list reports per-statement running-balance
+    reconciliation so the parser's rigor becomes a visible trust signal."""
+
+    def _seed_chain(self, conn, stmt_id, rows):
+        # rows: list of (amount, debit_credit, running_balance)
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES (?, 'test', '1', '2026-01')",
+            (stmt_id,),
+        )
+        for i, (amt, dc, bal) in enumerate(rows):
+            conn.execute(
+                """INSERT INTO transactions
+                   (id, statement_id, txn_date, amount, debit_credit, raw_description, running_balance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (f"{stmt_id}_{i}", stmt_id, f"2026-01-{10 + i:02d}", amt, dc, f"row {i}", bal),
+            )
+        conn.commit()
+
+    def _check_for(self, client, stmt_id):
+        body = client.get("/api/statements").json()
+        return next(s["balance_check"] for s in body if s["id"] == stmt_id)
+
+    def test_consistent_chain_is_balanced(self, client_conn):
+        client, conn, _ = client_conn
+        # 1000 → -200 debit → 800 → +50 credit → 850. Two consecutive checks, both OK.
+        self._seed_chain(conn, "s_ok", [(0.0, "credit", 1000.0), (200.0, "debit", 800.0), (50.0, "credit", 850.0)])
+        chk = self._check_for(client, "s_ok")
+        assert chk["checked"] == 2
+        assert chk["consistent"] == 2
+        assert chk["balanced"] is True
+
+    def test_broken_chain_flagged(self, client_conn):
+        client, conn, _ = client_conn
+        # Second step claims 800 but 1000 - 200 credit would be 1200; mismatch.
+        self._seed_chain(conn, "s_bad", [(0.0, "credit", 1000.0), (200.0, "credit", 800.0)])
+        chk = self._check_for(client, "s_bad")
+        assert chk["checked"] == 1
+        assert chk["consistent"] == 0
+        assert chk["balanced"] is False
+
+    def test_no_balances_reports_nothing_to_check(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s_nb','t','1','2026-01')"
+        )
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('s_nb_0','s_nb','2026-01-10', 10.0, 'debit', 'x')"""
+        )
+        conn.commit()
+        chk = self._check_for(client, "s_nb")
+        assert chk["checked"] == 0
+        assert chk["balanced"] is True
 
 
 class TestStatementDeleteCascade:

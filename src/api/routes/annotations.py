@@ -13,10 +13,13 @@ from pydantic import BaseModel
 from src.api.deps import get_db
 from src.config import settings
 from src.db.queries.annotations import (
+    count_snoozed,
     get_annotation,
     get_annotation_by_transaction,
     insert_annotation,
     list_review_queue,
+    snooze_annotation,
+    unsnooze_all,
     update_annotation,
 )
 from src.db.queries.app_settings import get_confidence_threshold, get_dev_mode
@@ -551,6 +554,31 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
             except (TypeError, json.JSONDecodeError):
                 item["reasoning"] = None
     return items
+
+
+@router.get("/review-queue/snoozed-count")
+def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
+    """How many below-threshold items the user has skipped (snoozed). The queue
+    surfaces this so snoozed items are never fully hidden and can be restored."""
+    return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
+
+
+@router.post("/review-queue/unsnooze", status_code=200)
+def review_queue_unsnooze(conn: sqlite3.Connection = Depends(get_db)):
+    """Bring every snoozed item back into the review queue."""
+    cleared = unsnooze_all(conn)
+    conn.commit()
+    return {"restored": cleared}
+
+
+@router.post("/{annotation_id}/skip", status_code=200)
+def skip_annotation(annotation_id: str, conn: sqlite3.Connection = Depends(get_db)):
+    """Snooze one annotation out of the review queue - a skip that persists across
+    sessions instead of silently reappearing (4.15)."""
+    if not snooze_annotation(conn, annotation_id):
+        raise HTTPException(status_code=404, detail=f"Annotation {annotation_id} not found")
+    conn.commit()
+    return {"snoozed": True}
 
 
 def _classify_feedback(existing: dict, patch: dict) -> str:

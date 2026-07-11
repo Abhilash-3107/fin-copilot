@@ -24,6 +24,61 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
     )
 
 
+def statement_balance_checks(
+    conn: sqlite3.Connection, tolerance: float = 0.01
+) -> dict[str, dict]:
+    """Per-statement running-balance reconciliation, keyed by statement_id.
+
+    For each consecutive pair of balance-carrying rows (in parse order), checks
+    that the balance delta matches the signed amount between them - the same
+    rigor the parser used to pick the layout, recomputed from the stored
+    running_balance so the UI can show "N/N rows balanced" and flag any break.
+
+    Returns {statement_id: {"checked": int, "consistent": int, "balanced": bool}}.
+    A statement with no balance chain (checked == 0) is reported balanced=True
+    (nothing to contradict), so the UI shows a check only when checked > 0.
+    """
+    rows = conn.execute(
+        """
+        WITH chain AS (
+            SELECT
+                statement_id,
+                running_balance,
+                amount,
+                debit_credit,
+                LAG(running_balance) OVER (
+                    PARTITION BY statement_id ORDER BY rowid
+                ) AS prev_balance
+            FROM transactions
+            WHERE running_balance IS NOT NULL
+        )
+        SELECT
+            statement_id,
+            COUNT(*) AS checked,
+            SUM(
+                CASE WHEN ABS(
+                    (running_balance - prev_balance)
+                    - (CASE WHEN debit_credit = 'credit' THEN amount ELSE -amount END)
+                ) <= ? THEN 1 ELSE 0 END
+            ) AS consistent
+        FROM chain
+        WHERE prev_balance IS NOT NULL AND debit_credit IS NOT NULL
+        GROUP BY statement_id
+        """,
+        (tolerance,),
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        checked = r["checked"] or 0
+        consistent = r["consistent"] or 0
+        out[r["statement_id"]] = {
+            "checked": checked,
+            "consistent": consistent,
+            "balanced": consistent == checked,
+        }
+    return out
+
+
 def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
     """Insert a transaction row. txn.statement_id must be set before calling."""
     if txn.statement_id is None:

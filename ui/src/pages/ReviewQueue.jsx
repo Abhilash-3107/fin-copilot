@@ -160,6 +160,7 @@ export default function ReviewQueue() {
   const [devMode, setDevMode] = useState(false)
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
+  const [snoozedCount, setSnoozedCount] = useState(0)
   const idxRef = useRef(0)
   useEffect(() => { idxRef.current = idx }, [idx])
 
@@ -183,6 +184,10 @@ export default function ReviewQueue() {
     api.get('/config').then(cfg => {
       setDevMode(!!cfg.dev_mode)
     }).catch(() => {})
+
+    api.get('/annotations/review-queue/snoozed-count')
+      .then(r => setSnoozedCount(r.count ?? 0))
+      .catch(() => {})
   }, [toast])
 
   const current = queue[idx]
@@ -248,9 +253,31 @@ export default function ReviewQueue() {
   }
 
   function skip() {
+    if (!current) return
+    const id = current.annotation_id
     pushHistory()
-    record(current.annotation_id, 'skipped')
+    record(id, 'skipped')
+    setSnoozedCount(n => n + 1)
     advance()
+    // Persist the snooze so the skip sticks across sessions (4.15). Best-effort:
+    // the card is already advanced; a failure just means it reappears next load.
+    api.post(`/annotations/${id}/skip`, {}).catch(() => {
+      setSnoozedCount(n => Math.max(0, n - 1))
+    })
+  }
+
+  async function restoreSnoozed() {
+    try {
+      const { restored } = await api.post('/annotations/review-queue/unsnooze', {})
+      setSnoozedCount(0)
+      const data = await api.get('/annotations/review-queue')
+      setQueue(data)
+      setIdx(0)
+      setHistory([])
+      toast(`Restored ${restored} skipped ${restored === 1 ? 'item' : 'items'}`, 'info')
+    } catch (e) {
+      toast(`Couldn't restore skipped items - ${e.message}`, 'error')
+    }
   }
 
   async function confirm() {
@@ -377,6 +404,14 @@ export default function ReviewQueue() {
         <p className="text-xs text-[#64748b] mt-1">
           {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
         </p>
+        {snoozedCount > 0 && (
+          <button
+            onClick={restoreSnoozed}
+            className="text-xs text-[#64748b] hover:text-[#a5b4fc] underline underline-offset-2 transition-colors"
+          >
+            {snoozedCount} skipped {snoozedCount === 1 ? 'item is' : 'items are'} set aside - review {snoozedCount === 1 ? 'it' : 'them'} again
+          </button>
+        )}
         {history.length > 0 && (
           <button
             onClick={goBack}

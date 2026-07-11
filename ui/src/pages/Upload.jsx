@@ -1,11 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X, AlertTriangle } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
+
+// Running-balance reconciliation badge (4.20): turns the parser's balance-chain
+// rigor into visible trust. Green check when every consecutive pair reconciles,
+// amber warning when any break is found; nothing when there's no chain to check.
+function BalancedBadge({ check }) {
+  if (!check || check.checked === 0) return <span className="text-xs text-[#475569]">—</span>
+  const ok = check.balanced
+  return (
+    <Tooltip content={ok
+      ? 'Every running-balance step reconciles with its amount - the parse is internally consistent.'
+      : "Some rows don't reconcile against the running balance; this statement may have been parsed imperfectly."}>
+      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${
+        ok ? 'bg-[#14532d] text-[#86efac]' : 'bg-[#451a03] text-[#fdba74]'
+      }`}>
+        {ok ? <Check size={12} /> : <AlertTriangle size={12} />}
+        {check.consistent}/{check.checked}
+      </span>
+    </Tooltip>
+  )
+}
 
 // Coverage badge: full (green), partial (amber), none (grey).
 function CoverageBadge({ done, total }) {
@@ -47,7 +67,7 @@ export default function Upload() {
       const data = await api.get('/statements')
       setStatements(data)
     } catch (e) {
-      toast(`Couldn't load your statements — ${e.message}`, 'error')
+      toast(`Couldn't load your statements - ${e.message}`, 'error')
     }
   }, [toast])
 
@@ -123,7 +143,7 @@ export default function Upload() {
       )
       loadStatements()
     } catch (e) {
-      toast(`Categorization failed — ${e.message}`, 'error')
+      toast(`Categorization failed - ${e.message}`, 'error')
     } finally {
       setAnnotatingId(null)
     }
@@ -148,7 +168,7 @@ export default function Upload() {
       setEditingName('')
       loadStatements()
     } catch (e) {
-      toast(`Couldn't rename — ${e.message}`, 'error')
+      toast(`Couldn't rename - ${e.message}`, 'error')
     }
   }
 
@@ -156,11 +176,11 @@ export default function Upload() {
     if (!clearEmbedTarget) return
     try {
       await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
-      toast(`Memory cleared — rebuild it when you're ready`, 'info')
+      toast(`Memory cleared - rebuild it when you're ready`, 'info')
       setClearEmbedTarget(null)
       loadStatements()
     } catch (e) {
-      toast(`Couldn't clear the memory — ${e.message}`, 'error')
+      toast(`Couldn't clear the memory - ${e.message}`, 'error')
     }
   }
 
@@ -173,7 +193,7 @@ export default function Upload() {
       toast(`Added ${result.embedded} transactions to memory`, 'success')
       loadStatements()
     } catch (e) {
-      toast(`Couldn't build memory — ${e.message}`, 'error')
+      toast(`Couldn't build memory - ${e.message}`, 'error')
     } finally {
       setEmbeddingId(null)
     }
@@ -199,7 +219,7 @@ export default function Upload() {
         ) : (
           <>
             <p className="text-sm text-[#94a3b8]">Drop your bank statement here, or click to browse</p>
-            <p className="text-xs text-[#475569] mt-1">PDF format — we'll handle the rest</p>
+            <p className="text-xs text-[#475569] mt-1">PDF format - we'll handle the rest</p>
           </>
         )}
         <input ref={fileRef} type="file" accept=".pdf" onChange={onFileChange} className="hidden" />
@@ -259,12 +279,12 @@ export default function Upload() {
           Your Statements
         </p>
         {statements.length === 0 ? (
-          <p className="px-4 py-5 text-sm text-[#475569]">No statements yet — drop one above to get started</p>
+          <p className="px-4 py-5 text-sm text-[#475569]">No statements yet - drop one above to get started</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Categorized', 'Memory', 'Uploaded', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Balanced', 'Categorized', 'Memory', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -307,6 +327,9 @@ export default function Upload() {
                   </td>
                   <td className="px-4 py-3 text-[#94a3b8]">{formatMonth(s.statement_month)}</td>
                   <td className="px-4 py-3">
+                    <BalancedBadge check={s.balance_check} />
+                  </td>
+                  <td className="px-4 py-3">
                     <Tooltip content="Transactions that have been categorized">
                       <CoverageBadge done={s.annotated_count} total={s.txn_count} />
                     </Tooltip>
@@ -342,7 +365,7 @@ export default function Upload() {
                           {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
                         </button>
                       </Tooltip>
-                      <Tooltip content="Rebuild the AI's memory — do this after making corrections">
+                      <Tooltip content="Rebuild the AI's memory - do this after making corrections">
                         <button
                           onClick={() => setClearEmbedTarget(s)}
                           className="text-[#475569] hover:text-sky-400 transition-colors"
@@ -350,7 +373,7 @@ export default function Upload() {
                           <DatabaseZap size={14} />
                         </button>
                       </Tooltip>
-                      <Tooltip content="Reset all categories — keeps the statement data">
+                      <Tooltip content="Reset all categories - keeps the statement data">
                         <button
                           onClick={() => setResetTarget(s)}
                           className="text-[#475569] hover:text-amber-400 transition-colors"
