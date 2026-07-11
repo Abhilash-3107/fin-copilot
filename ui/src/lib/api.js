@@ -52,6 +52,27 @@ export async function apiFetch(path, options = {}) {
   return res.json()
 }
 
+// Fetch a file through the token-aware client and save it, so downloads work
+// under token auth (a plain <a href> can't set the Authorization header).
+export async function downloadFile(path, fallbackName = 'download') {
+  const token = getApiToken()
+  const headers = token ? { Authorization: `Bearer ${token}` } : {}
+  const res = await fetch(BASE + path, { headers })
+  if (!res.ok) throw new ApiError(res.status, await res.text())
+  const disposition = res.headers.get('content-disposition') ?? ''
+  const match = disposition.match(/filename=([^;]+)/)
+  const name = match ? match[1].trim().replace(/"/g, '') : fallbackName
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 export const api = {
   get:    (path)           => apiFetch(path),
   post:   (path, json)     => apiFetch(path, { method: 'POST',   json }),

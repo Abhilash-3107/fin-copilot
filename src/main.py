@@ -21,6 +21,7 @@ from src.api.routes import (
     annotations,
     categories,
     config,
+    data,
     embeddings,
     groups,
     insights,
@@ -91,6 +92,7 @@ app.include_router(embeddings.router, prefix="/api/embeddings", tags=["embedding
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])
 app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
+app.include_router(data.router, prefix="/api/data", tags=["data"])
 
 
 @app.get("/api/health")

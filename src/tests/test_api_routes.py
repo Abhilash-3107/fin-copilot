@@ -468,6 +468,28 @@ class TestTransactionsFilters:
         assert facets == {"categories": [], "sources": []}
 
 
+class TestDataManagement:
+    """4.14: delete-everything wipes user data but keeps the seeded categories."""
+
+    def test_delete_all_wipes_user_data_keeps_categories(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t1", ann_id="a1")
+        conn.execute("INSERT INTO people (id, name, upi) VALUES ('p1','x','x@u')")
+        conn.commit()
+        cats_before = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+        assert cats_before > 0
+
+        resp = client.post("/api/data/delete-all")
+        assert resp.status_code == 200
+
+        assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0
+        # The taxonomy survives so the app still has categories to assign.
+        assert conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == cats_before
+
+
 class TestStatementBalanceCheck:
     """4.20: the statements list reports per-statement running-balance
     reconciliation so the parser's rigor becomes a visible trust signal."""
