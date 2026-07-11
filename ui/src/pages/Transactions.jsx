@@ -7,6 +7,7 @@ import { useStatement } from '../contexts/StatementContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
+import TransactionCards from '../components/TransactionCards.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
 import { formatMonth } from '../lib/dates.js'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
@@ -593,19 +594,33 @@ export default function Transactions() {
           />
         ) : (
           <>
-            <TransactionTable
-              transactions={transactions}
-              annotationMap={annotationMap}
-              activeId={activeTxn?.id}
-              onSelect={openAnnotationPanel}
-              selectable
-              selected={selected}
-              onToggle={toggleSelect}
-              onToggleAll={toggleSelectAll}
-              sort={sort}
-              order={order}
-              onSort={toggleSort}
-            />
+            {/* Table on md+, card-per-row below md (4.1). */}
+            <div className="hidden md:block">
+              <TransactionTable
+                transactions={transactions}
+                annotationMap={annotationMap}
+                activeId={activeTxn?.id}
+                onSelect={openAnnotationPanel}
+                selectable
+                selected={selected}
+                onToggle={toggleSelect}
+                onToggleAll={toggleSelectAll}
+                sort={sort}
+                order={order}
+                onSort={toggleSort}
+              />
+            </div>
+            <div className="md:hidden">
+              <TransactionCards
+                transactions={transactions}
+                annotationMap={annotationMap}
+                activeId={activeTxn?.id}
+                onSelect={openAnnotationPanel}
+                selectable
+                selected={selected}
+                onToggle={toggleSelect}
+              />
+            </div>
             {hasMore && (
               <div className="flex justify-center py-4">
                 <button

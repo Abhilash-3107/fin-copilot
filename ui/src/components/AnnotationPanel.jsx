@@ -245,7 +245,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
       {/* Backdrop */}
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
       {/* Panel */}
-      <aside className="fixed right-0 top-0 bottom-0 w-[440px] bg-[#1a1d27] border-l border-[#2d3148] z-50 flex flex-col animate-slide-in">
+      <aside className="fixed right-0 top-0 bottom-0 w-full max-w-[440px] bg-[#1a1d27] border-l border-[#2d3148] z-50 flex flex-col animate-slide-in">
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#2d3148] flex items-center justify-between shrink-0">
           <h2 className="text-sm font-semibold text-[#a5b4fc]">
