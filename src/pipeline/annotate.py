@@ -705,9 +705,10 @@ def _try_rag_annotation(
     # confidence and the reject/defer decision (more reliable than top-1 similarity).
     vote_category, vote_share, trusted_weight = _weighted_trusted_vote(annotated_matches)
 
-    # Dev-mode trace: the deduped neighbours behind this decision, with their
+    # Reasoning trace: the deduped neighbours behind this decision, with their
     # cosine similarity. Built once and shared by both the rag_direct and
-    # rag_prompted branches below (only serialized when settings.dev_mode is on).
+    # rag_prompted branches below. Always persisted (see _persist); dev_mode only
+    # gates whether the API/UI surface it, so flipping it on explains past runs too.
     trace_neighbours = [
         TraceNeighbour(
             transaction_id=m["transaction_id"],

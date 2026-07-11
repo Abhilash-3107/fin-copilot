@@ -8,8 +8,14 @@ from src.models.annotation import Annotation
 from src.pipeline.sources import REVIEWABLE_SOURCES
 
 
-def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
-    """Insert or replace an annotation row, resolving category/subcategory ids.
+def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
+    """Insert an annotation row, resolving category/subcategory ids.
+
+    Inserts only when the transaction has no annotation yet: on a conflicting
+    transaction_id it does nothing rather than overwriting, so a re-run or an
+    errant POST can never clobber an existing row's original_source /
+    annotated_at / reasoning history. Edits must go through update_annotation.
+    Returns True when a row was inserted, False when one already existed.
 
     Unresolvable names (e.g. LLM free-text subcategories) leave the id NULL —
     callers that need strictness validate before inserting.
@@ -17,12 +23,13 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
     category_id, subcategory_id = resolve_category_ids(
         conn, annotation.category, annotation.subcategory
     )
-    conn.execute(
+    cur = conn.execute(
         """
-        INSERT OR REPLACE INTO annotations
+        INSERT INTO annotations
             (id, transaction_id, merchant, category, subcategory, tags, confidence, source,
              category_id, subcategory_id, reasoning)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(transaction_id) DO NOTHING
         """,
         (
             annotation.id,
@@ -38,6 +45,7 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> None:
             annotation.reasoning,
         ),
     )
+    return cur.rowcount > 0
 
 
 # Columns a patch is allowed to set. The column names are interpolated into the

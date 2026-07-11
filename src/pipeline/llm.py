@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import time
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -14,6 +15,24 @@ from src.config import settings
 from src.models.transaction import TxnRow
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def insecure_key_transport() -> bool:
+    """True when a BYOM API key would be sent over cleartext http to a remote host.
+
+    Sending a bearer token over plain http to anything but the local machine
+    leaks it to the network. Localhost http is fine (loopback never hits the
+    wire); https is fine anywhere; no key means nothing to leak.
+    """
+    if settings.llm_provider != "openai" or not settings.llm_api_key:
+        return False
+    parsed = urlparse(settings.llm_base_url)
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host not in _LOCAL_HOSTS
 
 
 def _strip_code_fence(content: str) -> str:
@@ -267,6 +286,11 @@ def _build_provider_request(
     """
     schema = _response_schema(category_list)
     if settings.llm_provider == "openai":
+        if insecure_key_transport():
+            raise ValueError(
+                "Refusing to send the API key over cleartext http to a remote host. "
+                "Use https, or a localhost endpoint. Set llm_base_url accordingly."
+            )
         url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
         payload = {
@@ -467,6 +491,12 @@ def test_connection(timeout: float = 10.0) -> dict:
             base = settings.llm_base_url.rstrip("/")
             if not base:
                 return {"ok": False, "detail": "No endpoint URL set."}
+            if insecure_key_transport():
+                return {
+                    "ok": False,
+                    "detail": "This endpoint is cleartext http on a remote host, so the "
+                    "API key would be sent unencrypted. Use https or a localhost endpoint.",
+                }
             headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {}
             resp = httpx.get(f"{base}/models", headers=headers, timeout=timeout)
             resp.raise_for_status()

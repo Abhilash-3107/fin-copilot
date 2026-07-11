@@ -188,6 +188,46 @@ class TestRuleFalsePositives:
 # LLM client tests (mocked httpx)
 # ---------------------------------------------------------------------------
 
+class TestInsecureKeyTransport:
+    """4.10: refuse to send a BYOM key over cleartext http to a remote host."""
+
+    def _set(self, monkeypatch, **kw):
+        from src.config import settings
+        for k, v in kw.items():
+            monkeypatch.setattr(settings, k, v)
+
+    def test_http_remote_with_key_is_insecure(self, monkeypatch):
+        from src.pipeline.llm import insecure_key_transport
+        self._set(monkeypatch, llm_provider="openai", llm_api_key="sk-x",
+                  llm_base_url="http://api.example.com/v1")
+        assert insecure_key_transport() is True
+
+    def test_https_remote_is_fine(self, monkeypatch):
+        from src.pipeline.llm import insecure_key_transport
+        self._set(monkeypatch, llm_provider="openai", llm_api_key="sk-x",
+                  llm_base_url="https://api.example.com/v1")
+        assert insecure_key_transport() is False
+
+    def test_http_localhost_is_fine(self, monkeypatch):
+        from src.pipeline.llm import insecure_key_transport
+        self._set(monkeypatch, llm_provider="openai", llm_api_key="sk-x",
+                  llm_base_url="http://localhost:1234/v1")
+        assert insecure_key_transport() is False
+
+    def test_no_key_is_fine(self, monkeypatch):
+        from src.pipeline.llm import insecure_key_transport
+        self._set(monkeypatch, llm_provider="openai", llm_api_key="",
+                  llm_base_url="http://api.example.com/v1")
+        assert insecure_key_transport() is False
+
+    def test_request_builder_refuses_insecure(self, monkeypatch):
+        from src.pipeline.llm import _build_provider_request
+        self._set(monkeypatch, llm_provider="openai", llm_api_key="sk-x",
+                  llm_model="gpt-4o-mini", llm_base_url="http://api.example.com/v1")
+        with pytest.raises(ValueError, match="cleartext http"):
+            _build_provider_request([{"role": "user", "content": "x"}], ["Food & Dining"])
+
+
 class TestLLMClient:
     def _valid_response_payload(self) -> dict:
         content = json.dumps({
@@ -2192,3 +2232,53 @@ class TestLearnedRules:
         result, _ = rule_annotation(conn, txn, [("ma", "karabi", None)])
         assert result.source == "rule"
         assert result.subcategory == "Peer Transfer"
+
+
+class TestInsertAnnotationNoClobber:
+    """insert_annotation must never overwrite an existing annotation's history."""
+
+    def setup_method(self):
+        self.conn = _make_conn()
+        _insert_statement(self.conn)
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_insert_returns_true_then_false_on_conflict(self):
+        from src.db.queries.annotations import insert_annotation
+        from src.models.annotation import Annotation
+
+        _insert_txn(self.conn, "tx", "Amazon shopping")
+        first = insert_annotation(self.conn, Annotation(
+            transaction_id="tx", category="Shopping", confidence=1.0, source="manual",
+        ))
+        second = insert_annotation(self.conn, Annotation(
+            transaction_id="tx", category="Food & Dining", confidence=0.3, source="llm",
+        ))
+        assert first is True
+        assert second is False
+
+    def test_conflict_preserves_original_row(self):
+        from src.db.queries.annotations import (
+            get_annotation_by_transaction,
+            insert_annotation,
+            update_annotation,
+        )
+        from src.models.annotation import Annotation
+
+        _insert_txn(self.conn, "tx", "Amazon shopping")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="tx", category="Shopping", confidence=1.0, source="llm",
+        ))
+        # A manual edit records original_source; a later machine insert must not wipe it.
+        ann = get_annotation_by_transaction(self.conn, "tx")
+        update_annotation(self.conn, ann["id"], {"category": "Groceries"})
+        self.conn.commit()
+
+        insert_annotation(self.conn, Annotation(
+            transaction_id="tx", category="Travel", confidence=0.2, source="llm",
+        ))
+        after = get_annotation_by_transaction(self.conn, "tx")
+        assert after["category"] == "Groceries"       # manual edit survives
+        assert after["source"] == "manual"
+        assert after["original_source"] == "llm"       # history intact

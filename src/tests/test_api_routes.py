@@ -223,6 +223,16 @@ class TestCategoryIds:
         })
         assert resp.status_code == 422
 
+    def test_create_on_already_annotated_txn_conflicts(self, client_conn):
+        # POST must not silently overwrite an existing annotation (4.5); it 409s
+        # so the caller PATCHes instead of losing original_source/reasoning.
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm")
+        resp = client.post("/api/annotations", json={
+            "transaction_id": "t1", "category": "Shopping", "source": "manual",
+        })
+        assert resp.status_code == 409
+
 
 class TestConfirmFlow:
     def test_confirm_sets_confidence_and_provenance(self, client_conn):

@@ -258,7 +258,14 @@ def create_annotation(
         confidence=body.confidence,
         source=body.source,
     )
-    insert_annotation(conn, annotation)
+    inserted = insert_annotation(conn, annotation)
+    if not inserted:
+        # insert_annotation never overwrites; an existing annotation must be
+        # edited via PATCH so its original_source/reasoning history survives.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transaction {body.transaction_id} is already annotated; PATCH it to edit.",
+        )
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
     embed_transaction(conn, annotation.transaction_id)
