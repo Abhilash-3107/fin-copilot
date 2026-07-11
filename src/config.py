@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     # Generous for the single-user local corpus this targets.
     run_summary_max_rows: int = 20_000
     api_base_url: str = "http://localhost:8000"
+    # Opt-in shared secret for deliberate LAN exposure (4.9). Empty (the default)
+    # means no auth - correct for the loopback-only single-user case. When set,
+    # every /api request except /api/health must carry it as `Authorization:
+    # Bearer <token>` or `X-API-Token: <token>`; the SPA prompts once and stores
+    # it locally. This is a coarse gate for "I bound to 0.0.0.0 on my LAN on
+    # purpose", not a user-management system.
+    api_token: str = ""
     log_level: str = "INFO"
     # The annotation pipeline always captures a per-annotation reasoning trace
     # (routing trail, neighbours, similarity math vs thresholds, donor vote,

@@ -1,4 +1,5 @@
 const BASE = '/api'
+const TOKEN_KEY = 'fc_api_token'
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -6,6 +7,18 @@ export class ApiError extends Error {
     this.status = status
     this.name = 'ApiError'
   }
+}
+
+// Optional shared-secret token for a deliberate LAN bind (4.9). Persisted in
+// localStorage and sent on every request; empty means no auth, the default.
+export function getApiToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' }
+}
+export function setApiToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch { /* storage unavailable; token just won't persist */ }
 }
 
 export async function apiFetch(path, options = {}) {
@@ -16,6 +29,9 @@ export async function apiFetch(path, options = {}) {
     headers['Content-Type'] = 'application/json'
     rest.body = JSON.stringify(json)
   }
+
+  const token = getApiToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
 
   const res = await fetch(BASE + path, { ...rest, headers })
 

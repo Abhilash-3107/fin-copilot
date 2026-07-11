@@ -6,6 +6,7 @@ import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
 import Layout from './components/Layout.jsx'
+import TokenGate from './components/TokenGate.jsx'
 
 // Route-level code splitting: each page is its own chunk, so the ~150 KB
 // Chart.js bundle only loads on the pages that render a chart (Dashboard,
@@ -25,6 +26,7 @@ function PageFallback() {
 
 export default function App() {
   return (
+    <TokenGate>
     <ToastProvider>
       <StatementProvider>
       <PrivacyProvider>
@@ -50,5 +52,6 @@ export default function App() {
       </PrivacyProvider>
       </StatementProvider>
     </ToastProvider>
+    </TokenGate>
   )
 }

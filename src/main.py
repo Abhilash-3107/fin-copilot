@@ -57,6 +57,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Finance Copilot", lifespan=lifespan)
 
+
+# Opt-in token gate (4.9): when settings.api_token is set, every /api request
+# except health must present it. Off by default so the loopback single-user case
+# is unaffected; this exists for a deliberate LAN bind where the app would
+# otherwise serve bank statements to the whole network with no auth.
+def _extract_token(request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-api-token")
+
+
+@app.middleware("http")
+async def require_api_token(request, call_next):
+    from fastapi.responses import JSONResponse
+
+    token = settings.api_token
+    path = request.url.path
+    if token and path.startswith("/api/") and path != "/api/health":
+        if _extract_token(request) != token:
+            return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
+    return await call_next(request)
+
+
 # All API routes live under /api so they can never collide with SPA client routes.
 app.include_router(statements.router, prefix="/api/statements", tags=["statements"])
 app.include_router(transactions.router, prefix="/api/transactions", tags=["transactions"])
@@ -108,6 +132,9 @@ def health():
         "ollama": "ok" if ollama_ok else "unavailable",
         "chat_model": _model_status(settings.ollama_model),
         "embedding_model": _model_status(settings.ollama_embedding_model),
+        # Lets the SPA know it must present a token (prompt for it) without
+        # leaking the token itself.
+        "auth_required": bool(settings.api_token),
     }
 
 

@@ -59,6 +59,33 @@ def client_conn():
     conn.close()
 
 
+class TestApiTokenGate:
+    """4.9: when settings.api_token is set, /api requests (except health) need it."""
+
+    def test_no_token_configured_allows_everything(self, client_conn):
+        client, conn, _ = client_conn
+        assert client.get("/api/categories").status_code == 200
+        assert client.get("/api/health").json()["auth_required"] is False
+
+    def test_token_required_when_configured(self, client_conn, monkeypatch):
+        from src.config import settings
+        client, conn, _ = client_conn
+        monkeypatch.setattr(settings, "api_token", "s3cret")
+
+        # Health is always reachable and advertises that auth is on.
+        health = client.get("/api/health")
+        assert health.status_code == 200
+        assert health.json()["auth_required"] is True
+
+        # A protected route is blocked without the token, allowed with it.
+        assert client.get("/api/categories").status_code == 401
+        assert client.get("/api/categories", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        ok = client.get("/api/categories", headers={"Authorization": "Bearer s3cret"})
+        assert ok.status_code == 200
+        # X-API-Token header works too.
+        assert client.get("/api/categories", headers={"X-API-Token": "s3cret"}).status_code == 200
+
+
 class TestAnnotationPatch:
     def test_patch_updates_field(self, client_conn):
         client, conn, _ = client_conn
