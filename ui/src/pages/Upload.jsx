@@ -5,6 +5,7 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+import { formatMonth } from '../lib/dates.js'
 
 // Coverage badge: full (green), partial (amber), none (grey).
 function CoverageBadge({ done, total }) {
@@ -73,7 +74,7 @@ export default function Upload() {
       form.append('file', file)
       if (password) form.append('password', password)
       const result = await api.upload('/statements/upload', form)
-      toast(`Uploaded: ${result.bank_name} — ${result.statement_month}`, 'success')
+      toast(`Uploaded: ${result.bank_name} - ${formatMonth(result.statement_month)}`, 'success')
       for (const w of result.warnings ?? []) toast(w, 'error', 8000)
       setFile(null)
       setPassword('')
@@ -101,7 +102,7 @@ export default function Upload() {
     if (!resetTarget) return
     try {
       await api.delete(`/statements/${resetTarget.id}/data`)
-      toast(`Reset ${resetTarget.bank_name} — ${resetTarget.statement_month}`, 'info')
+      toast(`Reset ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
       setResetTarget(null)
       loadStatements()
     } catch (e) {
@@ -304,7 +305,7 @@ export default function Upload() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-[#94a3b8]">{s.statement_month}</td>
+                  <td className="px-4 py-3 text-[#94a3b8]">{formatMonth(s.statement_month)}</td>
                   <td className="px-4 py-3">
                     <Tooltip content="Transactions that have been categorized">
                       <CoverageBadge done={s.annotated_count} total={s.txn_count} />
@@ -377,7 +378,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!clearEmbedTarget}
         title="Rebuild the AI's memory?"
-        description={`This will reset the AI's memory for "${clearEmbedTarget?.bank_name} — ${clearEmbedTarget?.statement_month}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
+        description={`This will reset the AI's memory for "${clearEmbedTarget?.bank_name} - ${formatMonth(clearEmbedTarget?.statement_month)}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
         confirmLabel="Rebuild memory"
         onConfirm={clearEmbeddings}
         onCancel={() => setClearEmbedTarget(null)}
@@ -387,7 +388,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This will remove all categories and the AI's memory for "${resetTarget?.bank_name} — ${resetTarget?.statement_month}". Your transactions stay — you can re-categorize anytime. This can't be undone.`}
+        description={`This will remove all categories and the AI's memory for "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}". Your transactions stay - you can re-categorize anytime. This can't be undone.`}
         confirmLabel="Reset"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}
@@ -397,7 +398,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this statement?"
-        description={`This will permanently remove "${deleteTarget?.bank_name} — ${deleteTarget?.statement_month}" and all its transactions. This can't be undone.`}
+        description={`This will permanently remove "${deleteTarget?.bank_name} - ${formatMonth(deleteTarget?.statement_month)}" and all its transactions. This can't be undone.`}
         confirmLabel="Delete"
         onConfirm={deleteStatement}
         onCancel={() => setDeleteTarget(null)}

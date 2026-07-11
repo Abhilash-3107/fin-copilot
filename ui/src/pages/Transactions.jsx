@@ -8,6 +8,7 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
+import { formatMonth } from '../lib/dates.js'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -392,7 +393,7 @@ export default function Transactions() {
         >
           <option value="">All statements</option>
           {statements.map(s => (
-            <option key={s.id} value={s.id}>{s.bank_name} — {s.statement_month}</option>
+            <option key={s.id} value={s.id}>{s.bank_name} - {formatMonth(s.statement_month)}</option>
           ))}
         </select>
 

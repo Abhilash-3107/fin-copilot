@@ -28,6 +28,15 @@ function Toggle({ checked, disabled, onChange }) {
   )
 }
 
+// Prefer the human merchant, but fall back to the raw counterparty key when the
+// merchant is empty or a mangled one-character fragment (4.21) - a lone "U" or
+// "3" reads as broken, whereas the raw key ("U OBEROIFC TUCKSH") is at least
+// recognizable.
+function ruleDisplayName(r) {
+  const m = (r.merchant || '').trim()
+  return m.length > 1 ? m : r.counterparty_key
+}
+
 function LearnedRules() {
   const toast = useToast()
   const [rules, setRules] = useState([])
@@ -92,9 +101,9 @@ function LearnedRules() {
                       )}
                       className="hover:text-[#a5b4fc] transition-colors"
                     >
-                      {r.merchant || r.counterparty_key}
+                      {ruleDisplayName(r)}
                     </Link>
-                    {r.merchant && (
+                    {ruleDisplayName(r) !== r.counterparty_key && (
                       <span className="text-[#64748b] ml-2 text-xs">{r.counterparty_key}</span>
                     )}
                   </td>

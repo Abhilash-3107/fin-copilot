@@ -134,6 +134,16 @@ def lookup_learned_rule(
     category AND purity >= learned_rule_purity. `before_txn_date` /
     `exclude_transaction_id` enforce causality (a replayed transaction only sees
     labels that existed before it), mirroring the counterparty prior.
+
+    Same-day asymmetry (deliberate, documented so it isn't chased as a bug):
+    the causal cutoff is strict (`t.txn_date < before_txn_date`), so in the eval
+    harness a transaction never sees another same-day label - dates are
+    day-granular and intra-day order is unknown, so counting a same-day sibling
+    would leak. Production (list_learned_rules and the live annotate path) passes
+    no before_txn_date and therefore sees every label including same-day ones.
+    So eval support for a merchant can be one lower than prod on a day the user
+    labeled two of its transactions; "eval says not-established, prod fires" on
+    that boundary is expected, not a divergence to fix.
     """
     if not counterparty_key:
         return None
