@@ -21,12 +21,14 @@ import argparse
 import sys
 from collections import Counter
 
-from src.config import settings
-from src.db.connection import get_connection
-from src.db.queries.annotations import insert_annotation  # noqa: F401  (kept for parity)
-from src.db.queries.categories import get_category_names_flat
-from src.db.queries.embeddings import find_similar
-from src.pipeline.annotate import (
+from finance_copilot.config import settings
+from finance_copilot.db.connection import get_connection
+from finance_copilot.db.queries.annotations import (
+    insert_annotation,  # noqa: F401  (kept for parity)
+)
+from finance_copilot.db.queries.categories import get_category_names_flat
+from finance_copilot.db.queries.embeddings import find_similar
+from finance_copilot.pipeline.annotate import (
     _annotations_by_transaction,
     _build_examples_from_similar,
     _dedup_donors,
@@ -34,8 +36,8 @@ from src.pipeline.annotate import (
     _majority_category,
     _weighted_trusted_vote,
 )
-from src.pipeline.embed import build_embed_text, get_embedding_single
-from src.pipeline.llm import (
+from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
+from finance_copilot.pipeline.llm import (
     annotate_transaction_llm_with_examples,
 )
 

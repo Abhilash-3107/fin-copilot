@@ -23,9 +23,9 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 
-from src.config import settings
-from src.db.connection import get_connection
-from src.pipeline.counterparty import counterparty_prior, normalize_identity
+from finance_copilot.config import settings
+from finance_copilot.db.connection import get_connection
+from finance_copilot.pipeline.counterparty import counterparty_prior, normalize_identity
 
 # Trusted ground-truth sources. We grade the prior only against these.
 _TRUSTED = {"manual", "rule", "imported"}

@@ -4,7 +4,7 @@ The pipeline is a **cost-ordered cascade**: cheap deterministic stages run first
 The LLM is the *fallback*, not the primary path.
 Every stage writes a full reasoning trace, so any decision can be explained after the fact.
 
-Entry point: `auto_annotate` in [`src/pipeline/annotate.py`](../src/pipeline/annotate.py).
+Entry point: `auto_annotate` in [`finance_copilot/pipeline/annotate.py`](../finance_copilot/pipeline/annotate.py).
 
 ```mermaid
 flowchart TD
@@ -179,7 +179,7 @@ flowchart TD
 | 3 — RAG Prompted | `rag_prompted` | Similar found but Stage 2 didn't fire (below 0.92, or donor untrusted) | `llm_conf × dampen(rag_prompted, category)`, then off-example cap / defer band / counterparty prior |
 | 4 — Plain LLM | `llm` | No embeddings, novelty gate tripped, or RAG found nothing | `llm_conf × dampen(llm, category)` |
 
-## Key Thresholds (all configurable via env — see `src/config.py`)
+## Key Thresholds (all configurable via env — see `finance_copilot/config.py`)
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -266,7 +266,7 @@ Gated by `learned_rule_enabled` (on by default since 2026-07-03: clean-DB eval s
 
 ### Embedding text (recurring-merchant retrieval)
 
-`build_embed_text` (`src/pipeline/embed.py`) builds `"{direction} {description-without-ref} {upi_note}"`, **lowercased**, and deliberately **excludes the raw amount and the rotating UPI reference number**.
+`build_embed_text` (`finance_copilot/pipeline/embed.py`) builds `"{direction} {description-without-ref} {upi_note}"`, **lowercased**, and deliberately **excludes the raw amount and the rotating UPI reference number**.
 UPI descriptions are `UPI/<merchant>/<numeric-ref>/<note>`, and that 12-ish-digit ref is unique per transaction — leaving it (or the amount) in the embedded string makes two visits to the *same* merchant embed as only ~0.6–0.9 similar instead of ~1.0.
 That drops recurring merchants below `rag_similarity_floor` (0.65), the novelty gate discards the correct same-merchant donors, and the txn falls through to plain Stage-4 LLM with no examples (confidence crushed to ~0.14).
 
@@ -321,7 +321,7 @@ Real trace — `UPI/abcoffee/...`: novelty gate tripped (best similarity 0.4611 
 
 ## Bayesian Confidence Calibration
 
-Stages 3 and 4 use dynamic per-`(source, category)` dampening instead of a fixed multiplier (`get_calibrated_dampening`, `src/pipeline/calibration.py`).
+Stages 3 and 4 use dynamic per-`(source, category)` dampening instead of a fixed multiplier (`get_calibrated_dampening`, `finance_copilot/pipeline/calibration.py`).
 The factor is modelled as a Beta distribution:
 
 - **Prior:** derived from the static setting (`0.85` or `0.92`) with 5 pseudo-observations, so with zero feedback `dampening == base` exactly.
@@ -347,7 +347,7 @@ It powers both the Stage-1 person-history gate and the Stage-3 fusion.
 The reasoning trace records `counterparty_prior_category / _probability / _n / _effect`.
 Tuned on the Dec–Mar 2026 causal backtest (`scripts/backtest_counterparty_prior.py --sweep`): `min_observations=2`, `dominance_floor=0.65`.
 The prior only helps *recurring* counterparties — one-off personal names get no nudge by design.
-See `src/pipeline/counterparty.py`.
+See `finance_copilot/pipeline/counterparty.py`.
 
 ## Apply-to-Similar (correction propagation)
 
@@ -357,7 +357,7 @@ This is the main accuracy lever: retrieval stages are 96–100% accurate when th
 
 ## LLM Client, Providers, and Determinism
 
-The LLM call (`_call_llm`, `src/pipeline/llm.py`) is shared by Stages 3 and 4 and sits behind one provider abstraction (`llm_provider`): `ollama` (default, native `/api/chat` with a grammar-constrained JSON schema and optional logprob confidence), `openai` (any OpenAI-compatible `/chat/completions` endpoint — LM Studio, vLLM, OpenRouter, OpenAI — via `llm_base_url`/`llm_api_key`/`llm_model`, using `response_format: json_schema`), or `none` (AI disabled: the pipeline degrades to rules + RAG-direct and routes the rest to review).
+The LLM call (`_call_llm`, `finance_copilot/pipeline/llm.py`) is shared by Stages 3 and 4 and sits behind one provider abstraction (`llm_provider`): `ollama` (default, native `/api/chat` with a grammar-constrained JSON schema and optional logprob confidence), `openai` (any OpenAI-compatible `/chat/completions` endpoint — LM Studio, vLLM, OpenRouter, OpenAI — via `llm_base_url`/`llm_api_key`/`llm_model`, using `response_format: json_schema`), or `none` (AI disabled: the pipeline degrades to rules + RAG-direct and routes the rest to review).
 
 Key parameters, all deliberate:
 - **`temperature: 0` + `seed: 42`** — annotation is a deterministic classification task. Beyond reproducibility, at the default temperature (~0.8) a small model intermittently emits malformed JSON in the free-text `reasoning` field (escaped/single quotes, stray braces, truncation), which fails schema validation, triggers retries, and silently degrades the label. With `temperature: 0` re-annotation is stable run-to-run (verified 19/19 stable, 0 validation errors via `scripts/diff_reannotate_april.py`).

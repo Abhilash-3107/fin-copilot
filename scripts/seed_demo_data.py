@@ -19,7 +19,7 @@ history plus the current partial month, so the demo always looks current:
 By default this seeds data/demo.db (never the real ledger). Serve it with:
 
     uv run python scripts/seed_demo_data.py
-    DB_PATH=data/demo.db PORT=8080 uv run python -m src
+    DB_PATH=data/demo.db PORT=8080 uv run python -m finance_copilot
 
 Other usage:
 
@@ -38,8 +38,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.db.connection import get_migrated_db
-from src.pipeline.counterparty import normalize_identity
+from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.pipeline.counterparty import normalize_identity
 
 DEFAULT_DB = str(Path(__file__).parent.parent / "data" / "demo.db")
 
@@ -501,7 +501,7 @@ def seed(conn, today: date) -> None:
     print(f"  {unannotated} recent transactions unannotated (live auto-annotate fodder)")
     print()
     print("Serve the demo ledger:")
-    print("  DB_PATH=data/demo.db PORT=8080 uv run python -m src")
+    print("  DB_PATH=data/demo.db PORT=8080 uv run python -m finance_copilot")
     print()
     print("Live auto-annotate during the demo (needs Ollama + embeddings, see docs/demo.md):")
     print('  curl -X POST http://localhost:8080/api/annotations/auto-annotate \\')

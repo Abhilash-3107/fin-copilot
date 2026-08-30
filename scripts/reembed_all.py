@@ -16,10 +16,10 @@ import argparse
 
 import httpx
 
-from src.config import settings
-from src.db.connection import get_connection
-from src.db.queries.embeddings import delete_embeddings, upsert_embedding
-from src.pipeline.embed import build_embed_text, get_embeddings_batch
+from finance_copilot.config import settings
+from finance_copilot.db.connection import get_connection
+from finance_copilot.db.queries.embeddings import delete_embeddings, upsert_embedding
+from finance_copilot.pipeline.embed import build_embed_text, get_embeddings_batch
 
 
 def main() -> None:

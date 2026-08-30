@@ -13,8 +13,8 @@ from __future__ import annotations
 import sys
 from collections import defaultdict
 
-from src.db.connection import get_connection
-from src.pipeline.annotate import auto_annotate
+from finance_copilot.db.connection import get_connection
+from finance_copilot.pipeline.annotate import auto_annotate
 
 
 def _april_rag_targets(conn) -> list[str]:

@@ -1,0 +1,1014 @@
+"""Auto-annotation pipeline: rules → RAG direct → RAG prompted → plain LLM."""
+from __future__ import annotations
+
+import difflib
+import json
+import logging
+import sqlite3
+from collections import Counter
+
+from finance_copilot.config import settings
+from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.categories import get_category_names_flat
+from finance_copilot.db.queries.common import dump_string_list, parse_string_list
+from finance_copilot.db.queries.embeddings import find_similar
+from finance_copilot.db.queries.learned_rules import lookup_learned_rule
+from finance_copilot.db.queries.people import (
+    list_people,
+    person_token_matches,
+    relationship_subcategory,
+)
+from finance_copilot.db.queries.transactions import list_transactions
+from finance_copilot.models.annotation import (
+    Annotation,
+    AnnotationCreate,
+    AutoAnnotateResult,
+    ReasoningTrace,
+    TraceExample,
+    TraceNeighbour,
+)
+from finance_copilot.models.transaction import TxnRow
+from finance_copilot.pipeline.calibration import get_calibrated_dampening
+from finance_copilot.pipeline.counterparty import (
+    CounterpartyPrior,
+    counterparty_prior,
+    normalize_identity,
+)
+from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
+from finance_copilot.pipeline.llm import (
+    annotate_transaction_llm,
+    annotate_transaction_llm_with_examples,
+    top_level_categories,
+)
+from finance_copilot.pipeline.rules import apply_rules
+from finance_copilot.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_category(category: str, category_list: list[str]) -> str:
+    """Validate an LLM-returned category against the taxonomy.
+
+    The JSON-schema enum should already constrain it, but small models can still
+    slip (and older Ollama versions ignore enums), so: exact match → fuzzy match
+    → 'Uncategorized'.
+    """
+    valid = top_level_categories(category_list)
+    if not valid or category in valid:
+        return category
+
+    lower = category.strip().lower()
+    for v in valid:
+        if v.lower() == lower:
+            return v
+
+    # Unambiguous substring (e.g. 'Food' → 'Food & Dining')
+    containing = [v for v in valid if lower in v.lower() or v.lower() in lower]
+    if len(containing) == 1:
+        logger.warning("category normalized | %r → %r", category, containing[0])
+        return containing[0]
+
+    close = difflib.get_close_matches(category, valid, n=1, cutoff=0.6)
+    if close:
+        logger.warning("category normalized | %r → %r", category, close[0])
+        return close[0]
+    logger.warning("category invalid | %r → 'Uncategorized'", category)
+    return "Uncategorized"
+
+
+def _normalize_subcategory(
+    category: str, subcategory: str | None, category_list: list[str]
+) -> str | None:
+    """Validate an LLM-returned subcategory against the taxonomy for its category.
+
+    The JSON schema only constrains the top-level category; subcategory is free
+    text, so a small model can invent one. Exact/case-insensitive match → keep;
+    otherwise drop to None rather than persist a label outside the taxonomy.
+    """
+    if not subcategory:
+        return None
+    prefix = f"{category} > "
+    valid = [c[len(prefix):] for c in category_list if c.startswith(prefix)]
+    if subcategory in valid:
+        return subcategory
+    lower = subcategory.strip().lower()
+    for v in valid:
+        if v.lower() == lower:
+            return v
+    logger.warning("subcategory invalid | %r not under %r → None", subcategory, category)
+    return None
+
+
+def _threshold_snapshot(*names: str) -> dict[str, float]:
+    """Snapshot current settings values into a trace, keyed by setting name.
+
+    Traces are read long after settings change, so every measured value in a
+    trace carries the threshold it was compared against at annotation time.
+    """
+    return {n: float(getattr(settings, n)) for n in names}
+
+
+def _llm_telemetry_fields(llm_result) -> dict:
+    """Extract call-telemetry trace fields from an LLM result.
+
+    getattr with defaults so a plain AnnotationResponse (tests, older callers)
+    works as well as the telemetry-carrying AnnotationResult.
+    """
+    return {
+        "llm_model": getattr(llm_result, "model_name", None),
+        "prompt_tokens": getattr(llm_result, "prompt_tokens", None),
+        "prompt_truncated": getattr(llm_result, "prompt_truncated", None),
+        "verbalized_confidence": getattr(llm_result, "verbalized_confidence", None),
+        "logprob_confidence": getattr(llm_result, "logprob_confidence", None),
+    }
+
+
+def _match_known_person(
+    txn: TxnRow, known_people: list[tuple[str, str, str | None]]
+) -> AnnotationCreate | None:
+    """Return a Transfers annotation if the transaction matches a known person.
+
+    known_people is a list of (display_name, match_token, relationship) where
+    match_token is the person's UPI handle or a name fragment, already lowercased,
+    and relationship drives the subcategory: family relationships (dad/mom/…) map
+    to Transfers › Family, everything else (including unlabelled) to Peer Transfer.
+    Matching semantics live in people.person_token_matches.
+    """
+    vpa = None
+    upi_meta = txn.get("upi_meta")
+    if upi_meta:
+        try:
+            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+            vpa = (meta.get("vpa") or "").lower() or None
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    desc = (txn.get("raw_description") or "").lower()
+    counterparty_key = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
+    for name, token, relationship in known_people:
+        if person_token_matches(token, vpa, counterparty_key, desc):
+            subcategory = relationship_subcategory(relationship)
+            is_family = subcategory == "Family"
+            return AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=name,
+                category="Transfers",
+                subcategory=subcategory,
+                tags=["transfer", "family"] if is_family else ["transfer", "peer"],
+                confidence=0.95,
+                source="rule",
+            )
+    return None
+
+
+def rule_annotation(
+    conn: sqlite3.Connection,
+    txn: TxnRow,
+    known_people: list[tuple[str, str, str | None]],
+) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
+    """Stage 1: known-person match or keyword rule, with the person-history gate.
+
+    The person rule labels by *mechanism* (a payment to a known person →
+    Transfers) but humans label by *purpose* (the same payment can be
+    Entertainment or Food when it settles a shared expense) — on the golden eval
+    it was wrong 10/49 times. When the person's own history says their payments
+    are dominated by a non-Transfers category, drop confidence below the review
+    threshold so a human decides; cold-start (no history) and genuine
+    transfer-dominant contacts keep the 0.95 fast path.
+    """
+    person_result = _match_known_person(txn, known_people)
+    result = person_result or apply_rules(txn)
+
+    # Stage 1.5 — learned merchant memory. Only when the hand-authored person /
+    # keyword rules didn't fire: a counterparty the user has verified enough times
+    # at high purity gets a deterministic label with no embedding/LLM call. Causal
+    # (bounded by this txn's date, excludes self) so production == eval.
+    if result is None and settings.learned_rule_enabled:
+        learned = lookup_learned_rule(
+            conn,
+            txn.get("counterparty_key") or normalize_identity(txn.get("raw_description")),
+            before_txn_date=txn.get("txn_date"),
+            exclude_transaction_id=txn.get("id"),
+        )
+        if learned is not None:
+            logger.info(
+                "learned_rule | txn=%s  → %s/%s  support=%d/%d purity=%.2f",
+                txn["id"], learned.category, learned.subcategory,
+                learned.support, learned.total, learned.purity,
+            )
+            ann = AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=learned.merchant,
+                category=learned.category,
+                subcategory=learned.subcategory,
+                tags=learned.tags,
+                confidence=settings.learned_rule_confidence,
+                source="learned_rule",
+            )
+            trace = ReasoningTrace(
+                stage="learned_rule",
+                final_confidence=ann.confidence,
+                matched_rule=f"{learned.counterparty_key} ({learned.support}/{learned.total} verified, purity {learned.purity})",
+                thresholds=_threshold_snapshot(
+                    "learned_rule_min_support", "learned_rule_purity",
+                    "learned_rule_confidence", "confidence_threshold",
+                ),
+                skips=["rule: no person/keyword match"],
+            )
+            return ann, trace
+
+    if result is None:
+        return None, None
+
+    caps: list[str] = []
+    prior = None
+    if person_result is not None:
+        prior = counterparty_prior(conn, txn)
+        if prior.established and prior.category != result.category:
+            result.confidence = min(result.confidence, settings.rag_defer_confidence_cap)
+            caps.append("person_history_disagrees")
+            logger.info(
+                "rule person gate | txn=%s  %s → review  prior=%s (n=%d p=%.2f)",
+                txn["id"], result.merchant, prior.category,
+                prior.n_prior, prior.probability,
+            )
+    trace = ReasoningTrace(
+        stage="rule",
+        final_confidence=result.confidence,
+        matched_rule=result.merchant or result.category,
+        caps_applied=caps,
+        counterparty_prior_category=prior.category if prior is not None and prior.established else None,
+        counterparty_prior_probability=prior.probability if prior is not None and prior.established else None,
+        counterparty_prior_n=prior.n_prior if prior is not None and prior.established else None,
+        counterparty_prior_effect="tighten" if caps else "neutral",
+        thresholds=_threshold_snapshot(
+            "confidence_threshold", "rag_defer_confidence_cap",
+            "counterparty_min_observations", "counterparty_dominance_floor",
+        ),
+    )
+    return result, trace
+
+
+def auto_annotate(
+    conn: sqlite3.Connection,
+    statement_id: str | None = None,
+    transaction_ids: list[str] | None = None,
+    progress_cb=None,
+) -> AutoAnnotateResult:
+    """Run the full auto-annotation pipeline on unannotated transactions.
+
+    Stage 1 — rules:        keyword/merchant match → source=rule
+    Stage 2 — rag_direct:   cosine similarity >= threshold → copy annotation → source=rag_direct
+    Stage 3 — rag_prompted: cosine similarity found but below threshold → LLM with examples → source=rag_prompted
+    Stage 4 — llm:          no similar found or embedding unavailable → plain LLM → source=llm
+
+    progress_cb(processed, total), when given, is called after each transaction
+    so callers (e.g. background jobs) can report progress.
+    """
+    logger.info("auto_annotate start | statement_id=%s", statement_id)
+
+    all_txns = list_transactions(conn, statement_id=statement_id)
+    unannotated = list_transactions(conn, statement_id=statement_id, unannotated=True)
+    if transaction_ids:
+        id_set = set(transaction_ids)
+        all_txns = [t for t in all_txns if t["id"] in id_set]
+        unannotated = [t for t in unannotated if t["id"] in id_set]
+    already_annotated_count = len(all_txns) - len(unannotated)
+
+    logger.info(
+        "txn counts | total=%d  unannotated=%d  already_annotated=%d",
+        len(all_txns), len(unannotated), already_annotated_count,
+    )
+
+    rule_matched = 0
+    learned_rule_annotated = 0
+    rag_direct_annotated = 0
+    rag_prompted_annotated = 0
+    llm_annotated = 0
+    llm_failed = 0
+    low_confidence = 0
+
+    # Commit in small batches: cheap enough to keep progress on a crash, without
+    # paying a WAL sync per annotation.
+    _COMMIT_EVERY = 10
+    uncommitted = 0
+
+    def _persist(ann_create: AnnotationCreate, trace: ReasoningTrace | None = None) -> None:
+        nonlocal uncommitted
+        # Always store the reasoning trace — dev mode only gates whether the
+        # API/UI surface it, so flipping it on later explains past decisions too.
+        reasoning = trace.model_dump_json() if trace is not None else None
+        annotation = Annotation(
+            transaction_id=ann_create.transaction_id,
+            merchant=ann_create.merchant,
+            category=ann_create.category,
+            subcategory=ann_create.subcategory,
+            tags=dump_string_list(ann_create.tags),
+            confidence=ann_create.confidence,
+            source=ann_create.source,
+            reasoning=reasoning,
+        )
+        insert_annotation(conn, annotation)
+        uncommitted += 1
+        if uncommitted >= _COMMIT_EVERY:
+            conn.commit()
+            uncommitted = 0
+
+    # Load known people once — used for peer transfer matching before merchant rules
+    known_people = [
+        (p["name"], p["upi"].lower(), p.get("relationship"))
+        for p in list_people(conn)
+        if p.get("upi")
+    ]
+
+    # A transaction counts as processed once its final outcome is decided
+    # (annotated or failed) — stage-1 misses are still pending.
+    total = len(unannotated)
+    processed = 0
+
+    def _tick() -> None:
+        nonlocal processed
+        processed += 1
+        if progress_cb is not None:
+            progress_cb(processed, total)
+
+    # Routing trail per txn: why each earlier stage fell through, carried into
+    # whichever stage finally decides so its trace explains the whole path.
+    rag_ctx_by_txn: dict[str, dict] = {}
+
+    # --- Stage 1: Rule pass ---
+    logger.info("stage 1 | rules | %d txns", len(unannotated))
+    needs_rag: list[dict] = []
+    for txn in unannotated:
+        result, trace = rule_annotation(conn, txn, known_people)
+        if result is not None:
+            _persist(result, trace)
+            _tick()
+            if result.source == "learned_rule":
+                learned_rule_annotated += 1
+            else:
+                rule_matched += 1
+            if result.confidence < settings.confidence_threshold:
+                low_confidence += 1
+            logger.debug(
+                "rule match | txn=%s  desc=%r  → category=%s/%s  conf=%.2f  source=%s",
+                txn["id"], txn["raw_description"], result.category, result.subcategory,
+                result.confidence, result.source,
+            )
+        else:
+            rag_ctx_by_txn[txn["id"]] = {
+                "skips": [
+                    "rule: no person/keyword match",
+                    "learned_rule: no established rule"
+                    if settings.learned_rule_enabled else "learned_rule: disabled",
+                ],
+                "embed_text": None,
+            }
+            needs_rag.append(txn)
+
+    # --- Stages 2 + 3: RAG passes ---
+    logger.info("stage 1 done | rule_matched=%d  needs_rag=%d", rule_matched, len(needs_rag))
+    needs_llm: list[dict] = []
+    category_list: list[str] = []
+    if needs_rag:
+        logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
+        category_list = get_category_names_flat(conn)
+        for txn in needs_rag:
+            rag_result, rag_trace = _try_rag_annotation(
+                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]]
+            )
+            if rag_result is not None:
+                _persist(rag_result, rag_trace)
+                _tick()
+                if rag_result.source == "rag_direct":
+                    rag_direct_annotated += 1
+                else:
+                    rag_prompted_annotated += 1
+                if rag_result.confidence < settings.confidence_threshold:
+                    low_confidence += 1
+            else:
+                needs_llm.append(txn)
+
+    # --- Stage 4: Plain LLM pass ---
+    logger.info(
+        "stage 2+3 done | rag_direct=%d  rag_prompted=%d  needs_llm=%d",
+        rag_direct_annotated, rag_prompted_annotated, len(needs_llm),
+    )
+    if needs_llm:
+        logger.info("stage 4 | llm | %d txns", len(needs_llm))
+        if not category_list:
+            category_list = get_category_names_flat(conn)
+        # Recurring transactions share normalized descriptions — call the LLM once
+        # per (description, direction) and reuse the result within this run.
+        llm_cache: dict = {}
+        for txn in needs_llm:
+            logger.debug("llm | txn=%s  desc=%r  amount=%.2f", txn["id"], txn["raw_description"], txn["amount"])
+            cache_key = (
+                (txn.get("raw_description") or "").strip().lower(),
+                txn.get("debit_credit") or "",
+            )
+            llm_result = llm_cache.get(cache_key)
+            if llm_result is None:
+                llm_result = annotate_transaction_llm(txn, category_list)
+                if llm_result is not None and cache_key[0]:
+                    llm_cache[cache_key] = llm_result
+            else:
+                logger.debug("llm cache hit | txn=%s", txn["id"])
+            if llm_result is not None:
+                category = _normalize_category(llm_result.category, category_list)
+                dampening = get_calibrated_dampening(conn, "llm", category)
+                ann = AnnotationCreate(
+                    transaction_id=txn["id"],
+                    merchant=llm_result.merchant,
+                    category=category,
+                    subcategory=_normalize_subcategory(category, llm_result.subcategory, category_list),
+                    tags=llm_result.tags,
+                    confidence=round(llm_result.confidence * dampening, 4),
+                    source="llm",
+                )
+                ctx = rag_ctx_by_txn.get(txn["id"], {})
+                trace = ReasoningTrace(
+                    stage="llm",
+                    final_confidence=ann.confidence,
+                    llm_reasoning=llm_result.reasoning,
+                    raw_confidence=llm_result.confidence,
+                    dampening_factor=round(dampening, 4),
+                    calibration_bucket=f"llm/{category}",
+                    thresholds=_threshold_snapshot("confidence_threshold"),
+                    skips=ctx.get("skips", []),
+                    embed_text=ctx.get("embed_text"),
+                    **_llm_telemetry_fields(llm_result),
+                )
+                _persist(ann, trace)
+                llm_annotated += 1
+                # Compare the stored (dampened) confidence — it decides review-queue membership
+                if ann.confidence < settings.confidence_threshold:
+                    low_confidence += 1
+                logger.debug(
+                    "llm result | txn=%s  → %s/%s  merchant=%r  raw_conf=%.2f  dampened_conf=%.4f",
+                    txn["id"], llm_result.category, llm_result.subcategory, llm_result.merchant,
+                    llm_result.confidence, ann.confidence,
+                )
+            else:
+                llm_failed += 1
+                logger.warning("llm failed | txn=%s  desc=%r", txn["id"], txn["raw_description"])
+            _tick()
+
+    conn.commit()  # flush the final partial batch
+    logger.info(
+        "auto_annotate done | total_processed=%d  rule=%d  learned_rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
+        len(unannotated), rule_matched, learned_rule_annotated, rag_direct_annotated,
+        rag_prompted_annotated, llm_annotated, llm_failed, low_confidence, already_annotated_count,
+    )
+
+    return AutoAnnotateResult(
+        total_processed=len(unannotated),
+        rule_matched=rule_matched,
+        learned_rule_annotated=learned_rule_annotated,
+        rag_direct_annotated=rag_direct_annotated,
+        rag_prompted_annotated=rag_prompted_annotated,
+        llm_annotated=llm_annotated,
+        llm_failed=llm_failed,
+        low_confidence=low_confidence,
+        already_annotated=already_annotated_count,
+    )
+
+
+def _donor_weight(source: str | None) -> float:
+    """Vote weight for a donor based on its annotation source.
+
+    Human-verified / rule donors carry full weight; machine guesses (llm, rag_*)
+    are downweighted so they cannot out-vote a human label or let one recurring
+    machine-labeled merchant dominate the vote.
+    """
+    return 1.0 if source in _TRUSTED_SOURCES else settings.rag_machine_donor_weight
+
+
+def _dedup_donors(annotated_matches: list[dict]) -> list[dict]:
+    """Collapse donors that refer to the same counterparty to a single vote.
+
+    Amount-clustered retrieval often returns the same recurring merchant several
+    times (e.g. DISTRICT DINING ×3); counting each as an independent vote inflates
+    its category's apparent agreement. Group by a stable counterparty key (UPI VPA,
+    else canonical merchant, else normalized description) and keep only the nearest
+    (smallest-distance) donor per group.
+    """
+    best_by_key: dict[str, dict] = {}
+    for m in annotated_matches:
+        key = _counterparty_key(m)
+        existing = best_by_key.get(key)
+        if existing is None or m["distance"] < existing["distance"]:
+            best_by_key[key] = m
+    # Preserve ascending-distance order for downstream margin logic.
+    return sorted(best_by_key.values(), key=lambda m: m["distance"])
+
+
+def _counterparty_key(match: dict) -> str:
+    """Stable identity for a donor: UPI VPA → merchant → normalized description."""
+    ann = match.get("annotation") or {}
+    vpa = None
+    upi_meta = match.get("upi_meta")
+    if upi_meta:
+        try:
+            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+            vpa = (meta.get("vpa") or "").lower() or None
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if vpa:
+        return f"vpa:{vpa}"
+    merchant = (ann.get("merchant") or "").strip().lower()
+    if merchant:
+        return f"merchant:{merchant}"
+    return f"desc:{(match.get('raw_description') or match['transaction_id']).strip().lower()}"
+
+
+def _weighted_trusted_vote(annotated_matches: list[dict]) -> tuple[str | None, float, float]:
+    """Aggregate donor categories into a source-weighted, deduplicated vote.
+
+    Literature consistently finds majority/consensus aggregation more reliable than
+    the single nearest neighbour (RankRAG 2024; VoteGCL 2026), so confidence and
+    routing key off this vote rather than top-1 similarity.
+
+    Returns (winning_category, winning_share, trusted_total_weight) where
+    winning_share is the winner's fraction of the total weighted vote in [0,1].
+    """
+    if not annotated_matches:
+        return None, 0.0, 0.0
+    weights: dict[str, float] = {}
+    trusted_weight = 0.0
+    for m in annotated_matches:
+        cat = m.get("category")
+        if not cat:
+            continue
+        w = _donor_weight(m.get("source"))
+        weights[cat] = weights.get(cat, 0.0) + w
+        if m.get("source") in _TRUSTED_SOURCES:
+            trusted_weight += w
+    if not weights:
+        return None, 0.0, 0.0
+    total = sum(weights.values())
+    winner, winner_weight = max(weights.items(), key=lambda kv: kv[1])
+    return winner, winner_weight / total, trusted_weight
+
+
+def _compute_agreement_factor(annotated_matches: list[dict], top_category: str) -> float:
+    """Discount factor based on how many top-K matches agree on the top category.
+
+    Returns 1.0 when all matches agree (no penalty).
+    Returns majority_fraction ** exponent when there's disagreement (gentle penalty).
+    """
+    if not annotated_matches:
+        return 1.0
+    majority_count = sum(1 for m in annotated_matches if m.get("category") == top_category)
+    majority_fraction = majority_count / len(annotated_matches)
+    if majority_fraction >= 1.0:
+        return 1.0
+    return majority_fraction ** settings.rag_agreement_exponent
+
+
+def _compute_margin_factor(top_distance: float, next_diff_distance: float | None) -> float:
+    """Discount factor based on the distance margin to the nearest different-category match.
+
+    Returns 1.0 when the gap is large enough (clear winner) or no different category exists.
+    Linearly interpolates from 0.85 (tied) to 1.0 (at rag_margin_safe distance apart).
+    """
+    if next_diff_distance is None:
+        return 1.0
+    margin = next_diff_distance - top_distance
+    if margin >= settings.rag_margin_safe:
+        return 1.0
+    return 0.85 + 0.15 * (margin / settings.rag_margin_safe)
+
+
+def _fuse_counterparty_prior(
+    confidence: float,
+    chosen_category: str,
+    prior: CounterpartyPrior,
+) -> tuple[float, str]:
+    """Late-fuse the counterparty recurrence prior into a rag_prompted confidence.
+
+    Out-of-band signal: the embedding/KNN can't see that a counterparty recurs, but
+    the user's own history can. We adjust *confidence/routing only* — never the label
+    — consistent with the prior being a weak-but-orthogonal evidence source.
+
+    - established prior AGREES with the chosen label → "rescue": lift confidence
+      toward prior.probability so genuine recurring transfers (which category-level
+      calibration over-punishes, e.g. KARABI BORA) clear the review threshold.
+    - established prior DISAGREES → "tighten": cap below threshold so it routes to
+      review. Catches both the cab-misfire and a recurring contact's occasional
+      off-category spend (the irreducible ~15% the floor can't fix).
+    - not established (cold start / first-time counterparty) → "neutral": no change.
+
+    Returns (new_confidence, effect) where effect ∈ {"rescue","tighten","neutral"}.
+    """
+    if not settings.counterparty_prior_enabled or not prior.established:
+        return confidence, "neutral"
+
+    if prior.category == chosen_category:
+        # Rescue: don't reduce an already-confident score; only raise a dampened one,
+        # bounded by how strongly the counterparty supports this category.
+        rescued = max(confidence, round(prior.probability, 4))
+        return rescued, ("rescue" if rescued > confidence else "neutral")
+
+    # Disagreement: an established counterparty prior contradicts the per-txn pick.
+    capped = min(confidence, settings.rag_defer_confidence_cap)
+    return capped, ("tighten" if capped < confidence else "neutral")
+
+
+def _try_rag_annotation(
+    conn: sqlite3.Connection,
+    txn: TxnRow,
+    category_list: list[str],
+    before_txn_date: str | None = None,
+    ctx: dict | None = None,
+) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
+    """Attempt RAG-based annotation.
+
+    Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct'
+    or 'rag_prompted', or (None, None) if the embedding service is
+    unavailable or no similar annotated transactions exist (caller falls through
+    to plain LLM).
+
+    before_txn_date is set only by the time-split eval harness: it restricts
+    retrieval and the counterparty prior to history strictly before that date.
+
+    ctx, when given, is the per-txn routing-trail accumulator ({"skips": [...],
+    "embed_text": ...}): this function appends why each RAG branch fell through
+    and records the embed text, so the trace of whichever stage finally decides
+    (including the plain-LLM fallback in the caller) explains the whole path.
+    """
+    if ctx is None:
+        ctx = {"skips": [], "embed_text": None}
+    skips: list[str] = ctx["skips"]
+
+    try:
+        embed_text = build_embed_text(txn)
+        query_vec = get_embedding_single(embed_text)
+    except Exception as e:
+        logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
+        skips.append(f"rag: embedding failed ({e})")
+        return None, None  # embedding service down — fall through to plain LLM
+    ctx["embed_text"] = embed_text
+
+    similar = find_similar(
+        conn,
+        query_vec,
+        top_k=settings.rag_top_k,
+        exclude_transaction_ids=[txn["id"]],
+        before_txn_date=before_txn_date,
+    )
+
+    if not similar:
+        logger.debug("rag | no similar found | txn=%s  desc=%r", txn["id"], txn["raw_description"])
+        skips.append("rag: no embedded transactions to retrieve from")
+        return None, None
+
+    # Novelty gate: if the best match is too far away, the examples are noise
+    best_similarity = 1.0 - similar[0]["distance"]
+    if best_similarity < settings.rag_similarity_floor:
+        logger.debug(
+            "rag | novelty gate | txn=%s  best_sim=%.4f < floor=%.4f → skip RAG",
+            txn["id"], best_similarity, settings.rag_similarity_floor,
+        )
+        skips.append(
+            f"rag: novelty gate — best similarity {best_similarity:.4f} < "
+            f"rag_similarity_floor {settings.rag_similarity_floor}"
+        )
+        return None, None
+
+    # Fetch annotations for all top-K matches upfront (used for agreement + margin analysis)
+    top_match = similar[0]
+    cosine_similarity = best_similarity
+    ann_by_txn = _annotations_by_transaction(conn, [m["transaction_id"] for m in similar])
+    # Counterparty metadata (VPA, description) for the donors, used to dedup the vote.
+    donor_txn_by_id = _donor_transactions([m["transaction_id"] for m in similar], conn)
+    annotated_matches = []
+    for match in similar:
+        ann = ann_by_txn.get(match["transaction_id"])
+        if ann:
+            donor_txn = donor_txn_by_id.get(match["transaction_id"], {})
+            annotated_matches.append({
+                "transaction_id": match["transaction_id"],
+                "distance": match["distance"],
+                "category": ann.get("category"),
+                "source": ann.get("source"),
+                "annotation": ann,
+                "upi_meta": donor_txn.get("upi_meta"),
+                "raw_description": donor_txn.get("raw_description"),
+            })
+
+    # Deduplicate recurring counterparties to one vote before any agreement logic.
+    annotated_matches = _dedup_donors(annotated_matches)
+
+    logger.debug(
+        "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f  annotated_k=%d",
+        txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold, len(annotated_matches),
+    )
+
+    # Source-weighted, deduplicated vote across the donors — the basis for
+    # confidence and the reject/defer decision (more reliable than top-1 similarity).
+    vote_category, vote_share, trusted_weight = _weighted_trusted_vote(annotated_matches)
+
+    # Reasoning trace: the deduped neighbours behind this decision, with their
+    # cosine similarity. Built once and shared by both the rag_direct and
+    # rag_prompted branches below. Always persisted (see _persist); dev_mode only
+    # gates whether the API/UI surface it, so flipping it on explains past runs too.
+    trace_neighbours = [
+        TraceNeighbour(
+            transaction_id=m["transaction_id"],
+            raw_description=m.get("raw_description"),
+            category=m.get("category"),
+            source=m.get("source"),
+            distance=round(m["distance"], 4),
+            similarity=round(1.0 - m["distance"], 4),
+        )
+        for m in annotated_matches
+    ]
+
+    # rag_direct: top match above similarity threshold → copy its annotation directly
+    # Only trust human-verified or rule-matched annotations;
+    # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
+    if cosine_similarity >= settings.rag_direct_threshold:
+        donor_ann = annotated_matches[0]["annotation"] if annotated_matches else None
+        if donor_ann and donor_ann.get("source") in _TRUSTED_SOURCES:
+            top_category = donor_ann["category"]
+
+            # Agreement factor: penalize if top-K matches disagree on category
+            agreement_factor = _compute_agreement_factor(annotated_matches, top_category)
+
+            # Margin factor: penalize if nearest different-category match is close.
+            # Use the deduped nearest donor's distance so both sides of the margin
+            # come from the same (post-dedup) donor set.
+            nearest_distance = annotated_matches[0]["distance"]
+            next_diff_distance = next(
+                (m["distance"] for m in annotated_matches if m.get("category") != top_category),
+                None,
+            )
+            margin_factor = _compute_margin_factor(nearest_distance, next_diff_distance)
+
+            confidence = round(cosine_similarity * agreement_factor * margin_factor, 4)
+            logger.debug(
+                "rag_direct | txn=%s  → %s/%s  cosine=%.4f  agreement=%.4f  margin=%.4f  conf=%.4f  donor_source=%s",
+                txn["id"], top_category, donor_ann.get("subcategory"),
+                cosine_similarity, agreement_factor, margin_factor, confidence, donor_ann["source"],
+            )
+            trace = ReasoningTrace(
+                stage="rag_direct",
+                final_confidence=confidence,
+                best_similarity=round(cosine_similarity, 4),
+                neighbours=trace_neighbours,
+                vote_category=vote_category,
+                vote_share=round(vote_share, 4) if vote_share is not None else None,
+                trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
+                agreement_factor=round(agreement_factor, 4),
+                margin_factor=round(margin_factor, 4),
+                thresholds=_threshold_snapshot(
+                    "rag_similarity_floor", "rag_direct_threshold", "rag_margin_safe",
+                    "rag_agreement_exponent", "rag_machine_donor_weight",
+                    "confidence_threshold",
+                ),
+                skips=skips,
+                embed_text=embed_text,
+            )
+            return AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=donor_ann.get("merchant"),
+                category=top_category,
+                subcategory=donor_ann.get("subcategory"),
+                tags=parse_string_list(donor_ann.get("tags")),
+                confidence=confidence,
+                source="rag_direct",
+            ), trace
+        elif donor_ann:
+            logger.debug(
+                "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
+                txn["id"], donor_ann.get("source"),
+            )
+            skips.append(
+                f"rag_direct: nearest donor source '{donor_ann.get('source')}' untrusted "
+                f"(similarity {cosine_similarity:.4f} ≥ rag_direct_threshold "
+                f"{settings.rag_direct_threshold})"
+            )
+        else:
+            skips.append(
+                f"rag_direct: similarity {cosine_similarity:.4f} ≥ threshold but nearest donor has no annotation"
+            )
+    else:
+        skips.append(
+            f"rag_direct: best similarity {cosine_similarity:.4f} < "
+            f"rag_direct_threshold {settings.rag_direct_threshold}"
+        )
+
+    # rag_prompted: inject similar examples as few-shot context into the LLM prompt
+    examples = _build_examples_from_similar(conn, similar, ann_by_txn)
+    logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
+    if examples:
+        # Pass the example-category majority as a hint so the LLM weighs the
+        # retrieved neighbors over its pretraining prior. Use the categories the
+        # LLM actually sees (the selected examples), so the off-example cap below
+        # judges against the real prompt content.
+        example_categories = [e["category"] for e in examples if e.get("category")]
+        majority_category, majority_count = _majority_category(example_categories)
+        llm_result = annotate_transaction_llm_with_examples(
+            txn, category_list, examples, majority_category, majority_count
+        )
+        if llm_result is not None:
+            category = _normalize_category(llm_result.category, category_list)
+            dampening = get_calibrated_dampening(conn, "rag_prompted", category)
+            confidence = round(llm_result.confidence * dampening, 4)
+            caps_applied: list[str] = []
+
+            # Seam A: counterparty recurrence prior — out-of-band, computed from the
+            # user's own prior labels (causal: bounded by this txn's date, excludes
+            # self). Inert for unknown/first-time counterparties.
+            prior = counterparty_prior(conn, txn)
+
+            # Off-example backstop: if the LLM picked a category that none of the
+            # retrieved examples used, it's likely falling back on its prior rather
+            # than the evidence. Don't override it (the example majority can itself
+            # be a coincidence of amount), but cap confidence so it lands in the
+            # review queue instead of being auto-accepted.
+            if example_categories and category not in set(example_categories):
+                capped = min(confidence, settings.rag_offexample_confidence_cap)
+                logger.info(
+                    "rag_prompted off-example | txn=%s  → %s (not in examples %s)  conf %.4f → %.4f",
+                    txn["id"], category, sorted(set(example_categories)), confidence, capped,
+                )
+                confidence = capped
+                caps_applied.append("off_example")
+
+            # Reject/defer band: only when the LLM is *itself* uncertain AND the
+            # trusted donors are split with no clear winner. This is the genuinely
+            # undecidable case (e.g. an unfamiliar small UPI to a bare personal name
+            # whose amount-neighbors are part cab, part family transfer) — the
+            # description carries no signal and neither does history, so route to a
+            # human. We deliberately do NOT defer when the LLM is confident (a
+            # merchant it recognizes, e.g. 'Zomato', 'Miya Kebabs'); the noisy
+            # amount-driven neighbor vote must not override a grounded decision.
+            elif (
+                trusted_weight > 0
+                and vote_share < settings.rag_consensus_floor
+                and llm_result.confidence < settings.rag_defer_llm_confidence
+            ):
+                capped = min(confidence, settings.rag_defer_confidence_cap)
+                logger.info(
+                    "rag_prompted defer | txn=%s  → %s  llm_conf=%.2f  trusted_vote_share=%.2f < floor=%.2f  conf %.4f → %.4f",
+                    txn["id"], category, llm_result.confidence, vote_share,
+                    settings.rag_consensus_floor, confidence, capped,
+                )
+                confidence = capped
+                caps_applied.append("defer")
+
+            # Seam B: fuse the counterparty prior. Applied after the existing caps so
+            # it can rescue a genuine recurring transfer past category-calibration
+            # dampening, or tighten further when an established prior disagrees with
+            # the per-txn pick. Adjusts confidence/routing only, never the label.
+            confidence, prior_effect = _fuse_counterparty_prior(confidence, category, prior)
+            if prior_effect != "neutral":
+                caps_applied.append(f"counterparty_{prior_effect}")
+                logger.info(
+                    "rag_prompted counterparty %s | txn=%s  → %s  prior=%s (n=%d p=%.2f)  conf→%.4f",
+                    prior_effect, txn["id"], category, prior.category,
+                    prior.n_prior, prior.probability, confidence,
+                )
+
+            logger.debug(
+                "rag_prompted result | txn=%s  → %s/%s  raw_conf=%.2f  dampened_conf=%.4f",
+                txn["id"], category, llm_result.subcategory, llm_result.confidence, confidence,
+            )
+            trace = ReasoningTrace(
+                stage="rag_prompted",
+                final_confidence=confidence,
+                best_similarity=round(best_similarity, 4),
+                neighbours=trace_neighbours,
+                vote_category=vote_category,
+                vote_share=round(vote_share, 4) if vote_share is not None else None,
+                trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
+                caps_applied=caps_applied,
+                counterparty_prior_category=prior.category if prior.established else None,
+                counterparty_prior_probability=prior.probability if prior.established else None,
+                counterparty_prior_n=prior.n_prior if prior.established else None,
+                counterparty_prior_effect=prior_effect,
+                llm_reasoning=llm_result.reasoning,
+                raw_confidence=llm_result.confidence,
+                dampening_factor=round(dampening, 4),
+                calibration_bucket=f"rag_prompted/{category}",
+                thresholds=_threshold_snapshot(
+                    "rag_similarity_floor", "rag_direct_threshold",
+                    "rag_consensus_floor", "rag_defer_llm_confidence",
+                    "rag_defer_confidence_cap", "rag_offexample_confidence_cap",
+                    "counterparty_min_observations", "counterparty_dominance_floor",
+                    "confidence_threshold",
+                ),
+                skips=skips,
+                embed_text=embed_text,
+                prompt_examples=[
+                    TraceExample(
+                        raw_description=e.get("raw_description"),
+                        category=e.get("category"),
+                        subcategory=e.get("subcategory"),
+                        source=e.get("source"),
+                    )
+                    for e in examples
+                ],
+                majority_category=majority_category,
+                majority_count=majority_count,
+                **_llm_telemetry_fields(llm_result),
+            )
+            return AnnotationCreate(
+                transaction_id=txn["id"],
+                merchant=llm_result.merchant,
+                category=category,
+                subcategory=_normalize_subcategory(category, llm_result.subcategory, category_list),
+                tags=llm_result.tags,
+                confidence=confidence,
+                source="rag_prompted",
+            ), trace
+        logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
+        skips.append("rag_prompted: llm returned nothing")
+        return None, None
+
+    skips.append("rag_prompted: no annotated examples to prompt with")
+    return None, None
+
+
+def _majority_category(categories: list[str]) -> tuple[str | None, int]:
+    """Return the most common category and its count, or (None, 0) if empty."""
+    if not categories:
+        return None, 0
+    top_category, count = Counter(categories).most_common(1)[0]
+    return top_category, count
+
+
+def _annotations_by_transaction(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, dict]:
+    """Fetch annotations for many transactions in one query, keyed by transaction id."""
+    if not transaction_ids:
+        return {}
+    placeholders = ",".join("?" * len(transaction_ids))
+    rows = conn.execute(
+        f"SELECT * FROM annotations WHERE transaction_id IN ({placeholders})",
+        transaction_ids,
+    ).fetchall()
+    return {row["transaction_id"]: dict(row) for row in rows}
+
+
+def _donor_transactions(transaction_ids: list[str], conn: sqlite3.Connection) -> dict[str, dict]:
+    """Fetch id, upi_meta, raw_description for donor transactions, keyed by id.
+
+    Used to derive a stable counterparty key for vote deduplication.
+    """
+    if not transaction_ids:
+        return {}
+    placeholders = ",".join("?" * len(transaction_ids))
+    rows = conn.execute(
+        f"SELECT id, upi_meta, raw_description FROM transactions WHERE id IN ({placeholders})",
+        transaction_ids,
+    ).fetchall()
+    return {row["id"]: dict(row) for row in rows}
+
+
+def _build_examples_from_similar(
+    conn: sqlite3.Connection,
+    similar: list[dict],
+    ann_by_txn: dict[str, dict],
+) -> list[dict]:
+    """Fetch transaction details for similar matches to use as few-shot examples."""
+    txn_ids = [m["transaction_id"] for m in similar]
+    placeholders = ",".join("?" * len(txn_ids))
+    txn_by_id = {
+        row["id"]: row
+        for row in conn.execute(
+            f"SELECT * FROM transactions WHERE id IN ({placeholders})", txn_ids
+        ).fetchall()
+    } if txn_ids else {}
+
+    examples = []
+    for match in similar:
+        txn_row = txn_by_id.get(match["transaction_id"])
+        ann_row = ann_by_txn.get(match["transaction_id"])
+        if txn_row is None or ann_row is None:
+            continue
+        upi_note = ""
+        upi_meta = txn_row["upi_meta"] if "upi_meta" in txn_row.keys() else None
+        if upi_meta:
+            try:
+                meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+                upi_note = str(meta.get("note", ""))
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        examples.append({
+            "raw_description": txn_row["raw_description"],
+            "upi_note": upi_note,
+            "amount": txn_row["amount"],
+            "debit_credit": txn_row["debit_credit"],
+            "txn_date": txn_row["txn_date"],
+            "category": ann_row["category"],
+            "subcategory": ann_row.get("subcategory"),
+            "merchant": ann_row.get("merchant"),
+            "source": ann_row.get("source"),
+        })
+
+    # Prioritize human-verified examples first — LLMs are sensitive to example ordering
+    _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}
+    examples.sort(key=lambda e: _SOURCE_PRIORITY.get(e.get("source", ""), 9))
+    return examples

@@ -13,7 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src.db.connection import get_connection
+from finance_copilot.db.connection import get_connection
 
 
 def build_golden(db_path: str | None, out_path: str) -> int:

@@ -1,0 +1,196 @@
+"""Statement routes: upload PDF, list statements, list transactions for a statement."""
+from __future__ import annotations
+
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from pydantic import BaseModel
+
+from finance_copilot.api.deps import get_db
+from finance_copilot.config import settings
+from finance_copilot.db.queries.embeddings import delete_embeddings
+from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
+from finance_copilot.pipeline.ingest import DuplicateStatementError, check_continuity, ingest_pdf
+
+router = APIRouter()
+
+# Bank statements are a few MB at most; refuse anything larger so a bad or hostile
+# upload can't exhaust memory (the file is buffered to read it).
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@router.post("/upload")
+def upload_statement(
+    file: UploadFile,
+    # Form body, not query param — query strings end up in server access logs.
+    password: Annotated[str | None, Form()] = None,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
+    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    # Stage the statement next to the DB with owner-only perms, not in the shared
+    # /tmp: this is the app's most sensitive data, and a crash between write and
+    # unlink must not leave a bank statement world-readable in a shared temp dir.
+    data_dir = Path(settings.db_path).parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file 0600 by default; write via its fd so the bytes
+    # never touch a wider-permissioned path.
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=data_dir)
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(contents)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+
+    try:
+        try:
+            statement = ingest_pdf(tmp_path, password=password, conn=conn)
+        except DuplicateStatementError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        os.unlink(tmp_path)
+
+    return {**statement.model_dump(), "warnings": check_continuity(conn, statement)}
+
+
+@router.get("")
+def list_statements(conn: sqlite3.Connection = Depends(get_db)):
+    """List statements, each enriched with transaction/annotation/embedding counts.
+
+    Counts are computed in a single grouped query (no N+1) so the UI can show
+    annotation and vector-DB coverage per statement.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            s.*,
+            COUNT(DISTINCT t.id)              AS txn_count,
+            COUNT(DISTINCT a.transaction_id)  AS annotated_count,
+            COUNT(DISTINCT em.transaction_id) AS embedded_count
+        FROM statements s
+        LEFT JOIN transactions t   ON t.statement_id = s.id
+        LEFT JOIN annotations a    ON a.transaction_id = t.id
+        LEFT JOIN embedding_meta em ON em.transaction_id = t.id
+        GROUP BY s.id
+        ORDER BY s.uploaded_at DESC
+        """
+    ).fetchall()
+    # Per-statement running-balance reconciliation for the "N/N rows balanced"
+    # trust indicator (4.20). One extra windowed query, merged in by id.
+    checks = statement_balance_checks(conn)
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
+        result.append(d)
+    return result
+
+
+class StatementPatch(BaseModel):
+    bank_name: str
+
+
+@router.patch("/{statement_id}")
+def patch_statement(
+    statement_id: str,
+    body: StatementPatch,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Update mutable fields on a statement (currently: bank_name)."""
+    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    conn.execute(
+        "UPDATE statements SET bank_name = ? WHERE id = ?",
+        (body.bank_name.strip(), statement_id),
+    )
+    conn.commit()
+    return {"id": statement_id, "bank_name": body.bank_name.strip()}
+
+
+@router.delete("/{statement_id}")
+def delete_statement(
+    statement_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Delete a statement and all associated transactions, annotations, and embeddings."""
+    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    txn_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
+        ).fetchall()
+    ]
+
+    if txn_ids:
+        placeholders = ",".join("?" * len(txn_ids))
+        conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+        delete_embeddings(conn, txn_ids)
+        # transaction_links references transactions(id) without ON DELETE CASCADE,
+        # so links must go before the transactions or the FK check (PRAGMA
+        # foreign_keys=ON) aborts the delete. A link can cross a statement
+        # boundary, so match on either endpoint.
+        conn.execute(
+            f"DELETE FROM transaction_links "
+            f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
+            txn_ids + txn_ids,
+        )
+        conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+
+    conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+    conn.commit()
+    return {"deleted": statement_id}
+
+
+@router.delete("/{statement_id}/data")
+def reset_statement_data(
+    statement_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Delete all transactions, annotations, and embeddings for a statement, but keep the statement record itself."""
+    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    txn_ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
+        ).fetchall()
+    ]
+
+    annotations_deleted = 0
+    if txn_ids:
+        placeholders = ",".join("?" * len(txn_ids))
+        cur = conn.execute(
+            f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
+        )
+        annotations_deleted = cur.rowcount
+        delete_embeddings(conn, txn_ids)
+
+    conn.commit()
+    return {"reset": statement_id, "annotations_deleted": annotations_deleted}
+
+
+@router.get("/{statement_id}/transactions")
+def get_statement_transactions(
+    statement_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    return list_transactions(conn, statement_id=statement_id)

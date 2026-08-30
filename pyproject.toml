@@ -22,11 +22,11 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.uv]
-# Code lives in src/ and is imported as `src.*`; nothing is built or installed.
+# Code lives in src/ and is imported as `finance_copilot.*`; nothing is built or installed.
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["src/tests"]
+testpaths = ["finance_copilot/tests"]
 
 [tool.ruff]
 line-length = 100
@@ -47,6 +47,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # main.py deliberately runs logging.basicConfig before importing route modules
 # so their import-time loggers inherit the format; that's an intentional E402.
-"src/main.py" = ["E402"]
-# Standalone scripts insert the repo root on sys.path before importing src.*.
+"finance_copilot/main.py" = ["E402"]
+# Standalone scripts insert the repo root on sys.path before importing finance_copilot.*.
 "scripts/*.py" = ["E402"]

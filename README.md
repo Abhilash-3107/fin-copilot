@@ -81,7 +81,7 @@ uv sync
 # Start the API server (runs migrations automatically on startup)
 # Binds to 127.0.0.1 by default — loopback only, so your statements are not
 # exposed on the network. Set RELOAD=1 for auto-reload during development.
-RELOAD=1 uv run python -m src
+RELOAD=1 uv run python -m finance_copilot
 ```
 
 > The server binds to `127.0.0.1` by default. It has no authentication yet, so
@@ -111,12 +111,12 @@ CONFIDENCE_THRESHOLD=0.85
 
 For password-protected statement PDFs, enter the password in the upload form — it is sent with the upload request, not stored.
 
-All values have sensible defaults in `src/config.py` — the `.env` file is optional unless you need to override them.
+All values have sensible defaults in `finance_copilot/config.py` — the `.env` file is optional unless you need to override them.
 
 ### CLI Review Queue
 
 ```bash
-uv run python -m src.cli review
+uv run python -m finance_copilot.cli review
 ```
 
 Interactive terminal UI for reviewing and correcting low-confidence annotations.
@@ -124,7 +124,7 @@ Interactive terminal UI for reviewing and correcting low-confidence annotations.
 ## Project Structure
 
 ```
-src/
+finance_copilot/
 ├── api/routes/          # FastAPI endpoints (statements, transactions, annotations, ...)
 ├── db/
 │   ├── migrations/      # Versioned SQL migrations (applied once, tracked in schema_migrations)
@@ -138,7 +138,7 @@ src/
 └── main.py              # FastAPI app entry point
 
 ui/
-├── src/
+├── finance_copilot/
 │   ├── pages/           # Dashboard, ReviewQueue, Transactions, Upload, Groups, People, Insights
 │   ├── components/      # AnnotationPanel, CategoryPicker, TransactionTable, TagInput, ...
 │   ├── contexts/        # StatementContext, ToastContext
@@ -168,10 +168,10 @@ After seeding, start the server and trigger auto-annotate on the remaining unann
 
 ## Bank Statement Parsing
 
-Uploads are auto-detected by the parser registry (`src/parsers/registry.py`):
+Uploads are auto-detected by the parser registry (`finance_copilot/parsers/registry.py`):
 
 1. **Dedicated parsers** (currently Kotak) are tried first.
-2. The **generic parser** (`src/parsers/generic.py`) handles everything else: it
+2. The **generic parser** (`finance_copilot/parsers/generic.py`) handles everything else: it
    extracts tables from the PDF, infers which columns are date / description /
    debit / credit / balance from the header row, and then **verifies every row
    arithmetically against the running balance** (`balance[i] == balance[i-1] ± amount`).
@@ -187,10 +187,10 @@ account statements work; credit-card statements generally won't yet).
 
 Only needed when the generic parser can't handle a bank's layout:
 
-1. Create a new file under `src/parsers/banks/` (e.g., `sbi.py`)
-2. Subclass `StatementParser` from `src/parsers/base.py`
+1. Create a new file under `finance_copilot/parsers/banks/` (e.g., `sbi.py`)
+2. Subclass `StatementParser` from `finance_copilot/parsers/base.py`
 3. Implement the `parse()` method to extract transactions from the PDF
-4. Register it in `src/parsers/registry.py` **before** `GenericStatementParser`
+4. Register it in `finance_copilot/parsers/registry.py` **before** `GenericStatementParser`
 
 ## Demo Screenshots
 
@@ -225,5 +225,5 @@ Only needed when the generic parser can't handle a bank's layout:
 ## Testing
 
 ```bash
-uv run pytest src/tests/
+uv run pytest finance_copilot/tests/
 ```

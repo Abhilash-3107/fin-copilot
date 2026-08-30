@@ -37,17 +37,17 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from src.config import settings
-from src.db.connection import get_connection
-from src.db.queries.categories import get_category_names_flat
-from src.db.queries.people import list_people
-from src.pipeline.annotate import (
+from finance_copilot.config import settings
+from finance_copilot.db.connection import get_connection
+from finance_copilot.db.queries.categories import get_category_names_flat
+from finance_copilot.db.queries.people import list_people
+from finance_copilot.pipeline.annotate import (
     _normalize_category,
     _try_rag_annotation,
     rule_annotation,
 )
-from src.pipeline.calibration import get_calibrated_dampening
-from src.pipeline.llm import annotate_transaction_llm
+from finance_copilot.pipeline.calibration import get_calibrated_dampening
+from finance_copilot.pipeline.llm import annotate_transaction_llm
 
 
 def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
