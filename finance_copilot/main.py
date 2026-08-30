@@ -25,6 +25,7 @@ from finance_copilot.api.routes import (
     embeddings,
     groups,
     insights,
+    local_llm,
     people,
     statements,
     transactions,
@@ -101,6 +102,8 @@ _DEMO_BLOCKED = (
     ("POST", "/api/data/delete-all"),
     ("PUT", "/api/config/llm"),           # no provider/API-key writes on a shared box
     ("POST", "/api/config/llm/test"),
+    ("POST", "/api/local-llm"),           # no multi-GB downloads onto the demo box
+    ("DELETE", "/api/local-llm"),
 )
 
 
@@ -145,6 +148,7 @@ app.include_router(categories.router, prefix="/api/categories", tags=["categorie
 app.include_router(config.router, prefix="/api/config", tags=["config"])
 app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
+app.include_router(local_llm.router, prefix="/api/local-llm", tags=["local-llm"])
 
 
 def _app_version() -> str:

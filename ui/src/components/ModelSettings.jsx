@@ -5,6 +5,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 const PROVIDERS = [
   { id: 'ollama', label: 'Ollama', hint: 'Local models on your machine (default). Private, no API key.' },
+  { id: 'local', label: 'On this computer', hint: 'Downloads a model once (~2.7GB), then categorization runs fully offline inside the app. Needs the local-llm add-on.' },
   { id: 'openai', label: 'OpenAI-compatible', hint: 'Any /chat/completions endpoint: OpenAI, LM Studio, vLLM, OpenRouter.' },
   { id: 'none', label: 'Disabled', hint: 'No AI. Categorization falls back to rules and your history only.' },
 ]
@@ -17,6 +18,111 @@ const EMBED_PROVIDERS = [
 
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]'
 const label = 'block text-xs text-[#94a3b8] mb-1'
+
+// Local-AI management: shows exactly one of (install hint | download button |
+// download progress | ready + remove). The model artifact is managed by
+// /api/local-llm; inference switches on via the provider radio above.
+function LocalAICard() {
+  const toast = useToast()
+  const [status, setStatus] = useState(null)
+  const [job, setJob] = useState(null)
+
+  const refresh = () => api.get('/local-llm/status').then(setStatus).catch(() => {})
+  useEffect(() => { refresh() }, [])
+
+  // Poll the download job once a second until it resolves.
+  useEffect(() => {
+    if (!job || job.status === 'completed' || job.status === 'failed') return undefined
+    const t = setInterval(async () => {
+      try {
+        const j = await api.get(`/annotations/jobs/${job.job_id ?? job.id}`)
+        setJob({ ...j, job_id: j.id })
+        if (j.status === 'completed') { toast('Local model ready', 'success'); refresh() }
+        if (j.status === 'failed') { toast(`Download stopped - ${j.error ?? 'unknown error'}`, 'error'); refresh() }
+      } catch { /* transient poll error; keep trying */ }
+    }, 1000)
+    return () => clearInterval(t)
+  }, [job, toast])
+
+  async function startDownload() {
+    try {
+      const j = await api.post('/local-llm/download', {})
+      setJob(j)
+    } catch (e) {
+      toast(e.message, 'error', 8000)
+    }
+  }
+
+  async function cancelDownload() {
+    try { await api.post('/local-llm/download/cancel') } catch { /* job resolves via poll */ }
+  }
+
+  async function removeModel() {
+    try {
+      await api.delete('/local-llm/model')
+      toast('Model removed', 'info')
+      refresh()
+    } catch (e) {
+      toast(`Couldn't remove - ${e.message}`, 'error')
+    }
+  }
+
+  if (!status) return <p className="text-sm text-[#475569]">Checking local AI…</p>
+
+  const downloading = job && (job.status === 'queued' || job.status === 'running')
+  const pct = downloading && job.total ? Math.round((job.processed / job.total) * 100) : 0
+
+  return (
+    <div className="bg-[#13151f] border border-[#2d3148] rounded-lg px-4 py-3 space-y-3">
+      {!status.extra_installed ? (
+        <>
+          <p className="text-sm text-[#e2e8f0]">The local-llm add-on isn't installed.</p>
+          <p className="text-xs text-[#64748b]">Restart the app with it included:</p>
+          <code className="block text-xs bg-[#0f1117] border border-[#2d3148] rounded-md px-3 py-2 text-[#a5b4fc] overflow-x-auto">
+            {status.install_hint.uvx}
+          </code>
+        </>
+      ) : downloading ? (
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-[#e2e8f0]">Downloading model… {pct}%</p>
+            <button onClick={cancelDownload} className="text-xs text-[#94a3b8] hover:text-[#e2e8f0]">Cancel</button>
+          </div>
+          <div className="h-1.5 rounded-full bg-[#1e2235] overflow-hidden">
+            <div className="h-full bg-[#6366f1] transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          <p className="text-xs text-[#64748b]">
+            Safe to keep using the app. If the download is interrupted, it resumes where it left off.
+          </p>
+        </>
+      ) : status.model_present ? (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-[#e2e8f0]">
+            Model ready <span className="text-xs text-[#64748b]">({status.quant}, {(status.size / 1024 ** 3).toFixed(1)}GB on disk)</span>
+          </p>
+          <button onClick={removeModel} className="text-xs text-[#f87171] hover:opacity-80">Remove model</button>
+        </div>
+      ) : (
+        <>
+          {!status.preflight.ok && (
+            <p className="text-xs text-[#fdba74]">{status.preflight.problems.join(' ')}</p>
+          )}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={startDownload}
+              className="bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90"
+            >
+              {status.download_partial ? 'Resume download' : 'Enable local AI'}
+            </button>
+            <span className="text-xs text-[#64748b]">
+              Downloads {(status.size / 1024 ** 3).toFixed(1)}GB once, into your app data folder.
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 // Settings › AI & Model: bring-your-own-model config (provider, endpoint, model,
 // key) with a test-connection button - replaces the .env-only setup.
@@ -150,6 +256,8 @@ export default function ModelSettings() {
           </div>
         </div>
       )}
+
+      {provider === 'local' && <LocalAICard />}
 
       {provider === 'openai' && (
         <div className="space-y-3">

@@ -18,7 +18,7 @@ from finance_copilot.db.queries.app_settings import (
 
 router = APIRouter()
 
-_VALID_PROVIDERS = {"ollama", "openai", "none"}
+_VALID_PROVIDERS = {"ollama", "openai", "local", "none"}
 _VALID_EMBEDDING_PROVIDERS = {"ollama", "local", "none"}
 
 
@@ -63,6 +63,7 @@ class LlmConfigPatch(BaseModel):
     llm_api_key: str | None = None
     embedding_provider: str | None = None
     local_embedding_model: str | None = None
+    local_llm_model: str | None = None
 
 
 @router.get("/llm")

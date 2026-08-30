@@ -38,6 +38,12 @@ dependencies = [
     "fastembed>=0.4",
 ]
 
+[project.optional-dependencies]
+# Fully-local LLM (Settings > AI & Model > "On this computer"). Never a hard
+# dependency: llama-cpp-python wheels are large and platform-fussy, and most
+# users are fine with rules + RAG or a BYOM key.
+local-llm = ["llama-cpp-python>=0.3"]
+
 [project.scripts]
 finance-copilot = "finance_copilot.app:main"
 

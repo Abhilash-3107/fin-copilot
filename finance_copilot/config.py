@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     #           vLLM, OpenRouter, OpenAI itself) via llm_base_url + llm_api_key.
     # "none":   AI disabled; the pipeline degrades to rules + RAG-direct and
     #           routes everything else to the review queue.
+    # "local":  llama-cpp-python running a GGUF in-process (pip extra
+    #           finance-copilot[local-llm]); model downloads on demand into the
+    #           data dir. See finance_copilot/local_llm.py.
     llm_provider: str = "ollama"
+    # Manifest key in local_llm.MODEL_MANIFEST selecting which GGUF to run.
+    local_llm_model: str = "qwen3.5-4b-q4_k_m"
     llm_base_url: str = ""  # e.g. https://api.openai.com/v1 (openai provider only)
     llm_api_key: str = ""
     llm_model: str = ""  # openai-provider model name; ollama uses ollama_model

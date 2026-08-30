@@ -306,6 +306,18 @@ def _build_provider_request(
         }
         return url, headers, payload
 
+    if settings.llm_provider == "local":
+        # In-process llama-cpp: OpenAI-shaped payload, no URL. JSON validity is
+        # grammar-enforced (schema → GBNF inside llama-cpp), not requested.
+        payload = {
+            "model": settings.local_llm_model,
+            "max_tokens": 512,
+            "response_format": {"type": "json_object", "schema": schema},
+            "messages": messages,
+            "logprobs": settings.llm_logprob_confidence,
+        }
+        return "", {}, payload
+
     url = f"{settings.ollama_url}/api/chat"
     payload = {
         "model": settings.ollama_model,
@@ -369,11 +381,23 @@ def _call_llm(
     for attempt in range(max_retries + 1):
         t0 = time.monotonic()
         content = ""
+        response = None
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
-            elapsed = time.monotonic() - t0
-            response.raise_for_status()
-            data = response.json()
+            if settings.llm_provider == "local":
+                from finance_copilot import local_llm
+
+                try:
+                    data = local_llm.chat_completion(payload)
+                except local_llm.LocalLLMError as e:
+                    # Missing extra/model can't heal mid-run; fail this txn cleanly.
+                    logger.warning("%s | txn=%s  local_llm_unavailable=%s", log_prefix, txn_id, e)
+                    return None
+                elapsed = time.monotonic() - t0
+            else:
+                response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+                elapsed = time.monotonic() - t0
+                response.raise_for_status()
+                data = response.json()
             content = _strip_code_fence(_extract_content(data))
             try:
                 result = AnnotationResponse.model_validate_json(content)
@@ -430,9 +454,11 @@ def _call_llm(
                 time.sleep(1.0)
             continue
         except KeyError as e:
-            logger.warning("%s | txn=%s  attempt=%d  missing_key=%s  raw=%s", log_prefix, txn_id, attempt, e, response.text)
+            raw = response.text if response is not None else content
+            logger.warning("%s | txn=%s  attempt=%d  missing_key=%s  raw=%s", log_prefix, txn_id, attempt, e, raw)
         except json.JSONDecodeError as e:
-            logger.warning("%s | txn=%s  attempt=%d  json_error=%s  raw=%s", log_prefix, txn_id, attempt, e, response.text)
+            raw = response.text if response is not None else content
+            logger.warning("%s | txn=%s  attempt=%d  json_error=%s  raw=%s", log_prefix, txn_id, attempt, e, raw)
         except ValidationError as e:
             logger.warning("%s | txn=%s  attempt=%d  validation_error=%s  raw=%s", log_prefix, txn_id, attempt, e, content)
 
@@ -485,6 +511,11 @@ def test_connection(timeout: float = 10.0) -> dict:
     provider = settings.llm_provider
     if provider == "none":
         return {"ok": True, "detail": "AI is disabled (provider = none)."}
+
+    if provider == "local":
+        from finance_copilot.local_llm import test_local_connection
+
+        return test_local_connection()
 
     try:
         if provider == "openai":

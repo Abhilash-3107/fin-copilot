@@ -26,6 +26,7 @@ _LLM_KEYS = (
     "llm_api_key",
     "embedding_provider",
     "local_embedding_model",
+    "local_llm_model",
 )
 
 
