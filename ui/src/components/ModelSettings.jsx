@@ -9,6 +9,12 @@ const PROVIDERS = [
   { id: 'none', label: 'Disabled', hint: 'No AI. Categorization falls back to rules and your history only.' },
 ]
 
+const EMBED_PROVIDERS = [
+  { id: 'local', label: 'Built-in', hint: 'Runs inside the app - nothing to install. Downloads a small model (~100MB) on first use.' },
+  { id: 'ollama', label: 'Ollama', hint: 'nomic-embed-text via your local Ollama.' },
+  { id: 'none', label: 'Off', hint: 'No memory: matching from your history is disabled; rules still work.' },
+]
+
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]'
 const label = 'block text-xs text-[#94a3b8] mb-1'
 
@@ -45,12 +51,24 @@ export default function ModelSettings() {
         ollama_model: cfg.ollama_model,
         llm_base_url: cfg.llm_base_url,
         llm_model: cfg.llm_model,
+        embedding_provider: cfg.embedding_provider,
       }
       // Only send the key when the user typed a new one (blank = keep existing).
       if (cfg.llm_api_key) payload.llm_api_key = cfg.llm_api_key
       const updated = await api.put('/config/llm', payload)
       setCfg({ ...updated, llm_api_key: '' })
       toast('Model settings saved', 'success')
+      // A different embedding model = a different vector space: everything must
+      // be re-embedded before matching from history works again. Kick the
+      // background rebuild right away; RAG (not the app) is paused while it runs.
+      if (updated.embedding_model_changed) {
+        try {
+          await api.post('/embeddings/reembed')
+          toast('Rebuilding your copilot\'s memory in the background - matching from history resumes when it finishes', 'info', 8000)
+        } catch (e) {
+          toast(`Couldn't start the memory rebuild - ${e.message}`, 'error')
+        }
+      }
     } catch (e) {
       toast(`Couldn't save - ${e.message}`, 'error')
     } finally {
@@ -90,9 +108,10 @@ export default function ModelSettings() {
             {health.ai_message}
           </p>
         )}
-        {health && !health.ai_message && health.embeddings !== 'ok' && (
+        {health && !health.ai_message && health.embeddings === 'unavailable' && (
           <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
-            The AI's memory (similar-transaction matching) needs Ollama running, so it's paused for now.
+            The AI's memory (similar-transaction matching) is paused because Ollama isn't
+            reachable. Switch AI memory to Built-in below to run it inside the app instead.
           </p>
         )}
         <div className="space-y-2">
@@ -156,6 +175,37 @@ export default function ModelSettings() {
           </div>
         </div>
       )}
+
+      <div>
+        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI memory (embeddings)</h2>
+        <p className="text-xs text-[#64748b] mb-3 leading-relaxed">
+          How your copilot remembers past transactions so similar ones categorize
+          themselves. Switching rebuilds the memory from scratch - it runs in the
+          background and matching from history pauses until it's done.
+        </p>
+        <div className="space-y-2">
+          {EMBED_PROVIDERS.map(p => (
+            <label
+              key={p.id}
+              className={`flex items-start gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-colors ${
+                cfg.embedding_provider === p.id ? 'border-[#6366f1] bg-[#13151f]' : 'border-[#2d3148] hover:border-[#3d4468]'
+              }`}
+            >
+              <input
+                type="radio"
+                name="embedding_provider"
+                checked={cfg.embedding_provider === p.id}
+                onChange={() => set('embedding_provider', p.id)}
+                className="mt-0.5 accent-[#6366f1]"
+              />
+              <div>
+                <div className="text-sm text-[#e2e8f0]">{p.label}</div>
+                <div className="text-xs text-[#64748b] mt-0.5">{p.hint}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
 
       {/* Test result banner */}
       {result && (

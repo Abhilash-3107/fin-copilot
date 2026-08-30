@@ -1,18 +1,29 @@
-"""Transaction descriptions → embeddings via Ollama; upsert into vec_items and embedding_meta."""
+"""Transaction descriptions → embeddings; upsert into vec_items and embedding_meta.
+
+Provider seam (settings.embedding_provider): "ollama" calls the Ollama API,
+"local" runs fastembed/onnxruntime in-process (weights auto-download into the
+data dir on first use), "none" raises EmbeddingsUnavailable which every caller
+treats as "quietly skip the embedding-dependent feature".
+"""
 from __future__ import annotations
 
 import json
 import logging
 import re
 import sqlite3
+from pathlib import Path
 
 import httpx
 
-from finance_copilot.config import settings
+from finance_copilot.config import current_embedding_model, settings
 from finance_copilot.db.queries.embeddings import get_embedded_transaction_ids, upsert_embedding
 from finance_copilot.models.transaction import TxnRow
 
 logger = logging.getLogger(__name__)
+
+
+class EmbeddingsUnavailable(RuntimeError):
+    """No embedding provider configured (embedding_provider == "none")."""
 
 
 # UPI descriptions are 'UPI/<merchant>/<numeric-ref>/<note>'. The 12-ish-digit
@@ -71,11 +82,32 @@ def build_embed_text(txn: TxnRow) -> str:
     return " ".join(p for p in parts if p).strip().lower()
 
 
-def get_embeddings_batch(
-    texts: list[str],
-    timeout: float = 120.0,
-) -> list[list[float]]:
-    """Call Ollama /api/embed for a batch of texts. Returns list of embedding vectors."""
+# One in-process fastembed model, loaded lazily on first embed. Keyed by model
+# name so a settings change mid-process swaps the instance instead of serving
+# stale vectors.
+_local_embedder = None
+_local_embedder_model: str | None = None
+
+
+def _get_local_embedder():
+    global _local_embedder, _local_embedder_model
+    if _local_embedder is None or _local_embedder_model != settings.local_embedding_model:
+        from fastembed import TextEmbedding  # deferred: pulls onnxruntime
+
+        cache_dir = Path(settings.data_dir) / "models" / "embeddings"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "loading local embedding model %s (first use downloads ~100MB into %s)",
+            settings.local_embedding_model, cache_dir,
+        )
+        _local_embedder = TextEmbedding(
+            model_name=settings.local_embedding_model, cache_dir=str(cache_dir)
+        )
+        _local_embedder_model = settings.local_embedding_model
+    return _local_embedder
+
+
+def _ollama_embeddings_batch(texts: list[str], timeout: float) -> list[list[float]]:
     url = f"{settings.ollama_url}/api/embed"
     payload = {
         "model": settings.ollama_embedding_model,
@@ -84,6 +116,19 @@ def get_embeddings_batch(
     response = httpx.post(url, json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json()["embeddings"]
+
+
+def get_embeddings_batch(
+    texts: list[str],
+    timeout: float = 120.0,
+) -> list[list[float]]:
+    """Embed a batch of texts with the configured provider. Returns vectors."""
+    provider = settings.embedding_provider
+    if provider == "none":
+        raise EmbeddingsUnavailable("embedding_provider is 'none'")
+    if provider == "local":
+        return [vec.tolist() for vec in _get_local_embedder().embed(texts)]
+    return _ollama_embeddings_batch(texts, timeout)
 
 
 def get_embedding_single(text: str, timeout: float = 60.0) -> list[float]:
@@ -105,7 +150,7 @@ def embed_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
         if row is None:
             return False
         vector = get_embedding_single(build_embed_text(dict(row)))
-        upsert_embedding(conn, transaction_id, vector, settings.ollama_embedding_model)
+        upsert_embedding(conn, transaction_id, vector, current_embedding_model())
         conn.commit()
         return True
     except Exception as e:
@@ -140,14 +185,17 @@ def embed_annotated_transactions(
     to_embed = [t for t in all_txns if t["id"] not in already_embedded]
 
     embedded_count = 0
-    model_version = settings.ollama_embedding_model
+    model_version = current_embedding_model()
 
     for i in range(0, len(to_embed), batch_size):
         batch = to_embed[i : i + batch_size]
         texts = [build_embed_text(txn) for txn in batch]
         try:
             vectors = get_embeddings_batch(texts)
-        except (httpx.HTTPError, httpx.TimeoutException):
+        except EmbeddingsUnavailable:
+            break  # no provider at all - retrying the next batch can't help
+        except Exception:
+            logger.warning("embedding batch failed; skipping %d texts", len(batch), exc_info=True)
             continue
 
         # One vector per txn; strict= surfaces a count mismatch instead of
@@ -158,3 +206,36 @@ def embed_annotated_transactions(
 
     conn.commit()
     return {"embedded": embedded_count, "skipped": len(already_embedded)}
+
+
+def reembed_all(
+    conn: sqlite3.Connection,
+    batch_size: int = 32,
+    progress_cb=None,
+) -> dict:
+    """Re-embed every annotated transaction with the current provider/model.
+
+    Used after an embedding-provider switch: vectors from the old model stay
+    filtered out by the embedding_meta model_version check, and this overwrites
+    them in place (upsert) so RAG resumes in the new vector space. Raises on a
+    dead provider - a re-embed that silently produces nothing would strand the
+    user with RAG off and no explanation.
+    """
+    rows = conn.execute(
+        "SELECT t.* FROM transactions t "
+        "JOIN annotations a ON a.transaction_id = t.id ORDER BY t.id"
+    ).fetchall()
+    txns = [dict(r) for r in rows]
+    model_version = current_embedding_model()
+
+    done = 0
+    for i in range(0, len(txns), batch_size):
+        batch = txns[i : i + batch_size]
+        vectors = get_embeddings_batch([build_embed_text(t) for t in batch])
+        for txn, vec in zip(batch, vectors, strict=True):
+            upsert_embedding(conn, txn["id"], vec, model_version)
+            done += 1
+        conn.commit()
+        if progress_cb:
+            progress_cb(done, len(txns))
+    return {"embedded": done, "model": model_version}

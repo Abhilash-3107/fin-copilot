@@ -5,6 +5,7 @@ import TopBar from './TopBar.jsx'
 import AnnotationProgress from './AnnotationProgress.jsx'
 import CommandPalette from './CommandPalette.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
+import DemoBanner from './DemoBanner.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 
 export default function Layout() {
@@ -17,6 +18,7 @@ export default function Layout() {
     <div className="flex h-screen bg-[#0f1117] overflow-hidden">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <DemoBanner />
         <TopBar onMenu={() => setNavOpen(true)} />
         <main className="flex-1 overflow-y-auto">
           {/* Keyed on the route so navigating to another page clears a caught error. */}

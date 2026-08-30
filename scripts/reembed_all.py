@@ -16,7 +16,7 @@ import argparse
 
 import httpx
 
-from finance_copilot.config import settings
+from finance_copilot.config import current_embedding_model
 from finance_copilot.db.connection import get_connection
 from finance_copilot.db.queries.embeddings import delete_embeddings, upsert_embedding
 from finance_copilot.pipeline.embed import build_embed_text, get_embeddings_batch
@@ -42,7 +42,7 @@ def main() -> None:
         print("... (dry run, nothing written)")
         return
 
-    model = settings.ollama_embedding_model
+    model = current_embedding_model()
     done = 0
     for i in range(0, len(txns), args.batch_size):
         batch = txns[i : i + args.batch_size]

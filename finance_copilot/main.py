@@ -56,6 +56,15 @@ async def lifespan(app: FastAPI):
         ensure_llm_provider_default(conn)
         conn.commit()
         apply_llm_config(conn)
+        # Vector table must match the active embedding model's dimension; a
+        # provider switch while the app was down is reconciled here.
+        from finance_copilot.db.queries.embeddings import ensure_vec_dimension
+
+        if ensure_vec_dimension(conn):
+            logging.getLogger(__name__).warning(
+                "embedding dimension changed - vector memory cleared; run a re-embed "
+                "from Settings > AI & Model to rebuild RAG retrieval"
+            )
         # Jobs still marked in-flight at boot were orphaned by the previous
         # process; fail them or they block the single-job guard forever.
         reaped = annotations.reap_interrupted_jobs(conn)
@@ -80,6 +89,37 @@ def _extract_token(request) -> str | None:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return request.headers.get("x-api-token")
+
+
+# Demo-instance guardrails (FC_DEMO_MODE=1): the hosted demo must be incapable
+# of receiving real user data or leaking anything, at the API layer - hiding
+# buttons in the UI is not a security boundary. (method, path-prefix) pairs.
+_DEMO_BLOCKED = (
+    ("POST", "/api/statements/upload"),   # real data must never land here
+    ("DELETE", "/api/statements"),        # keep the shared dataset intact
+    ("GET", "/api/data/backup"),          # nothing to exfiltrate, keep it that way
+    ("POST", "/api/data/delete-all"),
+    ("PUT", "/api/config/llm"),           # no provider/API-key writes on a shared box
+    ("POST", "/api/config/llm/test"),
+)
+
+
+@app.middleware("http")
+async def demo_mode_guard(request, call_next):
+    from fastapi.responses import JSONResponse
+
+    if settings.demo_mode:
+        path = request.url.path
+        for method, prefix in _DEMO_BLOCKED:
+            if request.method == method and path.startswith(prefix):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "This is the shared demo - it never accepts real data. "
+                        "Run Finance Copilot locally (uvx finance-copilot) to use your own statements."
+                    },
+                )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -163,19 +203,27 @@ def health():
         ai_message = "Ollama isn't reachable right now, so AI categorization is paused."
     else:
         ai_message = ""
-    embeddings_ok = ollama_ok  # embeddings ride on Ollama until in-process embeddings land
+    if settings.embedding_provider == "local":
+        embeddings_status = "ok"  # in-process; weights download on first embed
+    elif settings.embedding_provider == "none":
+        embeddings_status = "off"
+    else:
+        embeddings_status = "ok" if ollama_ok else "unavailable"
 
     return {
         "version": _app_version(),
         "llm_provider": provider,
         "ai_message": ai_message,
-        "embeddings": "ok" if embeddings_ok else "unavailable",
+        "embedding_provider": settings.embedding_provider,
+        "embeddings": embeddings_status,
         "ollama": "ok" if ollama_ok else "unavailable",
         "chat_model": _model_status(settings.ollama_model),
         "embedding_model": _model_status(settings.ollama_embedding_model),
         # Lets the SPA know it must present a token (prompt for it) without
         # leaking the token itself.
         "auth_required": bool(settings.api_token),
+        # The SPA shows the persistent "sample data" banner off this flag.
+        "demo_mode": settings.demo_mode,
     }
 
 

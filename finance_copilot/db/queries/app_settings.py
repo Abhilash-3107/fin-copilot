@@ -24,6 +24,8 @@ _LLM_KEYS = (
     "llm_base_url",
     "llm_model",
     "llm_api_key",
+    "embedding_provider",
+    "local_embedding_model",
 )
 
 
@@ -126,6 +128,10 @@ def ensure_llm_provider_default(conn: sqlite3.Connection, probe_timeout: float =
     except Exception:
         detected = "none"
     _set(conn, "llm_provider", detected)
+    # Same one-shot choice for embeddings: Ollama when present, otherwise the
+    # in-process fastembed model so RAG works out of the box with zero setup.
+    if _get(conn, "embedding_provider") is None and settings.embedding_provider == "ollama":
+        _set(conn, "embedding_provider", "ollama" if detected == "ollama" else "local")
 
 
 def apply_llm_config(conn: sqlite3.Connection) -> None:

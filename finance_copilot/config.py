@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -45,6 +46,14 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3.5:4b"
     confidence_threshold: float = 0.85
+    # --- Embedding provider seam (phase 2: RAG out of the box) ---
+    # "ollama": nomic-embed-text via the Ollama API (today's path).
+    # "local":  in-process fastembed/onnxruntime; weights download on first use
+    #           into <data_dir>/models/embeddings. No external service needed.
+    # "none":   embedding-dependent features (RAG, apply-to-similar) quietly
+    #           don't fire; the pipeline stays rules + learned rules.
+    embedding_provider: str = "ollama"
+    local_embedding_model: str = "BAAI/bge-small-en-v1.5"
     ollama_embedding_model: str = "nomic-embed-text"
     rag_direct_threshold: float = 0.92
     rag_top_k: int = 5
@@ -142,6 +151,11 @@ class Settings(BaseSettings):
     # annotation?" panel. Off by default — regular users never see it, but
     # flipping it on explains past decisions too.
     dev_mode: bool = False
+    # Hosted-demo hardening (FC_DEMO_MODE=1): the API refuses statement uploads,
+    # backups, delete-everything, and AI-config writes so the demo box is
+    # structurally incapable of receiving real user data. Enforced in middleware,
+    # not the UI - even a curl user gets the 403. Never set this locally.
+    demo_mode: bool = Field(default=False, validation_alias=AliasChoices("FC_DEMO_MODE", "DEMO_MODE"))
 
     # Last-segment values in UPI descriptions that carry no meaningful note.
     # Extend this list as you encounter new noise patterns — no code changes needed.
@@ -153,3 +167,25 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Vector dimension per embedding model. A vec0 virtual table is fixed-dim, so a
+# model with a different dimension forces a table rebuild + full re-embed (see
+# ensure_vec_dimension). Single vector space invariant: one model at a time.
+EMBEDDING_DIMS = {
+    "nomic-embed-text": 768,
+    "BAAI/bge-small-en-v1.5": 384,
+}
+DEFAULT_EMBEDDING_DIM = 768
+
+
+def current_embedding_model() -> str:
+    """The model identity stamped into embedding_meta and used as the retrieval
+    compatibility filter - vectors from different models never mix."""
+    if settings.embedding_provider == "local":
+        return settings.local_embedding_model
+    return settings.ollama_embedding_model
+
+
+def current_embedding_dim() -> int:
+    return EMBEDDING_DIMS.get(current_embedding_model(), DEFAULT_EMBEDDING_DIM)

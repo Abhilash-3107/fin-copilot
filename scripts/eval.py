@@ -100,7 +100,12 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
 def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None) -> dict:
     conn = get_connection(db_path)
     category_list = get_category_names_flat(conn)
-    known_people = [(p["name"], p["upi"].lower()) for p in list_people(conn) if p.get("upi")]
+    # Mirrors auto_annotate's construction (3-tuples incl. relationship).
+    known_people = [
+        (p["name"], p["upi"].lower(), p.get("relationship"))
+        for p in list_people(conn)
+        if p.get("upi")
+    ]
 
     golden = [json.loads(line) for line in Path(golden_path).read_text().splitlines() if line.strip()]
     if limit:

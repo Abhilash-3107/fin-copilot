@@ -32,6 +32,10 @@ dependencies = [
     "httpx>=0.27",
     "python-multipart>=0.0.9", # FastAPI multipart uploads (statement PDFs)
     "platformdirs>=4",         # per-OS app-data directory for the packaged app
+    # In-process embeddings (RAG with zero setup). Deliberately a hard dependency:
+    # the whole point of phase 2 is that a fresh install has working retrieval
+    # without Ollama, an API key, or any decision.
+    "fastembed>=0.4",
 ]
 
 [project.scripts]

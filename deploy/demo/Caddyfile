@@ -1,0 +1,16 @@
+# TLS + rate limiting in front of the demo container.
+# Replace demo.example.com with the real domain; Caddy fetches certificates
+# automatically. Upload-attempt 403s in the app log are the conversion signal.
+demo.example.com {
+	reverse_proxy 127.0.0.1:8080
+
+	# The box is disposable, but don't let bots chew CPU for free.
+	@writes method POST PUT PATCH DELETE
+	rate_limit @writes {
+		zone demo_writes {
+			key {remote_host}
+			events 30
+			window 1m
+		}
+	}
+}

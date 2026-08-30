@@ -1,14 +1,24 @@
-"""Embedding routes: generate embeddings for annotated transactions, get per-statement stats."""
+"""Embedding routes: generate embeddings for annotated transactions, get per-statement stats,
+and the full re-embed background job used after an embedding-provider switch."""
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 
-from fastapi import APIRouter, Depends
+import ulid
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
-from finance_copilot.db.queries.embeddings import delete_embeddings, get_embedding_stats
-from finance_copilot.pipeline.embed import embed_annotated_transactions
+from finance_copilot.db.queries.embeddings import (
+    delete_embeddings,
+    ensure_vec_dimension,
+    get_embedding_stats,
+)
+from finance_copilot.pipeline.embed import embed_annotated_transactions, reembed_all
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -51,6 +61,91 @@ def clear_embeddings(
     deleted = delete_embeddings(conn, txn_ids)
     conn.commit()
     return {"cleared": deleted}
+
+
+def _run_reembed_job(job_id: str) -> None:
+    # Import here to avoid a routes-module import cycle; annotations owns the
+    # shared job-connection/heartbeat helpers.
+    from finance_copilot.api.routes.annotations import _open_job_connection
+
+    conn = _open_job_connection()
+    try:
+        conn.execute(
+            "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') WHERE id = ?",
+            (job_id,),
+        )
+        conn.commit()
+
+        # A dimension change (e.g. nomic 768 → bge-small 384) rebuilds vec_items
+        # before any vector is written.
+        ensure_vec_dimension(conn)
+
+        def progress(processed: int, total: int) -> None:
+            conn.execute(
+                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
+                (processed, total, job_id),
+            )
+            conn.commit()
+
+        result = reembed_all(conn, progress_cb=progress)
+        conn.execute(
+            """UPDATE annotation_jobs
+               SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
+               WHERE id = ?""",
+            (result["embedded"], result["embedded"], json.dumps(result), job_id),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.exception("reembed job failed | job=%s", job_id)
+        conn.rollback()
+        conn.execute(
+            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') WHERE id = ?",
+            (str(e), job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@router.post("/reembed", status_code=202)
+def start_reembed_job(
+    background_tasks: BackgroundTasks,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Rebuild the whole vector memory with the current embedding provider.
+
+    Runs as a background job in the shared annotation_jobs table (kind
+    'reembed') under the same single-job guard: RAG retrieval is meaningless
+    mid-rebuild, so annotation must wait its turn. Poll
+    GET /api/annotations/jobs/{id} for progress.
+    """
+    from finance_copilot.api.routes.annotations import _reap_stale_jobs
+
+    scheduled_job_id: str | None = None
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _reap_stale_jobs(conn)
+        inflight = conn.execute(
+            "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if inflight is not None:
+            conn.commit()
+            return {"job_id": inflight["id"], "status": inflight["status"], "kind": inflight["kind"]}
+
+        job_id = str(ulid.ULID())
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, kind) VALUES (?, 'reembed')",
+            (job_id,),
+        )
+        conn.commit()
+        scheduled_job_id = job_id
+    except Exception:
+        conn.rollback()
+        raise
+
+    background_tasks.add_task(_run_reembed_job, scheduled_job_id)
+    return {"job_id": scheduled_job_id, "status": "queued", "kind": "reembed"}
 
 
 @router.get("/stats/{statement_id}")

@@ -59,7 +59,9 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /AI & Model/ }))
     await waitFor(() => expect(screen.getByText('AI provider')).toBeInTheDocument())
-    expect(screen.getByText('Ollama')).toBeInTheDocument()
+    // "Ollama" appears twice: once as an LLM provider, once as an embedding provider.
+    expect(screen.getAllByText('Ollama')).toHaveLength(2)
+    expect(screen.getByText('AI memory (embeddings)')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Test connection/ })).toBeInTheDocument()
   })
 })

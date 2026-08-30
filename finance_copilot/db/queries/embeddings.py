@@ -6,12 +6,44 @@ import struct
 
 import ulid
 
-from finance_copilot.config import settings
+from finance_copilot.config import current_embedding_dim, current_embedding_model
 
 
 def _serialize_embedding(embedding: list[float]) -> bytes:
     """Pack a list of floats into a compact binary blob for sqlite-vec."""
     return struct.pack(f"{len(embedding)}f", *embedding)
+
+
+def ensure_vec_dimension(conn: sqlite3.Connection) -> bool:
+    """Rebuild vec_items when the active embedding model's dimension differs.
+
+    vec0 virtual tables are fixed-dimension, so switching to a model with a
+    different vector size (e.g. nomic 768 → bge-small 384) requires dropping and
+    recreating the table. Old vectors are gone either way - they lived in a
+    different vector space - and embedding_meta rows are cleared so re-embed
+    treats everything as missing. Returns True when a rebuild happened.
+    No-op (False) when sqlite-vec isn't loaded or the dimension already matches.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_items'"
+    ).fetchone()
+    if row is None:
+        return False  # extension not loaded → table never created
+    import re
+
+    match = re.search(r"FLOAT\[(\d+)\]", row[0], re.IGNORECASE)
+    existing_dim = int(match.group(1)) if match else None
+    wanted = current_embedding_dim()
+    if existing_dim == wanted:
+        return False
+    conn.execute("DROP TABLE vec_items")
+    conn.execute(
+        f"CREATE VIRTUAL TABLE vec_items USING vec0("
+        f"transaction_id TEXT PRIMARY KEY, embedding FLOAT[{wanted}])"
+    )
+    conn.execute("DELETE FROM embedding_meta")
+    conn.commit()
+    return True
 
 
 def upsert_embedding(
@@ -113,7 +145,7 @@ def find_similar(
         f"JOIN embedding_meta em ON em.transaction_id = t.id "
         f"WHERE t.id IN ({placeholders}) AND em.model_version = ?"
     )
-    params: list = list(candidate_ids) + [settings.ollama_embedding_model]
+    params: list = list(candidate_ids) + [current_embedding_model()]
     if before_txn_date is not None:
         query += " AND t.txn_date < ?"
         params.append(before_txn_date)

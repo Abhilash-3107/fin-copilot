@@ -19,6 +19,7 @@ from finance_copilot.db.queries.app_settings import (
 router = APIRouter()
 
 _VALID_PROVIDERS = {"ollama", "openai", "none"}
+_VALID_EMBEDDING_PROVIDERS = {"ollama", "local", "none"}
 
 
 class ConfigPatch(BaseModel):
@@ -60,6 +61,8 @@ class LlmConfigPatch(BaseModel):
     llm_model: str | None = None
     # Blank means "keep the stored key"; a real value replaces it. Never echoed back.
     llm_api_key: str | None = None
+    embedding_provider: str | None = None
+    local_embedding_model: str | None = None
 
 
 @router.get("/llm")
@@ -76,9 +79,22 @@ def update_llm(body: LlmConfigPatch, conn: sqlite3.Connection = Depends(get_db))
     provider = values.get("llm_provider")
     if provider is not None and provider not in _VALID_PROVIDERS:
         raise HTTPException(status_code=422, detail=f"provider must be one of {sorted(_VALID_PROVIDERS)}")
+    embed_provider = values.get("embedding_provider")
+    if embed_provider is not None and embed_provider not in _VALID_EMBEDDING_PROVIDERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"embedding_provider must be one of {sorted(_VALID_EMBEDDING_PROVIDERS)}",
+        )
+    # Surface whether this save moved the vector space, so the UI can offer the
+    # re-embed job (provider switch = full re-embed; single vector space).
+    from finance_copilot.config import current_embedding_model
+
+    model_before = current_embedding_model()
     set_llm_config(conn, values)
     conn.commit()
-    return get_llm_config(conn)
+    out = get_llm_config(conn)
+    out["embedding_model_changed"] = current_embedding_model() != model_before
+    return out
 
 
 @router.post("/llm/test")
