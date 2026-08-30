@@ -471,6 +471,7 @@ def auto_annotate(
         llm_failed=llm_failed,
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
+        ai_active=settings.llm_provider != "none",
     )
 
 

@@ -136,11 +136,24 @@ export default function Upload() {
     try {
       const result = await api.post('/annotations/auto-annotate', { statement_id: stmt.id })
       setLastResult(result)
-      toast(
-        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
-        'success',
-        5000
-      )
+      const fromRules = (result.rule_matched ?? 0) + (result.learned_rule_annotated ?? 0)
+      const fromHistory = (result.rag_direct_annotated ?? 0) + (result.rag_prompted_annotated ?? 0)
+      if (result.ai_active === false) {
+        // No LLM configured: rules + history are the whole pipeline, and the
+        // remainder is simply waiting for the user - the normal state, not an error.
+        const waiting = (result.llm_failed ?? 0) + (result.low_confidence ?? 0)
+        toast(
+          `Done! ${fromRules + fromHistory} categorized by your rules and history, ${waiting} waiting for you`,
+          'success',
+          5000
+        )
+      } else {
+        toast(
+          `All done! ${result.rule_matched ?? 0} matched by rules, ${fromHistory} from history, ${result.llm_annotated ?? 0} by AI`,
+          'success',
+          5000
+        )
+      }
       loadStatements()
     } catch (e) {
       toast(`Categorization failed - ${e.message}`, 'error')
@@ -260,8 +273,14 @@ export default function Upload() {
               { label: 'Processed', value: lastResult.total_processed, color: 'bg-[#1e2235] text-[#94a3b8]' },
               { label: 'Matched by rules', value: lastResult.rule_matched, color: 'bg-[#1e3a5f] text-[#7dd3fc]' },
               { label: 'Matched from history', value: (lastResult.rag_direct_annotated ?? 0) + (lastResult.rag_prompted_annotated ?? 0), color: 'bg-[#164e63] text-[#67e8f9]' },
-              { label: 'Figured out by AI', value: lastResult.llm_annotated, color: 'bg-[#3b1f5e] text-[#c4b5fd]' },
-              { label: 'Couldn\'t figure out', value: lastResult.llm_failed, color: 'bg-[#450a0a] text-[#fca5a5]' },
+              // With no AI configured the LLM stage never ran: the remainder is
+              // "waiting for you", not "couldn't figure out".
+              ...(lastResult.ai_active === false
+                ? [{ label: 'Waiting for you', value: lastResult.llm_failed, color: 'bg-[#451a03] text-[#fdba74]' }]
+                : [
+                    { label: 'Figured out by AI', value: lastResult.llm_annotated, color: 'bg-[#3b1f5e] text-[#c4b5fd]' },
+                    { label: 'Couldn\'t figure out', value: lastResult.llm_failed, color: 'bg-[#450a0a] text-[#fca5a5]' },
+                  ]),
               { label: 'Needs your review', value: lastResult.low_confidence, color: 'bg-[#451a03] text-[#fdba74]' },
               { label: 'Already done', value: lastResult.already_annotated, color: 'bg-[#14532d] text-[#86efac]' },
             ].map(({ label, value, color }) => (
@@ -270,6 +289,13 @@ export default function Upload() {
               </span>
             ))}
           </div>
+          {lastResult.ai_active === false && (
+            <p className="text-xs text-[#64748b] mt-3">
+              AI is off - your rules and history did the work above. Add a provider in{' '}
+              <a href="/settings" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</a>{' '}
+              to categorize the rest automatically.
+            </p>
+          )}
         </div>
       )}
 

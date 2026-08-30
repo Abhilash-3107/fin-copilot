@@ -104,6 +104,30 @@ def set_llm_config(conn: sqlite3.Connection, values: dict) -> None:
     apply_llm_config(conn)
 
 
+def ensure_llm_provider_default(conn: sqlite3.Connection, probe_timeout: float = 1.5) -> None:
+    """First-run provider choice: detect Ollama once, then never probe again.
+
+    A fresh install has no stored llm_provider. If the config default is still
+    "ollama" (i.e. the user didn't explicitly choose a provider via env), probe
+    the default Ollama URL one time: reachable keeps today's behavior, absent
+    stores "none" so the app presents rules + history as the normal tier instead
+    of timing out against a server that isn't there. The stored value makes the
+    choice stable; Settings > AI & Model changes it any time. Caller commits.
+    """
+    if _get(conn, "llm_provider") is not None:
+        return  # already decided (by this probe or by the user)
+    if settings.llm_provider != "ollama":
+        return  # explicit env choice ("openai"/"none"); respect it, store nothing
+    import httpx
+
+    try:
+        httpx.get(f"{settings.ollama_url}/api/tags", timeout=probe_timeout).raise_for_status()
+        detected = "ollama"
+    except Exception:
+        detected = "none"
+    _set(conn, "llm_provider", detected)
+
+
 def apply_llm_config(conn: sqlite3.Connection) -> None:
     """Copy stored LLM overrides onto the process-static `settings` so the pipeline
     (which reads the singleton) uses the user's runtime choices. Called on write and

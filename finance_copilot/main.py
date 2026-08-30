@@ -45,8 +45,16 @@ async def lifespan(app: FastAPI):
     try:
         # Apply any stored BYOM/LLM overrides onto the live settings so the pipeline
         # uses the user's runtime provider choice from the first request.
-        from finance_copilot.db.queries.app_settings import apply_llm_config
+        from finance_copilot.db.queries.app_settings import (
+            apply_llm_config,
+            ensure_llm_provider_default,
+        )
 
+        # First run only: pick "ollama" vs "none" from a one-shot probe so a
+        # machine without Ollama starts in the honest no-AI tier instead of
+        # timing out per request.
+        ensure_llm_provider_default(conn)
+        conn.commit()
         apply_llm_config(conn)
         # Jobs still marked in-flight at boot were orphaned by the previous
         # process; fail them or they block the single-job guard forever.
@@ -143,8 +151,25 @@ def health():
             status = "not_pulled"
         return {"name": name, "status": status}
 
+    # One plain sentence for the UI when a capability is off - the no-AI state
+    # is a tier, not a failure.
+    provider = settings.llm_provider
+    if provider == "none":
+        ai_message = (
+            "AI is off. Parsing, rules, and your saved history still categorize "
+            "what they can; add a provider in Settings > AI & Model for the rest."
+        )
+    elif provider == "ollama" and not ollama_ok:
+        ai_message = "Ollama isn't reachable right now, so AI categorization is paused."
+    else:
+        ai_message = ""
+    embeddings_ok = ollama_ok  # embeddings ride on Ollama until in-process embeddings land
+
     return {
         "version": _app_version(),
+        "llm_provider": provider,
+        "ai_message": ai_message,
+        "embeddings": "ok" if embeddings_ok else "unavailable",
         "ollama": "ok" if ollama_ok else "unavailable",
         "chat_model": _model_status(settings.ollama_model),
         "embedding_model": _model_status(settings.ollama_embedding_model),

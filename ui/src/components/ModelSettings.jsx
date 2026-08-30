@@ -21,12 +21,14 @@ export default function ModelSettings() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
+  const [health, setHealth] = useState(null)
 
   useEffect(() => {
     api.get('/config/llm')
       .then(c => setCfg({ ...c, llm_api_key: '' }))
       .catch(e => toast(`Couldn't load model settings - ${e.message}`, 'error'))
       .finally(() => setLoading(false))
+    api.get('/health').then(setHealth).catch(() => {})
   }, [toast])
 
   function set(key, value) {
@@ -83,6 +85,16 @@ export default function ModelSettings() {
           Bring your own model. Your copilot uses this to categorize transactions the
           rules and your history can't resolve on their own.
         </p>
+        {health?.ai_message && (
+          <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
+            {health.ai_message}
+          </p>
+        )}
+        {health && !health.ai_message && health.embeddings !== 'ok' && (
+          <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
+            The AI's memory (similar-transaction matching) needs Ollama running, so it's paused for now.
+          </p>
+        )}
         <div className="space-y-2">
           {PROVIDERS.map(p => (
             <label

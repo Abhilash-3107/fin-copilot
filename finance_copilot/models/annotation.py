@@ -126,3 +126,7 @@ class AutoAnnotateResult(BaseModel):
     llm_failed: int
     low_confidence: int       # annotations below settings.confidence_threshold
     already_annotated: int    # transactions skipped because already annotated
+    # Whether an LLM provider was configured for this run. False means the LLM
+    # stage never fired, so "llm_failed" transactions are simply waiting for the
+    # user - the UI presents that as the normal no-AI state, not an error.
+    ai_active: bool = True
