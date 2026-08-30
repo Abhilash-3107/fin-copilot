@@ -1,8 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "finance-copilot"
 version = "0.1.0"
 description = "Local-first personal finance tool: parses bank statement PDFs and auto-categorizes transactions with rules, RAG, and a local LLM."
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+keywords = ["finance", "personal-finance", "bank-statements", "local-first"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
@@ -16,14 +31,38 @@ dependencies = [
     "python-ulid>=2.6",
     "httpx>=0.27",
     "python-multipart>=0.0.9", # FastAPI multipart uploads (statement PDFs)
+    "platformdirs>=4",         # per-OS app-data directory for the packaged app
 ]
+
+[project.scripts]
+finance-copilot = "finance_copilot.app:main"
+
+[project.urls]
+Homepage = "https://github.com/Abhilash-3107/finance-copilot"
+Source = "https://github.com/Abhilash-3107/finance-copilot"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
 
-[tool.uv]
-# Code lives in src/ and is imported as `finance_copilot.*`; nothing is built or installed.
-package = false
+[tool.hatch.build.targets.wheel]
+packages = ["finance_copilot"]
+# Tests (and their PDF fixtures) stay out of the shipped wheel; CI runs them
+# from a checkout copy against the installed wheel instead.
+exclude = ["finance_copilot/tests"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The built SPA rides inside the wheel; main.py serves it from the package dir
+# when present and falls back to the repo's ui/dist in a dev checkout.
+"ui/dist" = "finance_copilot/ui_dist"
+
+[tool.hatch.build.targets.sdist]
+# The sdist is a source snapshot for `pip install` from source; it needs the
+# built UI too because most installers won't have Node.
+include = ["finance_copilot", "ui/dist", "README.md", "pyproject.toml"]
+exclude = ["finance_copilot/tests"]
+# ui/dist is gitignored (it is a build output), so it must be declared an
+# artifact or hatchling's VCS-ignore filter drops it from the sdist.
+artifacts = ["ui/dist"]
 
 [tool.pytest.ini_options]
 testpaths = ["finance_copilot/tests"]

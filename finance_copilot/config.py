@@ -1,13 +1,37 @@
 """Settings: database path, Ollama URL, confidence threshold, and related configuration."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
 
+def default_data_dir() -> Path:
+    """Where the app keeps its database and downloaded artifacts.
+
+    Resolution order:
+    1. FC_DATA_DIR env var - explicit override, also set by the launcher's --data-dir.
+    2. A dev checkout (pyproject.toml sits next to the package) keeps the
+       repo-relative data/ dir so the dev workflow is unchanged.
+    3. Installed copies use the platform app-data dir (~/Library/Application
+       Support/FinanceCopilot on macOS, %LOCALAPPDATA%\\FinanceCopilot on
+       Windows, ~/.local/share/FinanceCopilot on Linux).
+    """
+    env = os.getenv("FC_DATA_DIR")
+    if env:
+        return Path(env).expanduser()
+    repo_root = Path(__file__).parent.parent
+    if (repo_root / "pyproject.toml").exists():
+        return repo_root / "data"
+    import platformdirs
+
+    return Path(platformdirs.user_data_dir("FinanceCopilot", appauthor=False))
+
+
 class Settings(BaseSettings):
-    db_path: str = str(Path(__file__).parent.parent / "data" / "finance.db")
+    data_dir: str = str(default_data_dir())
+    db_path: str = str(default_data_dir() / "finance.db")
     # --- BYOM: pluggable LLM provider ---
     # "ollama": native Ollama API (default; structured output + logprobs).
     # "openai": any OpenAI-compatible /chat/completions endpoint (LM Studio,

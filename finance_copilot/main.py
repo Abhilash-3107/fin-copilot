@@ -31,7 +31,11 @@ from finance_copilot.api.routes import (
 )
 from finance_copilot.db.connection import get_migrated_db
 
-UI_DIR = Path(__file__).parent.parent / "ui"
+# The built SPA rides inside the wheel as finance_copilot/ui_dist (force-included
+# at build time); a dev checkout serves ui/dist instead. Wheels install as plain
+# directories, so Path(__file__) resolution covers both cases.
+_BUNDLED_DIST = Path(__file__).parent / "ui_dist"
+_CHECKOUT_DIST = Path(__file__).parent.parent / "ui" / "dist"
 
 
 @asynccontextmanager
@@ -95,6 +99,15 @@ app.include_router(insights.router, prefix="/api/insights", tags=["insights"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 
 
+def _app_version() -> str:
+    from importlib import metadata
+
+    try:
+        return metadata.version("finance-copilot")
+    except metadata.PackageNotFoundError:
+        return "0.0.0.dev0"
+
+
 @app.get("/api/health")
 def health():
     """Check Ollama availability and which models are loaded vs pulled."""
@@ -131,6 +144,7 @@ def health():
         return {"name": name, "status": status}
 
     return {
+        "version": _app_version(),
         "ollama": "ok" if ollama_ok else "unavailable",
         "chat_model": _model_status(settings.ollama_model),
         "embedding_model": _model_status(settings.ollama_embedding_model),
@@ -140,7 +154,7 @@ def health():
     }
 
 
-DIST_DIR = UI_DIR / "dist"
+DIST_DIR = _BUNDLED_DIST if _BUNDLED_DIST.exists() else _CHECKOUT_DIST
 
 if DIST_DIR.exists():
     from fastapi.exceptions import HTTPException
