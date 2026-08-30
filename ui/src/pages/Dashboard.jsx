@@ -423,6 +423,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const { startAnnotation } = useAnnotationJob()
   const [annotating, setAnnotating] = useState(false)
+  const [seedingDemo, setSeedingDemo] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
   // Month-anchored like Money Map: "All time" falls back to the latest month
@@ -471,6 +472,19 @@ export default function Dashboard() {
       toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
       setAnnotating(false)
+    }
+  }
+
+  async function loadDemoData() {
+    setSeedingDemo(true)
+    try {
+      const s = await api.post('/data/demo')
+      toast(`Demo loaded: ${s.transactions} transactions across ${s.months} months`, 'success', 5000)
+      setReloadKey(k => k + 1)
+    } catch (e) {
+      toast(`Couldn't load demo data - ${e.message}`, 'error')
+    } finally {
+      setSeedingDemo(false)
     }
   }
 
@@ -564,12 +578,25 @@ export default function Dashboard() {
           <p className="mt-2 text-sm text-[#64748b]">
             Upload a bank statement and your copilot will sort every transaction for you.
           </p>
-          <Link
-            to="/upload"
-            className="mt-4 inline-block rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
-          >
-            Add your first statement
-          </Link>
+          <div className="mt-4 flex items-center justify-center gap-3">
+            <Link
+              to="/upload"
+              className="inline-block rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
+            >
+              Add your first statement
+            </Link>
+            <button
+              onClick={loadDemoData}
+              disabled={seedingDemo}
+              className="inline-block rounded-lg border border-[#2d3148] px-4 py-2 text-sm font-semibold text-[#cbd5e1] transition-colors hover:border-[#6366f1] hover:text-[#e2e8f0] disabled:opacity-50"
+            >
+              {seedingDemo ? 'Loading…' : 'Load demo data'}
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-[#475569]">
+            No statement handy? The demo fills four months of realistic sample data - clear it
+            anytime from Settings › Data.
+          </p>
         </div>
       ) : data.annotation?.total > 0 && data.annotation.annotated === 0 ? (
         <SetupStage

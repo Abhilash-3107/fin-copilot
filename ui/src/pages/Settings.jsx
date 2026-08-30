@@ -234,10 +234,12 @@ export default function Settings() {
   const [threshold, setThreshold] = useState(0.85)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [version, setVersion] = useState(null)
   const mounted = useRef(true)
 
   useEffect(() => {
     mounted.current = true
+    api.get('/health').then(h => setVersion(h.version)).catch(() => {})
     api.get('/config')
       .then(cfg => {
         setDevMode(!!cfg.dev_mode)
@@ -326,6 +328,9 @@ export default function Settings() {
 
           {tab === 'data' && <DataSettings />}
         </>
+      )}
+      {version && (
+        <p className="mt-8 text-xs text-[#475569]">Finance Copilot v{version}</p>
       )}
     </div>
   )

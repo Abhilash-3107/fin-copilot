@@ -1,7 +1,20 @@
 # Finance Copilot
 
-A privacy first personal finance copilot that automatically categorizes bank transactions using a hybrid pipeline of deterministic rules, vector retrieval (RAG), and local LLMs running entirely offline with Ollama
+Your bank statements, understood - on your machine, and nowhere else.
 
+```bash
+uvx finance-copilot
+```
+
+That's it.
+The app installs, starts on localhost, and opens in your browser.
+Drop in a bank statement PDF (or click "Load demo data") and watch every transaction get parsed, balance-checked, and categorized.
+No account, no cloud, no data leaving your computer.
+
+> Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) (one installer command, no Python needed). Prefer pipx? `pipx run finance-copilot` works too. First run takes a minute while dependencies download.
+
+Out of the box you get statement parsing with running-balance verification, rule-based and history-based categorization, expense groups, people tracking, and insights.
+Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollama.com) or paste any OpenAI-compatible API key.
 
 ## Highlights
 
@@ -57,7 +70,7 @@ See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Me
 | CLI | Typer + Rich (terminal review queue) |
 | IDs | ULID (sortable, unique) |
 
-## Getting Started
+## Developing
 
 ### Prerequisites
 

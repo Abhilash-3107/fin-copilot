@@ -65,6 +65,31 @@ def backup_database():
     )
 
 
+@router.post("/demo")
+def load_demo_data(conn: sqlite3.Connection = Depends(get_db)):
+    """Seed the bundled demo ledger so a fresh install has something to explore.
+
+    Refused once real statements exist - demo rows must never mix into a real
+    ledger. Re-running on an already-demo DB is a no-op top-up (idempotent
+    inserts); delete-everything is the way back.
+    """
+    from datetime import date
+
+    from fastapi import HTTPException
+
+    from finance_copilot.demo_seed import seed
+
+    non_demo = conn.execute(
+        "SELECT COUNT(*) FROM statements WHERE id NOT LIKE 'demo_stmt%'"
+    ).fetchone()[0]
+    if non_demo:
+        raise HTTPException(
+            status_code=409,
+            detail="You already have real statements - demo data won't be mixed into them.",
+        )
+    return seed(conn, date.today())
+
+
 @router.post("/delete-all")
 def delete_all(conn: sqlite3.Connection = Depends(get_db)):
     """Irreversibly remove all user data (statements, transactions, annotations,
