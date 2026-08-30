@@ -530,7 +530,7 @@ def main() -> None:
     print("Serve the demo ledger:")
     print("  DB_PATH=data/demo.db PORT=8080 uv run python -m finance_copilot")
     print()
-    print("Live auto-annotate during the demo (needs Ollama + embeddings, see docs/demo.md):")
+    print("Live auto-annotate during the demo (needs an AI provider configured):")
     print('  curl -X POST http://localhost:8080/api/annotations/auto-annotate \\')
     print(f'       -H "Content-Type: application/json" -d \'{{"statement_id": "{summary["current_statement_id"]}"}}\'')
 
