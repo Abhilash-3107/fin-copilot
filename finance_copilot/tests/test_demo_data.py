@@ -44,6 +44,18 @@ class TestLoadDemoData:
         assert r.status_code == 200
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == first
 
+    def test_goa_group_tells_a_settled_story(self, client_conn):
+        # The demo group's note says both friends settled; settle-up must agree,
+        # and every tag must be a real person id the UI can resolve to a name.
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        detail = client.get("/api/groups/demo_grp_goa").json()
+        assert detail["settle_up"] == []
+        tagged = {p for m in detail["members"] for p in (m["people"] or [])}
+        names = {r[0] for r in conn.execute(
+            f"SELECT name FROM people WHERE id IN ({','.join('?' * len(tagged))})", list(tagged))}
+        assert names == {"Rahul Mehta", "Neha Gupta"}
+
     def test_refused_when_real_statements_exist(self, client_conn):
         client, conn = client_conn
         conn.execute(
