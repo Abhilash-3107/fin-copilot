@@ -1,6 +1,6 @@
 # Finance Copilot
 
-Your bank statements, understood - on your machine, and nowhere else.
+Finance Copilot is a local-first personal finance application for parsing bank statements, organising transactions and analysing expenses.
 
 ```bash
 uvx finance-copilot
