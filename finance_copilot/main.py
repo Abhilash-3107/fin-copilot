@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -85,6 +86,11 @@ app = FastAPI(title="Finance Copilot", lifespan=lifespan)
 # except health must present it. Off by default so the loopback single-user case
 # is unaffected; this exists for a deliberate LAN bind where the app would
 # otherwise serve bank statements to the whole network with no auth.
+# FastAPI's schema and docs pages sit outside /api/; they describe every route,
+# so they're gated along with it.
+_SCHEMA_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+
+
 def _extract_token(request) -> str | None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -131,8 +137,11 @@ async def require_api_token(request, call_next):
 
     token = settings.api_token
     path = request.url.path
-    if token and path.startswith("/api/") and path != "/api/health":
-        if _extract_token(request) != token:
+    gated = (path.startswith("/api/") and path != "/api/health") or path in _SCHEMA_PATHS
+    if token and gated:
+        presented = (_extract_token(request) or "").encode()
+        # Constant-time so a LAN client can't recover the secret byte by byte.
+        if not secrets.compare_digest(presented, token.encode()):
             return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
     return await call_next(request)
 

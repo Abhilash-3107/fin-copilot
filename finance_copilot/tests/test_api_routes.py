@@ -88,6 +88,26 @@ class TestApiTokenGate:
         # X-API-Token header works too.
         assert client.get("/api/categories", headers={"X-API-Token": "s3cret"}).status_code == 200
 
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_api_docs_gated_when_token_set(self, client_conn, monkeypatch, path):
+        # Review M3: the schema routes live outside /api/ and bypassed the gate.
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        assert client.get(path).status_code == 200
+        monkeypatch.setattr(settings, "api_token", "s3cret")
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={"X-API-Token": "s3cret"}).status_code == 200
+
+    def test_token_compared_in_constant_time(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "api_token", "s3cret")
+        with patch("finance_copilot.main.secrets.compare_digest", wraps=__import__("secrets").compare_digest) as cmp:
+            assert client.get("/api/categories", headers={"X-API-Token": "s3cret"}).status_code == 200
+        cmp.assert_called_once()
+        # Non-ASCII junk must be a clean 401, not a 500 from compare_digest.
+        assert client.get("/api/categories", headers={"Authorization": b"Bearer t\xc3\xb6ken"}).status_code == 401
+
 
 class TestAnnotationPatch:
     def test_patch_updates_field(self, client_conn):
