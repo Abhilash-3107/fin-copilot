@@ -28,7 +28,7 @@ export default function DataSettings() {
     setBusy('delete')
     try {
       await api.post('/data/delete-all', {})
-      toast('All data deleted. Your categories are kept.', 'info')
+      toast('All data and settings deleted. Your categories are kept.', 'info')
       // Hard reload so every page drops its now-empty caches.
       setTimeout(() => window.location.reload(), 600)
     } catch (e) {
@@ -63,7 +63,8 @@ export default function DataSettings() {
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Backup</h2>
         <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
           Download a complete snapshot of your database - transactions, categories,
-          learned rules, and memory - as a single file you can keep or restore.
+          learned rules, and memory - as a single file you can keep or restore. Your AI
+          provider's API key is left out, so the file is safe to share.
         </p>
         <button className={btn} disabled={busy === 'backup'}
           onClick={() => download('backup', '/data/backup', 'finance-copilot-backup.db')}>
@@ -75,8 +76,9 @@ export default function DataSettings() {
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Delete everything</h2>
         <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
           Permanently remove all statements, transactions, categories you've assigned,
-          people, groups, and the AI's memory. The category list itself is kept. This
-          cannot be undone - back up first if you're unsure.
+          people, groups, the AI's memory, and your settings (AI model and API key, review
+          threshold, developer mode, dismissed rules). The category list itself is kept. This cannot be
+          undone - back up first if you're unsure.
         </p>
         <button
           onClick={() => setConfirmDelete(true)}
@@ -91,7 +93,7 @@ export default function DataSettings() {
         open={confirmDelete}
         danger
         title="Delete all data?"
-        description="This permanently removes every statement, transaction, category assignment, person, group, and all AI memory. Your category list is kept. This cannot be undone."
+        description="This permanently removes every statement, transaction, category assignment, person, group, and all AI memory, plus your settings: AI model and API key, review threshold, developer mode, and dismissed rules. Your category list is kept. This cannot be undone."
         confirmLabel="Delete everything"
         onConfirm={deleteEverything}
         onCancel={() => setConfirmDelete(false)}

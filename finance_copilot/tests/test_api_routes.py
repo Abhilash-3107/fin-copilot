@@ -540,6 +540,23 @@ class TestTransactionsFilters:
         self._seed(conn)
         assert self._ids(client, "q=%E2%82%B9100") == {"t_food", "t_shop", "t_bare"}
 
+    def test_q_whole_rupees_match_the_rupee_part(self, client_conn):
+        # Review L2: "1200" should find ₹1,200.50, as the comment always promised;
+        # a query with paise stays exact.
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES ('t_paise', 's1', '2026-01-15', 1200.5, 'debit', 'X'), "
+            "('t_round', 's1', '2026-01-15', 1200.0, 'debit', 'Y'), "
+            "('t_next', 's1', '2026-01-15', 1201.0, 'debit', 'Z')"
+        )
+        conn.commit()
+        assert self._ids(client, "q=1200") == {"t_paise", "t_round"}
+        assert self._ids(client, "q=1,200") == {"t_paise", "t_round"}
+        assert self._ids(client, "q=1200.50") == {"t_paise"}
+        assert self._ids(client, "q=1200.00") == {"t_round"}
+
     def test_q_non_matching_amount_empty(self, client_conn):
         client, conn, _ = client_conn
         self._seed(conn)
