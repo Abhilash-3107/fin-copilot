@@ -53,6 +53,12 @@ def backup_database():
     try:
         with dst:
             src.backup(dst)
+        # Backups get shared (bug reports, a new machine); the BYOM API key must
+        # not travel with them. VACUUM so the deleted value doesn't linger on a
+        # free page. Restore keeps whatever key the running install has.
+        dst.execute("DELETE FROM app_settings WHERE key = 'llm_api_key'")
+        dst.commit()
+        dst.execute("VACUUM")
     finally:
         src.close()
         dst.close()
