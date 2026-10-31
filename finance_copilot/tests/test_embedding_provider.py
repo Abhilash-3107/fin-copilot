@@ -90,6 +90,31 @@ class TestEnsureVecDimension:
             # second call is a no-op
             assert ensure_vec_dimension(conn) is False
 
+    def test_reembedding_an_embedded_transaction_replaces_the_vector(self, conn):
+        # vec0 virtual tables reject INSERT OR REPLACE on an existing key, which
+        # made every re-embed (relabel, provider switch) fail on a real DB.
+        if not self._vec_available(conn):
+            pytest.skip("sqlite-vec unavailable")
+        from finance_copilot.db.queries.embeddings import upsert_embedding
+
+        with patch.object(settings, "embedding_provider", "ollama"):
+            ensure_vec_dimension(conn)
+            n = current_embedding_dim()
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')"
+        )
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES ('t1', 's1', '2026-01-10', 10.0, 'debit', 'x')"
+        )
+        upsert_embedding(conn, "t1", [0.0] * n, "m1")
+        upsert_embedding(conn, "t1", [1.0] * n, "m2")
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM vec_items WHERE transaction_id='t1'").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT model_version FROM embedding_meta WHERE transaction_id='t1'"
+        ).fetchone()[0] == "m2"
+
     def test_noop_without_vec_table(self):
         c = sqlite3.connect(":memory:")
         c.row_factory = sqlite3.Row
@@ -141,3 +166,51 @@ class TestReembedJob:
         r = client.post("/api/embeddings/reembed")
         assert r.status_code == 202
         assert r.json()["job_id"] == "j1"
+
+
+class TestEmbedTransactions:
+    @pytest.fixture
+    def conn(self):
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        init_db(c)
+        c.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')"
+        )
+        for i in range(5):
+            c.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-10', 10.0, 'debit', ?)",
+                (f"t{i}", f"MERCHANT {i}"),
+            )
+        c.commit()
+        yield c
+        c.close()
+
+    def test_batches_and_skips_missing_ids(self, conn):
+        from finance_copilot.pipeline.embed import embed_transactions
+
+        calls: list[int] = []
+
+        def fake_batch(texts):
+            calls.append(len(texts))
+            return [[0.0] * 3 for _ in texts]
+
+        with (
+            patch("finance_copilot.pipeline.embed.get_embeddings_batch", side_effect=fake_batch),
+            patch("finance_copilot.pipeline.embed.upsert_embedding") as upsert,
+        ):
+            n = embed_transactions(conn, ["t0", "t1", "t2", "t3", "t4", "gone"], batch_size=2)
+        assert n == 5
+        assert calls == [2, 2, 1]  # one provider call per batch, not per row
+        assert {c.args[1] for c in upsert.call_args_list} == {"t0", "t1", "t2", "t3", "t4"}
+
+    def test_dead_provider_stops_quietly(self, conn):
+        from finance_copilot.pipeline.embed import embed_transactions
+
+        with patch(
+            "finance_copilot.pipeline.embed.get_embeddings_batch",
+            side_effect=EmbeddingsUnavailable("none"),
+        ) as batch:
+            assert embed_transactions(conn, ["t0", "t1", "t2"], batch_size=1) == 0
+        batch.assert_called_once()

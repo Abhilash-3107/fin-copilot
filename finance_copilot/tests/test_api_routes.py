@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from finance_copilot.db.connection import init_db
-from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.annotations import get_annotation_by_transaction, insert_annotation
 from finance_copilot.models.annotation import Annotation
 
 
@@ -52,7 +52,10 @@ def client_conn():
     app.dependency_overrides[api_get_db] = lambda: conn
     # Embedding service isn't available in tests — stub the best-effort embed call.
     # No context manager on TestClient: lifespan would migrate the real settings.db_path.
-    with patch("finance_copilot.api.routes.annotations.embed_transaction", return_value=False) as embed_mock:
+    # Background re-embeds open their own connection to settings.db_path (the
+    # real ledger in a dev checkout) - never let a test reach it.
+    with patch("finance_copilot.api.routes.annotations.embed_transaction", return_value=False) as embed_mock, \
+            patch("finance_copilot.api.routes.annotations._embed_in_background"):
         client = TestClient(app)
         yield client, conn, embed_mock
     app.dependency_overrides.pop(api_get_db, None)
@@ -411,6 +414,43 @@ class TestTransactionsList:
             assert by_id[tid]["source"] == "manual"
         # The pre-existing model label's history is preserved.
         assert by_id["b0"]["original_source"] == "llm"
+
+    def test_bulk_skips_ids_that_no_longer_exist(self, client_conn):
+        # Review M1: a transaction deleted since the page loaded used to trip the
+        # annotations FK and 500 the whole batch.
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) VALUES ('b0','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        resp = client.post("/api/annotations/bulk-category", json={
+            "transaction_ids": ["b0", "gone"], "category": "Food & Dining",
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": 1, "skipped": ["gone"]}
+        assert get_annotation_by_transaction(conn, "b0")["category"] == "Food & Dining"
+
+    def test_bulk_all_unknown_ids(self, client_conn):
+        client, _, _ = client_conn
+        resp = client.post("/api/annotations/bulk-category", json={
+            "transaction_ids": ["x", "y"], "category": "Food & Dining",
+        })
+        assert resp.json() == {"updated": 0, "skipped": ["x", "y"]}
+
+    def test_bulk_reembeds_after_responding(self, client_conn):
+        # Review M2: re-embedding ran inline, one provider call per row.
+        client, conn, embed_mock = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-10', 10.0, 'debit', 'x')", (f"b{i}",))
+        conn.commit()
+        with patch("finance_copilot.api.routes.annotations._embed_in_background") as bg:
+            client.post("/api/annotations/bulk-category", json={
+                "transaction_ids": ["b0", "b1", "b2", "gone"], "category": "Food & Dining",
+            })
+        embed_mock.assert_not_called()
+        bg.assert_called_once_with(["b0", "b1", "b2"])
 
     def test_bulk_unknown_category_rejected(self, client_conn):
         client, conn, _ = client_conn

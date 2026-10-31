@@ -158,6 +158,46 @@ def embed_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
         return False
 
 
+def embed_transactions(
+    conn: sqlite3.Connection,
+    transaction_ids: list[str],
+    batch_size: int = 32,
+) -> int:
+    """Embed a known set of transactions in batches; returns how many landed.
+
+    Best-effort like embed_transaction: missing ids are skipped, a dead
+    provider stops the run, and a failed batch is logged and skipped (the bulk
+    /embeddings/generate endpoint backfills gaps). Never raises.
+    """
+    rows: list[dict] = []
+    for i in range(0, len(transaction_ids), 500):
+        chunk = transaction_ids[i : i + 500]
+        placeholders = ",".join("?" * len(chunk))
+        rows += [
+            dict(r)
+            for r in conn.execute(
+                f"SELECT * FROM transactions WHERE id IN ({placeholders})", chunk
+            ).fetchall()
+        ]
+
+    model_version = current_embedding_model()
+    embedded = 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        try:
+            vectors = get_embeddings_batch([build_embed_text(t) for t in batch])
+        except EmbeddingsUnavailable:
+            break
+        except Exception:
+            logger.warning("embedding batch failed; skipping %d texts", len(batch), exc_info=True)
+            continue
+        for txn, vec in zip(batch, vectors, strict=True):
+            upsert_embedding(conn, txn["id"], vec, model_version)
+            embedded += 1
+        conn.commit()
+    return embedded
+
+
 def embed_annotated_transactions(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
