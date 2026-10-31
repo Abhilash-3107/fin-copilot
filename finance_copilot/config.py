@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -31,8 +31,8 @@ def default_data_dir() -> Path:
 
 
 class Settings(BaseSettings):
-    data_dir: str = str(default_data_dir())
-    db_path: str = str(default_data_dir() / "finance.db")
+    data_dir: str = Field(default_factory=lambda: str(default_data_dir()))
+    db_path: str = Field(default_factory=lambda: str(default_data_dir() / "finance.db"))
     # --- BYOM: pluggable LLM provider ---
     # "ollama": native Ollama API (default; structured output + logprobs).
     # "openai": any OpenAI-compatible /chat/completions endpoint (LM Studio,
@@ -169,6 +169,18 @@ class Settings(BaseSettings):
     ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _explicit_data_dir_wins(self) -> Settings:
+        # FC_DATA_DIR (what --data-dir sets) is the most explicit choice the user
+        # can make, so it owns both paths. Otherwise a DB_PATH in whatever .env
+        # sits in the cwd would quietly point `--data-dir X` at another database.
+        env = os.getenv("FC_DATA_DIR")
+        if env:
+            data_dir = Path(env).expanduser()
+            self.data_dir = str(data_dir)
+            self.db_path = str(data_dir / "finance.db")
+        return self
 
 
 settings = Settings()

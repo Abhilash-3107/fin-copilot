@@ -115,7 +115,6 @@ npm run build    # Production build → ui/dist/ (served by FastAPI)
 Create a `.env` file in the project root:
 
 ```env
-DB_PATH=data/finance.db
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3.5:4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text

@@ -21,6 +21,27 @@ class TestDefaultDataDir:
         assert (repo_root / "pyproject.toml").exists()  # we are in a checkout
         assert default_data_dir() == repo_root / "data"
 
+    def test_fc_data_dir_beats_db_path_from_dotenv(self, monkeypatch, tmp_path):
+        # A .env with DB_PATH (the README's old dev example) must not silently
+        # redirect `--data-dir X` to a different database.
+        from finance_copilot.config import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("DB_PATH=elsewhere/finance.db\n")
+        monkeypatch.setenv("FC_DATA_DIR", str(tmp_path / "custom"))
+        s = Settings(_env_file=env_file)
+        assert Path(s.data_dir) == tmp_path / "custom"
+        assert Path(s.db_path) == tmp_path / "custom" / "finance.db"
+
+    def test_db_path_from_dotenv_still_works_without_fc_data_dir(self, monkeypatch, tmp_path):
+        from finance_copilot.config import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("DB_PATH=elsewhere/finance.db\n")
+        monkeypatch.delenv("FC_DATA_DIR", raising=False)
+        s = Settings(_env_file=env_file)
+        assert s.db_path == "elsewhere/finance.db"
+
 
 class TestRuntimeFile:
     def test_roundtrip(self, tmp_path):
