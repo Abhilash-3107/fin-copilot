@@ -121,8 +121,8 @@ def rename_subcategory(conn: sqlite3.Connection, category_id: str, name: str) ->
 
 
 def merge_subcategory(conn: sqlite3.Connection, source_id: str, target_id: str) -> dict:
-    """Merge source subcategory into target: repoint every annotation from source
-    to target, then delete source. Both must be subcategories of the same parent.
+    """Merge source subcategory into target: repoint every annotation and user
+    rule from source to target, then delete source. Both must be subcategories of the same parent.
     Caller commits."""
     if source_id == target_id:
         raise CategoryError("Can't merge a subcategory into itself")
@@ -136,5 +136,9 @@ def merge_subcategory(conn: sqlite3.Connection, source_id: str, target_id: str) 
         "UPDATE annotations SET subcategory = ?, subcategory_id = ? WHERE subcategory_id = ?",
         (tgt["name"], target_id, source_id),
     ).rowcount
+    # User rules point at subcategories by id; follow the merge like annotations.
+    conn.execute(
+        "UPDATE user_rules SET subcategory_id = ? WHERE subcategory_id = ?", (target_id, source_id)
+    )
     conn.execute("DELETE FROM categories WHERE id = ?", (source_id,))
     return {"merged_into": target_id, "moved": moved}

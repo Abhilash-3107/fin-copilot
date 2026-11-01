@@ -19,6 +19,8 @@ from finance_copilot.db.queries.people import (
     relationship_subcategory,
 )
 from finance_copilot.db.queries.transactions import list_transactions
+from finance_copilot.db.queries.user_rules import annotation_for as user_rule_annotation
+from finance_copilot.db.queries.user_rules import list_user_rules, match_user_rule
 from finance_copilot.models.annotation import (
     Annotation,
     AnnotationCreate,
@@ -165,8 +167,14 @@ def rule_annotation(
     conn: sqlite3.Connection,
     txn: TxnRow,
     known_people: list[tuple[str, str, str | None]],
+    user_rules: list[dict] | None = None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
-    """Stage 1: known-person match or keyword rule, with the person-history gate.
+    """Stage 1: the user's own rules, then known-person match or keyword rule,
+    with the person-history gate.
+
+    User-authored rules go first: what the user wrote on purpose beats every
+    built-in heuristic. `user_rules` is loaded once per run by auto_annotate;
+    left as None it is read here.
 
     The person rule labels by *mechanism* (a payment to a known person →
     Transfers) but humans label by *purpose* (the same payment can be
@@ -176,6 +184,18 @@ def rule_annotation(
     threshold so a human decides; cold-start (no history) and genuine
     transfer-dominant contacts keep the 0.95 fast path.
     """
+    if user_rules is None:
+        user_rules = list_user_rules(conn, enabled_only=True)
+    user_rule = match_user_rule(user_rules, txn)
+    if user_rule is not None:
+        ann = user_rule_annotation(user_rule, txn)
+        trace = ReasoningTrace(
+            stage="user_rule",
+            final_confidence=ann.confidence,
+            matched_rule=f'your rule "{user_rule["pattern"]}"',
+        )
+        return ann, trace
+
     person_result = _match_known_person(txn, known_people)
     result = person_result or apply_rules(txn)
 
@@ -339,8 +359,9 @@ def auto_annotate(
     # --- Stage 1: Rule pass ---
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
+    user_rules = list_user_rules(conn, enabled_only=True)
     for txn in unannotated:
-        result, trace = rule_annotation(conn, txn, known_people)
+        result, trace = rule_annotation(conn, txn, known_people, user_rules)
         if result is not None:
             _persist(result, trace)
             _tick()

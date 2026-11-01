@@ -244,7 +244,7 @@ export default function ReasoningPanel({ reasoning }) {
         )}
 
         {/* rule path */}
-        {(r.stage === 'rule' || r.stage === 'learned_rule') && r.matched_rule && (
+        {(r.stage === 'rule' || r.stage === 'user_rule' || r.stage === 'learned_rule') && r.matched_rule && (
           <div>
             <SectionLabel>Matched rule</SectionLabel>
             <p className="text-[#cbd5e1]">{r.matched_rule}</p>

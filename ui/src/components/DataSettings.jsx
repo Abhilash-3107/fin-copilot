@@ -121,7 +121,7 @@ export default function DataSettings() {
         <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
           Permanently remove all statements, transactions, categories you've assigned,
           people, groups, the AI's memory, and your settings (AI model and API key, review
-          threshold, developer mode, dismissed rules). The category list itself is kept. This cannot be
+          threshold, developer mode, your rules and dismissed ones). The category list itself is kept. This cannot be
           undone - back up first if you're unsure.
         </p>
         <button
@@ -147,7 +147,7 @@ export default function DataSettings() {
         open={confirmDelete}
         danger
         title="Delete all data?"
-        description="This permanently removes every statement, transaction, category assignment, person, group, and all AI memory, plus your settings: AI model and API key, review threshold, developer mode, and dismissed rules. Your category list is kept. This cannot be undone."
+        description="This permanently removes every statement, transaction, category assignment, person, group, and all AI memory, plus your settings: AI model and API key, review threshold, developer mode, your rules, and dismissed rules. Your category list is kept. This cannot be undone."
         confirmLabel="Delete everything"
         onConfirm={deleteEverything}
         onCancel={() => setConfirmDelete(false)}

@@ -16,15 +16,17 @@ nothing from the pipeline so any layer can depend on it without a cycle.
 """
 from __future__ import annotations
 
-# Deterministic or human-verified; full weight in every learning loop.
-TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "imported"})
+# Deterministic or human-verified; full weight in every learning loop. user_rule
+# is a rule the user wrote, so it is both.
+TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imported"})
 
 # Machine-produced labels that "apply to similar" may overwrite.
 MACHINE_SOURCES: frozenset[str] = frozenset({"llm", "rag_prompted", "rag_direct", "learned_rule"})
 
 # Sources whose corrections/confirmations are recorded as calibration feedback.
-# rule and learned_rule ride along so their thresholds and bad donors surface too.
-MODEL_SOURCES: frozenset[str] = MACHINE_SOURCES | {"rule"}
+# rule, user_rule and learned_rule ride along so their thresholds and bad donors
+# (or a user rule that catches the wrong transactions) surface too.
+MODEL_SOURCES: frozenset[str] = MACHINE_SOURCES | {"rule", "user_rule"}
 
 # Sources that can appear in the low-confidence review queue. Includes the legacy
 # "model" value from pre-split annotations still present in long-lived databases.

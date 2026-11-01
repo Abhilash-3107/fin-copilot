@@ -41,6 +41,7 @@ _WIPE_ORDER = (
     "annotations",
     "feedback_stats",
     "learned_rule_suppressions",
+    "user_rules",
     "people",
     "transactions",
     "statements",
