@@ -19,7 +19,8 @@ Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollam
 ## Highlights
 
 - **100% local** - SQLite database + Ollama for inference, everything stays on your machine
-- **Multi-stage annotation pipeline** - Rules > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
+- **Multi-stage annotation pipeline** - Your rules > built-in rules > learned merchants > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
+- **Your own rules** - Settings > Rules: a word or phrase and a category, with a live preview of what it matches before you save
 - **Human-in-the-loop** - Low-confidence predictions surface in an intuitive and fast review queue for correction
 - **Bank statement parsing** - Dedicated Kotak parser plus a generic parser that handles most banks' tabular statement PDFs, with every row verified against the running balance; UPI metadata extracted automatically
 - **Vector similarity search** - sqlite-vec powers few-shot retrieval for better categorization over time
