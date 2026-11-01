@@ -51,6 +51,10 @@ PEOPLE = [
     ("demo_p04", "Amit Kumar", "amit.landlord@oksbi", "landlord"),
 ]
 
+# (pattern, category, subcategory, merchant): matches the BMRCL metro top-up in
+# the unannotated batch.
+DEMO_RULE = ("bmrcl", "Transport", "Public Transport", "Namma Metro")
+
 
 def _month_add(anchor: date, offset: int) -> tuple[int, int]:
     idx = anchor.year * 12 + (anchor.month - 1) + offset
@@ -417,6 +421,7 @@ def wipe(conn) -> None:
     conn.execute("DELETE FROM transactions WHERE statement_id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM statements WHERE id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM people WHERE id LIKE 'demo_p%'")
+    conn.execute("DELETE FROM user_rules WHERE id LIKE 'demo_rule%'")
     conn.commit()
     print("Wiped existing demo data.")
 
@@ -468,6 +473,16 @@ def seed(conn, today: date) -> dict:
         conn.execute(
             "INSERT OR IGNORE INTO people (id, name, upi, relationship) VALUES (?, ?, ?, ?)",
             (pid, name, upi, relationship))
+
+    # One user-authored rule, matching a merchant in the unannotated batch, so a
+    # live auto-annotate shows the "Your rule" stage deciding before anything else.
+    from finance_copilot.db.queries.categories import resolve_category_ids
+
+    category_id, subcategory_id = resolve_category_ids(conn, *DEMO_RULE[1:3])
+    conn.execute(
+        "INSERT OR IGNORE INTO user_rules (id, pattern, category_id, subcategory_id, merchant) "
+        "VALUES ('demo_rule_metro', ?, ?, ?, ?)",
+        (DEMO_RULE[0], category_id, subcategory_id, DEMO_RULE[3]))
 
     for group in led.groups:
         conn.execute(

@@ -219,3 +219,21 @@ class TestKotakParserIntegration:
     def test_detect_parser_finds_kotak(self):
         result = detect_parser(str(REAL_PDF), password=_PASSWORD)
         assert isinstance(result, KotakParser)
+
+
+class TestSmokeFixture:
+    """The release workflow uploads this PDF through `uvx finance-copilot` on
+    three OSes; it was once committed empty, which would have failed every
+    release. Regenerate with scripts/make_smoke_statement.py."""
+
+    def test_generic_parser_accepts_it_with_a_verified_balance_chain(self):
+        from pathlib import Path
+
+        from finance_copilot.parsers.generic import GenericStatementParser
+
+        pdf = str(Path(__file__).parent / "fixtures" / "sample_statement.pdf")
+        parser = GenericStatementParser()
+        assert parser.detect(pdf)
+        txns = parser.parse(pdf)
+        assert len(txns) == 8
+        assert txns[-1].running_balance == 101755.25

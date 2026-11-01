@@ -141,13 +141,19 @@ def status() -> dict:
     entry = MODEL_MANIFEST.get(key, {})
     path = models_dir() / entry.get("filename", "missing.gguf")
     present = path.exists() and path.stat().st_size == entry.get("size")
-    partial = path.exists() and not present
+    # An unfinished download lives at .part until its sha256 checks out.
+    part = path.with_suffix(".part")
+    partial = not present and part.exists()
+    if present:
+        downloaded = path.stat().st_size
+    else:
+        downloaded = part.stat().st_size if partial else 0
     return {
         "extra_installed": extra_installed(),
         "model_key": key,
         "model_present": present,
         "download_partial": partial,
-        "downloaded_bytes": path.stat().st_size if path.exists() else 0,
+        "downloaded_bytes": downloaded,
         "path": str(path),
         "quant": entry.get("quant"),
         "size": entry.get("size"),

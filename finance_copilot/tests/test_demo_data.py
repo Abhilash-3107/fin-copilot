@@ -56,6 +56,21 @@ class TestLoadDemoData:
             f"SELECT name FROM people WHERE id IN ({','.join('?' * len(tagged))})", list(tagged))}
         assert names == {"Rahul Mehta", "Neha Gupta"}
 
+    def test_demo_rule_fires_on_the_unannotated_batch(self, client_conn):
+        # The live auto-annotate demo should show a user rule deciding first.
+        from finance_copilot.pipeline.annotate import rule_annotation
+
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        rules = client.get("/api/rules").json()
+        assert [r["pattern"] for r in rules] == ["bmrcl"]
+        metro = conn.execute(
+            "SELECT t.* FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id "
+            "WHERE t.raw_description LIKE '%BMRCL%' AND a.id IS NULL"
+        ).fetchone()
+        result, _ = rule_annotation(conn, dict(metro), [])
+        assert (result.source, result.subcategory) == ("user_rule", "Public Transport")
+
     def test_refused_when_real_statements_exist(self, client_conn):
         client, conn = client_conn
         conn.execute(

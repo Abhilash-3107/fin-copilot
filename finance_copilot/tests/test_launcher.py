@@ -15,11 +15,25 @@ class TestDefaultDataDir:
         monkeypatch.setenv("FC_DATA_DIR", str(tmp_path / "custom"))
         assert default_data_dir() == tmp_path / "custom"
 
-    def test_dev_checkout_uses_repo_data_dir(self, monkeypatch):
+    # Both branches are simulated by pointing config's __file__ at a fake tree,
+    # so the tests hold whether they run from a checkout or (in the release
+    # workflow) against the installed wheel.
+    def test_dev_checkout_uses_repo_data_dir(self, monkeypatch, tmp_path):
+        from finance_copilot import config
+
         monkeypatch.delenv("FC_DATA_DIR", raising=False)
-        repo_root = Path(launcher.__file__).parent.parent
-        assert (repo_root / "pyproject.toml").exists()  # we are in a checkout
-        assert default_data_dir() == repo_root / "data"
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setattr(config, "__file__", str(tmp_path / "finance_copilot" / "config.py"))
+        assert default_data_dir() == tmp_path / "data"
+
+    def test_installed_copy_uses_platform_dir(self, monkeypatch, tmp_path):
+        import platformdirs
+
+        from finance_copilot import config
+
+        monkeypatch.delenv("FC_DATA_DIR", raising=False)
+        monkeypatch.setattr(config, "__file__", str(tmp_path / "site-packages" / "finance_copilot" / "config.py"))
+        assert default_data_dir() == Path(platformdirs.user_data_dir("FinanceCopilot", appauthor=False))
 
     def test_fc_data_dir_beats_db_path_from_dotenv(self, monkeypatch, tmp_path):
         # A .env with DB_PATH (the README's old dev example) must not silently

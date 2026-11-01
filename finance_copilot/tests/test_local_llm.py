@@ -48,6 +48,31 @@ class TestPreflight:
         assert any("API key" in p for p in pf["problems"])
 
 
+class TestStatus:
+    def test_reports_an_interrupted_download_from_its_part_file(self, data_dir):
+        # The downloader writes <model>.part until the sha256 checks out; status
+        # used to look only at the final path, so a half-done download read as
+        # "nothing downloaded" and the card couldn't offer to resume.
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        part = local_llm.models_dir() / entry["filename"]
+        part = part.with_suffix(".part")
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(b"x" * 1234)
+        s = local_llm.status()
+        assert s["download_partial"] is True
+        assert s["downloaded_bytes"] == 1234
+        assert s["model_present"] is False
+
+    def test_complete_model_is_present_not_partial(self, data_dir):
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        path = local_llm.models_dir() / entry["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            f.truncate(entry["size"])
+        s = local_llm.status()
+        assert (s["model_present"], s["download_partial"], s["downloaded_bytes"]) == (True, False, entry["size"])
+
+
 class TestDownload:
     def _serve(self, payload: bytes, status_code=200, from_byte=0):
         """Fake httpx.stream returning `payload[from_byte:]`."""
