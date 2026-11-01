@@ -65,7 +65,8 @@ describe('GroupCard', () => {
     })
     renderCard(GROUP)
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByText('DINNER')).toBeInTheDocument())
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
     expect(screen.getByText('Settle up')).toBeInTheDocument()
     // Alice appears both in the members' People cell and in settle-up.
     expect(screen.getAllByText('Alice').length).toBeGreaterThanOrEqual(1)
@@ -85,12 +86,13 @@ describe('GroupCard', () => {
     mockApi.patch.mockResolvedValue({})
     renderCard(GROUP)
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByText('DINNER')).toBeInTheDocument())
-    // Name, never the id, in both the People cell and the settle-up chip.
-    expect(screen.getAllByText('Alice')).toHaveLength(2)
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
+    // Name, never the id: People cell (table + phone card) and the settle-up chip.
+    expect(screen.getAllByText('Alice')).toHaveLength(3)
     expect(screen.queryByText('p1')).not.toBeInTheDocument()
 
-    fireEvent.focus(screen.getByLabelText('Search people'))
+    fireEvent.focus(screen.getAllByLabelText('Search people')[0])
     fireEvent.click(screen.getByText('Bob'))
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith(
       '/groups/g1/members/t1', { people: ['p1', 'p2'] }))
@@ -120,7 +122,8 @@ describe('GroupCard', () => {
     })
     renderCard(GROUP)
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByText('DINNER')).toBeInTheDocument())
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
     expect(screen.queryByText('Settle up')).not.toBeInTheDocument()
   })
 
@@ -134,7 +137,8 @@ describe('GroupCard', () => {
     })
     renderCard(GROUP)
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByText('DINNER')).toBeInTheDocument())
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
     expect(screen.queryByText('Role')).not.toBeInTheDocument()
   })
 })

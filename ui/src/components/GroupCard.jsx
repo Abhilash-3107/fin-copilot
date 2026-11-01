@@ -9,6 +9,7 @@ import PeoplePicker from './PeoplePicker.jsx'
 import Tooltip from './Tooltip.jsx'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
+const TYPE_HELP = 'Matters for payments you made. split / event / blank = shared cost, divided with you · transfer / refund = money you sent them, owed back in full · reimbursement = repaying something they covered, no effect. Money you received always counts as paid back.'
 
 // Small inline searchbox that finds transactions not yet in this group and adds
 // them on click. Scoped to the expanded group so "add transactions" stays where
@@ -77,6 +78,33 @@ function AddTransactionSearch({ existingIds, onAdd }) {
         </div>
       )}
     </div>
+  )
+}
+
+function TypeSelect({ member, onChange }) {
+  return (
+    <select
+      value={member.txn_type ?? ''}
+      onChange={e => onChange({ txn_type: e.target.value })}
+      aria-label={`Type for ${member.raw_description}`}
+      className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
+    >
+      <option value="">—</option>
+      {TXN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+    </select>
+  )
+}
+
+function RemoveMemberButton({ member, onRemove }) {
+  return (
+    <button
+      type="button"
+      onClick={onRemove}
+      aria-label={`Remove ${member.raw_description} from group`}
+      className="text-[#475569] hover:text-red-400 transition-colors"
+    >
+      <Trash2 size={12} />
+    </button>
   )
 }
 
@@ -250,7 +278,8 @@ export default function GroupCard({ group, onDelete }) {
           ) : (
             <>
               {detail?.members?.length ? (
-                <table className="w-full text-xs">
+                <>
+                <table className="w-full text-xs hidden md:table">
                   <thead>
                     <tr>
                       {['Date', 'Description', 'Amount', 'People'].map(h => (
@@ -259,7 +288,7 @@ export default function GroupCard({ group, onDelete }) {
                       <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
                         <span className="flex items-center gap-1">
                           Type
-                          <Tooltip content="Matters for payments you made. split / event / blank = shared cost, divided with you · transfer / refund = money you sent them, owed back in full · reimbursement = repaying something they covered, no effect. Money you received always counts as paid back." position="bottom">
+                          <Tooltip content={TYPE_HELP} position="bottom">
                             <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
                           </Tooltip>
                         </span>
@@ -285,29 +314,45 @@ export default function GroupCard({ group, onDelete }) {
                           />
                         </td>
                         <td className="px-3 py-2">
-                          <select
-                            value={m.txn_type ?? ''}
-                            onChange={e => updateMember(m.transaction_id, { txn_type: e.target.value })}
-                            className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
-                          >
-                            <option value="">—</option>
-                            {TXN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                          </select>
+                          <TypeSelect member={m} onChange={patch => updateMember(m.transaction_id, patch)} />
                         </td>
                         <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => removeMember(m.transaction_id)}
-                            aria-label={`Remove ${m.raw_description} from group`}
-                            className="text-[#475569] hover:text-red-400 transition-colors"
-                          >
-                            <Trash2 size={12} />
-                          </button>
+                          <RemoveMemberButton member={m} onRemove={() => removeMember(m.transaction_id)} />
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {/* Phones: one stacked card per member instead of a six-column table. */}
+                <ul className="md:hidden divide-y divide-[#1a1d27]">
+                  {detail.members.map(m => (
+                    <li key={m.transaction_id} className="px-4 py-3 space-y-2 text-xs">
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[#cbd5e1] truncate">{m.raw_description}</p>
+                          <p className="text-[#64748b]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
+                        </div>
+                        <span className={`tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
+                          <Amount value={m.amount} debitCredit={m.debit_credit} />
+                        </span>
+                        <RemoveMemberButton member={m} onRemove={() => removeMember(m.transaction_id)} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 min-w-0">
+                          <PeoplePicker
+                            compact
+                            selectedIds={m.people ?? []}
+                            allPeople={people}
+                            onChange={ids => updateMember(m.transaction_id, { people: ids })}
+                            onCreatePerson={createPerson}
+                          />
+                        </div>
+                        <TypeSelect member={m} onChange={patch => updateMember(m.transaction_id, patch)} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                </>
               ) : (
                 <p className="px-4 py-3 text-xs text-[#475569]">No transactions yet. Search below to add some.</p>
               )}
