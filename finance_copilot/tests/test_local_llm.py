@@ -251,3 +251,30 @@ class TestDownloadRoutes:
             r = client.post("/api/local-llm/download", json={})
         assert r.status_code == 409
         assert "API key" in r.json()["detail"]
+
+
+class TestModelLifetime:
+    def test_model_is_freed_before_exit_and_on_remove(self, data_dir):
+        # ggml's Metal backend aborts the process at exit if a model is still
+        # resident, so the first load registers unload_model with atexit.
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        path = local_llm.models_dir() / entry["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"gguf")
+        fake_model = MagicMock()
+        fake_module = MagicMock(Llama=MagicMock(return_value=fake_model))
+        with (
+            patch.object(local_llm, "extra_installed", return_value=True),
+            patch.dict("sys.modules", {"llama_cpp": fake_module}),
+            patch.object(local_llm, "_unload_registered", False),
+            patch("finance_copilot.local_llm.atexit.register") as register,
+        ):
+            assert local_llm._get_llama() is fake_model
+            local_llm._get_llama()  # cached: no second load, no second hook
+            register.assert_called_once_with(local_llm.unload_model)
+            fake_module.Llama.assert_called_once()
+
+            local_llm.remove_model()
+        fake_model.close.assert_called_once()
+        assert local_llm._llama is None
+        assert not path.exists()

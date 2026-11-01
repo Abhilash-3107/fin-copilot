@@ -11,6 +11,7 @@ fine-tuned categorizer become the default via a metadata change only.
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import importlib.util
 import logging
@@ -231,10 +232,7 @@ def download_model(key: str | None = None, progress_cb=None) -> Path:
 
 def remove_model(key: str | None = None) -> bool:
     """Delete the model file (and any partial). Unloads the in-process instance."""
-    global _llama, _llama_path
-    with _llama_lock:
-        _llama = None
-        _llama_path = None
+    unload_model()
     removed = False
     for p in (model_path(key), model_path(key).with_suffix(".part")):
         if p.exists():
@@ -251,10 +249,26 @@ _llama_path: str | None = None
 # are not thread-safe, and the app's single-job guard doesn't cover ad-hoc
 # calls like test_connection.
 _llama_lock = threading.Lock()
+_unload_registered = False
+
+
+def unload_model() -> None:
+    """Free the in-process model now.
+
+    Must also happen before the interpreter exits: ggml's Metal backend asserts
+    (GGML_ASSERT([rsets->data count] == 0)) if a model is still resident when it
+    tears down, which aborts the app on quit with a crash report on macOS.
+    """
+    global _llama, _llama_path
+    with _llama_lock:
+        if _llama is not None:
+            _llama.close()
+        _llama = None
+        _llama_path = None
 
 
 def _get_llama():
-    global _llama, _llama_path
+    global _llama, _llama_path, _unload_registered
     if not extra_installed():
         raise LocalLLMError(
             "The local-llm extra isn't installed. Add it with: "
@@ -281,6 +295,9 @@ def _get_llama():
             logits_all=True,  # required for token logprobs
         )
         _llama_path = str(path)
+        if not _unload_registered:
+            atexit.register(unload_model)
+            _unload_registered = True
     return _llama
 
 
