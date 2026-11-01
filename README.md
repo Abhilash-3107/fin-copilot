@@ -161,22 +161,36 @@ data/                    # SQLite database (gitignored)
 docs/                    # Pipeline documentation
 ```
 
+## Your Data
+
+Everything lives in one SQLite file, `finance.db`, in the app's data folder:
+`~/Library/Application Support/FinanceCopilot` on macOS, `%LOCALAPPDATA%\FinanceCopilot` on Windows, and `~/.local/share/FinanceCopilot` on Linux.
+Pass `--data-dir` to keep it somewhere else.
+
+Settings › Data downloads a backup of the whole ledger.
+The file leaves out your AI provider's API key, so it is safe to share or attach to a bug report.
+Restore from the same tab: the app checks the file, saves your current data as `pre-restore-<timestamp>.db` next to `finance.db`, then swaps the backup in.
+
+To restore by hand instead, quit the app, replace `finance.db` in the data folder with the backup file, and start it again.
+Delete any `finance.db-wal` and `finance.db-shm` files next to it first, or SQLite may replay them over the restored file.
+
 ## Demo Data
 
-Seed the database with 50 synthetic transactions (entirely fictional) to explore the UI without uploading real bank statements:
+Click "Load demo data" on an empty dashboard to explore with four months of fictional transactions, people, and an expense group.
+To build a separate demo database instead (it never touches your real ledger):
 
 ```bash
-uv run python scripts/seed_demo_data.py          # seed transactions, annotations, and people
-uv run python scripts/seed_demo_data.py --wipe    # remove demo data
+uv run python scripts/seed_demo_data.py          # writes data/demo.db
+uv run python scripts/seed_demo_data.py --wipe    # remove demo rows
 ```
 
 The demo data includes:
 - Pre-annotated transactions from all pipeline stages (rule, rag_direct, rag_prompted, llm, manual)
 - Low-confidence annotations that appear in the review queue
 - Unannotated transactions ready for auto-annotate
-- Synthetic people for known-person matching
+- Synthetic people for known-person matching, and a settled Goa trip group
 
-After seeding, start the server and trigger auto-annotate on the remaining unannotated transactions to see the full pipeline in action.
+After seeding, trigger auto-annotate on the remaining unannotated transactions to see the full pipeline in action.
 
 ## Bank Statement Parsing
 

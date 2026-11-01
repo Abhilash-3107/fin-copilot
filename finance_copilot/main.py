@@ -31,7 +31,7 @@ from finance_copilot.api.routes import (
     statements,
     transactions,
 )
-from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.connection import get_connection
 
 # The built SPA rides inside the wheel as finance_copilot/ui_dist (force-included
 # at build time); a dev checkout serves ui/dist instead. Wheels install as plain
@@ -43,37 +43,11 @@ _CHECKOUT_DIST = Path(__file__).parent.parent / "ui" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
-    conn = get_migrated_db()
+    from finance_copilot.db.lifecycle import reconcile_database
+
+    conn = get_connection()
     try:
-        # Apply any stored BYOM/LLM overrides onto the live settings so the pipeline
-        # uses the user's runtime provider choice from the first request.
-        from finance_copilot.db.queries.app_settings import (
-            apply_llm_config,
-            ensure_llm_provider_default,
-        )
-
-        # First run only: pick "ollama" vs "none" from a one-shot probe so a
-        # machine without Ollama starts in the honest no-AI tier instead of
-        # timing out per request.
-        ensure_llm_provider_default(conn)
-        conn.commit()
-        apply_llm_config(conn)
-        # Vector table must match the active embedding model's dimension; a
-        # provider switch while the app was down is reconciled here.
-        from finance_copilot.db.queries.embeddings import ensure_vec_dimension
-
-        if ensure_vec_dimension(conn):
-            logging.getLogger(__name__).warning(
-                "embedding dimension changed - vector memory cleared; run a re-embed "
-                "from Settings > AI & Model to rebuild RAG retrieval"
-            )
-        # Jobs still marked in-flight at boot were orphaned by the previous
-        # process; fail them or they block the single-job guard forever.
-        reaped = annotations.reap_interrupted_jobs(conn)
-        if reaped:
-            logging.getLogger(__name__).warning(
-                "failed %d annotation job(s) orphaned by the previous process", reaped
-            )
+        reconcile_database(conn)
     finally:
         conn.close()
     yield
@@ -105,6 +79,7 @@ _DEMO_BLOCKED = (
     ("POST", "/api/statements/upload"),   # real data must never land here
     ("DELETE", "/api/statements"),        # keep the shared dataset intact
     ("GET", "/api/data/backup"),          # nothing to exfiltrate, keep it that way
+    ("POST", "/api/data/restore"),        # the shared dataset is not replaceable
     ("POST", "/api/data/delete-all"),
     ("PUT", "/api/config/llm"),           # no provider/API-key writes on a shared box
     ("POST", "/api/config/llm/test"),

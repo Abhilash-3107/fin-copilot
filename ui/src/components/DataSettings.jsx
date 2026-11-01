@@ -1,16 +1,18 @@
-import { useState } from 'react'
-import { Download, Database, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Download, Database, Trash2, Upload } from 'lucide-react'
 import { api, downloadFile } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 
-// Data management (4.14): export (CSV/JSON), full DB backup, and an irreversible
-// delete-everything. Downloads go through the token-aware client so they work
+// Data management (4.14): export (CSV/JSON), full DB backup and restore, and an
+// irreversible delete-everything. Downloads go through the token-aware client so they work
 // under API-token auth.
 export default function DataSettings() {
   const toast = useToast()
-  const [busy, setBusy] = useState(null) // 'csv' | 'json' | 'backup' | 'delete'
+  const [busy, setBusy] = useState(null) // 'csv' | 'json' | 'backup' | 'restore' | 'delete'
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [restoreFile, setRestoreFile] = useState(null)
+  const fileInput = useRef(null)
 
   async function download(kind, path, name) {
     setBusy(kind)
@@ -19,6 +21,35 @@ export default function DataSettings() {
     } catch (e) {
       toast(`Download failed - ${e.message}`, 'error')
     } finally {
+      setBusy(null)
+    }
+  }
+
+  function pickRestoreFile(e) {
+    const file = e.target.files?.[0]
+    // Reset so picking the same file again after a cancel still fires onChange.
+    e.target.value = ''
+    if (file) setRestoreFile(file)
+  }
+
+  async function restore() {
+    const file = restoreFile
+    setRestoreFile(null)
+    setBusy('restore')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const r = await api.upload('/data/restore', form)
+      toast(
+        `Restored ${r.transactions} transaction${r.transactions === 1 ? '' : 's'} from ${file.name}. `
+          + `Your previous data was saved as ${r.safety_copy}.`,
+        'success',
+        8000,
+      )
+      // Hard reload so every page drops caches from the replaced ledger.
+      setTimeout(() => window.location.reload(), 1500)
+    } catch (e) {
+      toast(`Couldn't restore - ${e.message}`, 'error', 8000)
       setBusy(null)
     }
   }
@@ -66,10 +97,23 @@ export default function DataSettings() {
           learned rules, and memory - as a single file you can keep or restore. Your AI
           provider's API key is left out, so the file is safe to share.
         </p>
-        <button className={btn} disabled={busy === 'backup'}
-          onClick={() => download('backup', '/data/backup', 'finance-copilot-backup.db')}>
-          <Database size={14} /> {busy === 'backup' ? 'Preparing…' : 'Download backup'}
-        </button>
+        <div className="flex gap-3">
+          <button className={btn} disabled={busy === 'backup'}
+            onClick={() => download('backup', '/data/backup', 'finance-copilot-backup.db')}>
+            <Database size={14} /> {busy === 'backup' ? 'Preparing…' : 'Download backup'}
+          </button>
+          <button className={btn} disabled={busy === 'restore'} onClick={() => fileInput.current?.click()}>
+            <Upload size={14} /> {busy === 'restore' ? 'Restoring…' : 'Restore from backup'}
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".db,application/x-sqlite3,application/vnd.sqlite3"
+            className="hidden"
+            aria-label="Backup file to restore"
+            onChange={pickRestoreFile}
+          />
+        </div>
       </div>
 
       <div>
@@ -88,6 +132,16 @@ export default function DataSettings() {
           <Trash2 size={14} /> {busy === 'delete' ? 'Deleting…' : 'Delete all data'}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={restoreFile !== null}
+        danger
+        title="Restore from this backup?"
+        description={`Everything in the app now - statements, transactions, categories, people, groups, memory, and settings - will be replaced with the contents of ${restoreFile?.name ?? 'the backup'}. Your current data is first saved as a pre-restore file in the app's data folder, and your AI provider's API key is kept.`}
+        confirmLabel="Replace and restore"
+        onConfirm={restore}
+        onCancel={() => setRestoreFile(null)}
+      />
 
       <ConfirmDialog
         open={confirmDelete}
