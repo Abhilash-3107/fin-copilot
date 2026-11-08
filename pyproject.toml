@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finance-copilot"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first personal finance tool: parses bank statement PDFs and auto-categorizes transactions with rules, RAG, and a local LLM."
 readme = "README.md"
 license = { text = "MIT" }
