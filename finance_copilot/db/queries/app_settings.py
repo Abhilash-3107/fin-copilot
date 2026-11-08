@@ -131,8 +131,17 @@ def ensure_llm_provider_default(conn: sqlite3.Connection, probe_timeout: float =
     _set(conn, "llm_provider", detected)
     # Same one-shot choice for embeddings: Ollama when present, otherwise the
     # in-process fastembed model so RAG works out of the box with zero setup.
+    # Off ("none") on a Python where fastembed could not be installed.
     if _get(conn, "embedding_provider") is None and settings.embedding_provider == "ollama":
-        _set(conn, "embedding_provider", "ollama" if detected == "ollama" else "local")
+        from finance_copilot.pipeline.embed import local_embeddings_installed
+
+        if detected == "ollama":
+            fallback = "ollama"
+        elif local_embeddings_installed():
+            fallback = "local"
+        else:
+            fallback = "none"
+        _set(conn, "embedding_provider", fallback)
 
 
 def apply_llm_config(conn: sqlite3.Connection) -> None:

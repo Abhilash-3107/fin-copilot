@@ -134,6 +134,8 @@ export default function ModelSettings() {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
   const [health, setHealth] = useState(null)
+  // Missing field (older server) or health not loaded yet: assume available.
+  const builtinAvailable = health?.local_embeddings_available !== false
 
   useEffect(() => {
     api.get('/config/llm')
@@ -224,8 +226,15 @@ export default function ModelSettings() {
         )}
         {health && !health.ai_message && health.embeddings === 'unavailable' && (
           <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
-            The AI's memory (similar-transaction matching) is paused because Ollama isn't
-            reachable. Switch AI memory to Built-in below to run it inside the app instead.
+            {health.embedding_provider === 'local'
+              ? <>The AI's memory (similar-transaction matching) is paused: built-in embeddings
+                  aren't available on this Python version. Switch AI memory to Ollama below, or
+                  run <code className="text-[#c7d2fe]">uvx --python 3.14 finance-copilot</code>.</>
+              : builtinAvailable
+                ? <>The AI's memory (similar-transaction matching) is paused because Ollama isn't
+                    reachable. Switch AI memory to Built-in below to run it inside the app instead.</>
+                : <>The AI's memory (similar-transaction matching) is paused because Ollama isn't
+                    reachable.</>}
           </p>
         )}
         <div className="space-y-2">
@@ -300,26 +309,38 @@ export default function ModelSettings() {
           background and matching from history pauses until it's done.
         </p>
         <div className="space-y-2">
-          {EMBED_PROVIDERS.map(p => (
-            <label
-              key={p.id}
-              className={`flex items-start gap-3 px-4 py-3 rounded-lg border cursor-pointer transition-colors ${
-                cfg.embedding_provider === p.id ? 'border-[#6366f1] bg-[#13151f]' : 'border-[#2d3148] hover:border-[#3d4468]'
-              }`}
-            >
-              <input
-                type="radio"
-                name="embedding_provider"
-                checked={cfg.embedding_provider === p.id}
-                onChange={() => set('embedding_provider', p.id)}
-                className="mt-0.5 accent-[#6366f1]"
-              />
-              <div>
-                <div className="text-sm text-[#e2e8f0]">{p.label}</div>
-                <div className="text-xs text-[#64748b] mt-0.5">{p.hint}</div>
-              </div>
-            </label>
-          ))}
+          {EMBED_PROVIDERS.map(p => {
+            const disabled = p.id === 'local' && !builtinAvailable
+            return (
+              <label
+                key={p.id}
+                className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
+                  disabled
+                    ? 'border-[#2d3148] opacity-60 cursor-not-allowed'
+                    : cfg.embedding_provider === p.id
+                      ? 'border-[#6366f1] bg-[#13151f] cursor-pointer'
+                      : 'border-[#2d3148] hover:border-[#3d4468] cursor-pointer'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="embedding_provider"
+                  checked={cfg.embedding_provider === p.id}
+                  disabled={disabled}
+                  onChange={() => set('embedding_provider', p.id)}
+                  className="mt-0.5 accent-[#6366f1]"
+                />
+                <div>
+                  <div className="text-sm text-[#e2e8f0]">{p.label}</div>
+                  <div className="text-xs text-[#64748b] mt-0.5">
+                    {disabled
+                      ? <>Not available on this Python version. Run <code className="text-[#94a3b8]">uvx --python 3.14 finance-copilot</code> to use it.</>
+                      : p.hint}
+                  </div>
+                </div>
+              </label>
+            )
+          })}
         </div>
       </div>
 

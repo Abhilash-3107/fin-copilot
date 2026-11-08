@@ -404,7 +404,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
-    { name = "fastembed" },
+    { name = "fastembed", marker = "python_full_version < '3.15'" },
     { name = "httpx" },
     { name = "pdfplumber" },
     { name = "platformdirs" },
@@ -433,7 +433,7 @@ dev = [
 requires-dist = [
     { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "fastembed", specifier = ">=0.4" },
+    { name = "fastembed", marker = "python_full_version < '3.15'", specifier = ">=0.4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "llama-cpp-python", marker = "extra == 'local-llm'", specifier = ">=0.3" },
     { name = "pdfplumber", specifier = ">=0.11" },

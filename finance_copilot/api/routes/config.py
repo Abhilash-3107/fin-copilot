@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.config import settings
 from finance_copilot.db.queries.app_settings import (
     get_confidence_threshold,
     get_dev_mode,
@@ -86,6 +87,21 @@ def update_llm(body: LlmConfigPatch, conn: sqlite3.Connection = Depends(get_db))
             status_code=422,
             detail=f"embedding_provider must be one of {sorted(_VALID_EMBEDDING_PROVIDERS)}",
         )
+    # Only a switch to "local" is refused. A user who chose it on another Python
+    # still has it stored, and the form re-sends every field, so refusing the
+    # unchanged value would block saving any other setting.
+    if embed_provider == "local" and settings.embedding_provider != "local":
+        from finance_copilot.pipeline.embed import local_embeddings_installed
+
+        if not local_embeddings_installed():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Built-in embeddings aren't available on this Python version. "
+                    "Use Ollama, or run Finance Copilot with Python 3.14: "
+                    "uvx --python 3.14 finance-copilot"
+                ),
+            )
     # Surface whether this save moved the vector space, so the UI can offer the
     # re-embed job (provider switch = full re-embed; single vector space).
     from finance_copilot.config import current_embedding_model

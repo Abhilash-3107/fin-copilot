@@ -23,7 +23,20 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingsUnavailable(RuntimeError):
-    """No embedding provider configured (embedding_provider == "none")."""
+    """No usable embedding provider: "none" is configured, or "local" is
+    configured but fastembed is not installed."""
+
+
+def local_embeddings_installed() -> bool:
+    """Whether the in-process provider can run here.
+
+    fastembed is a hard dependency except on Pythons that onnxruntime publishes
+    no wheels for (see the marker in pyproject.toml). There the app installs
+    and runs without it, and "local" behaves like "none".
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("fastembed") is not None
 
 
 # UPI descriptions are 'UPI/<merchant>/<numeric-ref>/<note>'. The 12-ish-digit
@@ -127,6 +140,11 @@ def get_embeddings_batch(
     if provider == "none":
         raise EmbeddingsUnavailable("embedding_provider is 'none'")
     if provider == "local":
+        if not local_embeddings_installed():
+            raise EmbeddingsUnavailable(
+                "embedding_provider is 'local' but fastembed is not installed "
+                "(onnxruntime has no wheels for this Python version)"
+            )
         return [vec.tolist() for vec in _get_local_embedder().embed(texts)]
     return _ollama_embeddings_batch(texts, timeout)
 

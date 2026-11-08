@@ -52,4 +52,39 @@ describe('ModelSettings', () => {
     expect(mockApi.put.mock.invocationCallOrder[0])
       .toBeLessThan(mockApi.post.mock.invocationCallOrder[0])
   })
+
+  const builtinRadio = () => screen.getByText('Built-in').closest('label').querySelector('input')
+
+  it('disables Built-in embeddings where the server cannot run them', async () => {
+    mockApi.get.mockImplementation(path => Promise.resolve(
+      path === '/config/llm' ? CONFIG
+        : path === '/health' ? { ollama: 'ok', local_embeddings_available: false } : {}
+    ))
+    render(<ModelSettings />)
+    await screen.findByText(/Not available on this Python version/)
+    expect(builtinRadio()).toBeDisabled()
+  })
+
+  it('keeps Built-in embeddings selectable when the server reports them available', async () => {
+    mockApi.get.mockImplementation(path => Promise.resolve(
+      path === '/config/llm' ? CONFIG
+        : path === '/health' ? { ollama: 'ok', local_embeddings_available: true } : {}
+    ))
+    render(<ModelSettings />)
+    await screen.findByText('Built-in')
+    expect(builtinRadio()).toBeEnabled()
+    expect(screen.queryByText(/Not available on this Python version/)).not.toBeInTheDocument()
+  })
+
+  it('explains a paused Built-in memory instead of suggesting Built-in', async () => {
+    mockApi.get.mockImplementation(path => Promise.resolve(
+      path === '/config/llm' ? { ...CONFIG, embedding_provider: 'local' }
+        : path === '/health'
+          ? { embedding_provider: 'local', embeddings: 'unavailable', local_embeddings_available: false }
+          : {}
+    ))
+    render(<ModelSettings />)
+    await screen.findByText(/built-in embeddings\s+aren't available on this Python version/)
+    expect(screen.queryByText(/Switch AI memory to Built-in/)).not.toBeInTheDocument()
+  })
 })

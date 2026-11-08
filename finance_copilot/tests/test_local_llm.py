@@ -13,7 +13,8 @@ import pytest
 
 from finance_copilot import local_llm
 from finance_copilot.config import settings
-from finance_copilot.pipeline.llm import _build_provider_request, test_connection
+from finance_copilot.pipeline.llm import _build_provider_request
+from finance_copilot.pipeline.llm import test_connection as probe_connection
 
 
 @pytest.fixture
@@ -171,7 +172,7 @@ class TestProviderSeam:
             patch.object(settings, "llm_provider", "local"),
             patch.object(local_llm, "extra_installed", return_value=False),
         ):
-            result = test_connection()
+            result = probe_connection()
         assert result["ok"] is False
         assert "local-llm" in result["detail"]
 
