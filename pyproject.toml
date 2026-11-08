@@ -60,15 +60,16 @@ packages = ["finance_copilot"]
 # from a checkout copy against the installed wheel instead.
 exclude = ["finance_copilot/tests"]
 
-[tool.hatch.build.targets.wheel.force-include]
-# The built SPA rides inside the wheel; main.py serves it from the package dir
-# when present and falls back to the repo's ui/dist in a dev checkout.
-"ui/dist" = "finance_copilot/ui_dist"
+[tool.hatch.build.targets.wheel.hooks.custom]
+# hatch_build.py bundles the built SPA (ui/dist) into real wheels as
+# finance_copilot/ui_dist; main.py serves it from there and falls back to the
+# repo's ui/dist in a dev checkout. Editable installs (uv sync) skip it, so a
+# fresh clone installs without building the UI first.
 
 [tool.hatch.build.targets.sdist]
 # The sdist is a source snapshot for `pip install` from source; it needs the
 # built UI too because most installers won't have Node.
-include = ["finance_copilot", "ui/dist", "README.md", "pyproject.toml"]
+include = ["finance_copilot", "ui/dist", "README.md", "pyproject.toml", "hatch_build.py"]
 exclude = ["finance_copilot/tests"]
 # ui/dist is gitignored (it is a build output), so it must be declared an
 # artifact or hatchling's VCS-ignore filter drops it from the sdist.
