@@ -48,8 +48,8 @@ local-llm = ["llama-cpp-python>=0.3"]
 finance-copilot = "finance_copilot.app:main"
 
 [project.urls]
-Homepage = "https://github.com/Abhilash-3107/finance-copilot"
-Source = "https://github.com/Abhilash-3107/finance-copilot"
+Homepage = "https://github.com/Abhilash-3107/fin-copilot"
+Source = "https://github.com/Abhilash-3107/fin-copilot"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
