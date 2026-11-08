@@ -129,6 +129,8 @@ CONFIDENCE_THRESHOLD=0.85
 For password-protected statement PDFs, enter the password in the upload form: it is sent with the upload request, not stored.
 
 All values have sensible defaults in `finance_copilot/config.py`, so the `.env` file is optional unless you need to override them.
+Only a source checkout reads this file, from the repo root.
+The installed app (`uvx finance-copilot`) ignores any `.env` and takes overrides from real environment variables instead.
 
 ### CLI Review Queue
 

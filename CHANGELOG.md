@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The installed app no longer reads a `.env` from the folder you launch it in.
+  Running `uvx finance-copilot` inside a project whose `.env` set `DB_PATH` or an AI endpoint used to open that database or endpoint silently.
+  Real environment variables and `--data-dir` still apply; a source checkout still reads its own `.env`.
+
 ## 0.1.1 - 2026-11-08
 
 Documentation fixes for the PyPI page.

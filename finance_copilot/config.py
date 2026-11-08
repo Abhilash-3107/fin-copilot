@@ -8,6 +8,24 @@ from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
 
+def dev_checkout_root() -> Path | None:
+    """The repo root when running from a source checkout, else None (installed copy)."""
+    repo_root = Path(__file__).parent.parent
+    return repo_root if (repo_root / "pyproject.toml").exists() else None
+
+
+def dotenv_file() -> Path | None:
+    """The .env file Settings reads, or None for an installed copy.
+
+    A checkout reads the repo's own .env. An installed copy reads none: a .env
+    in whatever folder the user launches from (often some unrelated project)
+    must not silently swap the database or AI endpoint. Real environment
+    variables and --data-dir still apply.
+    """
+    repo_root = dev_checkout_root()
+    return repo_root / ".env" if repo_root is not None else None
+
+
 def default_data_dir() -> Path:
     """Where the app keeps its database and downloaded artifacts.
 
@@ -22,8 +40,8 @@ def default_data_dir() -> Path:
     env = os.getenv("FC_DATA_DIR")
     if env:
         return Path(env).expanduser()
-    repo_root = Path(__file__).parent.parent
-    if (repo_root / "pyproject.toml").exists():
+    repo_root = dev_checkout_root()
+    if repo_root is not None:
         return repo_root / "data"
     import platformdirs
 
@@ -163,12 +181,12 @@ class Settings(BaseSettings):
     demo_mode: bool = Field(default=False, validation_alias=AliasChoices("FC_DEMO_MODE", "DEMO_MODE"))
 
     # Last-segment values in UPI descriptions that carry no meaningful note.
-    # Extend this list as you encounter new noise patterns — no code changes needed.
+    # Extend this list as you encounter new noise patterns - no code changes needed.
     upi_noise_keywords: list[str] = [
         "UPI", "NEFT", "IMPS", "RTGS", "NA", "NO REMARKS", "N/A", "NONE", "-",
     ]
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": dotenv_file(), "extra": "ignore"}
 
     @model_validator(mode="after")
     def _explicit_data_dir_wins(self) -> Settings:
