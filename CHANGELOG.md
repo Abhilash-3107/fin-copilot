@@ -1,13 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-11-08
+
+Packaging fixes, and a license change.
+
+### License
+
+- Finance Copilot is now source-available under FSL-1.1-MIT, shipped as the `LICENSE` file inside the package.
+  You can use it, self-host it, modify it and contribute; offering it as a competing commercial product is not allowed.
+  Each release becomes MIT-licensed two years after it ships.
+  0.1.0 and 0.1.1 were published under MIT and stay that way.
+
+### Fixes
 
 - The installed app no longer reads a `.env` from the folder you launch it in.
   Running `uvx finance-copilot` inside a project whose `.env` set `DB_PATH` or an AI endpoint used to open that database or endpoint silently.
   Real environment variables and `--data-dir` still apply; a source checkout still reads its own `.env`.
 - The terminal running `finance-copilot` no longer fills with a line for every request to Ollama.
 - The "running at" message shows up even when the output goes to a file or another program.
-- The package now ships the MIT license text, and PyPI lists the supported Python versions.
+- PyPI lists the supported Python versions, and the source archive no longer carries an unrelated deploy README.
+- Stable dependencies are capped below their next major version, so a breaking upstream release can't break fresh installs.
 - `python -m finance_copilot.cli version` reads the installed version instead of a hardcoded one.
 
 ## 0.1.1 - 2026-11-08

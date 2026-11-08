@@ -230,3 +230,20 @@ Only needed when the generic parser can't handle a bank's layout:
 ```bash
 uv run pytest finance_copilot/tests/
 ```
+
+## Contributing
+
+Bug reports, bank parsers, and fixes are welcome.
+See [CONTRIBUTING.md](https://github.com/Abhilash-3107/fin-copilot/blob/main/CONTRIBUTING.md) for setup and what a good PR looks like.
+On your first pull request a bot asks you to sign the Contributor License Agreement; it takes one click and covers all your future PRs.
+
+## License
+
+Finance Copilot is source-available under the [Functional Source License, Version 1.1, MIT Future License](https://github.com/Abhilash-3107/fin-copilot/blob/main/LICENSE) (FSL-1.1-MIT).
+You can use it, self-host it, read and modify the code, and contribute back.
+What you can't do is offer it, or something substantially similar built from it, as a commercial product or service.
+Each release becomes available under the MIT license two years after it ships.
+
+Versions 0.1.0 and 0.1.1 were published under the MIT license and remain so.
+
+Copyright 2026 Abhilash Bora.
