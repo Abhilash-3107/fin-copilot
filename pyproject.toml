@@ -55,6 +55,8 @@ finance-copilot = "finance_copilot.app:main"
 [project.urls]
 Homepage = "https://github.com/Abhilash-3107/fin-copilot"
 Source = "https://github.com/Abhilash-3107/fin-copilot"
+Changelog = "https://github.com/Abhilash-3107/fin-copilot/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Abhilash-3107/fin-copilot/issues"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

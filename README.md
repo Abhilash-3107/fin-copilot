@@ -20,7 +20,7 @@ Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollam
 
 ## Highlights
 
-- **100% local** - SQLite database + Ollama for inference, everything stays on your machine
+- **Local-first** - one SQLite file on your machine; AI runs through Ollama, a built-in local model, or an OpenAI-compatible endpoint you choose
 - **Multi-stage annotation pipeline** - Your rules > built-in rules > learned merchants > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
 - **Your own rules** - Settings > Rules: a word or phrase and a category, with a live preview of what it matches before you save
 - **Human-in-the-loop** - Low-confidence predictions surface in an intuitive and fast review queue for correction
@@ -36,8 +36,9 @@ When you trigger auto-annotation, each transaction flows through four stages. Th
 Transaction
     |
     v
-[Stage 1: Rules]          - Known-person match (UPI handle from people table),
-    |  confidence: 0.95       then merchant keywords & UPI notes (~70 built-in rules)
+[Stage 1: Rules]          - Your own rules first, then known-person match (UPI handle
+    |  confidence: 0.95       from people table), merchant keywords & UPI notes
+    |                         (~70 built-in rules), then learned merchant rules
     |  no match? ↓
     v
 [Stage 2: RAG Direct]     - Find top-5 similar annotated transactions via embeddings
@@ -57,7 +58,7 @@ Transaction
 
 Confidence dampening for Stages 3 and 4 uses Bayesian calibration, starting from static base values but dynamically adjusting per `(source, category)` as human feedback (confirmations, corrections) accumulates.
 
-See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Mermaid flowchart.
+See [`docs/annotation-pipeline.md`](https://github.com/Abhilash-3107/fin-copilot/blob/main/docs/annotation-pipeline.md) for the full Mermaid flowchart.
 
 ## Tech Stack
 
@@ -67,7 +68,8 @@ See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Me
 | Frontend | React 18, React Router, Vite |
 | Styling | Tailwind CSS, Lucide React icons |
 | Database | SQLite + sqlite-vec (vectors in the same DB file) |
-| LLM | Ollama — qwen3.5:4b (inference), nomic-embed-text (embeddings) |
+| LLM | Ollama (qwen3.5:4b), any OpenAI-compatible API, or a built-in local model via llama.cpp (`finance-copilot[local-llm]`) |
+| Embeddings | Ollama (nomic-embed-text) or built-in fastembed (BAAI/bge-small-en-v1.5) |
 | PDF Parsing | pdfplumber |
 | Charts | Chart.js + react-chartjs-2 |
 | CLI | Typer + Rich (terminal review queue) |
@@ -79,9 +81,9 @@ See [`docs/annotation-pipeline.md`](docs/annotation-pipeline.md) for the full Me
 
 - Python 3.10+
 - Node.js 18+
-- [Ollama](https://ollama.com) installed and running
+- [Ollama](https://ollama.com) (optional, for the default AI setup)
 
-Pull the required models:
+To use Ollama, pull the default models:
 
 ```bash
 ollama pull qwen3.5:4b
@@ -95,14 +97,14 @@ ollama pull nomic-embed-text
 uv sync
 
 # Start the API server (runs migrations automatically on startup)
-# Binds to 127.0.0.1 by default — loopback only, so your statements are not
+# Binds to 127.0.0.1 by default - loopback only, so your statements are not
 # exposed on the network. Set RELOAD=1 for auto-reload during development.
 RELOAD=1 uv run python -m finance_copilot
 ```
 
-> The server binds to `127.0.0.1` by default. It has no authentication yet, so
-> only expose it on your LAN deliberately: set `HOST=0.0.0.0` (you will get a
-> startup warning). `PORT` defaults to `8000`.
+> The server binds to `127.0.0.1` by default and needs no login there.
+> To expose it on your LAN, set `HOST=0.0.0.0` (you will get a startup warning) and set `API_TOKEN` to a shared secret: every API request must then carry it, and the app asks for it once in the browser.
+> `PORT` defaults to `8000`.
 
 ### Frontend
 
@@ -124,9 +126,9 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 CONFIDENCE_THRESHOLD=0.85
 ```
 
-For password-protected statement PDFs, enter the password in the upload form — it is sent with the upload request, not stored.
+For password-protected statement PDFs, enter the password in the upload form: it is sent with the upload request, not stored.
 
-All values have sensible defaults in `finance_copilot/config.py` — the `.env` file is optional unless you need to override them.
+All values have sensible defaults in `finance_copilot/config.py`, so the `.env` file is optional unless you need to override them.
 
 ### CLI Review Queue
 
@@ -153,7 +155,7 @@ finance_copilot/
 └── main.py              # FastAPI app entry point
 
 ui/
-├── finance_copilot/
+├── src/
 │   ├── pages/           # Dashboard, ReviewQueue, Transactions, Upload, Groups, People, Insights
 │   ├── components/      # AnnotationPanel, CategoryPicker, TransactionTable, TagInput, ...
 │   ├── contexts/        # StatementContext, ToastContext
@@ -205,7 +207,7 @@ Uploads are auto-detected by the parser registry (`finance_copilot/parsers/regis
    debit / credit / balance from the header row, and then **verifies every row
    arithmetically against the running balance** (`balance[i] == balance[i-1] ± amount`).
    It only claims a statement when ≥80% of those checks pass, so it cannot
-   silently ingest wrong amounts — unsupported layouts are rejected with an error
+   silently ingest wrong amounts; unsupported layouts are rejected with an error
    instead.
 
 Limitations of the generic parser: it needs a text-native PDF (no scans/OCR), a
@@ -220,36 +222,6 @@ Only needed when the generic parser can't handle a bank's layout:
 2. Subclass `StatementParser` from `finance_copilot/parsers/base.py`
 3. Implement the `parse()` method to extract transactions from the PDF
 4. Register it in `finance_copilot/parsers/registry.py` **before** `GenericStatementParser`
-
-## Demo Screenshots
-
-### Dashboard
-![Dashboard](docs/dashboard.png)
-*Transaction overview with auto-annotate trigger and confidence scores*
-
-### Review Queue
-![Review Queue](docs/reviewqueue.png)
-*Low-confidence annotations surfaced for human correction*
-
-### Upload & Parse
-![Upload](docs/upload.png)
-*Drag-and-drop PDF upload with bank auto-detection*
-
-### Transactions
-![Transactions](docs/transaction.png)
-*Full transaction table with category chips, inline editing, and filters*
-
-### Insights
-![Insights](docs/insights.png)
-*Spending breakdowns and trends*
-
-### Groups
-![Groups](docs/groups.png)
-*Group shared expenses (trips, events) and track who paid vs. who settled their split*
-
-### People
-![People](docs/people.png)
-*Known counterparties with UPI handles and relationships, so transfers get categorized correctly*
 
 ## Testing
 
