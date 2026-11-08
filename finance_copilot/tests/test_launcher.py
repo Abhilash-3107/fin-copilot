@@ -35,6 +35,32 @@ class TestDefaultDataDir:
         monkeypatch.setattr(config, "__file__", str(tmp_path / "site-packages" / "finance_copilot" / "config.py"))
         assert default_data_dir() == Path(platformdirs.user_data_dir("FinanceCopilot", appauthor=False))
 
+    def test_dev_checkout_reads_repo_dotenv(self, monkeypatch, tmp_path):
+        from finance_copilot import config
+
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setattr(config, "__file__", str(tmp_path / "finance_copilot" / "config.py"))
+        assert config.dotenv_file() == tmp_path / ".env"
+
+    def test_installed_copy_reads_no_dotenv(self, monkeypatch, tmp_path):
+        from finance_copilot import config
+
+        monkeypatch.setattr(config, "__file__", str(tmp_path / "site-packages" / "finance_copilot" / "config.py"))
+        assert config.dotenv_file() is None
+
+    def test_dotenv_in_launch_folder_is_ignored(self, monkeypatch, tmp_path):
+        # Launching from an unrelated folder whose .env sets DB_PATH must not
+        # open that database (it used to, via a cwd-relative env_file).
+        from finance_copilot.config import Settings
+
+        (tmp_path / ".env").write_text("DB_PATH=leaked/finance.db\nOLLAMA_URL=http://leaked:1\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("DB_PATH", raising=False)
+        monkeypatch.delenv("OLLAMA_URL", raising=False)
+        s = Settings()
+        assert s.db_path != "leaked/finance.db"
+        assert s.ollama_url != "http://leaked:1"
+
     def test_fc_data_dir_beats_db_path_from_dotenv(self, monkeypatch, tmp_path):
         # A .env with DB_PATH (the README's old dev example) must not silently
         # redirect `--data-dir X` to a different database.
