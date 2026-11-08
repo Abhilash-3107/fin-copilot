@@ -10,6 +10,8 @@ The first public release: a one-command local app (`uvx finance-copilot`) plus a
 - Your data lives in one SQLite file in the platform app-data folder; `--data-dir` moves it, and now always wins over a `DB_PATH` in a local `.env`.
 - Works with no AI at all: rules, your history, and your own rules categorize without a model.
 - AI when you want it: Ollama, any OpenAI-compatible endpoint, or a fully local model (`finance-copilot[local-llm]`, Qwen 3.5 4B downloaded in-app with resume and checksum verification).
+- Runs on Python 3.10 to 3.15.
+  On 3.15 the built-in embeddings are off (onnxruntime has no 3.15 wheels yet); `uvx --python 3.14 finance-copilot` gets them.
 
 ### Categorization
 

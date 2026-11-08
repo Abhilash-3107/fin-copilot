@@ -34,6 +34,31 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  python-compat:
+    # `uvx finance-copilot` runs on whatever Python is newest on the user's
+    # machine, and requires-python cannot steer that choice. Resolve and test
+    # fresh (no lockfile, like uvx does) on every supported version plus the
+    # newest one, so a dependency without wheels for it fails here, not on a tag.
+    name: Python ${{ matrix.python }} (fresh resolve)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install the package and pytest
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install -e . pytest
+
+      - name: Run tests
+        run: .venv/bin/python -m pytest -q
+
   frontend:
     name: Frontend (lint, test, build)
     runs-on: ubuntu-latest

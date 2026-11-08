@@ -12,6 +12,8 @@ Drop in a bank statement PDF (or click "Load demo data") and watch every transac
 No account, no cloud, no data leaving your computer.
 
 > Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) (one installer command, no Python needed). Prefer pipx? `pipx run finance-copilot` works too. First run takes a minute while dependencies download.
+>
+> On Python 3.15 the app runs with built-in embeddings off, because their runtime has no 3.15 build yet. For the full experience run `uvx --python 3.14 finance-copilot`.
 
 Out of the box you get statement parsing with running-balance verification, rule-based and history-based categorization, expense groups, people tracking, and insights.
 Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollama.com) or paste any OpenAI-compatible API key.

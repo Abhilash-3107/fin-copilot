@@ -62,6 +62,27 @@ def client_conn():
     conn.close()
 
 
+class TestHealthLocalEmbeddings:
+    """Pythons without onnxruntime wheels install without fastembed; health says so."""
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_reports_whether_builtin_embeddings_can_run(self, client_conn, installed):
+        client, _, _ = client_conn
+        with patch(
+            "finance_copilot.pipeline.embed.local_embeddings_installed", return_value=installed
+        ):
+            assert client.get("/api/health").json()["local_embeddings_available"] is installed
+
+    def test_local_provider_without_fastembed_is_unavailable(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "embedding_provider", "local")
+        with patch(
+            "finance_copilot.pipeline.embed.local_embeddings_installed", return_value=False
+        ):
+            assert client.get("/api/health").json()["embeddings"] == "unavailable"
+
+
 class TestApiTokenGate:
     """4.9: when settings.api_token is set, /api requests (except health) need it."""
 

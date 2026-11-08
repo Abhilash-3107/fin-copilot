@@ -27,6 +27,13 @@ def _stored_provider(conn):
     return row[0] if row else None
 
 
+def _stored_embedding_provider(conn):
+    row = conn.execute(
+        "SELECT value FROM app_settings WHERE key = 'embedding_provider'"
+    ).fetchone()
+    return row[0] if row else None
+
+
 class TestEnsureLlmProviderDefault:
     def test_ollama_reachable_keeps_ollama(self, conn):
         with patch("httpx.get", return_value=MagicMock(raise_for_status=lambda: None)):
@@ -37,6 +44,28 @@ class TestEnsureLlmProviderDefault:
         with patch("httpx.get", side_effect=ConnectionError):
             ensure_llm_provider_default(conn)
         assert _stored_provider(conn) == "none"
+
+    def test_ollama_absent_uses_local_embeddings(self, conn):
+        with (
+            patch("httpx.get", side_effect=ConnectionError),
+            patch(
+                "finance_copilot.pipeline.embed.local_embeddings_installed",
+                return_value=True,
+            ),
+        ):
+            ensure_llm_provider_default(conn)
+        assert _stored_embedding_provider(conn) == "local"
+
+    def test_ollama_absent_without_fastembed_turns_embeddings_off(self, conn):
+        with (
+            patch("httpx.get", side_effect=ConnectionError),
+            patch(
+                "finance_copilot.pipeline.embed.local_embeddings_installed",
+                return_value=False,
+            ),
+        ):
+            ensure_llm_provider_default(conn)
+        assert _stored_embedding_provider(conn) == "none"
 
     def test_existing_choice_never_reprobed(self, conn):
         conn.execute(

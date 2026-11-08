@@ -35,7 +35,12 @@ dependencies = [
     # In-process embeddings (RAG with zero setup). Deliberately a hard dependency:
     # the whole point of phase 2 is that a fresh install has working retrieval
     # without Ollama, an API key, or any decision.
-    "fastembed>=0.4",
+    # Except on Pythons onnxruntime publishes no wheels for yet (3.15 as of
+    # 2026-11): uvx picks the newest Python on the machine and requires-python
+    # cannot steer it, so a hard dependency would make the app uninstallable
+    # there. Without fastembed the app runs with built-in embeddings off.
+    # Raise the bound once onnxruntime ships wheels for the next version.
+    "fastembed>=0.4; python_version < '3.15'",
 ]
 
 [project.optional-dependencies]

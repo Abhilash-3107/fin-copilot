@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,6 +82,31 @@ class TestLlmConfig:
     def test_invalid_provider_rejected(self, client_conn):
         client, _ = client_conn
         assert client.put("/api/config/llm", json={"llm_provider": "gemini"}).status_code == 422
+
+    def test_local_embeddings_rejected_when_fastembed_missing(self, client_conn):
+        client, conn = client_conn
+        with patch(
+            "finance_copilot.pipeline.embed.local_embeddings_installed", return_value=False
+        ):
+            r = client.put("/api/config/llm", json={"embedding_provider": "local"})
+        assert r.status_code == 422
+        assert "Python 3.14" in r.json()["detail"]
+        assert get_llm_config(conn)["embedding_provider"] != "local"
+
+    def test_stored_local_embeddings_do_not_block_other_saves(self, client_conn, monkeypatch):
+        # Chosen on another Python, then run where fastembed is missing: the form
+        # re-sends the stored value, and saving another field must still work.
+        client, conn = client_conn
+        monkeypatch.setattr(settings, "embedding_provider", "local")
+        with patch(
+            "finance_copilot.pipeline.embed.local_embeddings_installed", return_value=False
+        ):
+            r = client.put(
+                "/api/config/llm",
+                json={"llm_provider": "none", "embedding_provider": "local"},
+            )
+        assert r.status_code == 200
+        assert get_llm_config(conn)["llm_provider"] == "none"
 
     def teardown_method(self):
         # Reset the mutated singleton so provider changes don't leak across tests.

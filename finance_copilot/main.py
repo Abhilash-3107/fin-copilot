@@ -193,8 +193,13 @@ def health():
         ai_message = "Ollama isn't reachable right now, so AI categorization is paused."
     else:
         ai_message = ""
+    from finance_copilot.pipeline.embed import local_embeddings_installed
+
+    # False only on a Python where fastembed could not be installed.
+    local_embeddings_available = local_embeddings_installed()
     if settings.embedding_provider == "local":
-        embeddings_status = "ok"  # in-process; weights download on first embed
+        # In-process; weights download on first embed.
+        embeddings_status = "ok" if local_embeddings_available else "unavailable"
     elif settings.embedding_provider == "none":
         embeddings_status = "off"
     else:
@@ -206,6 +211,8 @@ def health():
         "ai_message": ai_message,
         "embedding_provider": settings.embedding_provider,
         "embeddings": embeddings_status,
+        # Settings disables the Built-in embeddings option when this is false.
+        "local_embeddings_available": local_embeddings_available,
         "ollama": "ok" if ollama_ok else "unavailable",
         "chat_model": _model_status(settings.ollama_model),
         "embedding_model": _model_status(settings.ollama_embedding_model),

@@ -19,17 +19,36 @@ class TestProviderDispatch:
                 get_embeddings_batch(["hello"])
 
     def test_local_uses_fastembed(self):
-        import numpy as np
-
+        # fastembed yields numpy arrays; only .tolist() is used, and numpy is
+        # absent where fastembed isn't installed, so stand in for the array.
         fake = MagicMock()
-        fake.embed.return_value = iter([np.array([0.1, 0.2])])
+        fake.embed.return_value = iter([MagicMock(tolist=lambda: [0.1, 0.2])])
         with (
             patch.object(settings, "embedding_provider", "local"),
+            patch(
+                "finance_copilot.pipeline.embed.local_embeddings_installed",
+                return_value=True,
+            ),
             patch("finance_copilot.pipeline.embed._get_local_embedder", return_value=fake),
         ):
             vecs = get_embeddings_batch(["hello"])
         assert vecs == [[pytest.approx(0.1), pytest.approx(0.2)]]
         fake.embed.assert_called_once_with(["hello"])
+
+    def test_local_without_fastembed_raises_unavailable(self):
+        # Pythons onnxruntime ships no wheels for install without fastembed;
+        # "local" must degrade like "none" instead of crashing on import.
+        with (
+            patch.object(settings, "embedding_provider", "local"),
+            patch(
+                "finance_copilot.pipeline.embed.local_embeddings_installed",
+                return_value=False,
+            ),
+            patch("finance_copilot.pipeline.embed._get_local_embedder") as loader,
+        ):
+            with pytest.raises(EmbeddingsUnavailable):
+                get_embeddings_batch(["hello"])
+        loader.assert_not_called()
 
     def test_ollama_path_hits_http(self):
         response = MagicMock()
