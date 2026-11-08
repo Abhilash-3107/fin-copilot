@@ -1,5 +1,6 @@
 [build-system]
-requires = ["hatchling"]
+# 1.27+ implements PEP 639 (SPDX license expression + bundled license files).
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +8,8 @@ name = "finance-copilot"
 version = "0.1.1"
 description = "Local-first personal finance tool: parses bank statement PDFs and auto-categorizes transactions with rules, RAG, and a local LLM."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["finance", "personal-finance", "bank-statements", "local-first"]
 classifiers = [
@@ -16,6 +18,13 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: FastAPI",
     "Topic :: Office/Business :: Financial",
 ]
 dependencies = [
@@ -76,8 +85,18 @@ exclude = ["finance_copilot/tests"]
 [tool.hatch.build.targets.sdist]
 # The sdist is a source snapshot for `pip install` from source; it needs the
 # built UI too because most installers won't have Node.
-include = ["finance_copilot", "ui/dist", "README.md", "pyproject.toml", "hatch_build.py"]
-exclude = ["finance_copilot/tests"]
+# Leading slashes anchor to the project root; a bare "README.md" is a
+# gitignore-style pattern that also pulled in deploy/demo/README.md.
+include = [
+    "/finance_copilot",
+    "/ui/dist",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/hatch_build.py",
+]
+exclude = ["/finance_copilot/tests"]
 # ui/dist is gitignored (it is a build output), so it must be declared an
 # artifact or hatchling's VCS-ignore filter drops it from the sdist.
 artifacts = ["ui/dist"]

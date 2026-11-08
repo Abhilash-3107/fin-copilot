@@ -5,6 +5,10 @@
 - The installed app no longer reads a `.env` from the folder you launch it in.
   Running `uvx finance-copilot` inside a project whose `.env` set `DB_PATH` or an AI endpoint used to open that database or endpoint silently.
   Real environment variables and `--data-dir` still apply; a source checkout still reads its own `.env`.
+- The terminal running `finance-copilot` no longer fills with a line for every request to Ollama.
+- The "running at" message shows up even when the output goes to a file or another program.
+- The package now ships the MIT license text, and PyPI lists the supported Python versions.
+- `python -m finance_copilot.cli version` reads the installed version instead of a hardcoded one.
 
 ## 0.1.1 - 2026-11-08
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI
 
+from finance_copilot import app_version
 from finance_copilot.config import settings
 
 logging.basicConfig(
@@ -16,6 +17,11 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx logs every request at INFO. The app polls Ollama on each health check,
+# so at the default level the launcher's terminal filled with request lines.
+# Failures still surface through our own warnings and httpx's WARNING output.
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(max(logging.WARNING, logging.root.level))
 from fastapi.staticfiles import StaticFiles
 
 from finance_copilot.api.routes import (
@@ -137,15 +143,6 @@ app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(local_llm.router, prefix="/api/local-llm", tags=["local-llm"])
 
 
-def _app_version() -> str:
-    from importlib import metadata
-
-    try:
-        return metadata.version("finance-copilot")
-    except metadata.PackageNotFoundError:
-        return "0.0.0.dev0"
-
-
 @app.get("/api/health")
 def health():
     """Check Ollama availability and which models are loaded vs pulled."""
@@ -206,7 +203,7 @@ def health():
         embeddings_status = "ok" if ollama_ok else "unavailable"
 
     return {
-        "version": _app_version(),
+        "version": app_version(),
         "llm_provider": provider,
         "ai_message": ai_message,
         "embedding_provider": settings.embedding_provider,
