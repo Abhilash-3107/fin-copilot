@@ -20,3 +20,5 @@ ui/dist/
 findings/
 
 eval/
+# Maintainer runbooks stay local
+docs/release.md
