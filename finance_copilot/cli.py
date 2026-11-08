@@ -94,7 +94,7 @@ def _patch(base: str, annotation_id: str, payload: dict) -> None:
 @app.command()
 def version():
     """Show version."""
-    console.print("finance-copilot 0.1.0")
+    console.print("finance-copilot 0.1.1")
 
 
 if __name__ == "__main__":

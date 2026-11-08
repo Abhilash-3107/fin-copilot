@@ -1,8 +1,16 @@
 # Changelog
 
+## 0.1.1 - 2026-11-08
+
+Documentation fixes for the PyPI page.
+
+- The README no longer shows broken screenshots on PyPI, and its description of the pipeline, AI options and LAN access matches the app.
+- PyPI now links to the changelog and the issue tracker.
+- `finance-copilot version` now prints 0.1.1; it was still saying 0.1.0.
+
 ## 0.1.0 - 2026-11-08
 
-The first public release: a one-command local app (`uvx finance-copilot`) plus a hosted read-only demo.
+The first public release: a one-command local app (`uvx finance-copilot`).
 
 ### Install and run
 
