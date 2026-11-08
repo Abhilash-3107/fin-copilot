@@ -202,7 +202,8 @@ export default function Transactions() {
 
   function toggleSort(col) {
     if (sort === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'))
-    else { setSort(col); setOrder(col === 'amount' ? 'desc' : 'desc') }
+    // Both sortable columns (date, amount) open on newest / largest first.
+    else { setSort(col); setOrder('desc') }
   }
 
   function toggleSelect(id) {
@@ -229,10 +230,13 @@ export default function Transactions() {
     if (!category) return
     setBulkApplying(true)
     try {
-      const { updated } = await api.post('/annotations/bulk-category', {
+      const { updated, skipped = [] } = await api.post('/annotations/bulk-category', {
         transaction_ids: [...selected], category, subcategory: subcategory || null,
       })
-      toast(`Categorized ${updated} transaction${updated === 1 ? '' : 's'}`, 'success')
+      const gone = skipped.length
+        ? ` · ${skipped.length} skipped (no longer exist${skipped.length === 1 ? 's' : ''})`
+        : ''
+      toast(`Categorized ${updated} transaction${updated === 1 ? '' : 's'}${gone}`, skipped.length ? 'info' : 'success')
       setSelected(new Set())
       setBulkCategory('')
       loadTransactions()

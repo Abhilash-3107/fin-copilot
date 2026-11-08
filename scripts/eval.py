@@ -38,7 +38,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from finance_copilot.config import settings
-from finance_copilot.db.connection import get_connection
+from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.categories import get_category_names_flat
 from finance_copilot.db.queries.people import list_people
 from finance_copilot.pipeline.annotate import (
@@ -98,7 +98,9 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
 
 
 def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None) -> dict:
-    conn = get_connection(db_path)
+    # Migrate like app startup does: the pipeline under test reads the current
+    # schema (e.g. user_rules), and an eval DB copy may predate it.
+    conn = get_migrated_db(db_path)
     category_list = get_category_names_flat(conn)
     # Mirrors auto_annotate's construction (3-tuples incl. relationship).
     known_people = [

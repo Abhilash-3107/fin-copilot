@@ -35,7 +35,12 @@ from finance_copilot.models.annotation import (
 )
 from finance_copilot.pipeline.annotate import auto_annotate
 from finance_copilot.pipeline.counterparty import normalize_identity
-from finance_copilot.pipeline.embed import build_embed_text, embed_transaction, get_embedding_single
+from finance_copilot.pipeline.embed import (
+    build_embed_text,
+    embed_transaction,
+    embed_transactions,
+    get_embedding_single,
+)
 from finance_copilot.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
 from finance_copilot.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
 
@@ -63,6 +68,22 @@ def _open_job_connection() -> sqlite3.Connection:
     from finance_copilot.db.connection import get_connection
 
     return get_connection()
+
+
+def _embed_in_background(transaction_ids: list[str]) -> None:
+    """Re-embed relabelled rows after the response so they serve as RAG donors.
+
+    A bulk edit can touch a thousand rows; embedding them inline kept the UI on
+    "Applying..." for minutes. Best-effort: a miss is backfilled by
+    /embeddings/generate.
+    """
+    conn = _open_job_connection()
+    try:
+        embed_transactions(conn, transaction_ids)
+    except Exception:
+        logger.exception("background re-embed failed | txns=%d", len(transaction_ids))
+    finally:
+        conn.close()
 
 
 # A live job heartbeats updated_at roughly once per second via its progress
@@ -366,7 +387,11 @@ class BulkCategoryRequest(BaseModel):
 
 
 @router.post("/bulk-category")
-def bulk_set_category(body: BulkCategoryRequest, conn: sqlite3.Connection = Depends(get_db)):
+def bulk_set_category(
+    body: BulkCategoryRequest,
+    background_tasks: BackgroundTasks,
+    conn: sqlite3.Connection = Depends(get_db),
+):
     """Set a category on many transactions at once (4.12).
 
     Each transaction is annotated as a manual label: an unannotated one gets a
@@ -382,10 +407,23 @@ def bulk_set_category(body: BulkCategoryRequest, conn: sqlite3.Connection = Depe
             detail=f"Unknown subcategory under {body.category}: {body.subcategory}",
         )
     if not body.transaction_ids:
-        return {"updated": 0}
+        return {"updated": 0, "skipped": []}
+
+    # Ids come straight from the client; one that was deleted since the page
+    # loaded would trip the annotations FK and 500 the whole batch.
+    known: set[str] = set()
+    for i in range(0, len(body.transaction_ids), 500):
+        chunk = body.transaction_ids[i : i + 500]
+        placeholders = ",".join("?" * len(chunk))
+        known.update(
+            r[0]
+            for r in conn.execute(f"SELECT id FROM transactions WHERE id IN ({placeholders})", chunk)
+        )
+    to_update = [t for t in dict.fromkeys(body.transaction_ids) if t in known]
+    skipped = [t for t in body.transaction_ids if t not in known]
 
     updated = 0
-    for txn_id in body.transaction_ids:
+    for txn_id in to_update:
         existing = get_annotation_by_transaction(conn, txn_id)
         if existing is None:
             insert_annotation(conn, Annotation(
@@ -408,10 +446,8 @@ def bulk_set_category(body: BulkCategoryRequest, conn: sqlite3.Connection = Depe
         updated += 1
 
     conn.commit()
-    # Best-effort re-embed so the new labels serve as RAG donors.
-    for txn_id in body.transaction_ids:
-        embed_transaction(conn, txn_id)
-    return {"updated": updated}
+    background_tasks.add_task(_embed_in_background, to_update)
+    return {"updated": updated, "skipped": skipped}
 
 
 class ApplySimilarRequest(BaseModel):
@@ -499,6 +535,7 @@ def similar_candidates(
 def apply_to_similar(
     annotation_id: str,
     body: ApplySimilarRequest,
+    background_tasks: BackgroundTasks,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Copy this annotation's label onto the selected machine-labeled transactions.
@@ -530,9 +567,7 @@ def apply_to_similar(
         update_annotation(conn, target["id"], patch)
         applied += 1
     conn.commit()
-    # Re-embed the corrected rows so they become trusted donors (best-effort).
-    for txn_id in body.transaction_ids:
-        embed_transaction(conn, txn_id)
+    background_tasks.add_task(_embed_in_background, list(body.transaction_ids))
     return {"applied": applied, "skipped": skipped}
 
 

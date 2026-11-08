@@ -37,6 +37,11 @@ const GROUP = {
   },
 }
 
+// Expanding a card loads the group detail and the People list in parallel.
+function mockDetail(detail, people = []) {
+  mockApi.get.mockImplementation(url => Promise.resolve(url === '/people' ? people : detail))
+}
+
 describe('GroupCard', () => {
   beforeEach(() => vi.clearAllMocks())
 
@@ -51,7 +56,7 @@ describe('GroupCard', () => {
   })
 
   it('loads detail and shows settle-up when expanded', async () => {
-    mockApi.get.mockResolvedValue({
+    mockDetail({
       ...GROUP,
       members: [
         { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
@@ -60,10 +65,80 @@ describe('GroupCard', () => {
     })
     renderCard(GROUP)
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByText('DINNER')).toBeInTheDocument())
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
     expect(screen.getByText('Settle up')).toBeInTheDocument()
     // Alice appears both in the members' People cell and in settle-up.
     expect(screen.getAllByText('Alice').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/owes you/)).toBeInTheDocument()
+  })
+
+  it('shows people by name and tags through the picker', async () => {
+    mockApi.get.mockImplementation(url => Promise.resolve(url === '/people'
+      ? [{ id: 'p1', name: 'Alice' }, { id: 'p2', name: 'Bob' }]
+      : {
+          ...GROUP,
+          members: [
+            { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['p1'], txn_type: null },
+          ],
+          settle_up: [{ person: 'p1', name: 'Alice', net: 150 }],
+        }))
+    mockApi.patch.mockResolvedValue({})
+    renderCard(GROUP)
+    fireEvent.click(screen.getByText('Goa Trip'))
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
+    // Name, never the id: People cell (table + phone card) and the settle-up chip.
+    expect(screen.getAllByText('Alice')).toHaveLength(3)
+    expect(screen.queryByText('p1')).not.toBeInTheDocument()
+
+    fireEvent.focus(screen.getAllByLabelText('Search people')[0])
+    fireEvent.click(screen.getByText('Bob'))
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith(
+      '/groups/g1/members/t1', { people: ['p1', 'p2'] }))
+  })
+
+  it('says everyone is settled when tagged people net to zero', async () => {
+    mockDetail({
+      ...GROUP,
+      members: [
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: null },
+        { transaction_id: 't2', txn_date: '2026-01-06', amount: 150, debit_credit: 'credit', raw_description: 'REPAY', people: ['Alice'], txn_type: null },
+      ],
+      settle_up: [],
+    })
+    renderCard(GROUP)
+    fireEvent.click(screen.getByText('Goa Trip'))
+    await waitFor(() => expect(screen.getByText("Everyone's settled up")).toBeInTheDocument())
+  })
+
+  it('shows no settle-up section when nobody is tagged', async () => {
+    mockDetail({
+      ...GROUP,
+      members: [
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null },
+      ],
+      settle_up: [],
+    })
+    renderCard(GROUP)
+    fireEvent.click(screen.getByText('Goa Trip'))
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
+    expect(screen.queryByText('Settle up')).not.toBeInTheDocument()
+  })
+
+  it('has no role column - settle-up is driven by type alone', async () => {
+    mockDetail({
+      ...GROUP,
+      members: [
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
+      ],
+      settle_up: [{ person: 'Alice', net: 150 }],
+    })
+    renderCard(GROUP)
+    fireEvent.click(screen.getByText('Goa Trip'))
+    // jsdom renders both the desktop table and the phone cards.
+    await waitFor(() => expect(screen.getAllByText('DINNER').length).toBeGreaterThan(0))
+    expect(screen.queryByText('Role')).not.toBeInTheDocument()
   })
 })

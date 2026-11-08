@@ -184,8 +184,12 @@ def list_transactions(
         # query, the rupee part), so "1200" finds the ₹1,200 transaction.
         amount = _parse_amount_query(q)
         if amount is not None:
-            clauses.append("t.amount = ?")
-            params.append(amount)
+            if "." in q:
+                clauses.append("t.amount = ?")
+                params.append(amount)
+            else:
+                clauses.append("CAST(t.amount AS INTEGER) = ?")
+                params.append(int(amount))
         conditions.append("(" + " OR ".join(clauses) + ")")
 
     if categories:

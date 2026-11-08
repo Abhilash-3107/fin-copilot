@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,10 +28,11 @@ from finance_copilot.api.routes import (
     insights,
     local_llm,
     people,
+    rules,
     statements,
     transactions,
 )
-from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.connection import get_connection
 
 # The built SPA rides inside the wheel as finance_copilot/ui_dist (force-included
 # at build time); a dev checkout serves ui/dist instead. Wheels install as plain
@@ -42,37 +44,11 @@ _CHECKOUT_DIST = Path(__file__).parent.parent / "ui" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
-    conn = get_migrated_db()
+    from finance_copilot.db.lifecycle import reconcile_database
+
+    conn = get_connection()
     try:
-        # Apply any stored BYOM/LLM overrides onto the live settings so the pipeline
-        # uses the user's runtime provider choice from the first request.
-        from finance_copilot.db.queries.app_settings import (
-            apply_llm_config,
-            ensure_llm_provider_default,
-        )
-
-        # First run only: pick "ollama" vs "none" from a one-shot probe so a
-        # machine without Ollama starts in the honest no-AI tier instead of
-        # timing out per request.
-        ensure_llm_provider_default(conn)
-        conn.commit()
-        apply_llm_config(conn)
-        # Vector table must match the active embedding model's dimension; a
-        # provider switch while the app was down is reconciled here.
-        from finance_copilot.db.queries.embeddings import ensure_vec_dimension
-
-        if ensure_vec_dimension(conn):
-            logging.getLogger(__name__).warning(
-                "embedding dimension changed - vector memory cleared; run a re-embed "
-                "from Settings > AI & Model to rebuild RAG retrieval"
-            )
-        # Jobs still marked in-flight at boot were orphaned by the previous
-        # process; fail them or they block the single-job guard forever.
-        reaped = annotations.reap_interrupted_jobs(conn)
-        if reaped:
-            logging.getLogger(__name__).warning(
-                "failed %d annotation job(s) orphaned by the previous process", reaped
-            )
+        reconcile_database(conn)
     finally:
         conn.close()
     yield
@@ -85,6 +61,11 @@ app = FastAPI(title="Finance Copilot", lifespan=lifespan)
 # except health must present it. Off by default so the loopback single-user case
 # is unaffected; this exists for a deliberate LAN bind where the app would
 # otherwise serve bank statements to the whole network with no auth.
+# FastAPI's schema and docs pages sit outside /api/; they describe every route,
+# so they're gated along with it.
+_SCHEMA_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+
+
 def _extract_token(request) -> str | None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -99,6 +80,7 @@ _DEMO_BLOCKED = (
     ("POST", "/api/statements/upload"),   # real data must never land here
     ("DELETE", "/api/statements"),        # keep the shared dataset intact
     ("GET", "/api/data/backup"),          # nothing to exfiltrate, keep it that way
+    ("POST", "/api/data/restore"),        # the shared dataset is not replaceable
     ("POST", "/api/data/delete-all"),
     ("PUT", "/api/config/llm"),           # no provider/API-key writes on a shared box
     ("POST", "/api/config/llm/test"),
@@ -131,8 +113,11 @@ async def require_api_token(request, call_next):
 
     token = settings.api_token
     path = request.url.path
-    if token and path.startswith("/api/") and path != "/api/health":
-        if _extract_token(request) != token:
+    gated = (path.startswith("/api/") and path != "/api/health") or path in _SCHEMA_PATHS
+    if token and gated:
+        presented = (_extract_token(request) or "").encode()
+        # Constant-time so a LAN client can't recover the secret byte by byte.
+        if not secrets.compare_digest(presented, token.encode()):
             return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
     return await call_next(request)
 
@@ -143,6 +128,7 @@ app.include_router(transactions.router, prefix="/api/transactions", tags=["trans
 app.include_router(annotations.router, prefix="/api/annotations", tags=["annotations"])
 app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
 app.include_router(people.router, prefix="/api/people", tags=["people"])
+app.include_router(rules.router, prefix="/api/rules", tags=["rules"])
 app.include_router(embeddings.router, prefix="/api/embeddings", tags=["embeddings"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])

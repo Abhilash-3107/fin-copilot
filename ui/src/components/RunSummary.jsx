@@ -5,6 +5,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 // Per-stage accent colours — one hue per pipeline stage, reused across the funnel
 // and any stage tags so a stage reads the same everywhere.
 const STAGE_COLOR = {
+  user_rule: '#34d399',
   rule: '#22d3ee',
   learned_rule: '#4ade80',
   rag_direct: '#a5b4fc',
@@ -13,6 +14,7 @@ const STAGE_COLOR = {
   llm: '#f59e0b',
 }
 const STAGE_LABEL = {
+  user_rule: 'Your rule',
   rule: 'Rule',
   learned_rule: 'Learned rule',
   rag_direct: 'RAG direct',

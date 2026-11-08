@@ -7,6 +7,7 @@ import RunSummary from '../components/RunSummary.jsx'
 import ModelSettings from '../components/ModelSettings.jsx'
 import DataSettings from '../components/DataSettings.jsx'
 import CategorySettings from '../components/CategorySettings.jsx'
+import UserRules from '../components/UserRules.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -223,7 +224,7 @@ const TABS = [
   { id: 'model', label: 'AI & Model', icon: Cpu },
   { id: 'insights', label: 'Insights', icon: BarChart3 },
   { id: 'categories', label: 'Categories', icon: FolderTree },
-  { id: 'rules', label: 'Learned Rules', icon: BookOpen },
+  { id: 'rules', label: 'Rules', icon: BookOpen },
   { id: 'data', label: 'Data', icon: Database },
 ]
 
@@ -324,7 +325,12 @@ export default function Settings() {
 
           {tab === 'categories' && <CategorySettings />}
 
-          {tab === 'rules' && <LearnedRules />}
+          {tab === 'rules' && (
+            <div className="space-y-8">
+              <UserRules />
+              <LearnedRules />
+            </div>
+          )}
 
           {tab === 'data' && <DataSettings />}
         </>

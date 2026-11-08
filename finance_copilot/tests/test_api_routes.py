@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from finance_copilot.db.connection import init_db
-from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.annotations import get_annotation_by_transaction, insert_annotation
 from finance_copilot.models.annotation import Annotation
 
 
@@ -52,7 +52,10 @@ def client_conn():
     app.dependency_overrides[api_get_db] = lambda: conn
     # Embedding service isn't available in tests — stub the best-effort embed call.
     # No context manager on TestClient: lifespan would migrate the real settings.db_path.
-    with patch("finance_copilot.api.routes.annotations.embed_transaction", return_value=False) as embed_mock:
+    # Background re-embeds open their own connection to settings.db_path (the
+    # real ledger in a dev checkout) - never let a test reach it.
+    with patch("finance_copilot.api.routes.annotations.embed_transaction", return_value=False) as embed_mock, \
+            patch("finance_copilot.api.routes.annotations._embed_in_background"):
         client = TestClient(app)
         yield client, conn, embed_mock
     app.dependency_overrides.pop(api_get_db, None)
@@ -84,6 +87,26 @@ class TestApiTokenGate:
         assert ok.status_code == 200
         # X-API-Token header works too.
         assert client.get("/api/categories", headers={"X-API-Token": "s3cret"}).status_code == 200
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    def test_api_docs_gated_when_token_set(self, client_conn, monkeypatch, path):
+        # Review M3: the schema routes live outside /api/ and bypassed the gate.
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        assert client.get(path).status_code == 200
+        monkeypatch.setattr(settings, "api_token", "s3cret")
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={"X-API-Token": "s3cret"}).status_code == 200
+
+    def test_token_compared_in_constant_time(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "api_token", "s3cret")
+        with patch("finance_copilot.main.secrets.compare_digest", wraps=__import__("secrets").compare_digest) as cmp:
+            assert client.get("/api/categories", headers={"X-API-Token": "s3cret"}).status_code == 200
+        cmp.assert_called_once()
+        # Non-ASCII junk must be a clean 401, not a 500 from compare_digest.
+        assert client.get("/api/categories", headers={"Authorization": b"Bearer t\xc3\xb6ken"}).status_code == 401
 
 
 class TestAnnotationPatch:
@@ -412,6 +435,43 @@ class TestTransactionsList:
         # The pre-existing model label's history is preserved.
         assert by_id["b0"]["original_source"] == "llm"
 
+    def test_bulk_skips_ids_that_no_longer_exist(self, client_conn):
+        # Review M1: a transaction deleted since the page loaded used to trip the
+        # annotations FK and 500 the whole batch.
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) VALUES ('b0','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        resp = client.post("/api/annotations/bulk-category", json={
+            "transaction_ids": ["b0", "gone"], "category": "Food & Dining",
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": 1, "skipped": ["gone"]}
+        assert get_annotation_by_transaction(conn, "b0")["category"] == "Food & Dining"
+
+    def test_bulk_all_unknown_ids(self, client_conn):
+        client, _, _ = client_conn
+        resp = client.post("/api/annotations/bulk-category", json={
+            "transaction_ids": ["x", "y"], "category": "Food & Dining",
+        })
+        assert resp.json() == {"updated": 0, "skipped": ["x", "y"]}
+
+    def test_bulk_reembeds_after_responding(self, client_conn):
+        # Review M2: re-embedding ran inline, one provider call per row.
+        client, conn, embed_mock = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-10', 10.0, 'debit', 'x')", (f"b{i}",))
+        conn.commit()
+        with patch("finance_copilot.api.routes.annotations._embed_in_background") as bg:
+            client.post("/api/annotations/bulk-category", json={
+                "transaction_ids": ["b0", "b1", "b2", "gone"], "category": "Food & Dining",
+            })
+        embed_mock.assert_not_called()
+        bg.assert_called_once_with(["b0", "b1", "b2"])
+
     def test_bulk_unknown_category_rejected(self, client_conn):
         client, conn, _ = client_conn
         conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
@@ -479,6 +539,23 @@ class TestTransactionsFilters:
         client, conn, _ = client_conn
         self._seed(conn)
         assert self._ids(client, "q=%E2%82%B9100") == {"t_food", "t_shop", "t_bare"}
+
+    def test_q_whole_rupees_match_the_rupee_part(self, client_conn):
+        # Review L2: "1200" should find ₹1,200.50, as the comment always promised;
+        # a query with paise stays exact.
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES ('t_paise', 's1', '2026-01-15', 1200.5, 'debit', 'X'), "
+            "('t_round', 's1', '2026-01-15', 1200.0, 'debit', 'Y'), "
+            "('t_next', 's1', '2026-01-15', 1201.0, 'debit', 'Z')"
+        )
+        conn.commit()
+        assert self._ids(client, "q=1200") == {"t_paise", "t_round"}
+        assert self._ids(client, "q=1,200") == {"t_paise", "t_round"}
+        assert self._ids(client, "q=1200.50") == {"t_paise"}
+        assert self._ids(client, "q=1200.00") == {"t_round"}
 
     def test_q_non_matching_amount_empty(self, client_conn):
         client, conn, _ = client_conn

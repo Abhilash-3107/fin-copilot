@@ -48,6 +48,31 @@ class TestPreflight:
         assert any("API key" in p for p in pf["problems"])
 
 
+class TestStatus:
+    def test_reports_an_interrupted_download_from_its_part_file(self, data_dir):
+        # The downloader writes <model>.part until the sha256 checks out; status
+        # used to look only at the final path, so a half-done download read as
+        # "nothing downloaded" and the card couldn't offer to resume.
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        part = local_llm.models_dir() / entry["filename"]
+        part = part.with_suffix(".part")
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(b"x" * 1234)
+        s = local_llm.status()
+        assert s["download_partial"] is True
+        assert s["downloaded_bytes"] == 1234
+        assert s["model_present"] is False
+
+    def test_complete_model_is_present_not_partial(self, data_dir):
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        path = local_llm.models_dir() / entry["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            f.truncate(entry["size"])
+        s = local_llm.status()
+        assert (s["model_present"], s["download_partial"], s["downloaded_bytes"]) == (True, False, entry["size"])
+
+
 class TestDownload:
     def _serve(self, payload: bytes, status_code=200, from_byte=0):
         """Fake httpx.stream returning `payload[from_byte:]`."""
@@ -226,3 +251,30 @@ class TestDownloadRoutes:
             r = client.post("/api/local-llm/download", json={})
         assert r.status_code == 409
         assert "API key" in r.json()["detail"]
+
+
+class TestModelLifetime:
+    def test_model_is_freed_before_exit_and_on_remove(self, data_dir):
+        # ggml's Metal backend aborts the process at exit if a model is still
+        # resident, so the first load registers unload_model with atexit.
+        entry = local_llm.MODEL_MANIFEST[settings.local_llm_model]
+        path = local_llm.models_dir() / entry["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"gguf")
+        fake_model = MagicMock()
+        fake_module = MagicMock(Llama=MagicMock(return_value=fake_model))
+        with (
+            patch.object(local_llm, "extra_installed", return_value=True),
+            patch.dict("sys.modules", {"llama_cpp": fake_module}),
+            patch.object(local_llm, "_unload_registered", False),
+            patch("finance_copilot.local_llm.atexit.register") as register,
+        ):
+            assert local_llm._get_llama() is fake_model
+            local_llm._get_llama()  # cached: no second load, no second hook
+            register.assert_called_once_with(local_llm.unload_model)
+            fake_module.Llama.assert_called_once()
+
+            local_llm.remove_model()
+        fake_model.close.assert_called_once()
+        assert local_llm._llama is None
+        assert not path.exists()

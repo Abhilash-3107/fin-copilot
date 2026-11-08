@@ -75,13 +75,104 @@ class TestSettleUp:
         by_person = {s["person"]: s["net"] for s in settle}
         assert by_person == {"Alice": 100.0, "Bob": 100.0}
 
-    def test_credit_reduces_what_person_owes(self, conn):
-        # User pays 300 (Alice owes 150), then Alice pays 150 back (credit tagged to her).
-        g = create_group(conn, "Split")
-        _txn(conn, "t1", "2026-01-05", 300.0, "debit")
+    def test_untyped_credit_is_a_full_repayment(self, conn):
+        # The 2026-07-27 review's H1 case: user pays a 1,000 dinner shared with
+        # Rahul (he owes 500), Rahul sends 500 back. Settled, not "owes 250".
+        g = create_group(conn, "Dinner")
+        _txn(conn, "t1", "2026-01-05", 1000.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 500.0, "credit")
+        add_member(conn, g["id"], "t1", people=["Rahul"])
+        add_member(conn, g["id"], "t2", people=["Rahul"])
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == []
+
+    @pytest.mark.parametrize("txn_type", ["reimbursement", "refund", "transfer"])
+    def test_typed_repayment_credit_offsets_in_full(self, conn, txn_type):
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 600.0, "debit")
         _txn(conn, "t2", "2026-01-10", 300.0, "credit")
-        add_member(conn, g["id"], "t1", people=["Alice"])  # share = 150 each → Alice owes 150
-        add_member(conn, g["id"], "t2", people=["Alice"])  # credit share 150 → Alice net 0
+        add_member(conn, g["id"], "t1", people=["Alice"])
+        add_member(conn, g["id"], "t2", people=["Alice"], txn_type=txn_type)
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == []
+
+    @pytest.mark.parametrize("txn_type", ["split", "event"])
+    def test_split_typed_credit_is_still_a_full_repayment(self, conn, txn_type):
+        # How the real ledger tags friends paying back a trip share: credit +
+        # split. It is their share coming back, not an inflow to divide.
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 400.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 200.0, "credit")
+        add_member(conn, g["id"], "t1", people=["Alice"], txn_type="split")
+        add_member(conn, g["id"], "t2", people=["Alice"], txn_type=txn_type)
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == []
+
+    @pytest.mark.parametrize("txn_type", [None, "split", "event"])
+    def test_shared_debit_is_equal_split(self, conn, txn_type):
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 300.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Alice", "Bob"], txn_type=txn_type)
+        conn.commit()
+
+        by_person = {s["person"]: s["net"] for s in settle_up_for_group(conn, g["id"])}
+        assert by_person == {"Alice": 100.0, "Bob": 100.0}
+
+    @pytest.mark.parametrize("txn_type", ["transfer", "refund"])
+    def test_money_sent_is_owed_back_in_full(self, conn, txn_type):
+        # User sends Alice 400 (a loan, or refunding her overpayment): all of it
+        # is hers to return, split only across the people named.
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 400.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Alice"], txn_type=txn_type)
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == [{"person": "Alice", "name": "Alice", "net": 400.0}]
+
+    def test_reimbursement_debit_has_no_effect(self, conn):
+        # Alice covered a cab that never hit the user's ledger; the user pays her
+        # back 333. That settles an off-ledger debt, so nothing is owed either way.
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-06", 333.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Alice"], txn_type="reimbursement")
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == []
+
+    def test_person_ids_resolve_to_names(self, conn):
+        conn.execute("INSERT INTO people (id, name) VALUES ('p1', 'Rahul Mehta')")
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 300.0, "debit")
+        add_member(conn, g["id"], "t1", people=["p1", "Legacy Name"])
+        conn.commit()
+
+        settle = {s["person"]: s["name"] for s in settle_up_for_group(conn, g["id"])}
+        # Unknown ids (free-text tags from before the people table) show as-is.
+        assert settle == {"p1": "Rahul Mehta", "Legacy Name": "Legacy Name"}
+
+    def test_repayment_from_two_people_is_split_between_them(self, conn):
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 300.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 200.0, "credit")
+        add_member(conn, g["id"], "t1", people=["Alice", "Bob"])  # each owes 100
+        add_member(conn, g["id"], "t2", people=["Alice", "Bob"])  # each repays 100
+        conn.commit()
+
+        assert settle_up_for_group(conn, g["id"]) == []
+
+    def test_rounding_settles_to_zero(self, conn):
+        # 100 / 3 sharers leaves repeating decimals; paying back the rounded
+        # share must still read as settled.
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 100.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 33.33, "credit")
+        _txn(conn, "t3", "2026-01-10", 33.33, "credit")
+        add_member(conn, g["id"], "t1", people=["Alice", "Bob"])
+        add_member(conn, g["id"], "t2", people=["Alice"])
+        add_member(conn, g["id"], "t3", people=["Bob"])
         conn.commit()
 
         assert settle_up_for_group(conn, g["id"]) == []

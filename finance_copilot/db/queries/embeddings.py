@@ -54,8 +54,11 @@ def upsert_embedding(
 ) -> None:
     """Insert or replace embedding in vec_items and track in embedding_meta."""
     blob = _serialize_embedding(embedding)
+    # vec0 virtual tables reject INSERT OR REPLACE on an existing primary key
+    # ("UNIQUE constraint failed"), so replace is delete + insert.
+    conn.execute("DELETE FROM vec_items WHERE transaction_id = ?", (transaction_id,))
     conn.execute(
-        "INSERT OR REPLACE INTO vec_items (transaction_id, embedding) VALUES (?, ?)",
+        "INSERT INTO vec_items (transaction_id, embedding) VALUES (?, ?)",
         (transaction_id, blob),
     )
     existing = conn.execute(

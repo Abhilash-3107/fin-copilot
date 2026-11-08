@@ -69,7 +69,7 @@ export default function Groups() {
       </div>
 
       {/* Search + create */}
-      <div className="flex gap-3">
+      <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex items-center gap-2 flex-1 bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 focus-within:border-[#6366f1] transition-colors">
           <Search size={14} className="text-[#475569] shrink-0" />
           <input
@@ -84,7 +84,7 @@ export default function Groups() {
             value={newName}
             onChange={e => setNewName(e.target.value)}
             placeholder="New group name…"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] flex-1 sm:flex-none sm:w-52 min-w-0 placeholder:text-[#475569]"
           />
           <button
             type="submit"

@@ -148,6 +148,8 @@ export default function ModelSettings() {
     setResult(null)
   }
 
+  // Resolves true once the config is persisted; false when the save failed
+  // (already toasted), so callers that depend on it can stop.
   async function save() {
     setSaving(true)
     try {
@@ -175,8 +177,10 @@ export default function ModelSettings() {
           toast(`Couldn't start the memory rebuild - ${e.message}`, 'error')
         }
       }
+      return true
     } catch (e) {
       toast(`Couldn't save - ${e.message}`, 'error')
+      return false
     } finally {
       setSaving(false)
     }
@@ -186,8 +190,12 @@ export default function ModelSettings() {
     setTesting(true)
     setResult(null)
     try {
-      // Test hits the *saved* config, so persist first.
-      await save()
+      // Test hits the *saved* config, so persist first. If that failed, a probe
+      // would validate the previous config and could show a misleading green.
+      if (!(await save())) {
+        setResult({ ok: false, detail: 'Settings were not saved, so nothing was tested.' })
+        return
+      }
       const r = await api.post('/config/llm/test')
       setResult(r)
     } catch (e) {

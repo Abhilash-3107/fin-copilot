@@ -36,6 +36,7 @@ from datetime import date
 from pathlib import Path
 
 from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.queries.common import dump_string_list
 from finance_copilot.pipeline.counterparty import normalize_identity
 
 DEFAULT_DB = str(Path(__file__).parent.parent / "data" / "demo.db")
@@ -49,6 +50,10 @@ PEOPLE = [
     ("demo_p03", "Neha Gupta", "neha.gupta@paytm", "friend"),
     ("demo_p04", "Amit Kumar", "amit.landlord@oksbi", "landlord"),
 ]
+
+# (pattern, category, subcategory, merchant): matches the BMRCL metro top-up in
+# the unannotated batch.
+DEMO_RULE = ("bmrcl", "Transport", "Public Transport", "Namma Metro")
 
 
 def _month_add(anchor: date, offset: int) -> tuple[int, int]:
@@ -240,23 +245,28 @@ def _stories(led: Ledger, months: list[tuple[int, int]]) -> None:
                     ("Curlies Beach Shack", "Food & Dining", "Restaurants", "goa-trip", "llm", 0.68))
     scooter = led.add(y1, m1, 17, 800, "debit", "UPI/GOA BIKE RENTALS/PAYTM QR", "scooty 2 days",
                       ("Goa Bike Rentals", "Transport", "Cab & Auto", "rental,goa-trip", "llm", 0.61))
-    hotel = led.add(y1, m1, 19, 7150, "debit", "MAKEMYTRIP/HOTEL BOOKING GOA", "Beach resort 3 nights",
+    hotel = led.add(y1, m1, 19, 6008, "debit", "MAKEMYTRIP/HOTEL BOOKING GOA", "Beach resort 3 nights",
                     ("MakeMyTrip", "Travel", "Hotels", "hotel,goa-trip", "rag_direct", 0.90))
     share_r = led.add(y1, m1, 21, 5600, "credit", "UPI/RAHUL.MEHTA@YBL", "goa share",
                       ("Rahul Mehta", "Transfers", "Peer Transfer", "goa-trip,settled", "rule", 0.95))
     share_n = led.add(y1, m1, 22, 5600, "credit", "UPI/NEHA.GUPTA@PAYTM", "goa trip share",
                       ("Neha Gupta", "Transfers", "Peer Transfer", "goa-trip,settled", "rule", 0.95))
+    # Flight + hotel + shack (16,800) split three ways is exactly the 5,600 each
+    # friend sends back, so settle-up reads "Everyone's settled up". The
+    # scooter was the user's own. Members tag people by id (demo_p02 = Rahul,
+    # demo_p03 = Neha).
+    friends = ["demo_p02", "demo_p03"]
     led.groups.append({
         "id": "demo_grp_goa",
         "name": "Goa trip with Rahul & Neha",
         "note": "Long weekend in Goa; I paid, both settled their shares.",
         "members": [
-            (flight, "paid", "event", None),
-            (hotel, "paid", "event", None),
-            (shack, "paid", "event", None),
-            (scooter, "paid", "event", None),
-            (share_r, "received", "split", "demo_p02"),
-            (share_n, "received", "split", "demo_p03"),
+            (flight, "split", friends),
+            (hotel, "split", friends),
+            (shack, "split", friends),
+            (scooter, "event", None),
+            (share_r, "reimbursement", ["demo_p02"]),
+            (share_n, "reimbursement", ["demo_p03"]),
         ],
     })
     led.add(y1, m1, 24, 900, "debit", "UPI/PRACTO/DOCTOR CONSULT", "Post-trip fever consult",
@@ -411,6 +421,7 @@ def wipe(conn) -> None:
     conn.execute("DELETE FROM transactions WHERE statement_id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM statements WHERE id LIKE 'demo_stmt%'")
     conn.execute("DELETE FROM people WHERE id LIKE 'demo_p%'")
+    conn.execute("DELETE FROM user_rules WHERE id LIKE 'demo_rule%'")
     conn.commit()
     print("Wiped existing demo data.")
 
@@ -463,17 +474,27 @@ def seed(conn, today: date) -> dict:
             "INSERT OR IGNORE INTO people (id, name, upi, relationship) VALUES (?, ?, ?, ?)",
             (pid, name, upi, relationship))
 
+    # One user-authored rule, matching a merchant in the unannotated batch, so a
+    # live auto-annotate shows the "Your rule" stage deciding before anything else.
+    from finance_copilot.db.queries.categories import resolve_category_ids
+
+    category_id, subcategory_id = resolve_category_ids(conn, *DEMO_RULE[1:3])
+    conn.execute(
+        "INSERT OR IGNORE INTO user_rules (id, pattern, category_id, subcategory_id, merchant) "
+        "VALUES ('demo_rule_metro', ?, ?, ?, ?)",
+        (DEMO_RULE[0], category_id, subcategory_id, DEMO_RULE[3]))
+
     for group in led.groups:
         conn.execute(
             "INSERT OR IGNORE INTO transaction_groups (id, name, note) VALUES (?, ?, ?)",
             (group["id"], group["name"], group["note"]))
-        for txn_id, role, txn_type, people in group["members"]:
+        for txn_id, txn_type, people in group["members"]:
             if txn_id is None:
                 continue
             conn.execute(
                 """INSERT OR IGNORE INTO transaction_group_members
-                   (group_id, transaction_id, role, txn_type, people) VALUES (?, ?, ?, ?, ?)""",
-                (group["id"], txn_id, role, txn_type, people))
+                   (group_id, transaction_id, txn_type, people) VALUES (?, ?, ?, ?)""",
+                (group["id"], txn_id, txn_type, dump_string_list(people) if people else None))
 
     for i, (a, b, link_type, note) in enumerate(led.links):
         conn.execute(
