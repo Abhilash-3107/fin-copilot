@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 - unreleased
+## 0.1.0 - 2026-11-08
 
 The first public release: a one-command local app (`uvx finance-copilot`) plus a hosted read-only demo.
 
