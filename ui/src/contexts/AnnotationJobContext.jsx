@@ -16,7 +16,7 @@ export function AnnotationJobProvider({ children }) {
     // Show the card immediately (indeterminate) instead of waiting for the
     // first poll to come back.
     attached.current = true
-    setJob({ status: 'queued' })
+    setJob({ status: 'queued', kind: 'annotate' })
     try {
       return await runAnnotationJob(body, setJob)
     } finally {

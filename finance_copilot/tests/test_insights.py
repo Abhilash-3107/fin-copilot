@@ -414,8 +414,10 @@ class TestBalanceAndShape:
         assert _prev_month("2026-01") == "2025-12"
         assert _prev_month("2026-07") == "2026-06"
 
-    def test_subcategory_alias_merge(self, conn):
-        seed_txn(conn, "2026-01-05", 100, "debit", category="Food & Dining", subcategory="Dining")
+    def test_subcategory_variants_are_snapped_when_written(self, conn):
+        # 'Restaurant' is normalized to the 'Restaurants' sibling on write
+        # (db/queries/taxonomy.canonical_subcategory), so insights need no alias table.
+        seed_txn(conn, "2026-01-05", 100, "debit", category="Food & Dining", subcategory="Restaurant")
         seed_txn(conn, "2026-01-06", 200, "debit", category="Food & Dining", subcategory="Restaurants")
         s = summarize_insights(conn, "2026-01")
         food = next(c for c in s["categories"] if c["category"] == "Food & Dining")
