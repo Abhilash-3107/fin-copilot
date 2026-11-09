@@ -57,6 +57,7 @@ class ReasoningTrace(BaseModel):
     # RAG paths (rag_direct + rag_prompted)
     best_similarity: float | None = None
     neighbours: list[TraceNeighbour] = Field(default_factory=list)
+    evidence_count: int | None = None  # neighbours at or above rag_similarity_floor
     vote_category: str | None = None
     vote_share: float | None = None
     trusted_weight: float | None = None

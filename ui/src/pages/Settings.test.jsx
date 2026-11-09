@@ -69,8 +69,8 @@ describe('Settings', () => {
     mockApi.get.mockImplementation(path => {
       if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
       if (path === '/annotations/learned-rules') return Promise.resolve([
-        // A whole bank line saved as the merchant must not be shown as the name.
-        { counterparty_key: 'RAVI KUMAR', merchant: 'UPI/RAVI KUMAR/120777386275/self', category: 'Self Transfers',
+        // No merchant name: the payee key is shown.
+        { counterparty_key: 'RAVI KUMAR', merchant: null, category: 'Self Transfers',
           subcategory: 'Self Transfer', support: 3, total: 3, purity: 1, direction: 'credit' },
         { counterparty_key: 'PRACTO TECHNOLO', merchant: 'Practo', category: 'Health',
           subcategory: null, support: 3, total: 3, purity: 1, direction: 'debit' },
@@ -81,7 +81,6 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /Rules/ }))
     await waitFor(() => expect(screen.getByText('RAVI KUMAR')).toBeInTheDocument())
-    expect(screen.queryByText(/120777386275/)).not.toBeInTheDocument()
     expect(screen.getAllByText('money in')).toHaveLength(1)
     expect(screen.getByText('Practo')).toBeInTheDocument()
   })

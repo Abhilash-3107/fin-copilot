@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import time
+from typing import Literal
 
 import ulid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -626,17 +627,17 @@ def accuracy(conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.delete("/learned-rules/{counterparty_key:path}", status_code=204)
-def dismiss_learned_rule(counterparty_key: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Dismiss a learned merchant rule so it stops firing and drops off Settings.
-
-    Learned rules have no stored row (they're recomputed from verified labels), so
-    the dismissal is a sticky suppression keyed by counterparty_key. Typically used
-    once the user has added that counterparty to People and the person rule takes
-    over. Idempotent — dismissing an already-dismissed key is a no-op.
-    """
+def dismiss_learned_rule(
+    counterparty_key: str,
+    direction: Literal["debit", "credit"],
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Dismiss one learned rule (payee and direction) so it stops firing and drops
+    off Settings. Learned rules are recomputed from verified labels, so the
+    dismissal is a sticky suppression. Idempotent."""
     from finance_copilot.db.queries.learned_rules import suppress_learned_rule
 
-    suppress_learned_rule(conn, counterparty_key)
+    suppress_learned_rule(conn, counterparty_key, direction)
     conn.commit()
 
 

@@ -20,6 +20,10 @@ from __future__ import annotations
 # is a rule the user wrote, so it is both.
 TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imported"})
 
+# Labels a human authored or vouched for: the only ones that may promote a
+# learned rule or count as the user's own history for a payee.
+VERIFIED_SOURCES: frozenset[str] = frozenset({"manual", "imported"})
+
 # Machine-produced labels that "apply to similar" may overwrite.
 MACHINE_SOURCES: frozenset[str] = frozenset({"llm", "rag_prompted", "rag_direct", "learned_rule"})
 

@@ -30,14 +30,16 @@ function Toggle({ checked, disabled, onChange }) {
   )
 }
 
-// Prefer the human merchant, but fall back to the counterparty key when the
-// merchant is empty, a mangled one-character fragment (4.21) - a lone "U" or
-// "3" reads as broken - or a whole bank line ("UPI/NAME/1207.../self") that
-// was saved as the merchant. The key is at least recognizable.
+// Prefer the human merchant, but fall back to the raw counterparty key when the
+// merchant is empty or a mangled one-character fragment (4.21) - a lone "U" or
+// "3" reads as broken, whereas the raw key ("U OBEROIFC TUCKSH") is at least
+// recognizable.
 function ruleDisplayName(r) {
   const m = (r.merchant || '').trim()
-  return m.length > 1 && !m.includes('/') ? m : r.counterparty_key
+  return m.length > 1 ? m : r.counterparty_key
 }
+
+const ruleId = r => `${r.counterparty_key}|${r.direction}`
 
 function LearnedRules() {
   const toast = useToast()
@@ -53,11 +55,14 @@ function LearnedRules() {
   }, [toast])
 
   async function dismiss(rule) {
-    setDismissing(rule.counterparty_key)
+    setDismissing(ruleId(rule))
     try {
-      await api.delete(`/annotations/learned-rules/${encodeURIComponent(rule.counterparty_key)}`)
-      setRules(rs => rs.filter(r => r.counterparty_key !== rule.counterparty_key))
-      toast(`Stopped learning "${rule.merchant || rule.counterparty_key}"`, 'info')
+      await api.delete(
+        `/annotations/learned-rules/${encodeURIComponent(rule.counterparty_key)}?direction=${rule.direction}`
+      )
+      setRules(rs => rs.filter(r => ruleId(r) !== ruleId(rule)))
+      const which = rule.direction === 'credit' ? ' (money in)' : ''
+      toast(`Stopped learning "${ruleDisplayName(rule)}"${which}`, 'info')
     } catch (e) {
       toast(`Couldn't dismiss - ${e.message}`, 'error')
     } finally {
@@ -95,7 +100,7 @@ function LearnedRules() {
             </thead>
             <tbody className="divide-y divide-[#2d3148]">
               {rules.map(r => (
-                <tr key={`${r.counterparty_key}|${r.direction ?? ''}`}>
+                <tr key={ruleId(r)}>
                   <td className="px-5 py-3 text-[#e2e8f0]">
                     <Link
                       to={txnFilterPath(
@@ -123,7 +128,7 @@ function LearnedRules() {
                   <td className="px-2 py-3 text-right">
                     <button
                       onClick={() => dismiss(r)}
-                      disabled={dismissing === r.counterparty_key}
+                      disabled={dismissing === ruleId(r)}
                       title="Stop learning this merchant"
                       className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
                     >
