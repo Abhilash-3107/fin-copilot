@@ -25,7 +25,9 @@ TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imp
 VERIFIED_SOURCES: frozenset[str] = frozenset({"manual", "imported"})
 
 # Machine-produced labels that "apply to similar" may overwrite.
-MACHINE_SOURCES: frozenset[str] = frozenset({"llm", "rag_prompted", "rag_direct", "learned_rule"})
+# A review policy is the user's rule of thumb, not a fact about the payee, so
+# its labels are machine labels: re-decided when policies change, never trusted.
+MACHINE_SOURCES: frozenset[str] = frozenset({"llm", "rag_prompted", "rag_direct", "learned_rule", "policy"})
 
 # Sources whose corrections/confirmations are recorded as calibration feedback.
 # rule, user_rule and learned_rule ride along so their thresholds and bad donors

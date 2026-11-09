@@ -29,6 +29,11 @@ from finance_copilot.db.queries.people import (
     person_token_matches,
     relationship_category,
 )
+from finance_copilot.db.queries.review_policies import (
+    annotation_for_policy,
+    list_policies,
+    match_policy,
+)
 from finance_copilot.db.queries.transactions import list_transactions
 from finance_copilot.db.queries.user_rules import annotation_for as user_rule_annotation
 from finance_copilot.db.queries.user_rules import list_user_rules, match_user_rule
@@ -184,11 +189,13 @@ def rule_annotation(
     txn: TxnRow,
     known_people: list[tuple[str, str, str | None]],
     user_rules: list[dict] | None = None,
+    policies: list[dict] | None = None,
     *,
     as_of: str | None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Stage 1: the user's own rules, then known-person match or keyword rule,
-    with the person-history gate.
+    with the person-history gate, then learned merchant memory, then the user's
+    review policies (e.g. small payments to unknown people).
 
     as_of bounds the user's label history consulted (learned rules, the person
     gate): the transaction's date when annotating or replaying it, None when
@@ -254,6 +261,23 @@ def rule_annotation(
                     "learned_rule_confidence", "confidence_threshold",
                 ),
                 skips=["rule: no person/keyword match"],
+            )
+            return ann, trace
+
+    # Stage 1.6 — review policies: the user's standing answer for a class of
+    # transactions no rule or history settles. Before any model runs.
+    if result is None:
+        if policies is None:
+            policies = list_policies(conn, enabled_only=True)
+        policy = match_policy(conn, policies, txn, as_of=as_of)
+        if policy is not None:
+            ann = annotation_for_policy(policy, txn)
+            label = f"{policy['category']} > {policy['subcategory']}" if policy["subcategory"] else policy["category"]
+            trace = ReasoningTrace(
+                stage="policy",
+                final_confidence=ann.confidence,
+                matched_rule=f"your policy: payments up to {policy['max_amount']:,.0f} to people -> {label}",
+                skips=["rule: no person/keyword match", "learned_rule: no established rule"],
             )
             return ann, trace
 
@@ -376,7 +400,9 @@ def auto_annotate(
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
     for txn in unannotated:
-        result, trace = rule_annotation(conn, txn, known_people, stage.user_rules, as_of=txn["txn_date"])
+        result, trace = rule_annotation(
+            conn, txn, known_people, stage.user_rules, stage.policies, as_of=txn["txn_date"]
+        )
         if result is not None:
             _persist(result, trace)
             _tick()
@@ -1147,6 +1173,7 @@ class StageContext:
     """What every deterministic stage reads, loaded once per run."""
     known_people: list[tuple[str, str, str | None]]
     user_rules: list[dict]
+    policies: list[dict]
     category_list: list[str]
 
 
@@ -1154,6 +1181,7 @@ def load_stage_context(conn: sqlite3.Connection) -> StageContext:
     return StageContext(
         known_people=[(p["name"], p["upi"].lower(), p["relationship"]) for p in list_people(conn) if p["upi"]],
         user_rules=list_user_rules(conn, enabled_only=True),
+        policies=list_policies(conn, enabled_only=True),
         category_list=get_category_names_flat(conn),
     )
 
@@ -1203,7 +1231,9 @@ def _label_tuple(source, category, subcategory, merchant, confidence) -> tuple:
     return (source, category, subcategory, merchant, round(confidence, 4))
 
 
-def reevaluate_machine_labels(conn: sqlite3.Connection, transaction_ids: list[str], *, reason: str) -> list[dict]:
+def reevaluate_machine_labels(
+    conn: sqlite3.Connection, transaction_ids: list[str], *, reason: str, retrieval: bool = True
+) -> list[dict]:
     """Re-decide existing machine labels with the deterministic stages only.
 
     Each transaction runs user rules, the person rule, merchant rules, learned
@@ -1215,6 +1245,8 @@ def reevaluate_machine_labels(conn: sqlite3.Connection, transaction_ids: list[st
         without a stored vector is left alone.
       - An old LLM label is replaced only by a better decision: one that clears
         the review bar or is more confident.
+    retrieval=False runs the rule stages only (all a policy change needs);
+    then the only demotion is of a policy label no policy covers any more.
     Decisions are made first; the writes then run in one short transaction
     (replace_machine_annotation refuses rows a human labeled meanwhile).
 
@@ -1233,8 +1265,14 @@ def reevaluate_machine_labels(conn: sqlite3.Connection, transaction_ids: list[st
         ).fetchone())
         if txn["old_source"] not in MACHINE_SOURCES:
             continue
-        result, trace = rule_annotation(conn, txn, stage.known_people, stage.user_rules, as_of=None)
-        deterministic_old = txn["old_source"] in ("learned_rule", "rag_direct")
+        result, trace = rule_annotation(
+            conn, txn, stage.known_people, stage.user_rules, stage.policies, as_of=None
+        )
+        deterministic_old = txn["old_source"] in ("learned_rule", "rag_direct", "policy")
+        if result is None and not retrieval:
+            if txn["old_source"] == "policy" and txn["old_confidence"] >= threshold:
+                decisions.append((txn, None, None))  # no policy covers it any more
+            continue
         if result is None:
             vec = stored_embedding(conn, txn_id)
             if vec is None:
@@ -1290,3 +1328,10 @@ def rescore_review_queue(conn: sqlite3.Connection) -> list[dict]:
     included: knowledge gained since they were annotated may now settle them."""
     queued = _machine_labeled(conn, "a.confidence < ?", (get_confidence_threshold(conn),))
     return reevaluate_machine_labels(conn, queued, reason="rescore")
+
+
+def reevaluate_after_policy_change(conn: sqlite3.Connection) -> list[dict]:
+    """Re-decide what a policy change can affect: every machine label waiting
+    for review, and every label a policy made. Rule stages only, no retrieval."""
+    candidates = _machine_labeled(conn, "(a.confidence < ? OR a.source = 'policy')", (get_confidence_threshold(conn),))
+    return reevaluate_machine_labels(conn, candidates, reason="policy", retrieval=False)

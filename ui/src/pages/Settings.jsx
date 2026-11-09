@@ -8,6 +8,7 @@ import ModelSettings from '../components/ModelSettings.jsx'
 import DataSettings from '../components/DataSettings.jsx'
 import CategorySettings from '../components/CategorySettings.jsx'
 import UserRules from '../components/UserRules.jsx'
+import ReviewPolicies from '../components/ReviewPolicies.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -336,6 +337,7 @@ export default function Settings() {
           {tab === 'rules' && (
             <div className="space-y-8">
               <UserRules />
+              <ReviewPolicies />
               <LearnedRules />
             </div>
           )}

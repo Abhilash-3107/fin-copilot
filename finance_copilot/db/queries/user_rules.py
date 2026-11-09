@@ -11,6 +11,7 @@ import sqlite3
 
 import ulid
 
+from finance_copilot.db.queries.categories import CategoryError, require_category_ids
 from finance_copilot.models.annotation import AnnotationCreate
 from finance_copilot.pipeline.rules import _pattern_matches, match_view
 
@@ -31,7 +32,7 @@ _RULE_SELECT = """
 """
 
 
-class UserRuleError(ValueError):
+class UserRuleError(CategoryError):
     """A rule the taxonomy can't accept (unknown category, empty pattern)."""
 
 
@@ -40,17 +41,6 @@ def _clean_pattern(pattern: str) -> str:
     if not cleaned:
         raise UserRuleError("A rule needs a word or phrase to match")
     return cleaned
-
-
-def _resolve(conn: sqlite3.Connection, category: str, subcategory: str | None) -> tuple[str, str | None]:
-    from finance_copilot.db.queries.categories import resolve_category_ids
-
-    category_id, subcategory_id = resolve_category_ids(conn, category, subcategory)
-    if category_id is None:
-        raise UserRuleError(f"Unknown category: {category}")
-    if subcategory and subcategory_id is None:
-        raise UserRuleError(f"Unknown subcategory under {category}: {subcategory}")
-    return category_id, subcategory_id
 
 
 def list_user_rules(conn: sqlite3.Connection, enabled_only: bool = False) -> list[dict]:
@@ -79,7 +69,7 @@ def create_user_rule(
 ) -> dict:
     """Caller commits."""
     pattern = _clean_pattern(pattern)
-    category_id, subcategory_id = _resolve(conn, category, subcategory)
+    category_id, subcategory_id = require_category_ids(conn, category, subcategory)
     rule_id = str(ulid.ULID())
     conn.execute(
         "INSERT INTO user_rules (id, pattern, category_id, subcategory_id, merchant) VALUES (?, ?, ?, ?, ?)",
@@ -100,7 +90,7 @@ def update_user_rule(conn: sqlite3.Connection, rule_id: str, changes: dict) -> d
         sets.append("pattern = ?")
         params.append(_clean_pattern(changes["pattern"]))
     if "category" in changes:
-        category_id, subcategory_id = _resolve(conn, changes["category"], changes.get("subcategory"))
+        category_id, subcategory_id = require_category_ids(conn, changes["category"], changes.get("subcategory"))
         sets += ["category_id = ?", "subcategory_id = ?"]
         params += [category_id, subcategory_id]
     if "merchant" in changes:
@@ -123,9 +113,10 @@ def delete_user_rule(conn: sqlite3.Connection, rule_id: str) -> bool:
 
 
 def _haystack(txn: dict) -> str:
-    # The same view as the built-in rules: for UPI lines the payee and note,
-    # never the bank prefix or reference.
-    return match_view(txn).haystack(["raw_description", "upi_note"])
+    # The same view as the built-in rules (for UPI lines the payee and note,
+    # never the bank prefix or reference), plus the VPA a user may key a rule on.
+    view = match_view(txn)
+    return f"{view.haystack(['raw_description', 'upi_note'])} {view.vpa}"
 
 
 def match_user_rule(rules: list[dict], txn: dict) -> dict | None:
@@ -181,7 +172,7 @@ def preview_rule(
     protected   labelled by a human (manual/imported), left alone
     """
     pattern = _clean_pattern(pattern)
-    _resolve(conn, category, subcategory)
+    require_category_ids(conn, category, subcategory)
     rows = _matching_rows(conn, pattern)
     counts = {"matches": len(rows), "relabel": 0, "unlabeled": 0, "unchanged": 0, "protected": 0}
     for r in rows:

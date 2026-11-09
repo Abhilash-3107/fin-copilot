@@ -56,6 +56,7 @@ class MatchView:
     note: str
     payee: str | None            # parsed payee as printed, UPI lines only
     payee_prefixes: frozenset[str]  # compacted leading words: 'urban', 'urbancompany', ...
+    vpa: str                     # the payee's UPI handle, when the line carries one
 
     def haystack(self, fields: list[str]) -> str:
         return " ".join({"raw_description": self.description, "upi_note": self.note}[f] for f in fields)
@@ -68,9 +69,12 @@ def match_view(txn: dict) -> MatchView:
         note = strip_payment_app(parsed.note) or ""
         words = [_compact(w) for w in parsed.counterparty.split()]
         prefixes = frozenset("".join(words[: i + 1]) for i in range(len(words)))
-        return MatchView(f"{parsed.counterparty} {note}".strip().lower(), note.lower(), parsed.counterparty, prefixes)
+        return MatchView(
+            f"{parsed.counterparty} {note}".strip().lower(), note.lower(), parsed.counterparty, prefixes,
+            (parsed.vpa or "").lower(),
+        )
     note = json.loads(txn["upi_meta"])["note"] or "" if txn.get("upi_meta") else ""
-    return MatchView(raw.lower(), note.lower(), None, frozenset())
+    return MatchView(raw.lower(), note.lower(), None, frozenset(), "")
 
 
 @dataclass(frozen=True)
