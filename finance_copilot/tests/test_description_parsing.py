@@ -296,3 +296,37 @@ class TestFormatWarning:
         _ingest(conn, "a", "UPI/OBEROIFC tucks/YESB/125146338066/UPI")
         stmt = Statement(id="s1", bank_name="test", parser_version="1", statement_month="2026-06")
         assert check_description_formats(conn, stmt) == []
+
+
+class TestBalanceLabelLeak:
+    """The statement's balance label must not end up in a transaction description."""
+
+    @pytest.mark.parametrize(("raw", "clean"), [
+        ("UPI/ZOMATO/122406278840/UPI Closing Balance", "UPI/ZOMATO/122406278840/UPI"),
+        ("UPI/RAVI KUMAR SHA/124007205535/self\nClosing Balance", "UPI/RAVI KUMAR SHA/124007205535/self"),
+        ("Int.Pd:3250508074:01-01-2026 to 31-03-2026 Closing Balance",
+         "Int.Pd:3250508074:01-01-2026 to 31-03-2026"),
+        ("UPI/SWIGGY/122406278841/UPI Opening Balance", "UPI/SWIGGY/122406278841/UPI"),
+        # A standalone balance row is ingest's balance artifact, left untouched.
+        ("Closing Balance", "Closing Balance"),
+    ])
+    def test_kotak_parser_strips_trailing_label(self, raw, clean):
+        from finance_copilot.parsers.banks.kotak import KotakParser
+
+        assert KotakParser()._clean_description(raw) == clean
+
+    def test_migration_repairs_stored_rows(self):
+        conn = _conn()
+        conn.executemany(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES (?, 's1', '2026-05-31', 1, 'debit', ?)",
+            [("a", "UPI/ZOMATO/122406278840/UPI Closing Balance"),
+             ("b", "Closing Balance"),
+             ("c", "UPI/SWIGGY/122406278841/UPI")],
+        )
+        sql = (Path(__file__).parents[1] / "db" / "migrations"
+               / "027_strip_balance_label_from_descriptions.sql").read_text()
+        conn.executescript(sql)
+        got = dict(conn.execute("SELECT id, raw_description FROM transactions").fetchall())
+        assert got == {"a": "UPI/ZOMATO/122406278840/UPI", "b": "Closing Balance",
+                       "c": "UPI/SWIGGY/122406278841/UPI"}
