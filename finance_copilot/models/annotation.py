@@ -16,6 +16,8 @@ class TraceNeighbour(BaseModel):
     source: str | None = None
     distance: float
     similarity: float  # 1.0 - distance
+    # Below rag_similarity_floor: listed for transparency, not counted as evidence.
+    below_floor: bool = False
 
 
 class TraceExample(BaseModel):

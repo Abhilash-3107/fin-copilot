@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from finance_copilot.config import settings
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.annotations import get_annotation_by_transaction
 from finance_copilot.pipeline.rules import apply_rules
@@ -1361,6 +1362,82 @@ class TestRAGDirectAmbiguity:
         # All agree, no different category → both factors = 1.0
         assert abs(ann["confidence"] - round(0.95, 4)) < 1e-4
 
+    def _run(self, target_id, description, similar):
+        from finance_copilot.db.queries.annotations import get_annotation_by_transaction
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        _insert_txn(self.conn, target_id, description)
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", return_value=[0.1] * 768), \
+             patch("finance_copilot.pipeline.annotate.find_similar", return_value=similar):
+            auto_annotate(self.conn, transaction_ids=[target_id])
+        ann = get_annotation_by_transaction(self.conn, target_id)
+        return ann, json.loads(ann["reasoning"])
+
+    def test_far_neighbours_are_not_dissenting_evidence(self):
+        """A taught merchant at similarity 1.0 auto-accepts even when top-K is padded
+        with unrelated merchants below the similarity floor (the PVR case)."""
+        self._insert_donor("pvr_old", "UPI/PVR INOX Limite/117042580041/UPI", "Entertainment", source="manual")
+        self._insert_donor("air", "UPI/AIR INDIA LIMIT/120314690658/Pay", "Travel")
+        self._insert_donor("rapido", "UPI/Rapido/120853547409/UPI", "Transport")
+        ann, trace = self._run("pvr_new", "UPI/PVR INOX Limite/121440823398/UPI", [
+            {"transaction_id": "pvr_old", "distance": 0.0},
+            {"transaction_id": "air", "distance": 0.68},
+            {"transaction_id": "rapido", "distance": 0.72},
+        ])
+        assert ann["source"] == "rag_direct"
+        assert ann["confidence"] == 1.0
+        assert trace["agreement_factor"] == 1.0
+        assert [n["below_floor"] for n in trace["neighbours"]] == [False, True, True]
+
+    def test_near_different_category_still_penalizes(self):
+        """A dissenting donor above the floor is real evidence and still counts."""
+        self._insert_donor("a", "merchant alpha", "Shopping", source="manual")
+        self._insert_donor("b", "merchant alpha two", "Entertainment", source="manual")
+        ann, _ = self._run("t", "merchant alpha three", [
+            {"transaction_id": "a", "distance": 0.0},
+            {"transaction_id": "b", "distance": 0.2},  # similarity 0.80 >= floor
+        ])
+        assert ann["confidence"] < 1.0
+
+    def test_machine_neighbour_cannot_veto_at_full_weight(self):
+        self._insert_donor("human", "merchant beta", "Shopping", source="manual")
+        self._insert_donor("guess", "merchant beta llm", "Travel", source="llm")
+        ann, trace = self._run("t", "merchant beta again", [
+            {"transaction_id": "human", "distance": 0.0},
+            {"transaction_id": "guess", "distance": 0.2},
+        ])
+        # Weighted agreement: 1.0 / (1.0 + rag_machine_donor_weight).
+        expected = (1.0 / (1.0 + settings.rag_machine_donor_weight)) ** settings.rag_agreement_exponent
+        assert abs(trace["agreement_factor"] - round(expected, 4)) < 1e-4
+
+    def test_conflicting_verified_history_goes_to_a_human(self):
+        """Exact identity is not enough when the user labels the payee inconsistently."""
+        desc = "UPI/RAVI KUMAR SHA/{}/UPI"
+        self._insert_donor("r1", desc.format("111111111111"), "Food & Dining", source="manual")
+        self._insert_donor("r2", desc.format("222222222222"), "Housing", source="manual")
+        self._insert_donor("r3", desc.format("333333333333"), "Food & Dining", source="manual")
+        # History is strictly causal (same-day labels are invisible), so date it earlier.
+        self.conn.execute("UPDATE transactions SET txn_date = '2026-01-01' WHERE id IN ('r1','r2','r3')")
+        self.conn.commit()
+        ann, trace = self._run("r4", desc.format("444444444444"), [
+            {"transaction_id": "r1", "distance": 0.0},
+        ])
+        assert ann["source"] == "rag_direct"
+        assert ann["confidence"] <= settings.rag_defer_confidence_cap
+        assert "counterparty_conflict" in trace["caps_applied"]
+
+    def test_refund_from_the_payee_is_not_a_conflict(self):
+        desc = "UPI/Practo technolo/{}/UPI"
+        self._insert_donor("p1", desc.format("111111111111"), "Health", source="manual")
+        self._insert_donor("p2", desc.format("222222222222"), "Health", source="manual")
+        self._insert_donor("rf", desc.format("333333333333"), "Income", source="manual")
+        self.conn.execute("UPDATE transactions SET txn_date = '2026-01-01' WHERE id IN ('p1','p2','rf')")
+        self.conn.execute("UPDATE transactions SET debit_credit = 'credit' WHERE id = 'rf'")
+        self.conn.commit()
+        ann, trace = self._run("p3", desc.format("444444444444"), [{"transaction_id": "p1", "distance": 0.0}])
+        assert ann["confidence"] == 1.0
+        assert trace["caps_applied"] == []
+
 
 # ---------------------------------------------------------------------------
 # UPI metadata extraction + known-person matching
@@ -2135,11 +2212,12 @@ class TestLearnedRules:
         return conn
 
     def _add(self, conn, txn_id, key, category, source="manual", subcategory=None,
-             merchant=None, tags="", txn_date="2026-01-10", annotated_at="2026-01-10"):
+             merchant=None, tags="", txn_date="2026-01-10", annotated_at="2026-01-10",
+             debit_credit="debit"):
         conn.execute(
             "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
-            "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, ?)",
-            (txn_id, txn_date, f"UPI/{key}/1/UPI", key),
+            "VALUES (?, 'stmt_01', ?, 100.0, ?, ?, ?)",
+            (txn_id, txn_date, debit_credit, f"UPI/{key}/1/UPI", key),
         )
         conn.execute(
             "INSERT INTO annotations (id, transaction_id, category, subcategory, merchant, tags, confidence, source, annotated_at) "
@@ -2183,6 +2261,20 @@ class TestLearnedRules:
         assert restore_learned_rule(conn, "SWIGGY") is False
         conn.commit()
         assert lookup_learned_rule(conn, "SWIGGY") is not None
+
+    def test_refund_neither_breaks_nor_receives_the_payment_rule(self):
+        """A rule is per counterparty and direction: a merchant's refund credit
+        doesn't dilute its payment rule, and the payment rule never labels refunds."""
+        from finance_copilot.db.queries.learned_rules import list_learned_rules, lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"p{i}", "PRACTO TECHNOLO", "Health")
+        self._add(conn, "r0", "PRACTO TECHNOLO", "Income", debit_credit="credit")
+        debit_rule = lookup_learned_rule(conn, "PRACTO TECHNOLO", direction="debit")
+        assert debit_rule is not None and debit_rule.category == "Health" and debit_rule.purity == 1.0
+        assert lookup_learned_rule(conn, "PRACTO TECHNOLO", direction="credit") is None
+        listed = list_learned_rules(conn)
+        assert [(r.counterparty_key, r.direction) for r in listed] == [("PRACTO TECHNOLO", "debit")]
 
     def test_below_support_not_promoted(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule

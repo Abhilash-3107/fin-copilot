@@ -33,7 +33,7 @@ from finance_copilot.config import settings
 from finance_copilot.db.queries.common import parse_string_list
 
 # Only labels a human authored or vouched for may promote a merchant rule.
-_VERIFIED_SOURCES = ("manual", "imported")
+VERIFIED_SOURCES = ("manual", "imported")
 
 
 def is_suppressed(conn: sqlite3.Connection, counterparty_key: str) -> bool:
@@ -78,6 +78,10 @@ class LearnedRule:
     support: int          # verified labels agreeing on `category`
     total: int            # verified labels for this counterparty (any category)
     purity: float         # support / total
+    # 'debit' / 'credit': a rule is per counterparty *and* direction. Payments to
+    # a merchant and refunds from it are different questions (Health vs Refund),
+    # and mixing them would both break purity and mislabel refunds.
+    direction: str | None = None
 
 
 def _representative(rows: list[dict], category: str) -> dict:
@@ -90,7 +94,7 @@ def _representative(rows: list[dict], category: str) -> dict:
     return max(of_cat, key=lambda r: r["annotated_at"] or "")
 
 
-def _promote(counterparty_key: str, rows: list[dict]) -> LearnedRule | None:
+def _promote(counterparty_key: str, rows: list[dict], direction: str | None = None) -> LearnedRule | None:
     """Apply the support+purity promotion bar to one counterparty's verified rows.
 
     The single source of truth for "is this an established rule": both the
@@ -118,6 +122,7 @@ def _promote(counterparty_key: str, rows: list[dict]) -> LearnedRule | None:
         support=support,
         total=total,
         purity=round(purity, 4),
+        direction=direction,
     )
 
 
@@ -127,6 +132,7 @@ def lookup_learned_rule(
     *,
     before_txn_date: str | None = None,
     exclude_transaction_id: str | None = None,
+    direction: str | None = None,
 ) -> LearnedRule | None:
     """Return the established merchant rule for a counterparty, or None.
 
@@ -152,7 +158,7 @@ def lookup_learned_rule(
     if is_suppressed(conn, counterparty_key):
         return None
 
-    placeholders = ",".join("?" * len(_VERIFIED_SOURCES))
+    placeholders = ",".join("?" * len(VERIFIED_SOURCES))
     rows = [
         dict(r)
         for r in conn.execute(
@@ -165,17 +171,19 @@ def lookup_learned_rule(
               AND a.source IN ({placeholders})
               AND (? IS NULL OR t.txn_date < ?)
               AND (? IS NULL OR t.id != ?)
+              AND (? IS NULL OR t.debit_credit = ?)
             """,
             (
                 counterparty_key,
-                *_VERIFIED_SOURCES,
+                *VERIFIED_SOURCES,
                 before_txn_date, before_txn_date,
                 exclude_transaction_id, exclude_transaction_id,
+                direction, direction,
             ),
         ).fetchall()
     ]
 
-    return _promote(counterparty_key, rows)
+    return _promote(counterparty_key, rows, direction)
 
 
 def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
@@ -187,10 +195,10 @@ def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
     the same _promote() the per-key lookup uses, so the list can never diverge
     from what the pipeline would actually fire.
     """
-    placeholders = ",".join("?" * len(_VERIFIED_SOURCES))
+    placeholders = ",".join("?" * len(VERIFIED_SOURCES))
     rows = conn.execute(
         f"""
-        SELECT t.counterparty_key AS counterparty_key,
+        SELECT t.counterparty_key AS counterparty_key, t.debit_credit,
                a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
@@ -198,7 +206,7 @@ def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
           AND a.category IS NOT NULL
           AND a.source IN ({placeholders})
         """,
-        _VERIFIED_SOURCES,
+        VERIFIED_SOURCES,
     ).fetchall()
 
     suppressed = {
@@ -206,13 +214,17 @@ def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
         for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions").fetchall()
     }
 
-    by_key: dict[str, list[dict]] = {}
+    by_key: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
         key = r["counterparty_key"]
         if key in suppressed:
             continue
-        by_key.setdefault(key, []).append(dict(r))
+        by_key.setdefault((key, r["debit_credit"]), []).append(dict(r))
 
-    out = [rule for key, key_rows in by_key.items() if (rule := _promote(key, key_rows)) is not None]
-    out.sort(key=lambda r: (-r.support, r.counterparty_key))
+    out = [
+        rule
+        for (key, direction), key_rows in by_key.items()
+        if (rule := _promote(key, key_rows, direction)) is not None
+    ]
+    out.sort(key=lambda r: (-r.support, r.counterparty_key, r.direction or ""))
     return out

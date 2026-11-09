@@ -610,6 +610,7 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
             "support": r.support,
             "total": r.total,
             "purity": r.purity,
+            "direction": r.direction,
         }
         for r in list_learned_rules(conn)
     ]

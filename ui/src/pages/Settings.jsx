@@ -30,13 +30,13 @@ function Toggle({ checked, disabled, onChange }) {
   )
 }
 
-// Prefer the human merchant, but fall back to the raw counterparty key when the
-// merchant is empty or a mangled one-character fragment (4.21) - a lone "U" or
-// "3" reads as broken, whereas the raw key ("U OBEROIFC TUCKSH") is at least
-// recognizable.
+// Prefer the human merchant, but fall back to the counterparty key when the
+// merchant is empty, a mangled one-character fragment (4.21) - a lone "U" or
+// "3" reads as broken - or a whole bank line ("UPI/NAME/1207.../self") that
+// was saved as the merchant. The key is at least recognizable.
 function ruleDisplayName(r) {
   const m = (r.merchant || '').trim()
-  return m.length > 1 ? m : r.counterparty_key
+  return m.length > 1 && !m.includes('/') ? m : r.counterparty_key
 }
 
 function LearnedRules() {
@@ -95,7 +95,7 @@ function LearnedRules() {
             </thead>
             <tbody className="divide-y divide-[#2d3148]">
               {rules.map(r => (
-                <tr key={r.counterparty_key}>
+                <tr key={`${r.counterparty_key}|${r.direction ?? ''}`}>
                   <td className="px-5 py-3 text-[#e2e8f0]">
                     <Link
                       to={txnFilterPath(
@@ -108,12 +108,15 @@ function LearnedRules() {
                     {ruleDisplayName(r) !== r.counterparty_key && (
                       <span className="text-[#64748b] ml-2 text-xs">{r.counterparty_key}</span>
                     )}
+                    {r.direction === 'credit' && (
+                      <span className="text-[#64748b] ml-2 text-xs">money in</span>
+                    )}
                   </td>
-                  <td className="px-5 py-3 text-[#cbd5e1]">
+                  <td className="px-5 py-3 text-[#cbd5e1] whitespace-nowrap">
                     {r.category}
                     {r.subcategory && <span className="text-[#64748b]"> › {r.subcategory}</span>}
                   </td>
-                  <td className="px-5 py-3 text-right text-[#64748b] tabular-nums">
+                  <td className="px-5 py-3 text-right text-[#64748b] tabular-nums whitespace-nowrap">
                     {Math.round(r.purity * 100)}%
                     <span className="ml-1.5 text-[#475569]">({r.support}/{r.total})</span>
                   </td>

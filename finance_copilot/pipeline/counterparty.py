@@ -205,7 +205,7 @@ def counterparty_history(
     """
     rows = conn.execute(
         """
-        SELECT t.id AS transaction_id, t.txn_date, t.raw_description,
+        SELECT t.id AS transaction_id, t.txn_date, t.debit_credit,
                a.category, a.source
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
@@ -221,6 +221,7 @@ def counterparty_history(
         {
             "transaction_id": row["transaction_id"],
             "txn_date": row["txn_date"],
+            "debit_credit": row["debit_credit"],
             "category": row["category"],
             "source": row["source"],
         }
