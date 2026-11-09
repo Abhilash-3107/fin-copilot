@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from finance_copilot.config import settings
 from finance_copilot.models.transaction import TxnRow
-from finance_copilot.parsers.description import describe_for_llm, is_known_shape, parse_description
+from finance_copilot.parsers.description import is_known_shape, parse_description
+from finance_copilot.pipeline.merchant_catalog import strip_payment_app
 
 logger = logging.getLogger(__name__)
 
@@ -199,34 +200,42 @@ _SYSTEM_PROMPT = (
     "- 0.70: Reasonable guess but multiple categories are plausible\n"
     "- 0.50: Weak signal, essentially guessing\n"
     "Be conservative — only use 0.9+ when you are very certain.\n"
-    "If you do not recognise the payee, do not guess a business type from its name: "
-    "choose the catch-all category (Miscellaneous or Uncategorized, whichever is "
-    "listed) with low confidence. A payee that is a person's name is a "
-    "person, not a business. Use Self Transfers only when the examples show this "
-    "payee as a self transfer."
+    "A payee that is a person's name is a person, not a business. Use Self "
+    "Transfers only when the examples show this payee as a self transfer."
 )
 
 
-def _llm_view(raw: str | None, debit_credit: str | None, upi_meta) -> tuple[str, str]:
-    """(description, note) as the model sees them. Understood UPI lines are
-    rewritten from the parse (parsers/description.describe_for_llm); other lines
-    keep the raw text plus the stored UPI note."""
-    if is_known_shape(parse_description(raw)):
-        description, note = describe_for_llm(raw, debit_credit)
-        return description, note or ""
-    note = ""
-    if upi_meta:
-        try:
-            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
-            note = str(meta.get("note") or "")
-        except Exception:
-            pass
-    return raw or "", note
+def _llm_view(raw: str, debit_credit: str, stored_note: str | None) -> tuple[str, str | None]:
+    """(description, note) as the model sees a transaction line.
+
+    An understood UPI line becomes 'UPI payment to <payee>' with its cleaned
+    note (boilerplate, the VPA and the ref already removed by the parser, and
+    any payment-app phrase stripped): the reference, the IFSC bank prefix
+    ('HDFC', read as a credit card) and the value date are encoding, and a
+    small model takes them as facts. Other lines are shown verbatim with the
+    note stored for them.
+    """
+    parsed = parse_description(raw, settings.upi_noise_keywords)
+    if not is_known_shape(parsed) or not parsed.counterparty:
+        return raw, stored_note
+    if parsed.rail == "upi_reversal":
+        description = f"UPI reversal (refund) from {parsed.counterparty}"
+    elif debit_credit == "credit":
+        description = f"UPI payment from {parsed.counterparty}"
+    else:
+        description = f"UPI payment to {parsed.counterparty}"
+    return description, strip_payment_app(parsed.note)
+
+
+def _catch_all(category_list: list[str]) -> str:
+    """The category this install uses for "don't know"."""
+    return "Miscellaneous" if "Miscellaneous" in category_list else "Uncategorized"
 
 
 def _build_user_prompt(txn: TxnRow, category_list: list[str]) -> str:
     categories_text = "\n".join(f"  - {c}" for c in category_list)
-    description, upi_note = _llm_view(txn.get("raw_description"), txn.get("debit_credit"), txn.get("upi_meta"))
+    stored_note = json.loads(txn["upi_meta"])["note"] if txn.get("upi_meta") else None
+    description, upi_note = _llm_view(txn["raw_description"], txn["debit_credit"], stored_note)
 
     lines = [
         f"Date: {txn.get('txn_date', '')}",
@@ -241,6 +250,10 @@ def _build_user_prompt(txn: TxnRow, category_list: list[str]) -> str:
     lines.append("Available categories:")
     lines.append(categories_text)
     lines.append("")
+    lines.append(
+        "If you do not recognise the payee, do not guess a business type from its name: "
+        f"answer {_catch_all(top_level_categories(category_list))} with low confidence."
+    )
     lines.append("Respond with JSON only.")
 
     return "\n".join(lines)
@@ -266,9 +279,7 @@ def _build_fewshot_user_prompt(
 
     for i, ex in enumerate(similar_examples, 1):
         lines = [f"Example {i}:"]
-        ex_description, ex_note = _llm_view(ex.get("raw_description"), ex.get("debit_credit"), None)
-        if ex_note is None and not is_known_shape(parse_description(ex.get("raw_description"))):
-            ex_note = ex.get("upi_note") or None
+        ex_description, ex_note = _llm_view(ex["raw_description"], ex["debit_credit"], ex["upi_note"])
         lines.append(f"  Date: {ex.get('txn_date', '')}")
         lines.append(f"  Description: {ex_description}")
         if ex_note:

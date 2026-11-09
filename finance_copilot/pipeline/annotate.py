@@ -472,7 +472,7 @@ def auto_annotate(
                     embed_text=ctx.get("embed_text"),
                     **_llm_telemetry_fields(llm_result),
                 )
-                _apply_fact_gate(conn, txn, ann, trace)
+                _apply_fact_gate(conn, txn, ann, trace, txn["txn_date"])
                 _persist(ann, trace)
                 llm_annotated += 1
                 # Compare the stored (dampened) confidence — it decides review-queue membership
@@ -845,7 +845,7 @@ def _try_rag_annotation(
                 skips=skips,
                 embed_text=embed_text,
             )
-            return AnnotationCreate(
+            ann = AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=donor_ann.get("merchant"),
                 category=top_category,
@@ -853,7 +853,10 @@ def _try_rag_annotation(
                 tags=parse_string_list(donor_ann.get("tags")),
                 confidence=confidence,
                 source="rag_direct",
-            ), trace
+            )
+            # A neighbour's Self Transfer is about the neighbour's payee.
+            _apply_fact_gate(conn, txn, ann, trace, as_of)
+            return ann, trace
         elif donor_ann:
             logger.debug(
                 "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
@@ -1006,7 +1009,7 @@ def _try_rag_annotation(
                 confidence=confidence,
                 source="rag_prompted",
             )
-            _apply_fact_gate(conn, txn, ann, trace)
+            _apply_fact_gate(conn, txn, ann, trace, as_of)
             return ann, trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
         skips.append("rag_prompted: llm returned nothing")
@@ -1016,55 +1019,42 @@ def _try_rag_annotation(
     return None, None
 
 
-def self_transfer_verified(conn: sqlite3.Connection, txn: TxnRow) -> bool:
-    """Whether the user has stated this payee is themselves: a People entry with
-    relationship 'self' that matches it, or their own verified labels for it
-    being mostly Self Transfers."""
-    vpa = None
-    try:
-        meta = json.loads(txn["upi_meta"]) if isinstance(txn.get("upi_meta"), str) else (txn.get("upi_meta") or {})
-        vpa = (meta.get("vpa") or "").lower() or None
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
-    key = counterparty_identity(conn, txn)
-    desc = (txn.get("raw_description") or "").lower()
-    for p in list_people(conn):
-        if is_self_relationship(p.get("relationship")) and p.get("upi"):
-            if person_token_matches(p["upi"].lower(), vpa, key, desc):
-                return True
-    if key is None:
-        return False
-    verified = [
-        h["category"] for h in counterparty_history(conn, key, exclude_transaction_id=txn.get("id"))
-        if h["source"] in _VERIFIED_SOURCES
-    ]
-    return bool(verified) and Counter(verified).most_common(1)[0][0] == "Self Transfers"
-
-
 def gate_fact_categories(
-    conn: sqlite3.Connection, txn: TxnRow, category: str, subcategory: str | None, confidence: float
+    conn: sqlite3.Connection, txn: TxnRow, category: str, subcategory: str | None, confidence: float,
+    *, as_of: str | None,
 ) -> tuple[str, str | None, float, str | None]:
-    """Keep an AI-produced category only when the facts it needs are known.
+    """Keep a retrieved or model-produced category only when the facts it needs
+    are known.
 
-    Self Transfers means "the payee is me", which no model can infer from a name;
-    an unverified one would silently drop real spending from every insight. It is
-    rewritten to Transfers > Peer Transfer and sent to review. Returns
-    (category, subcategory, confidence, cap_name or None).
+    Self Transfers means "the payee is me". A name (to the LLM) or a nearby
+    vector (to retrieval) can't establish that, and an unverified one silently
+    drops real spending from every insight. It stands only when the user's own
+    verified labels for this payee and direction (as of as_of, like every other
+    history read) are mostly Self Transfers; a People entry marked "self" is
+    handled by the person rule before any model runs. Otherwise it becomes
+    Transfers > Peer Transfer for review. Returns (category, subcategory,
+    confidence, cap or None).
     """
-    if category != "Self Transfers" or self_transfer_verified(conn, txn):
+    if category != "Self Transfers":
+        return category, subcategory, confidence, None
+    stats = label_stats(verified_labels(
+        conn, txn["counterparty_key"], txn["debit_credit"], before_txn_date=as_of, exclude_transaction_id=txn["id"],
+    )) if txn["counterparty_key"] else None
+    if stats is not None and stats.category == "Self Transfers" and stats.purity > 0.5:
         return category, subcategory, confidence, None
     return "Transfers", "Peer Transfer", min(confidence, settings.rag_defer_confidence_cap), "self_transfer_unverified"
 
 
-def _apply_fact_gate(conn: sqlite3.Connection, txn: TxnRow, ann: AnnotationCreate, trace: ReasoningTrace) -> None:
+def _apply_fact_gate(
+    conn: sqlite3.Connection, txn: TxnRow, ann: AnnotationCreate, trace: ReasoningTrace, as_of: str | None
+) -> None:
     category, subcategory, confidence, cap = gate_fact_categories(
-        conn, txn, ann.category, ann.subcategory, ann.confidence
+        conn, txn, ann.category, ann.subcategory, ann.confidence, as_of=as_of
     )
-    if cap is None:
-        return
-    ann.category, ann.subcategory, ann.confidence = category, subcategory, confidence
-    trace.final_confidence = confidence
-    trace.caps_applied.append(cap)
+    if cap is not None:
+        ann.category, ann.subcategory, ann.confidence = category, subcategory, confidence
+        trace.final_confidence = confidence
+        trace.caps_applied.append(cap)
 
 
 def _majority_category(categories: list[str]) -> tuple[str | None, int]:

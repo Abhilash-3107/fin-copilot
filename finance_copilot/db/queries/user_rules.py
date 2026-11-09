@@ -12,7 +12,7 @@ import sqlite3
 import ulid
 
 from finance_copilot.models.annotation import AnnotationCreate
-from finance_copilot.pipeline.rules import _extract_upi_note, _pattern_matches
+from finance_copilot.pipeline.rules import _pattern_matches, match_view
 
 # A user rule is deliberate, so it auto-accepts like the built-in rules do.
 USER_RULE_CONFIDENCE = 0.95
@@ -123,7 +123,9 @@ def delete_user_rule(conn: sqlite3.Connection, rule_id: str) -> bool:
 
 
 def _haystack(txn: dict) -> str:
-    return f"{(txn.get('raw_description') or '').lower()} {_extract_upi_note(txn).lower()}"
+    # The same view as the built-in rules: for UPI lines the payee and note,
+    # never the bank prefix or reference.
+    return match_view(txn).haystack(["raw_description", "upi_note"])
 
 
 def match_user_rule(rules: list[dict], txn: dict) -> dict | None:

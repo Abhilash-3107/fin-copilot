@@ -1,10 +1,12 @@
 """Built-in merchant knowledge: who a payee is and what spending it is.
 
-Data, not logic: pipeline/rules.py does the matching. Patterns are matched
-case-insensitively against the parsed payee name and UPI note (word-bounded),
-and patterns of 5+ letters/digits also match a payee name with its spaces and
-punctuation removed, by prefix, so 'URBANCOMPANY' hits 'urban company' and a
-truncated 'ROPPEN TRANSPOR' hits 'roppen transportation'.
+Data, not logic: pipeline/rules.py does the matching. Patterns are whole words
+or phrases, matched case-insensitively against the parsed payee and UPI note.
+For a rule that names a merchant, a multi-word pattern also matches a payee
+whose leading words run it together ('URBANCOMPANY' ~ 'urban company'), and a
+payee cut at the bank's print width matches the full pattern ('ROPPEN
+TRANSPOR' ~ 'roppen transportation'). Keyword rules without a merchant
+('car loan', 'salary') never match that loosely.
 
 UPI shows the registered legal entity, not the brand, so each merchant lists
 both (Rapido is 'Roppen Transportation', Zomato's parent is 'Eternal'). Every
@@ -16,6 +18,7 @@ own history (learned rules, RAG) rather than guessed.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -33,7 +36,7 @@ class DisambiguationRule:
 
 @dataclass
 class MerchantRule:
-    patterns: list[str]          # case-insensitive substrings to search for
+    patterns: list[str]          # whole words or phrases, case-insensitive
     category: str
     subcategory: str | None = None
     merchant: str | None = None  # canonical merchant name
@@ -102,7 +105,7 @@ MERCHANT_RULES: list[MerchantRule] = [
     MerchantRule(["hotstar", "disney+", "disney plus"], "Entertainment", "Movies & OTT", "Hotstar", ["ott"]),
     MerchantRule(["spotify"], "Entertainment", "Movies & OTT", "Spotify", ["music"]),
     MerchantRule(["youtube premium", "youtube music"], "Entertainment", "Movies & OTT", "YouTube Premium", ["ott"]),
-    MerchantRule(["amazon prime", "prime video"], "Entertainment", "Movies & OTT", "Amazon Prime", ["ott"]),
+    MerchantRule(["prime video"], "Entertainment", "Movies & OTT", "Amazon Prime", ["ott"]),
     MerchantRule(["sonyliv", "sony liv"], "Entertainment", "Movies & OTT", "SonyLIV", ["ott"]),
     MerchantRule(["zee5"], "Entertainment", "Movies & OTT", "ZEE5", ["ott"]),
     MerchantRule(["bookmyshow", "bigtree entertainment"], "Entertainment", "Events & Concerts", "BookMyShow", ["entertainment"]),
@@ -168,7 +171,7 @@ DISAMBIGUATION_RULES: list[DisambiguationRule] = [
     # Amazon Prime Video → Entertainment (overrides Amazon → Shopping)
     DisambiguationRule(
         base_patterns=["amazon", "amzn"],
-        override_patterns=["prime video", "primevideo", "prime membership"],
+        override_patterns=["amazon prime", "prime video", "primevideo", "prime membership"],
         category="Entertainment", subcategory="Movies & OTT",
         merchant="Amazon Prime", tags=["ott"],
     ),
@@ -180,3 +183,34 @@ DISAMBIGUATION_RULES: list[DisambiguationRule] = [
         merchant="AWS", tags=["business", "cloud"],
     ),
 ]
+
+
+# Which directions a category can describe. Money in from a merchant is a
+# refund, not spending there; money out to someone is not income. Categories
+# not listed are spending: debits only.
+CATEGORY_DIRECTIONS: dict[str, frozenset[str]] = {
+    "Income": frozenset({"credit"}),
+    "Transfers": frozenset({"debit", "credit"}),
+    "Self Transfers": frozenset({"debit", "credit"}),
+    "Investments": frozenset({"debit", "credit"}),
+}
+SPENDING = frozenset({"debit"})
+
+
+# Payment apps and gateways named in a UPI note as the *channel* ('Pay To
+# BharatPe', 'Pay via Razorpay', 'Verified Paytm'), never the merchant. Only the
+# phrase is removed; whatever else the note says stays ('Swiggy order PhonePe').
+_PAYMENT_APP = re.compile(
+    r"(?:pay(?:ment)?\s*(?:to|via)\s*|verified\s+)?"
+    r"(?:razorpa\w*|bharatpe|phonepe|paytm|cashfree|ccavenue|pine\s*labs|billdesk|juspay|easebuzz"
+    r"|instamojo|mswipe|payu(?![a-z]))",
+    re.IGNORECASE,
+)
+
+
+def strip_payment_app(note: str | None) -> str | None:
+    """The note without payment-app phrasing; None when nothing else was said."""
+    if not note:
+        return None
+    rest = " ".join(_PAYMENT_APP.sub(" ", note).split())
+    return rest if re.search(r"[A-Za-z0-9]", rest) else None

@@ -84,7 +84,8 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
         category = _normalize_category(llm_result.category, category_list)
         dampening = get_calibrated_dampening(conn, "llm", category)
         category, subcategory, confidence, _cap = gate_fact_categories(
-            conn, txn, category, llm_result.subcategory, round(llm_result.confidence * dampening, 4)
+            conn, txn, category, llm_result.subcategory, round(llm_result.confidence * dampening, 4),
+            as_of=txn["txn_date"],
         )
         return {
             "stage": "llm",

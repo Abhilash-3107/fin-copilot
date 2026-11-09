@@ -63,7 +63,7 @@ def _insert_txn(
 
 class TestRuleEngine:
     def test_swiggy_matches(self):
-        txn = {"id": "t1", "raw_description": "UPI/Swiggy/payment", "upi_meta": None}
+        txn = {"id": "t1", "raw_description": "UPI/Swiggy/payment", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Food & Dining"
@@ -71,18 +71,18 @@ class TestRuleEngine:
         assert result.merchant == "Swiggy"
 
     def test_amazon_matches(self):
-        txn = {"id": "t2", "raw_description": "AMAZON PAYMENTS INDIA", "upi_meta": None}
+        txn = {"id": "t2", "raw_description": "AMAZON PAYMENTS INDIA", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Shopping"
 
     def test_unknown_returns_none(self):
-        txn = {"id": "t3", "raw_description": "Some random description XYZ", "upi_meta": None}
+        txn = {"id": "t3", "raw_description": "Some random description XYZ", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is None
 
     def test_case_insensitive(self):
-        txn = {"id": "t4", "raw_description": "ZOMATO ORDER PAYMENT", "upi_meta": None}
+        txn = {"id": "t4", "raw_description": "ZOMATO ORDER PAYMENT", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.merchant == "Zomato"
@@ -90,7 +90,7 @@ class TestRuleEngine:
     def test_upi_note_matching(self):
         txn = {
             "id": "t5",
-            "raw_description": "UPI transfer",
+            "raw_description": "UPI transfer", "debit_credit": "debit",
             "upi_meta": json.dumps({"note": "swiggy food order"}),
         }
         result = apply_rules(txn)
@@ -98,13 +98,13 @@ class TestRuleEngine:
         assert result.category == "Food & Dining"
 
     def test_confidence_is_095(self):
-        txn = {"id": "t6", "raw_description": "Netflix subscription", "upi_meta": None}
+        txn = {"id": "t6", "raw_description": "Netflix subscription", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.confidence == 0.95
 
     def test_source_is_rule(self):
-        txn = {"id": "t7", "raw_description": "Uber ride payment", "upi_meta": None}
+        txn = {"id": "t7", "raw_description": "Uber ride payment", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.source == "rule"
@@ -112,7 +112,7 @@ class TestRuleEngine:
     def test_interest_paid_matches_despite_closing_balance_text(self):
         txn = {
             "id": "t-int",
-            "raw_description": "Int.Pd:3250508074:01-01-2026 to 31-03-2026 Closing Balance",
+            "raw_description": "Int.Pd:3250508074:01-01-2026 to 31-03-2026 Closing Balance", "debit_credit": "credit",
             "upi_meta": None,
         }
         result = apply_rules(txn)
@@ -123,24 +123,24 @@ class TestRuleEngine:
     def test_opening_balance_has_no_rule(self):
         # Balance-artifact rows are folded into statement metadata at ingest and
         # never reach annotation; no rule should exist to label them as income.
-        txn = {"id": "t-ob", "raw_description": "OPENING BALANCE ...", "upi_meta": None}
+        txn = {"id": "t-ob", "raw_description": "OPENING BALANCE ...", "debit_credit": "debit", "upi_meta": None}
         assert apply_rules(txn) is None
 
     def test_irctc_maps_to_travel(self):
-        txn = {"id": "t8", "raw_description": "IRCTC ticket booking", "upi_meta": None}
+        txn = {"id": "t8", "raw_description": "IRCTC ticket booking", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Travel"
         assert result.subcategory == "Train"
 
     def test_salary_matches_raw_description(self):
-        txn = {"id": "t9", "raw_description": "SAL CREDIT ACME CORP", "upi_meta": None}
+        txn = {"id": "t9", "raw_description": "SAL CREDIT ACME CORP", "debit_credit": "credit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Income"
 
     def test_tags_populated(self):
-        txn = {"id": "t10", "raw_description": "Netflix subscription", "upi_meta": None}
+        txn = {"id": "t10", "raw_description": "Netflix subscription", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert "ott" in result.tags
@@ -162,7 +162,7 @@ class TestRuleFalsePositives:
         "PINOLA RESTAURANT BILL",             # 'pinola' must not match 'ola'
     ])
     def test_no_substring_false_positive(self, description):
-        txn = {"id": "fp", "raw_description": description, "upi_meta": None}
+        txn = {"id": "fp", "raw_description": description, "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         wrong = {"Loan EMI", "Mutual Fund SIP", "Cab & Auto", "Mobile Recharge"}
         assert result is None or result.subcategory not in wrong, (
@@ -179,7 +179,7 @@ class TestRuleFalsePositives:
         ("MMT*FLIGHT BOOKING", None),  # MakeMyTrip rule has no subcategory
     ])
     def test_word_boundary_still_matches(self, description, expected_subcategory):
-        txn = {"id": "tp", "raw_description": description, "upi_meta": None}
+        txn = {"id": "tp", "raw_description": description, "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None, f"{description!r} should match a rule"
         assert result.subcategory == expected_subcategory
@@ -935,7 +935,7 @@ class TestRagPromptedOffExample:
 
 class TestDisambiguationRules:
     def test_uber_eats_maps_to_food(self):
-        txn = {"id": "t1", "raw_description": "UPI/UBEREATS/PAYMENT", "upi_meta": None}
+        txn = {"id": "t1", "raw_description": "UPI/UBEREATS/PAYMENT", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Food & Dining"
@@ -943,47 +943,47 @@ class TestDisambiguationRules:
         assert result.merchant == "Uber Eats"
 
     def test_uber_food_in_note_maps_to_food(self):
-        txn = {"id": "t2", "raw_description": "UPI TRANSFER",
+        txn = {"id": "t2", "raw_description": "UPI TRANSFER", "debit_credit": "debit",
                "upi_meta": json.dumps({"note": "uber food order"})}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Food & Dining"
 
     def test_uber_ride_stays_transport(self):
-        txn = {"id": "t3", "raw_description": "Uber ride payment", "upi_meta": None}
+        txn = {"id": "t3", "raw_description": "Uber ride payment", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Transport"
         assert result.merchant == "Uber"
 
     def test_amazon_prime_video_maps_to_entertainment(self):
-        txn = {"id": "t4", "raw_description": "AMZN prime video subscription", "upi_meta": None}
+        txn = {"id": "t4", "raw_description": "AMZN prime video subscription", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Entertainment"
         assert result.merchant == "Amazon Prime"
 
     def test_amazon_prime_membership_maps_to_entertainment(self):
-        txn = {"id": "t5", "raw_description": "amazon prime membership", "upi_meta": None}
+        txn = {"id": "t5", "raw_description": "amazon prime membership", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Entertainment"
 
     def test_amazon_shopping_stays_shopping(self):
-        txn = {"id": "t6", "raw_description": "AMAZON PAYMENTS INDIA shopping order", "upi_meta": None}
+        txn = {"id": "t6", "raw_description": "AMAZON PAYMENTS INDIA shopping order", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Shopping"
 
     def test_aws_maps_to_finances(self):
-        txn = {"id": "t7", "raw_description": "AMZN AWS services payment", "upi_meta": None}
+        txn = {"id": "t7", "raw_description": "AMZN AWS services payment", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.category == "Finances"
         assert result.merchant == "AWS"
 
     def test_disambiguation_confidence_is_095(self):
-        txn = {"id": "t8", "raw_description": "Uber eats delivery", "upi_meta": None}
+        txn = {"id": "t8", "raw_description": "Uber eats delivery", "debit_credit": "debit", "upi_meta": None}
         result = apply_rules(txn)
         assert result is not None
         assert result.confidence == 0.95
@@ -1081,7 +1081,7 @@ class TestDonorVoting:
             "transaction_id": "x", "distance": 0.1,
             "annotation": {"merchant": "District Dining"},
             "upi_meta": json.dumps({"vpa": "dist@hdfc"}),
-            "raw_description": "UPI/DISTRICT DINING/1/UPI",
+            "raw_description": "UPI/DISTRICT DINING/1/UPI", "debit_credit": "debit",
         }
         assert _counterparty_key(match) == "vpa:dist@hdfc"
 
@@ -1090,7 +1090,7 @@ class TestDonorVoting:
         match = {
             "transaction_id": "x", "distance": 0.1,
             "annotation": {"merchant": "District Dining"},
-            "upi_meta": None, "raw_description": "UPI/DD/1/UPI",
+            "upi_meta": None, "raw_description": "UPI/DD/1/UPI", "debit_credit": "debit",
         }
         assert _counterparty_key(match) == "merchant:district dining"
 
@@ -1100,16 +1100,16 @@ class TestDonorVoting:
         matches = [
             {"transaction_id": "a", "distance": 0.30, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "b", "distance": 0.20, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "c", "distance": 0.25, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "d", "distance": 0.22, "category": "Transport",
              "source": "manual", "annotation": {"merchant": "Some Driver"},
-             "upi_meta": None, "raw_description": "y"},
+             "upi_meta": None, "raw_description": "y", "debit_credit": "debit"},
         ]
         deduped = _dedup_donors(matches)
         assert len(deduped) == 2  # one District Dining + one driver
@@ -1123,16 +1123,16 @@ class TestDonorVoting:
         matches = [
             {"transaction_id": "f1", "distance": 0.20, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "f2", "distance": 0.25, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "f3", "distance": 0.30, "category": "Food & Dining",
              "source": "rag_prompted", "annotation": {"merchant": "District Dining"},
-             "upi_meta": None, "raw_description": "x"},
+             "upi_meta": None, "raw_description": "x", "debit_credit": "debit"},
             {"transaction_id": "t1", "distance": 0.22, "category": "Transport",
              "source": "manual", "annotation": {"merchant": "Driver"},
-             "upi_meta": None, "raw_description": "y"},
+             "upi_meta": None, "raw_description": "y", "debit_credit": "debit"},
         ]
         deduped = _dedup_donors(matches)
         winner, share, trusted = _weighted_trusted_vote(deduped)
@@ -1496,7 +1496,7 @@ class TestKnownPersonMatching:
 
     def test_exact_vpa_match(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t1", "raw_description": "UPI/rahul@okaxis/118030236405/dinner", "counterparty_key": 'RAHUL@OKAXIS',
+        txn = {"id": "t1", "raw_description": "UPI/rahul@okaxis/118030236405/dinner", "debit_credit": "debit", "counterparty_key": 'RAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "118030236405", "note": "dinner"})}
         result = _match_known_person(txn, self._people())
         assert result is not None
@@ -1506,20 +1506,20 @@ class TestKnownPersonMatching:
     def test_different_vpa_does_not_substring_match(self):
         """'rahul@okaxis' must not match 'notrahul@okaxis' when a VPA is present."""
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t2", "raw_description": "UPI/notrahul@okaxis/12345678/x", "counterparty_key": 'NOTRAHUL@OKAXIS',
+        txn = {"id": "t2", "raw_description": "UPI/notrahul@okaxis/12345678/x", "debit_credit": "debit", "counterparty_key": 'NOTRAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "notrahul@okaxis", "ref": "12345678", "note": "x"})}
         assert _match_known_person(txn, self._people()) is None
 
     def test_legacy_rows_fall_back_to_substring(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t3", "raw_description": "IMPS rahul@okaxis transfer", "counterparty_key": None, "upi_meta": None}
+        txn = {"id": "t3", "raw_description": "IMPS rahul@okaxis transfer", "debit_credit": "debit", "counterparty_key": None, "upi_meta": None}
         result = _match_known_person(txn, self._people())
         assert result is not None
         assert result.merchant == "Rahul"
 
     def test_family_relationship_maps_to_family_subcategory(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t4", "raw_description": "UPI/ananta@oksbi/1/rent", "counterparty_key": 'ANANTA@OKSBI',
+        txn = {"id": "t4", "raw_description": "UPI/ananta@oksbi/1/rent", "debit_credit": "debit", "counterparty_key": 'ANANTA@OKSBI',
                "upi_meta": json.dumps({"vpa": "ananta@oksbi", "ref": "1", "note": "rent"})}
         result = _match_known_person(txn, [("Ananta", "ananta@oksbi", "dad")])
         assert result is not None
@@ -1529,7 +1529,7 @@ class TestKnownPersonMatching:
 
     def test_non_family_relationship_stays_peer_transfer(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t5", "raw_description": "UPI/rahul@okaxis/1/x", "counterparty_key": 'RAHUL@OKAXIS',
+        txn = {"id": "t5", "raw_description": "UPI/rahul@okaxis/1/x", "debit_credit": "debit", "counterparty_key": 'RAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "1", "note": "x"})}
         result = _match_known_person(txn, [("Rahul", "rahul@okaxis", "friend")])
         assert result is not None
@@ -2130,9 +2130,9 @@ class TestPersonHistoryGate:
         return conn
 
     def _txn(self):
-        return {"id": "t_new", "raw_description": "UPI/SANYA PRASHANT/9999999999/UPI", "counterparty_key": 'SANYA PRASHANT',
+        return {"id": "t_new", "raw_description": "UPI/SANYA PRASHANT/9999999999/UPI", "debit_credit": "debit", "counterparty_key": 'SANYA PRASHANT',
                 "upi_meta": json.dumps({"vpa": "sanya@okhdfc", "ref": "9", "note": ""}),
-                "txn_date": "2026-02-01", "amount": 500.0, "debit_credit": "debit"}
+                "txn_date": "2026-02-01", "amount": 500.0}
 
     def _people(self):
         return [("Sanya", "sanya@okhdfc", None)]

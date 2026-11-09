@@ -84,8 +84,8 @@ class TestPropagation:
         assert [c["transaction_id"] for c in reevaluate_after_teaching(conn, ["m2"])] == ["q1"]
 
     def test_rag_sibling_resolves_from_its_stored_vector(self, conn):
-        _row(conn, "taught", "Food & Dining", "manual", 1.0, key="BLUE TOKAI COF", vec=_vec(0.0))
-        _row(conn, "sib", "Miscellaneous", "llm", 0.17, key="BLUE TOKAI COF", day=5, vec=_vec(0.0))
+        _row(conn, "taught", "Food & Dining", "manual", 1.0, key="BEAN THERE CAFE", vec=_vec(0.0))
+        _row(conn, "sib", "Miscellaneous", "llm", 0.17, key="BEAN THERE CAFE", day=5, vec=_vec(0.0))
         changed = reevaluate_after_teaching(conn, ["taught"])
         assert changed[0]["source"] == "rag_direct" and changed[0]["resolved"]
 
