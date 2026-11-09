@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, Pencil, GitMerge, Check, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import TaxonomyHealth from './TaxonomyHealth.jsx'
 
 // Category management (4.13): add / rename / merge subcategories under each
 // top-level category. Top-level categories are fixed; subcategories are the
@@ -15,10 +16,13 @@ export default function CategorySettings() {
   const [editing, setEditing] = useState(null)    // subcategory id being renamed
   const [editName, setEditName] = useState('')
   const [merging, setMerging] = useState(null)    // subcategory id being merged
+  const [health, setHealth] = useState(null)
 
   async function load() {
     try {
-      setCats(await api.get('/categories'))
+      const [categories, tidy] = await Promise.all([api.get('/categories'), api.get('/categories/tidy-up')])
+      setCats(categories)
+      setHealth(tidy)
     } catch (e) {
       toast(`Couldn't load categories - ${e.message}`, 'error')
     } finally {
@@ -79,6 +83,8 @@ export default function CategorySettings() {
           transactions together.
         </p>
       </div>
+
+      <TaxonomyHealth health={health} categories={cats} onChanged={load} />
 
       <div className="space-y-3">
         {parents.map(parent => {

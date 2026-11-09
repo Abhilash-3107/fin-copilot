@@ -14,6 +14,11 @@ from finance_copilot.db.queries.categories import (
     merge_subcategory,
     rename_subcategory,
 )
+from finance_copilot.db.queries.taxonomy import (
+    dismiss_duplicate,
+    map_orphan_subcategory,
+    taxonomy_health,
+)
 
 router = APIRouter()
 
@@ -34,6 +39,12 @@ class RenameSubcategory(BaseModel):
 
 
 class MergeSubcategory(BaseModel):
+    target_id: str
+
+
+class MapOrphan(BaseModel):
+    category_id: str
+    name: str
     target_id: str
 
 
@@ -72,3 +83,32 @@ def merge_into(
         raise HTTPException(status_code=422, detail=str(e)) from e
     conn.commit()
     return result
+
+
+@router.get("/tidy-up")
+def tidy_up(conn: sqlite3.Connection = Depends(get_db)):
+    """Look-alike subcategories and orphaned subcategory names to resolve."""
+    return taxonomy_health(conn)
+
+
+class DismissPair(BaseModel):
+    keep_id: str
+    merge_id: str
+
+
+@router.post("/tidy-up/dismiss", status_code=204)
+def tidy_up_dismiss(body: DismissPair, conn: sqlite3.Connection = Depends(get_db)):
+    """Two look-alike subcategories are meant to differ; stop suggesting the merge."""
+    dismiss_duplicate(conn, body.keep_id, body.merge_id)
+    conn.commit()
+
+
+@router.post("/tidy-up/orphans")
+def map_orphan(body: MapOrphan, conn: sqlite3.Connection = Depends(get_db)):
+    """Move transactions labeled with an orphaned subcategory name onto a real one."""
+    try:
+        moved = map_orphan_subcategory(conn, body.category_id, body.name, body.target_id)
+    except CategoryError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    conn.commit()
+    return {"moved": moved}

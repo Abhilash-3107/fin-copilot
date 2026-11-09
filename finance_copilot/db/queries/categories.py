@@ -1,4 +1,4 @@
-"""Read helpers for the categories table."""
+"""The category taxonomy: reads, name resolution, and subcategory add / rename / merge."""
 from __future__ import annotations
 
 import sqlite3

@@ -42,15 +42,6 @@ NON_SPEND_CATEGORIES = ("Self Transfers", "Investments", "Transfers", "Income")
 # Credit-side link/group types that offset spending rather than being income.
 OFFSET_TYPES = ("split", "reimbursement", "refund")
 
-# Duplicate subcategory labels produced by taxonomy drift in the annotation
-# pipeline. Display-level shim; the durable fix is at annotation time.
-SUBCATEGORY_ALIASES = {
-    "cafes": "Cafe & Snacks",
-    "restaurant": "Restaurants",
-    "dining": "Restaurants",
-    "concerts": "Events & Concerts",
-}
-
 # A recurring charge whose last occurrence is older than this (relative to the
 # newest transaction in the ledger) is reported as stopped, not active.
 STOPPED_AFTER_DAYS = 45
@@ -61,12 +52,6 @@ def _prev_month(month: str) -> str:
     if mon == 1:
         return f"{year - 1}-12"
     return f"{year}-{mon - 1:02d}"
-
-
-def _canonical_subcategory(sub: str | None) -> str:
-    if not sub:
-        return "Other"
-    return SUBCATEGORY_ALIASES.get(sub.strip().lower(), sub.strip())
 
 
 def _is_spend(category: str | None) -> bool:
@@ -379,7 +364,7 @@ def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dic
         )
         cat["gross"] += row["total"]
         cat["count"] += row["n"]
-        sub = cat["subcategories"][_canonical_subcategory(row["subcategory"])]
+        sub = cat["subcategories"][row["subcategory"] or "Other"]
         sub["total"] += row["total"]
         sub["count"] += row["n"]
     # Offsets can land in a month where the category had no debit (e.g. a
