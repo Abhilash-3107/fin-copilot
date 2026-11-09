@@ -34,7 +34,11 @@ from finance_copilot.models.annotation import (
     AnnotationPatch,
     AutoAnnotateResult,
 )
-from finance_copilot.pipeline.annotate import auto_annotate
+from finance_copilot.pipeline.annotate import (
+    auto_annotate,
+    reevaluate_after_teaching,
+    rescore_review_queue,
+)
 from finance_copilot.pipeline.embed import (
     build_embed_text,
     embed_transaction,
@@ -71,17 +75,17 @@ def _open_job_connection() -> sqlite3.Connection:
 
 
 def _embed_in_background(transaction_ids: list[str]) -> None:
-    """Re-embed relabelled rows after the response so they serve as RAG donors.
+    """Re-embed relabelled rows after the response so they serve as RAG donors,
+    then let the new labels re-decide the machine labels they could change.
 
     A bulk edit can touch a thousand rows; embedding them inline kept the UI on
-    "Applying..." for minutes. Best-effort: a miss is backfilled by
-    /embeddings/generate.
+    "Applying..." for minutes. embed_transactions is best-effort (a dead
+    provider leaves gaps that /embeddings/generate backfills).
     """
     conn = _open_job_connection()
     try:
         embed_transactions(conn, transaction_ids)
-    except Exception:
-        logger.exception("background re-embed failed | txns=%d", len(transaction_ids))
+        reevaluate_after_teaching(conn, transaction_ids)
     finally:
         conn.close()
 
@@ -298,7 +302,10 @@ def create_annotation(
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
     embed_transaction(conn, annotation.transaction_id)
-    return _annotation_response(annotation)
+    response = _annotation_response(annotation)
+    if body.source == "manual":
+        response["reevaluated"] = reevaluate_after_teaching(conn, [annotation.transaction_id])
+    return response
 
 
 @router.patch("/{annotation_id}")
@@ -351,23 +358,35 @@ def patch_annotation(
         # Corrected annotations are trusted donors — refresh the embedding (best-effort)
         embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]]) if patch else []
+    return updated
+
+
+class ConfirmRequest(BaseModel):
+    # The category the user saw and is vouching for. Machine labels can be
+    # re-decided while a card is on screen; confirming must not stamp a label
+    # the user never saw.
+    category: str
 
 
 @router.post("/{annotation_id}/confirm")
 def confirm_annotation(
     annotation_id: str,
+    body: ConfirmRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Mark an annotation as confirmed by a human without changes.
 
     Records a 'confirmed' feedback event for the original (source, category),
-    then sets confidence=1.0 and source='manual'.
+    then sets confidence=1.0 and source='manual'. 409 when the stored category
+    is no longer the one the user confirmed.
     """
     existing = get_annotation(conn, annotation_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
+    if existing["category"] != body.category:
+        raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
 
     if existing["source"] in _MODEL_SOURCES:
         record_feedback(conn, existing["source"], existing["category"], "confirmed")
@@ -376,8 +395,9 @@ def confirm_annotation(
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]])
+    return updated
 
 
 class BulkCategoryRequest(BaseModel):
@@ -663,6 +683,15 @@ def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
     """How many below-threshold items the user has skipped (snoozed). The queue
     surfaces this so snoozed items are never fully hidden and can be restored."""
     return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
+
+
+@router.post("/review-queue/rescore", status_code=200)
+def review_queue_rescore(conn: sqlite3.Connection = Depends(get_db)):
+    """Re-decide every queued item with the deterministic stages (no LLM), so
+    items that current rules, learned rules, or donors can now settle leave the
+    queue. Also runs after a re-embed job."""
+    changed = rescore_review_queue(conn)
+    return {"resolved": sum(c["resolved"] for c in changed), "changed": len(changed)}
 
 
 @router.post("/review-queue/unsnooze", status_code=200)

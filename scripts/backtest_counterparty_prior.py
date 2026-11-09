@@ -25,7 +25,7 @@ from collections import Counter
 
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_connection
-from finance_copilot.pipeline.counterparty import counterparty_prior, normalize_identity
+from finance_copilot.pipeline.counterparty import counterparty_prior
 
 # Trusted ground-truth sources. We grade the prior only against these.
 _TRUSTED = {"manual", "rule", "imported"}
@@ -54,11 +54,11 @@ def _score(conn, rows, month: str | None) -> dict:
             continue
         if month and not r["txn_date"].startswith(month):
             continue
-        identity = normalize_identity(r["raw_description"])
+        identity = r["counterparty_key"]
         if identity is None:
             continue
-        txn = {"id": r["id"], "raw_description": r["raw_description"], "txn_date": r["txn_date"]}
-        prior = counterparty_prior(conn, txn)
+        txn = dict(r)
+        prior = counterparty_prior(conn, txn, as_of=txn["txn_date"])
         keys = ["overall"] + (["personal"] if _looks_personal(identity) else [])
         for bk in keys:
             stats[bk]["scored"] += 1
@@ -101,7 +101,7 @@ def main() -> int:
     # All annotated UPI txns in chronological order — the replay timeline.
     rows = conn.execute(
         """
-        SELECT t.id, t.txn_date, t.raw_description, a.category, a.source
+        SELECT t.id, t.txn_date, t.raw_description, t.debit_credit, t.counterparty_key, a.category, a.source
         FROM annotations a JOIN transactions t ON t.id = a.transaction_id
         WHERE t.raw_description LIKE 'UPI/%' AND a.category IS NOT NULL
         ORDER BY t.txn_date ASC, t.id ASC

@@ -206,7 +206,7 @@ class TestFeedbackRecording:
     def test_confirm_recorded_for_rag_direct(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="rag_direct")
-        resp = client.post("/api/annotations/a1/confirm")
+        resp = client.post("/api/annotations/a1/confirm", json={"category": "Shopping"})
         assert resp.status_code == 200
         rows = self._feedback_rows(conn)
         assert rows[("rag_direct", "Shopping")]["confirmed"] == 1
@@ -309,11 +309,18 @@ class TestConfirmFlow:
     def test_confirm_sets_confidence_and_provenance(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, source="llm", confidence=0.6)
-        resp = client.post("/api/annotations/a1/confirm")
+        resp = client.post("/api/annotations/a1/confirm", json={"category": "Shopping"})
         body = resp.json()
         assert body["confidence"] == 1.0
         assert body["source"] == "manual"
         assert body["original_source"] == "llm"
+
+    def test_confirm_refuses_a_label_the_user_did_not_see(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, source="llm", confidence=0.6)
+        resp = client.post("/api/annotations/a1/confirm", json={"category": "Travel"})
+        assert resp.status_code == 409
+        assert conn.execute("SELECT source FROM annotations WHERE id = 'a1'").fetchone()[0] == "llm"
 
 
 class TestReviewSnooze:

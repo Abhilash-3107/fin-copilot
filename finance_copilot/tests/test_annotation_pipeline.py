@@ -2141,7 +2141,7 @@ class TestPersonHistoryGate:
         from finance_copilot.config import settings
         from finance_copilot.pipeline.annotate import rule_annotation
         conn = self._conn_with_history("Entertainment", 4)
-        result, trace = rule_annotation(conn, self._txn(), self._people())
+        result, trace = rule_annotation(conn, self._txn(), self._people(), as_of="2026-02-01")
         assert result is not None
         assert result.category == "Transfers"  # label never changed, only routing
         assert result.confidence <= settings.rag_defer_confidence_cap
@@ -2150,7 +2150,7 @@ class TestPersonHistoryGate:
     def test_transfers_history_keeps_fast_path(self):
         from finance_copilot.pipeline.annotate import rule_annotation
         conn = self._conn_with_history("Transfers", 4)
-        result, trace = rule_annotation(conn, self._txn(), self._people())
+        result, trace = rule_annotation(conn, self._txn(), self._people(), as_of="2026-02-01")
         assert result.confidence == 0.95
         assert trace.caps_applied == []
 
@@ -2158,7 +2158,7 @@ class TestPersonHistoryGate:
         from finance_copilot.pipeline.annotate import rule_annotation
         conn = _make_conn()
         _insert_statement(conn)
-        result, trace = rule_annotation(conn, self._txn(), self._people())
+        result, trace = rule_annotation(conn, self._txn(), self._people(), as_of="2026-02-01")
         assert result.confidence == 0.95
 
     def test_keyword_rule_not_gated(self):
@@ -2166,7 +2166,7 @@ class TestPersonHistoryGate:
         conn = self._conn_with_history("Entertainment", 4)
         txn = {"id": "t_kw", "raw_description": "Swiggy food order", "counterparty_key": None, "upi_meta": None,
                "txn_date": "2026-02-01", "amount": 300.0, "debit_credit": "debit"}
-        result, trace = rule_annotation(conn, txn, [])
+        result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert result is not None
         assert result.confidence == 0.95
 
@@ -2361,7 +2361,7 @@ class TestLearnedRules:
                       txn_date="2026-01-05")
         txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
                "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
-        result, trace = rule_annotation(conn, txn, [])
+        result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert result is not None
         assert result.source == "learned_rule"
         assert result.category == "Food & Dining"
@@ -2376,7 +2376,7 @@ class TestLearnedRules:
             self._add(conn, f"s{i}", "LICIOUS", "Food & Dining")
         txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
                "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
-        result, trace = rule_annotation(conn, txn, [])
+        result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert result is None  # falls through to RAG
 
     def test_person_rule_takes_priority(self, monkeypatch):
@@ -2390,7 +2390,7 @@ class TestLearnedRules:
         txn = {"id": "new", "raw_description": "UPI/KARABI BORA/9/UPI",
                "counterparty_key": "KARABI BORA", "upi_meta": None,
                "txn_date": "2026-02-01", "amount": 100.0, "debit_credit": "debit"}
-        result, _ = rule_annotation(conn, txn, [("ma", "karabi", None)])
+        result, _ = rule_annotation(conn, txn, [("ma", "karabi", None)], as_of=None)
         assert result.source == "rule"
         assert result.subcategory == "Peer Transfer"
 

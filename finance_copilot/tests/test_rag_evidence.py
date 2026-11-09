@@ -65,7 +65,7 @@ class TestPromptedPathUsesEvidence:
         with patch("finance_copilot.pipeline.annotate.get_embedding_single", return_value=[0.1] * 768), \
              patch("finance_copilot.pipeline.annotate.find_similar", return_value=similar), \
              patch("finance_copilot.pipeline.annotate.annotate_transaction_llm_with_examples", side_effect=llm):
-            ann, trace = _try_rag_annotation(conn, txn, ["Entertainment", "Shopping"])
+            ann, trace = _try_rag_annotation(conn, txn, ["Entertainment", "Shopping"], as_of=txn["txn_date"])
 
         assert seen == {"examples": ["Entertainment"], "majority": "Entertainment", "count": 1}
         assert trace.evidence_count == 1

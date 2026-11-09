@@ -6,12 +6,18 @@ import json
 import logging
 import sqlite3
 from collections import Counter
+from dataclasses import dataclass
 
 from finance_copilot.config import settings
-from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.annotations import (
+    demote_machine_annotation,
+    insert_annotation,
+    replace_machine_annotation,
+)
+from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.categories import get_category_names_flat
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
-from finance_copilot.db.queries.embeddings import find_similar
+from finance_copilot.db.queries.embeddings import find_similar, stored_embedding
 from finance_copilot.db.queries.learned_rules import (
     label_stats,
     lookup_learned_rule,
@@ -46,6 +52,7 @@ from finance_copilot.pipeline.llm import (
     top_level_categories,
 )
 from finance_copilot.pipeline.rules import apply_rules
+from finance_copilot.pipeline.sources import MACHINE_SOURCES
 from finance_copilot.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -171,9 +178,15 @@ def rule_annotation(
     txn: TxnRow,
     known_people: list[tuple[str, str, str | None]],
     user_rules: list[dict] | None = None,
+    *,
+    as_of: str | None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Stage 1: the user's own rules, then known-person match or keyword rule,
     with the person-history gate.
+
+    as_of bounds the user's label history consulted (learned rules, the person
+    gate): the transaction's date when annotating or replaying it, None when
+    re-evaluating a stored label against everything known now.
 
     User-authored rules go first: what the user wrote on purpose beats every
     built-in heuristic. `user_rules` is loaded once per run by auto_annotate;
@@ -209,7 +222,7 @@ def rule_annotation(
     if result is None and settings.learned_rule_enabled:
         learned = lookup_learned_rule(
             conn, txn["counterparty_key"], txn["debit_credit"],
-            before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
+            before_txn_date=as_of, exclude_transaction_id=txn["id"],
         ) if txn["counterparty_key"] else None
         if learned is not None:
             logger.info(
@@ -244,7 +257,7 @@ def rule_annotation(
     caps: list[str] = []
     prior = None
     if person_result is not None:
-        prior = counterparty_prior(conn, txn)
+        prior = counterparty_prior(conn, txn, as_of=as_of)
         if prior.established and prior.category != result.category:
             result.confidence = min(result.confidence, settings.rag_defer_confidence_cap)
             caps.append("person_history_disagrees")
@@ -335,12 +348,8 @@ def auto_annotate(
             conn.commit()
             uncommitted = 0
 
-    # Load known people once — used for peer transfer matching before merchant rules
-    known_people = [
-        (p["name"], p["upi"].lower(), p.get("relationship"))
-        for p in list_people(conn)
-        if p.get("upi")
-    ]
+    stage = load_stage_context(conn)
+    known_people = stage.known_people
 
     # A transaction counts as processed once its final outcome is decided
     # (annotated or failed) — stage-1 misses are still pending.
@@ -360,9 +369,8 @@ def auto_annotate(
     # --- Stage 1: Rule pass ---
     logger.info("stage 1 | rules | %d txns", len(unannotated))
     needs_rag: list[dict] = []
-    user_rules = list_user_rules(conn, enabled_only=True)
     for txn in unannotated:
-        result, trace = rule_annotation(conn, txn, known_people, user_rules)
+        result, trace = rule_annotation(conn, txn, known_people, stage.user_rules, as_of=txn["txn_date"])
         if result is not None:
             _persist(result, trace)
             _tick()
@@ -391,13 +399,12 @@ def auto_annotate(
     # --- Stages 2 + 3: RAG passes ---
     logger.info("stage 1 done | rule_matched=%d  needs_rag=%d", rule_matched, len(needs_rag))
     needs_llm: list[dict] = []
-    category_list: list[str] = []
+    category_list = stage.category_list
     if needs_rag:
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
-        category_list = get_category_names_flat(conn)
         for txn in needs_rag:
             rag_result, rag_trace = _try_rag_annotation(
-                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]]
+                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]], as_of=txn["txn_date"]
             )
             if rag_result is not None:
                 _persist(rag_result, rag_trace)
@@ -418,8 +425,6 @@ def auto_annotate(
     )
     if needs_llm:
         logger.info("stage 4 | llm | %d txns", len(needs_llm))
-        if not category_list:
-            category_list = get_category_names_flat(conn)
         # Recurring transactions share normalized descriptions — call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
@@ -597,7 +602,7 @@ def _is_evidence(match: dict) -> bool:
     return 1.0 - match["distance"] >= settings.rag_similarity_floor
 
 
-def _contradicts_user(conn: sqlite3.Connection, txn: TxnRow, category: str) -> bool:
+def _contradicts_user(conn: sqlite3.Connection, txn: TxnRow, category: str, as_of: str | None) -> bool:
     """Whether the user's own verified labels for this payee (same direction,
     causal) point elsewhere: mostly another category, or split evenly. Exact text
     identity is not enough when one payee is paid for different things."""
@@ -605,7 +610,7 @@ def _contradicts_user(conn: sqlite3.Connection, txn: TxnRow, category: str) -> b
         return False
     stats = label_stats(verified_labels(
         conn, txn["counterparty_key"], txn["debit_credit"],
-        before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
+        before_txn_date=as_of, exclude_transaction_id=txn["id"],
     ))
     return stats is not None and stats.total >= 2 and (stats.category != category or stats.purity <= 0.5)
 
@@ -665,8 +670,17 @@ def _try_rag_annotation(
     category_list: list[str],
     before_txn_date: str | None = None,
     ctx: dict | None = None,
+    *,
+    as_of: str | None,
+    query_vec: list[float] | None = None,
+    allow_llm: bool = True,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
+
+    as_of bounds the label history the conflict guard and prior consult (see
+    rule_annotation). query_vec, when given, is the transaction's stored vector
+    and no embedding call is made. allow_llm=False stops after the rag_direct
+    decision (no rag_prompted LLM call), for deterministic re-evaluation.
 
     Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct'
     or 'rag_prompted', or (None, None) if the embedding service is
@@ -685,13 +699,14 @@ def _try_rag_annotation(
         ctx = {"skips": [], "embed_text": None}
     skips: list[str] = ctx["skips"]
 
-    try:
-        embed_text = build_embed_text(txn)
-        query_vec = get_embedding_single(embed_text)
-    except Exception as e:
-        logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
-        skips.append(f"rag: embedding failed ({e})")
-        return None, None  # embedding service down — fall through to plain LLM
+    embed_text = build_embed_text(txn)
+    if query_vec is None:
+        try:
+            query_vec = get_embedding_single(embed_text)
+        except Exception as e:
+            logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
+            skips.append(f"rag: embedding failed ({e})")
+            return None, None  # embedding service down — fall through to plain LLM
     ctx["embed_text"] = embed_text
 
     similar = find_similar(
@@ -795,7 +810,7 @@ def _try_rag_annotation(
 
             confidence = round(cosine_similarity * agreement_factor * margin_factor, 4)
             direct_caps: list[str] = []
-            if confidence > settings.rag_defer_confidence_cap and _contradicts_user(conn, txn, top_category):
+            if confidence > settings.rag_defer_confidence_cap and _contradicts_user(conn, txn, top_category, as_of):
                 confidence = min(confidence, settings.rag_defer_confidence_cap)
                 direct_caps.append("counterparty_conflict")
             logger.debug(
@@ -852,6 +867,10 @@ def _try_rag_annotation(
             f"rag_direct_threshold {settings.rag_direct_threshold}"
         )
 
+    if not allow_llm:
+        skips.append("rag_prompted: skipped (deterministic re-evaluation)")
+        return None, None
+
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     # Examples, the majority hint and the off-example check all come from the
     # same evidence the vote uses: below-floor neighbours are not shown either.
@@ -876,7 +895,7 @@ def _try_rag_annotation(
             # Seam A: counterparty recurrence prior — out-of-band, computed from the
             # user's own prior labels (causal: bounded by this txn's date, excludes
             # self). Inert for unknown/first-time counterparties.
-            prior = counterparty_prior(conn, txn)
+            prior = counterparty_prior(conn, txn, as_of=as_of)
 
             # Off-example backstop: if the LLM picked a category that none of the
             # retrieved examples used, it's likely falling back on its prior rather
@@ -1061,3 +1080,163 @@ def _build_examples_from_similar(
     _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}
     examples.sort(key=lambda e: _SOURCE_PRIORITY.get(e.get("source", ""), 9))
     return examples
+
+
+# ---------------------------------------------------------------------------
+# Re-evaluation: new human evidence re-decides existing machine labels
+# ---------------------------------------------------------------------------
+
+# Bound on how many existing labels one human decision re-decides. Each costs a
+# few indexed queries and one vector scan (no network), so this keeps a label
+# click interactive on a large ledger.
+_REEVALUATION_LIMIT = 60
+
+
+@dataclass(frozen=True)
+class StageContext:
+    """What every deterministic stage reads, loaded once per run."""
+    known_people: list[tuple[str, str, str | None]]
+    user_rules: list[dict]
+    category_list: list[str]
+
+
+def load_stage_context(conn: sqlite3.Connection) -> StageContext:
+    return StageContext(
+        known_people=[(p["name"], p["upi"].lower(), p["relationship"]) for p in list_people(conn) if p["upi"]],
+        user_rules=list_user_rules(conn, enabled_only=True),
+        category_list=get_category_names_flat(conn),
+    )
+
+
+def _machine_labeled(conn: sqlite3.Connection, where: str, params: tuple) -> list[str]:
+    machine = sorted(MACHINE_SOURCES)
+    return [
+        r[0] for r in conn.execute(
+            f"SELECT t.id FROM transactions t JOIN annotations a ON a.transaction_id = t.id "
+            f"WHERE a.source IN ({','.join('?' * len(machine))}) AND {where} "
+            f"ORDER BY a.confidence, t.id",
+            (*machine, *params),
+        )
+    ]
+
+
+def reevaluation_candidates(conn: sqlite3.Connection, taught_ids: list[str]) -> list[str]:
+    """Machine labels that new human labels on taught_ids could change, least
+    confident first: every label to the same payees, plus (for a single label,
+    the interactive case) the stored-vector neighbours above the similarity
+    floor. A bulk relabel is by payee already, so it skips the neighbour scans."""
+    taught = set(taught_ids)
+    keys = sorted({
+        r[0] for r in conn.execute(
+            f"SELECT counterparty_key FROM transactions WHERE id IN ({','.join('?' * len(taught_ids))}) "
+            f"AND counterparty_key IS NOT NULL",
+            taught_ids,
+        )
+    })
+    found = dict.fromkeys(
+        _machine_labeled(conn, f"t.counterparty_key IN ({','.join('?' * len(keys))})", tuple(keys)) if keys else []
+    )
+    if len(taught_ids) == 1:
+        vec = stored_embedding(conn, taught_ids[0])
+        if vec is not None:
+            near = [
+                m["transaction_id"]
+                for m in find_similar(conn, vec, top_k=settings.rag_top_k * 4, exclude_transaction_ids=taught_ids)
+                if _is_evidence(m)
+            ]
+            if near:
+                found.update(dict.fromkeys(_machine_labeled(conn, f"t.id IN ({','.join('?' * len(near))})", tuple(near))))
+    return [t for t in found if t not in taught][:_REEVALUATION_LIMIT]
+
+
+def _label_tuple(source, category, subcategory, merchant, confidence) -> tuple:
+    return (source, category, subcategory, merchant, round(confidence, 4))
+
+
+def reevaluate_machine_labels(conn: sqlite3.Connection, transaction_ids: list[str], *, reason: str) -> list[dict]:
+    """Re-decide existing machine labels with the deterministic stages only.
+
+    Each transaction runs user rules, the person rule, merchant rules, learned
+    rules, then rag_direct on its stored vector (never the LLM, never a network
+    call), against every label known now.
+      - An old learned_rule/rag_direct label was itself deterministic, so a fresh
+        decision supersedes it, downwards too. With no decision it is demoted
+        into review, but only when retrieval actually ran and declined; a row
+        without a stored vector is left alone.
+      - An old LLM label is replaced only by a better decision: one that clears
+        the review bar or is more confident.
+    Decisions are made first; the writes then run in one short transaction
+    (replace_machine_annotation refuses rows a human labeled meanwhile).
+
+    Returns the changed rows: {transaction_id, category, subcategory, merchant,
+    confidence, source, resolved} where resolved means "no longer needs review".
+    """
+    threshold = get_confidence_threshold(conn)
+    stage = load_stage_context(conn)
+    decisions: list[tuple[dict, AnnotationCreate | None, ReasoningTrace | None]] = []
+    for txn_id in transaction_ids:
+        txn = dict(conn.execute(
+            "SELECT t.*, a.id AS annotation_id, a.category AS old_category, a.subcategory AS old_subcategory, "
+            "a.merchant AS old_merchant, a.confidence AS old_confidence, a.source AS old_source "
+            "FROM transactions t JOIN annotations a ON a.transaction_id = t.id WHERE t.id = ?",
+            (txn_id,),
+        ).fetchone())
+        if txn["old_source"] not in MACHINE_SOURCES:
+            continue
+        result, trace = rule_annotation(conn, txn, stage.known_people, stage.user_rules, as_of=None)
+        deterministic_old = txn["old_source"] in ("learned_rule", "rag_direct")
+        if result is None:
+            vec = stored_embedding(conn, txn_id)
+            if vec is None:
+                continue  # retrieval can't run for this row: no verdict either way
+            result, trace = _try_rag_annotation(
+                conn, txn, stage.category_list, as_of=None, query_vec=vec, allow_llm=False
+            )
+        if result is None:
+            if deterministic_old and txn["old_confidence"] >= threshold:
+                decisions.append((txn, None, None))  # its rule or donor no longer holds
+            continue
+        new = _label_tuple(result.source, result.category, result.subcategory, result.merchant, result.confidence)
+        old = _label_tuple(txn["old_source"], txn["old_category"], txn["old_subcategory"],
+                           txn["old_merchant"], txn["old_confidence"])
+        better = result.confidence >= threshold or result.confidence > txn["old_confidence"]
+        if new != old and (deterministic_old or better):
+            trace.trigger = reason
+            decisions.append((txn, result, trace))
+
+    changed: list[dict] = []
+    for txn, result, trace in decisions:
+        if result is None:
+            if demote_machine_annotation(conn, txn["annotation_id"], settings.rag_defer_confidence_cap):
+                changed.append({
+                    "transaction_id": txn["id"], "category": txn["old_category"],
+                    "subcategory": txn["old_subcategory"], "merchant": txn["old_merchant"],
+                    "confidence": settings.rag_defer_confidence_cap, "source": txn["old_source"], "resolved": False,
+                })
+        elif replace_machine_annotation(
+            conn, txn["annotation_id"],
+            merchant=result.merchant, category=result.category, subcategory=result.subcategory,
+            tags=dump_string_list(result.tags), confidence=result.confidence, source=result.source,
+            reasoning=trace.model_dump_json(),
+        ):
+            changed.append({
+                "transaction_id": txn["id"], "category": result.category, "subcategory": result.subcategory,
+                "merchant": result.merchant, "confidence": result.confidence, "source": result.source,
+                "resolved": result.confidence >= threshold,
+            })
+    conn.commit()
+    if changed:
+        logger.info("reevaluate (%s) | %d candidates  changed=%d", reason, len(transaction_ids), len(changed))
+    return changed
+
+
+def reevaluate_after_teaching(conn: sqlite3.Connection, taught_ids: list[str]) -> list[dict]:
+    """Propagate fresh human labels: re-decide the machine labels they could change."""
+    return reevaluate_machine_labels(conn, reevaluation_candidates(conn, taught_ids), reason="teaching")
+
+
+def rescore_review_queue(conn: sqlite3.Connection) -> list[dict]:
+    """Re-decide every machine label below the review bar, skipped ones
+    included: knowledge gained since they were annotated may now settle them."""
+    queued = _machine_labeled(conn, "a.confidence < ?", (get_confidence_threshold(conn),))
+    return reevaluate_machine_labels(conn, queued, reason="rescore")

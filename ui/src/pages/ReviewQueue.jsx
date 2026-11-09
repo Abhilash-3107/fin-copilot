@@ -141,6 +141,11 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
   )
 }
 
+function withResolved(message, sorted) {
+  if (!sorted) return message
+  return `${message} Also sorted ${sorted} similar transaction${sorted === 1 ? '' : 's'}.`
+}
+
 export default function ReviewQueue() {
   const toast = useToast()
   const [queue, setQueue] = useState([])
@@ -245,6 +250,26 @@ export default function ReviewQueue() {
     setIdx(i => i + 1)
   }
 
+  // The server re-decides the machine labels a fresh human label can change
+  // (same payee, near neighbours) and returns every row it rewrote. Cards ahead
+  // in the queue follow it: resolved ones leave, the rest show their new label
+  // so a later confirm vouches for what is actually stored. Cards already
+  // passed stay put so the back button keeps working. Returns how many left.
+  function applyReevaluated(rows) {
+    const byId = new Map(rows.map(r => [r.transaction_id, r]))
+    const here = idxRef.current
+    let left = 0
+    const next = queue.flatMap((it, i) => {
+      const r = i > here && byId.get(it.transaction_id)
+      if (!r) return [it]
+      if (r.resolved) { left += 1; return [] }
+      const { transaction_id: _id, resolved: _resolved, ...label } = r
+      return [{ ...it, ...label }]
+    })
+    setQueue(next)
+    return left
+  }
+
   function goBack() {
     if (history.length === 0) return
     const prevIdx = history[history.length - 1]
@@ -284,12 +309,22 @@ export default function ReviewQueue() {
     if (!current) return
     setSaving(true)
     try {
-      await api.post(`/annotations/${current.annotation_id}/confirm`, {})
+      const res = await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
       pushHistory()
       record(current.annotation_id, 'confirmed')
-      toast('Got it, thanks!', 'success')
+      const sorted = applyReevaluated(res.reevaluated)
+      toast(withResolved('Got it, thanks!', sorted), 'success')
       advance()
     } catch (e) {
+      if (e.status === 409) {
+        // The label changed under this card (new evidence settled it); show
+        // the current queue instead of confirming something unseen.
+        toast(`${e.message}. Here's the updated list.`, 'info')
+        setQueue(await api.get('/annotations/review-queue'))
+        setIdx(0)
+        setHistory([])
+        return
+      }
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
       setSaving(false)
@@ -301,7 +336,7 @@ export default function ReviewQueue() {
     if (!payload.category) { toast('Pick a category first', 'error'); return }
     setSaving(true)
     try {
-      await api.patch(`/annotations/${current.annotation_id}`, {
+      const res = await api.patch(`/annotations/${current.annotation_id}`, {
         category: payload.category,
         subcategory: payload.subcategory || null,
         merchant: payload.merchant?.trim() || null,
@@ -309,7 +344,8 @@ export default function ReviewQueue() {
       })
       pushHistory()
       record(current.annotation_id, 'edited')
-      toast("Noted — I'll remember that", 'success')
+      const sorted = applyReevaluated(res.reevaluated)
+      toast(withResolved("Noted, I'll remember that.", sorted), 'success')
       advance()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
@@ -480,7 +516,11 @@ export default function ReviewQueue() {
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
           </div>
-          <Tooltip content="How sure the AI is about this guess. Below 60% means it's mostly guessing." position="bottom">
+          <Tooltip
+            content="How sure the AI is about this guess. Below 60% means it's mostly guessing."
+            position="bottom"
+            className="block"
+          >
             <ConfidenceBar confidence={item.confidence} />
           </Tooltip>
         </div>
