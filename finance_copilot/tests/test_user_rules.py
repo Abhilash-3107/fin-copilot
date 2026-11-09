@@ -74,9 +74,11 @@ class TestMatching:
         assert match_user_rule(list_user_rules(conn), {"raw_description": "SWIGGY"}) is None
 
     def test_unknown_category_rejected(self, conn):
-        with pytest.raises(UserRuleError):
+        from finance_copilot.db.queries.categories import CategoryError
+
+        with pytest.raises(CategoryError):
             create_user_rule(conn, "x", "Not A Category")
-        with pytest.raises(UserRuleError):
+        with pytest.raises(CategoryError):
             create_user_rule(conn, "x", "Shopping", "Not A Subcategory")
         with pytest.raises(UserRuleError):
             create_user_rule(conn, "   ", "Shopping")
@@ -88,7 +90,7 @@ class TestPipelinePrecedence:
         # their Swiggy spend is Groceries (Instamart habit) - theirs wins.
         create_user_rule(conn, "swiggy", "Food & Dining", "Groceries")
         txn = _txn(conn, "t1", "UPI/SWIGGY/ORDER/123")
-        result, trace = rule_annotation(conn, txn, [])
+        result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert (result.category, result.subcategory, result.source) == ("Food & Dining", "Groceries", "user_rule")
         assert trace.stage == "user_rule"
         assert "swiggy" in trace.matched_rule
@@ -96,12 +98,12 @@ class TestPipelinePrecedence:
     def test_user_rule_beats_known_person(self, conn):
         create_user_rule(conn, "sanya", "Entertainment")
         txn = _txn(conn, "t1", "UPI/SANYA PRASHANT/999/UPI")
-        result, _ = rule_annotation(conn, txn, [("Sanya", "sanya", None)])
+        result, _ = rule_annotation(conn, txn, [("Sanya", "sanya", None)], as_of=None)
         assert result.category == "Entertainment"
 
     def test_without_rules_the_built_in_still_fires(self, conn):
         txn = _txn(conn, "t1", "UPI/SWIGGY/ORDER/123")
-        result, _ = rule_annotation(conn, txn, [])
+        result, _ = rule_annotation(conn, txn, [], as_of=None)
         assert (result.subcategory, result.source) == ("Food Delivery", "rule")
 
     def test_auto_annotate_persists_user_rule_source(self, conn):

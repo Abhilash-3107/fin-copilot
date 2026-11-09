@@ -22,9 +22,18 @@ _FAMILY_RELATIONSHIPS = frozenset(
 # Ordered choices for the People UI dropdown. Free-text is still accepted at the
 # DB layer; this is just the curated set the picker offers.
 RELATIONSHIP_CHOICES = (
-    "dad", "mom", "sister", "brother", "wife", "husband",
+    "self", "dad", "mom", "sister", "brother", "wife", "husband",
     "son", "daughter", "family", "friend", "roommate", "colleague", "other",
 )
+
+# The user's own other accounts: money moved to them is a Self Transfer, which
+# insights exclude from spending. Only a fact the user states can make a payee
+# "self"; see annotate._gate_fact_categories.
+SELF_RELATIONSHIP = "self"
+
+
+def is_self_relationship(relationship: str | None) -> bool:
+    return bool(relationship) and relationship.strip().lower() == SELF_RELATIONSHIP
 
 
 def relationship_subcategory(relationship: str | None) -> str:
@@ -32,6 +41,13 @@ def relationship_subcategory(relationship: str | None) -> str:
     if relationship and relationship.strip().lower() in _FAMILY_RELATIONSHIPS:
         return "Family"
     return "Peer Transfer"
+
+
+def relationship_category(relationship: str | None) -> tuple[str, str]:
+    """(category, subcategory) for payments to a person with this relationship."""
+    if is_self_relationship(relationship):
+        return "Self Transfers", "Self Transfer"
+    return "Transfers", relationship_subcategory(relationship)
 
 
 def create_person(

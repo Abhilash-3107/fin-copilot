@@ -16,6 +16,8 @@ class TraceNeighbour(BaseModel):
     source: str | None = None
     distance: float
     similarity: float  # 1.0 - distance
+    # Below rag_similarity_floor: listed for transparency, not counted as evidence.
+    below_floor: bool = False
 
 
 class TraceExample(BaseModel):
@@ -55,12 +57,16 @@ class ReasoningTrace(BaseModel):
     # RAG paths (rag_direct + rag_prompted)
     best_similarity: float | None = None
     neighbours: list[TraceNeighbour] = Field(default_factory=list)
+    evidence_count: int | None = None  # neighbours at or above rag_similarity_floor
     vote_category: str | None = None
     vote_share: float | None = None
     trusted_weight: float | None = None
     agreement_factor: float | None = None
     margin_factor: float | None = None
     caps_applied: list[str] = Field(default_factory=list)  # e.g. ["off_example", "defer"]
+    # Set when an existing label was re-decided after new human evidence, e.g.
+    # "teaching" (a label elsewhere) or "rescore" (a queue sweep).
+    trigger: str | None = None
     # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
     counterparty_prior_category: str | None = None
     counterparty_prior_probability: float | None = None
@@ -93,7 +99,7 @@ class Annotation(BaseModel):
     subcategory: str | None = None
     tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported", "policy"]
     annotated_at: datetime | None = None
     reasoning: str | None = None  # JSON-serialized ReasoningTrace, dev mode only
 
@@ -105,7 +111,7 @@ class AnnotationCreate(BaseModel):
     subcategory: str | None = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported", "policy"]
 
 
 class AnnotationPatch(BaseModel):

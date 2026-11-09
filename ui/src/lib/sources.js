@@ -7,6 +7,7 @@ export const SOURCE_PILL = {
   manual:       'bg-[#14532d] text-[#86efac]',
   rule:         'bg-[#1e3a5f] text-[#7dd3fc]',
   user_rule:    'bg-[#14532d] text-[#86efac]',
+  policy:       'bg-[#14532d] text-[#86efac]',
   learned_rule: 'bg-[#1e3a5f] text-[#7dd3fc]',
   rag_direct:   'bg-[#164e63] text-[#67e8f9]',
   rag_prompted: 'bg-[#164e63] text-[#67e8f9]',
@@ -24,6 +25,7 @@ const SOURCE_LABEL = {
   learned_rule: 'learned merchant',
   rule:         'rule',
   user_rule:    'your rule',
+  policy:       'your policy',
   manual:       'manual',
   imported:     'imported',
 }

@@ -44,6 +44,7 @@ from finance_copilot.db.queries.people import list_people
 from finance_copilot.pipeline.annotate import (
     _normalize_category,
     _try_rag_annotation,
+    gate_fact_categories,
     rule_annotation,
 )
 from finance_copilot.pipeline.calibration import get_calibrated_dampening
@@ -56,7 +57,7 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     """Run the cascade for one golden txn, time-split at its own date. Returns a record."""
     t0 = time.monotonic()
 
-    rule_result, _rule_trace = rule_annotation(conn, txn, known_people)
+    rule_result, _rule_trace = rule_annotation(conn, txn, known_people, as_of=txn["txn_date"])
     if rule_result is not None:
         return {
             "stage": rule_result.source,  # "rule" or "learned_rule"
@@ -67,7 +68,7 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
         }
 
     rag_result, _trace = _try_rag_annotation(
-        conn, txn, category_list, before_txn_date=txn["txn_date"]
+        conn, txn, category_list, before_txn_date=txn["txn_date"], as_of=txn["txn_date"]
     )
     if rag_result is not None:
         return {
@@ -82,11 +83,15 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     if llm_result is not None:
         category = _normalize_category(llm_result.category, category_list)
         dampening = get_calibrated_dampening(conn, "llm", category)
+        category, subcategory, confidence, _cap = gate_fact_categories(
+            conn, txn, category, llm_result.subcategory, round(llm_result.confidence * dampening, 4),
+            as_of=txn["txn_date"],
+        )
         return {
             "stage": "llm",
             "category": category,
-            "subcategory": llm_result.subcategory,
-            "confidence": round(llm_result.confidence * dampening, 4),
+            "subcategory": subcategory,
+            "confidence": confidence,
             "latency_s": time.monotonic() - t0,
         }
 

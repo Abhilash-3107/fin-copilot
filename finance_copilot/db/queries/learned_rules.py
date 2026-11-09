@@ -31,188 +31,171 @@ from dataclasses import dataclass
 
 from finance_copilot.config import settings
 from finance_copilot.db.queries.common import parse_string_list
+from finance_copilot.pipeline.sources import VERIFIED_SOURCES
 
-# Only labels a human authored or vouched for may promote a merchant rule.
-_VERIFIED_SOURCES = ("manual", "imported")
-
-
-def is_suppressed(conn: sqlite3.Connection, counterparty_key: str) -> bool:
-    """Whether the user has explicitly dismissed the learned rule for this key."""
-    return (
-        conn.execute(
-            "SELECT 1 FROM learned_rule_suppressions WHERE counterparty_key = ?",
-            (counterparty_key,),
-        ).fetchone()
-        is not None
-    )
+_SOURCES = sorted(VERIFIED_SOURCES)
 
 
-def suppress_learned_rule(conn: sqlite3.Connection, counterparty_key: str) -> None:
-    """Dismiss the learned rule for a counterparty (idempotent).
+def is_suppressed(conn: sqlite3.Connection, counterparty_key: str, direction: str) -> bool:
+    """Whether the user dismissed the learned rule for this payee and direction."""
+    return conn.execute(
+        "SELECT 1 FROM learned_rule_suppressions WHERE counterparty_key = ? AND direction = ?",
+        (counterparty_key, direction),
+    ).fetchone() is not None
 
-    Sticky: re-verifying the counterparty does not clear this; the user restores
-    it explicitly via restore_learned_rule.
-    """
+
+def suppress_learned_rule(conn: sqlite3.Connection, counterparty_key: str, direction: str) -> None:
+    """Dismiss one learned rule (idempotent). Sticky: re-verifying the payee does
+    not clear it; restore_learned_rule does."""
     conn.execute(
-        "INSERT OR IGNORE INTO learned_rule_suppressions (counterparty_key) VALUES (?)",
-        (counterparty_key,),
+        "INSERT OR IGNORE INTO learned_rule_suppressions (counterparty_key, direction) VALUES (?, ?)",
+        (counterparty_key, direction),
     )
 
 
-def restore_learned_rule(conn: sqlite3.Connection, counterparty_key: str) -> bool:
-    """Undo a dismissal; returns True if a suppression existed and was removed."""
-    cur = conn.execute(
-        "DELETE FROM learned_rule_suppressions WHERE counterparty_key = ?",
-        (counterparty_key,),
-    )
-    return cur.rowcount > 0
+def restore_learned_rule(conn: sqlite3.Connection, counterparty_key: str, direction: str) -> bool:
+    """Undo a dismissal; True if one existed."""
+    return conn.execute(
+        "DELETE FROM learned_rule_suppressions WHERE counterparty_key = ? AND direction = ?",
+        (counterparty_key, direction),
+    ).rowcount > 0
+
+
+@dataclass(frozen=True)
+class LabelStats:
+    """How consistently the user labels one payee in one direction."""
+    category: str   # modal category
+    support: int    # verified labels in the modal category
+    total: int      # verified labels in any category
+    purity: float   # support / total
+
+
+def label_stats(rows: list[dict]) -> LabelStats | None:
+    """Stats over verified label rows ({"category": ...}); None when there are none.
+    The one definition of "how consistent is the user about this payee", shared
+    by learned-rule promotion and the RAG conflict guard."""
+    if not rows:
+        return None
+    category, support = Counter(r["category"] for r in rows).most_common(1)[0]
+    return LabelStats(category, support, len(rows), support / len(rows))
+
+
+def verified_labels(
+    conn: sqlite3.Connection,
+    counterparty_key: str,
+    direction: str,
+    *,
+    before_txn_date: str | None,
+    exclude_transaction_id: str | None = None,
+) -> list[dict]:
+    """Human-verified labels for one payee and direction.
+
+    before_txn_date makes it causal: only labels dated strictly before it, as a
+    transaction being annotated (or replayed in the eval) would have seen. Same-
+    day labels are invisible, since intra-day order is unknown. None means every
+    label that exists now: re-evaluating stored labels and the Settings listing.
+    """
+    return [
+        dict(r) for r in conn.execute(
+            f"""
+            SELECT a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
+            FROM annotations a
+            JOIN transactions t ON t.id = a.transaction_id
+            WHERE t.counterparty_key = ? AND t.debit_credit = ? AND (? IS NULL OR t.txn_date < ?)
+              AND a.source IN ({",".join("?" * len(_SOURCES))})
+              AND t.id IS NOT ?
+            """,
+            (counterparty_key, direction, before_txn_date, before_txn_date, *_SOURCES, exclude_transaction_id),
+        )
+    ]
 
 
 @dataclass
 class LearnedRule:
     counterparty_key: str
+    # 'debit' / 'credit': a rule is per payee *and* direction. Payments to a
+    # merchant and refunds from it are different questions (Health vs Refund).
+    direction: str
     category: str
     subcategory: str | None
     merchant: str | None
     tags: list[str]
     support: int          # verified labels agreeing on `category`
-    total: int            # verified labels for this counterparty (any category)
+    total: int            # verified labels for this payee and direction
     purity: float         # support / total
 
 
-def _representative(rows: list[dict], category: str) -> dict:
-    """Pick the annotation whose subcategory/merchant/tags represent the category.
+def _promote(counterparty_key: str, direction: str, rows: list[dict]) -> LearnedRule | None:
+    """Apply the support+purity promotion bar to one payee's verified rows.
 
-    Most recent verified label of the winning category — newer edits reflect the
-    user's current intent for that merchant.
+    The single source of truth for "is this an established rule": the per-key
+    lookup and the bulk listing both route through here.
     """
-    of_cat = [r for r in rows if r["category"] == category]
-    return max(of_cat, key=lambda r: r["annotated_at"] or "")
-
-
-def _promote(counterparty_key: str, rows: list[dict]) -> LearnedRule | None:
-    """Apply the support+purity promotion bar to one counterparty's verified rows.
-
-    The single source of truth for "is this an established rule": both the
-    per-key lookup and the bulk listing route through here so they can never
-    disagree. Callers pass only verified, causally-filtered rows.
-    """
-    total = len(rows)
-    if total == 0:
+    stats = label_stats(rows)
+    if stats is None or stats.support < settings.learned_rule_min_support or stats.purity < settings.learned_rule_purity:
         return None
-
-    counts = Counter(r["category"] for r in rows)
-    category, support = counts.most_common(1)[0]
-    purity = support / total
-
-    if support < settings.learned_rule_min_support or purity < settings.learned_rule_purity:
-        return None
-
-    rep = _representative(rows, category)
+    # The most recent verified label of the winning category carries the
+    # user's current subcategory/merchant/tags for that payee.
+    rep = max((r for r in rows if r["category"] == stats.category), key=lambda r: r["annotated_at"] or "")
     return LearnedRule(
         counterparty_key=counterparty_key,
-        category=category,
-        subcategory=rep.get("subcategory"),
-        merchant=rep.get("merchant"),
-        tags=parse_string_list(rep.get("tags")),
-        support=support,
-        total=total,
-        purity=round(purity, 4),
+        direction=direction,
+        category=stats.category,
+        subcategory=rep["subcategory"],
+        merchant=rep["merchant"],
+        tags=parse_string_list(rep["tags"]),
+        support=stats.support,
+        total=stats.total,
+        purity=round(stats.purity, 4),
     )
 
 
 def lookup_learned_rule(
     conn: sqlite3.Connection,
-    counterparty_key: str | None,
+    counterparty_key: str,
+    direction: str,
     *,
-    before_txn_date: str | None = None,
+    before_txn_date: str | None,
     exclude_transaction_id: str | None = None,
 ) -> LearnedRule | None:
-    """Return the established merchant rule for a counterparty, or None.
+    """The established rule for a payee and direction, or None.
 
     Established := >= learned_rule_min_support verified labels for the modal
-    category AND purity >= learned_rule_purity. `before_txn_date` /
-    `exclude_transaction_id` enforce causality (a replayed transaction only sees
-    labels that existed before it), mirroring the counterparty prior.
-
-    Same-day asymmetry (deliberate, documented so it isn't chased as a bug):
-    the causal cutoff is strict (`t.txn_date < before_txn_date`), so in the eval
-    harness a transaction never sees another same-day label - dates are
-    day-granular and intra-day order is unknown, so counting a same-day sibling
-    would leak. Production (list_learned_rules and the live annotate path) passes
-    no before_txn_date and therefore sees every label including same-day ones.
-    So eval support for a merchant can be one lower than prod on a day the user
-    labeled two of its transactions; "eval says not-established, prod fires" on
-    that boundary is expected, not a divergence to fix.
+    category AND purity >= learned_rule_purity, over labels dated before
+    before_txn_date (see verified_labels). A user dismissal overrides it.
     """
-    if not counterparty_key:
+    if is_suppressed(conn, counterparty_key, direction):
         return None
-
-    # A user dismissal overrides the computed rule entirely — no firing, no display.
-    if is_suppressed(conn, counterparty_key):
-        return None
-
-    placeholders = ",".join("?" * len(_VERIFIED_SOURCES))
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            f"""
-            SELECT a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
-            FROM annotations a
-            JOIN transactions t ON t.id = a.transaction_id
-            WHERE t.counterparty_key = ?
-              AND a.category IS NOT NULL
-              AND a.source IN ({placeholders})
-              AND (? IS NULL OR t.txn_date < ?)
-              AND (? IS NULL OR t.id != ?)
-            """,
-            (
-                counterparty_key,
-                *_VERIFIED_SOURCES,
-                before_txn_date, before_txn_date,
-                exclude_transaction_id, exclude_transaction_id,
-            ),
-        ).fetchall()
-    ]
-
-    return _promote(counterparty_key, rows)
+    rows = verified_labels(
+        conn, counterparty_key, direction,
+        before_txn_date=before_txn_date, exclude_transaction_id=exclude_transaction_id,
+    )
+    return _promote(counterparty_key, direction, rows)
 
 
 def list_learned_rules(conn: sqlite3.Connection) -> list[LearnedRule]:
-    """All currently-established merchant rules (for the transparency endpoint).
-
-    Computed live from present-day annotations (no causal cutoff) so the user
-    sees what the pipeline would apply right now. Two queries total (verified
-    rows, then the suppression set); grouping and promotion happen in Python via
-    the same _promote() the per-key lookup uses, so the list can never diverge
-    from what the pipeline would actually fire.
-    """
-    placeholders = ",".join("?" * len(_VERIFIED_SOURCES))
+    """All currently established rules (for the transparency endpoint), over
+    every label that exists today, grouped by payee and direction and promoted
+    by the same _promote the per-key lookup uses."""
     rows = conn.execute(
         f"""
-        SELECT t.counterparty_key AS counterparty_key,
+        SELECT t.counterparty_key, t.debit_credit,
                a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
         WHERE t.counterparty_key IS NOT NULL
-          AND a.category IS NOT NULL
-          AND a.source IN ({placeholders})
+          AND a.source IN ({",".join("?" * len(_SOURCES))})
         """,
-        _VERIFIED_SOURCES,
+        _SOURCES,
     ).fetchall()
-
     suppressed = {
-        r["counterparty_key"]
-        for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions").fetchall()
+        (r[0], r[1]) for r in conn.execute("SELECT counterparty_key, direction FROM learned_rule_suppressions")
     }
-
-    by_key: dict[str, list[dict]] = {}
+    groups: dict[tuple[str, str], list[dict]] = {}
     for r in rows:
-        key = r["counterparty_key"]
-        if key in suppressed:
-            continue
-        by_key.setdefault(key, []).append(dict(r))
-
-    out = [rule for key, key_rows in by_key.items() if (rule := _promote(key, key_rows)) is not None]
-    out.sort(key=lambda r: (-r.support, r.counterparty_key))
+        group = (r["counterparty_key"], r["debit_credit"])
+        if group not in suppressed:
+            groups.setdefault(group, []).append(dict(r))
+    out = [rule for (key, direction), g in groups.items() if (rule := _promote(key, direction, g)) is not None]
+    out.sort(key=lambda r: (-r.support, r.counterparty_key, r.direction))
     return out

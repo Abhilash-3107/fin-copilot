@@ -86,19 +86,19 @@ class TestCounterpartyHistory:
     def test_groups_same_counterparty_across_descriptions(self):
         _insert(self.conn, "h1", "UPI/SANYA PRASHANT /603975177215/UPI", "Transfers")
         _insert(self.conn, "h2", "UPI/SANYA PRASHANT /605037951331/UPI", "Transfers")
-        hist = counterparty_history(self.conn, "SANYA PRASHANT")
+        hist = counterparty_history(self.conn, "SANYA PRASHANT", "debit", before_txn_date="2099-01-01")
         assert len(hist) == 2
 
     def test_before_date_excludes_future_labels(self):
         _insert(self.conn, "past", "UPI/RAM/1/UPI", "Transport", txn_date="2026-01-01")
         _insert(self.conn, "future", "UPI/RAM/2/UPI", "Transport", txn_date="2026-03-01")
         # Scoring a txn dated Feb only sees the January label, not March.
-        hist = counterparty_history(self.conn, "RAM", before_txn_date="2026-02-01")
+        hist = counterparty_history(self.conn, "RAM", "debit", before_txn_date="2026-02-01")
         assert [h["transaction_id"] for h in hist] == ["past"]
 
     def test_excludes_self(self):
         _insert(self.conn, "self_txn", "UPI/RAM/1/UPI", "Transport")
-        hist = counterparty_history(self.conn, "RAM", exclude_transaction_id="self_txn")
+        hist = counterparty_history(self.conn, "RAM", "debit", before_txn_date="2099-01-01", exclude_transaction_id="self_txn")
         assert hist == []
 
 
@@ -115,16 +115,16 @@ class TestCounterpartyPrior:
 
     def test_unknown_counterparty_is_inert(self):
         """New user / never-seen counterparty → no prior, no nudge (cold start)."""
-        txn = {"id": "t", "raw_description": "UPI/BRAND NEW PERSON/9/UPI", "counterparty_key": 'BRAND NEW PERSON',
+        txn = {"id": "t", "raw_description": "UPI/BRAND NEW PERSON/9/UPI", "counterparty_key": 'BRAND NEW PERSON', "debit_credit": "debit",
                "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior == CounterpartyPrior()
         assert prior.category is None
         assert not prior.established
 
     def test_non_upi_is_inert(self):
-        txn = {"id": "t", "raw_description": "NEFT SALARY CREDIT", "counterparty_key": None, "txn_date": "2026-02-01"}
-        assert not counterparty_prior(self.conn, txn).established
+        txn = {"id": "t", "raw_description": "NEFT SALARY CREDIT", "counterparty_key": None, "debit_credit": "debit", "txn_date": "2026-02-01"}
+        assert not counterparty_prior(self.conn, txn, as_of=txn["txn_date"]).established
 
     def test_single_observation_not_established(self):
         """One prior label is not enough to clear min_observations → still inert.
@@ -133,8 +133,8 @@ class TestCounterpartyPrior:
         routing, even though a category technically 'wins'.
         """
         _insert(self.conn, "p1", "UPI/KARABI BORA/1/UPI", "Transfers", txn_date="2026-01-01")
-        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/2/UPI", "counterparty_key": 'KARABI BORA', "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/2/UPI", "counterparty_key": 'KARABI BORA', "debit_credit": "debit", "txn_date": "2026-02-01"}
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior.n_prior == 1
         assert prior.category == "Transfers"
         assert not prior.established  # below counterparty_min_observations (3)
@@ -144,8 +144,8 @@ class TestCounterpartyPrior:
         for i in range(4):
             _insert(self.conn, f"k{i}", f"UPI/KARABI BORA/{i}/UPI", "Transfers",
                     txn_date=f"2026-01-0{i+1}")
-        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/9/UPI", "counterparty_key": 'KARABI BORA', "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/9/UPI", "counterparty_key": 'KARABI BORA', "debit_credit": "debit", "txn_date": "2026-02-01"}
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior.n_prior == 4
         assert prior.category == "Transfers"
         assert prior.established
@@ -156,8 +156,8 @@ class TestCounterpartyPrior:
         for i in range(4):
             _insert(self.conn, f"m{i}", f"UPI/SOMEONE/{i}/UPI", "Transport",
                     source="rag_prompted", txn_date=f"2026-01-0{i+1}")
-        txn = {"id": "t", "raw_description": "UPI/SOMEONE/9/UPI", "counterparty_key": 'SOMEONE', "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        txn = {"id": "t", "raw_description": "UPI/SOMEONE/9/UPI", "counterparty_key": 'SOMEONE', "debit_credit": "debit", "txn_date": "2026-02-01"}
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior.n_prior == 4
         # 4 machine labels at rag_machine_donor_weight each.
         expected = round(4 * settings.rag_machine_donor_weight, 4)
@@ -169,8 +169,8 @@ class TestCounterpartyPrior:
             _insert(self.conn, f"a{i}", f"UPI/MIXED/{i}/UPI", "Transport",
                     txn_date=f"2026-01-0{i+1}")
         _insert(self.conn, "b0", "UPI/MIXED/8/UPI", "Transfers", txn_date="2026-01-08")
-        txn = {"id": "t", "raw_description": "UPI/MIXED/9/UPI", "counterparty_key": 'MIXED', "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        txn = {"id": "t", "raw_description": "UPI/MIXED/9/UPI", "counterparty_key": 'MIXED', "debit_credit": "debit", "txn_date": "2026-02-01"}
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior.category == "Transport"  # 3 vs 1
         # base = 1/2 categories = 0.5, m=2, winner=3, total=4 → (2*0.5+3)/(2+4)=0.6667
         assert prior.probability == pytest.approx((2 * 0.5 + 3) / (2 + 4), abs=1e-3)
@@ -180,8 +180,8 @@ class TestCounterpartyPrior:
         _insert(self.conn, "old", "UPI/RECUR/1/UPI", "Transport", txn_date="2026-01-01")
         _insert(self.conn, "newer", "UPI/RECUR/2/UPI", "Transport", txn_date="2026-05-01")
         # Scoring a txn dated Feb must not see the May label.
-        txn = {"id": "t", "raw_description": "UPI/RECUR/9/UPI", "counterparty_key": 'RECUR', "txn_date": "2026-02-01"}
-        prior = counterparty_prior(self.conn, txn)
+        txn = {"id": "t", "raw_description": "UPI/RECUR/9/UPI", "counterparty_key": 'RECUR', "debit_credit": "debit", "txn_date": "2026-02-01"}
+        prior = counterparty_prior(self.conn, txn, as_of=txn["txn_date"])
         assert prior.n_prior == 1
 
 

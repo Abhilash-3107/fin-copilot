@@ -16,11 +16,21 @@ describe('AnnotationProgress', () => {
   it('links the running-job card to the transactions page', () => {
     render(
       <MemoryRouter>
-        <AnnotationProgress job={{ status: 'running', processed: 40, total: 120 }} />
+        <AnnotationProgress job={{ kind: 'annotate', status: 'running', processed: 40, total: 120 }} />
       </MemoryRouter>
     )
     const link = screen.getByRole('link', { name: /categorizing your transactions/i })
     expect(link).toHaveAttribute('href', '/transactions')
     expect(screen.getByText('40 of 120')).toBeInTheDocument()
+  })
+
+  it('names a re-embed for what it is, not "categorizing"', () => {
+    render(
+      <MemoryRouter>
+        <AnnotationProgress job={{ kind: 'reembed', status: 'running', processed: 544, total: 668 }} />
+      </MemoryRouter>
+    )
+    expect(screen.getByRole('link', { name: /refreshing ai memory/i })).toHaveAttribute('href', '/settings')
+    expect(screen.queryByText(/categorizing/i)).not.toBeInTheDocument()
   })
 })

@@ -12,11 +12,13 @@ import Amount from '../components/Amount.jsx'
 
 // Curated relationship choices. Family ones (dad/mom/…) make this person's
 // transfers land in Transfers › Family instead of the generic Peer Transfer;
-// the mapping lives server-side (people.relationship_subcategory).
+// "self" (the user's own other accounts) makes them Self Transfers. The
+// mapping lives server-side (people.relationship_category).
 const RELATIONSHIPS = [
-  'dad', 'mom', 'sister', 'brother', 'wife', 'husband',
+  'self', 'dad', 'mom', 'sister', 'brother', 'wife', 'husband',
   'son', 'daughter', 'family', 'friend', 'roommate', 'colleague', 'other',
 ]
+const RELATIONSHIP_LABELS = { self: 'Me (my other account)' }
 
 export default function People() {
   const toast = useToast()
@@ -178,7 +180,7 @@ export default function People() {
                 <th className={th}>
                   <span className="flex items-center gap-1">
                     Relationship
-                    <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. Others are Peer Transfers." position="bottom">
+                    <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. Me (my other account) files them as Self Transfers. Others are Peer Transfers." position="bottom">
                       <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
@@ -228,7 +230,7 @@ export default function People() {
                       >
                         <option value="">— none</option>
                         {RELATIONSHIPS.map(r => (
-                          <option key={r} value={r} className="text-[#e2e8f0] capitalize">{r}</option>
+                          <option key={r} value={r} className="text-[#e2e8f0] capitalize">{RELATIONSHIP_LABELS[r] ?? r}</option>
                         ))}
                       </select>
                     </td>
@@ -257,7 +259,8 @@ export default function People() {
                     <td className="px-4 py-3 text-right">
                       <button
                         onClick={() => setDeleteTarget(p)}
-                        className="text-[#475569] hover:text-red-400 transition-colors"
+                        aria-label={`Delete ${p.name}`}
+                        className="inline-flex items-center align-middle text-[#475569] hover:text-red-400 transition-colors"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -301,7 +304,7 @@ export default function People() {
             >
               <option value="">Relationship…</option>
               {RELATIONSHIPS.map(r => (
-                <option key={r} value={r} className="text-[#e2e8f0] capitalize">{r}</option>
+                <option key={r} value={r} className="text-[#e2e8f0] capitalize">{RELATIONSHIP_LABELS[r] ?? r}</option>
               ))}
             </select>
           </div>

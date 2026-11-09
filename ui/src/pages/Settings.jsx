@@ -8,6 +8,7 @@ import ModelSettings from '../components/ModelSettings.jsx'
 import DataSettings from '../components/DataSettings.jsx'
 import CategorySettings from '../components/CategorySettings.jsx'
 import UserRules from '../components/UserRules.jsx'
+import ReviewPolicies from '../components/ReviewPolicies.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -39,6 +40,8 @@ function ruleDisplayName(r) {
   return m.length > 1 ? m : r.counterparty_key
 }
 
+const ruleId = r => `${r.counterparty_key}|${r.direction}`
+
 function LearnedRules() {
   const toast = useToast()
   const [rules, setRules] = useState([])
@@ -53,11 +56,14 @@ function LearnedRules() {
   }, [toast])
 
   async function dismiss(rule) {
-    setDismissing(rule.counterparty_key)
+    setDismissing(ruleId(rule))
     try {
-      await api.delete(`/annotations/learned-rules/${encodeURIComponent(rule.counterparty_key)}`)
-      setRules(rs => rs.filter(r => r.counterparty_key !== rule.counterparty_key))
-      toast(`Stopped learning "${rule.merchant || rule.counterparty_key}"`, 'info')
+      await api.delete(
+        `/annotations/learned-rules/${encodeURIComponent(rule.counterparty_key)}?direction=${rule.direction}`
+      )
+      setRules(rs => rs.filter(r => ruleId(r) !== ruleId(rule)))
+      const which = rule.direction === 'credit' ? ' (money in)' : ''
+      toast(`Stopped learning "${ruleDisplayName(rule)}"${which}`, 'info')
     } catch (e) {
       toast(`Couldn't dismiss - ${e.message}`, 'error')
     } finally {
@@ -95,7 +101,7 @@ function LearnedRules() {
             </thead>
             <tbody className="divide-y divide-[#2d3148]">
               {rules.map(r => (
-                <tr key={r.counterparty_key}>
+                <tr key={ruleId(r)}>
                   <td className="px-5 py-3 text-[#e2e8f0]">
                     <Link
                       to={txnFilterPath(
@@ -108,19 +114,22 @@ function LearnedRules() {
                     {ruleDisplayName(r) !== r.counterparty_key && (
                       <span className="text-[#64748b] ml-2 text-xs">{r.counterparty_key}</span>
                     )}
+                    {r.direction === 'credit' && (
+                      <span className="text-[#64748b] ml-2 text-xs">money in</span>
+                    )}
                   </td>
-                  <td className="px-5 py-3 text-[#cbd5e1]">
+                  <td className="px-5 py-3 text-[#cbd5e1] whitespace-nowrap">
                     {r.category}
                     {r.subcategory && <span className="text-[#64748b]"> › {r.subcategory}</span>}
                   </td>
-                  <td className="px-5 py-3 text-right text-[#64748b] tabular-nums">
+                  <td className="px-5 py-3 text-right text-[#64748b] tabular-nums whitespace-nowrap">
                     {Math.round(r.purity * 100)}%
                     <span className="ml-1.5 text-[#475569]">({r.support}/{r.total})</span>
                   </td>
                   <td className="px-2 py-3 text-right">
                     <button
                       onClick={() => dismiss(r)}
-                      disabled={dismissing === r.counterparty_key}
+                      disabled={dismissing === ruleId(r)}
                       title="Stop learning this merchant"
                       className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
                     >
@@ -328,6 +337,7 @@ export default function Settings() {
           {tab === 'rules' && (
             <div className="space-y-8">
               <UserRules />
+              <ReviewPolicies />
               <LearnedRules />
             </div>
           )}

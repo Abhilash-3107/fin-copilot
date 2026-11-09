@@ -68,7 +68,7 @@ class TestLoadDemoData:
             "SELECT t.* FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id "
             "WHERE t.raw_description LIKE '%BMRCL%' AND a.id IS NULL"
         ).fetchone()
-        result, _ = rule_annotation(conn, dict(metro), [])
+        result, _ = rule_annotation(conn, dict(metro), [], as_of=None)
         assert (result.source, result.subcategory) == ("user_rule", "Public Transport")
 
     def test_refused_when_real_statements_exist(self, client_conn):

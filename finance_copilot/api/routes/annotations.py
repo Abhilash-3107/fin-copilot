@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import time
+from typing import Literal
 
 import ulid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -23,7 +24,11 @@ from finance_copilot.db.queries.annotations import (
     update_annotation,
 )
 from finance_copilot.db.queries.app_settings import get_confidence_threshold, get_dev_mode
-from finance_copilot.db.queries.categories import resolve_category_ids
+from finance_copilot.db.queries.categories import (
+    CategoryError,
+    require_category_ids,
+    resolve_category_ids,
+)
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
 from finance_copilot.db.queries.feedback_stats import category_accuracy, record_feedback
@@ -33,13 +38,18 @@ from finance_copilot.models.annotation import (
     AnnotationPatch,
     AutoAnnotateResult,
 )
-from finance_copilot.pipeline.annotate import auto_annotate
+from finance_copilot.pipeline.annotate import (
+    auto_annotate,
+    reevaluate_after_teaching,
+    rescore_review_queue,
+)
 from finance_copilot.pipeline.embed import (
     build_embed_text,
     embed_transaction,
     embed_transactions,
     get_embedding_single,
 )
+from finance_copilot.pipeline.review_queue import group_review_queue
 from finance_copilot.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
 from finance_copilot.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
 
@@ -70,17 +80,17 @@ def _open_job_connection() -> sqlite3.Connection:
 
 
 def _embed_in_background(transaction_ids: list[str]) -> None:
-    """Re-embed relabelled rows after the response so they serve as RAG donors.
+    """Re-embed relabelled rows after the response so they serve as RAG donors,
+    then let the new labels re-decide the machine labels they could change.
 
     A bulk edit can touch a thousand rows; embedding them inline kept the UI on
-    "Applying..." for minutes. Best-effort: a miss is backfilled by
-    /embeddings/generate.
+    "Applying..." for minutes. embed_transactions is best-effort (a dead
+    provider leaves gaps that /embeddings/generate backfills).
     """
     conn = _open_job_connection()
     try:
         embed_transactions(conn, transaction_ids)
-    except Exception:
-        logger.exception("background re-embed failed | txns=%d", len(transaction_ids))
+        reevaluate_after_teaching(conn, transaction_ids)
     finally:
         conn.close()
 
@@ -297,19 +307,14 @@ def create_annotation(
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
     embed_transaction(conn, annotation.transaction_id)
-    return _annotation_response(annotation)
+    response = _annotation_response(annotation)
+    if body.source == "manual":
+        response["reevaluated"] = reevaluate_after_teaching(conn, [annotation.transaction_id])
+    return response
 
 
-@router.patch("/{annotation_id}")
-def patch_annotation(
-    annotation_id: str,
-    body: AnnotationPatch,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    existing = get_annotation(conn, annotation_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
-
+def _patch_from_body(conn: sqlite3.Connection, existing: dict, body: AnnotationPatch) -> dict:
+    """The column changes a PATCH body asks for, validated against the taxonomy."""
     # Only fields the client actually sent are updated; an explicit null clears
     # the field (merchant/subcategory/tags are nullable, category/confidence are not).
     patch: dict = {}
@@ -338,45 +343,120 @@ def patch_annotation(
             )
         patch["category_id"] = category_id
         patch["subcategory_id"] = subcategory_id
+    return patch
 
+
+def _apply_correction(conn: sqlite3.Connection, existing: dict, patch: dict) -> None:
+    """Record calibration feedback against the machine label, then apply. Caller commits."""
+    if existing["source"] in _MODEL_SOURCES:
+        record_feedback(conn, existing["source"], existing["category"], _classify_feedback(existing, patch))
+    update_annotation(conn, existing["id"], patch)
+
+
+def _apply_confirmation(conn: sqlite3.Connection, existing: dict) -> None:
+    """A human vouches for the label as is. Caller commits."""
+    if existing["source"] in _MODEL_SOURCES:
+        record_feedback(conn, existing["source"], existing["category"], "confirmed")
+    update_annotation(conn, existing["id"], {"confidence": 1.0})
+
+
+@router.patch("/{annotation_id}")
+def patch_annotation(
+    annotation_id: str,
+    body: AnnotationPatch,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    existing = get_annotation(conn, annotation_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    patch = _patch_from_body(conn, existing, body)
     if patch:
-        # Record feedback before updating — use original source + category.
-        if existing["source"] in _MODEL_SOURCES:
-            feedback_type = _classify_feedback(existing, patch)
-            record_feedback(conn, existing["source"], existing["category"], feedback_type)
-
-        update_annotation(conn, annotation_id, patch)
+        _apply_correction(conn, existing, patch)
         conn.commit()
         # Corrected annotations are trusted donors — refresh the embedding (best-effort)
         embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]]) if patch else []
+    return updated
+
+
+class ConfirmRequest(BaseModel):
+    # The category the user saw and is vouching for. Machine labels can be
+    # re-decided while a card is on screen; confirming must not stamp a label
+    # the user never saw.
+    category: str
 
 
 @router.post("/{annotation_id}/confirm")
 def confirm_annotation(
     annotation_id: str,
+    body: ConfirmRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Mark an annotation as confirmed by a human without changes.
 
     Records a 'confirmed' feedback event for the original (source, category),
-    then sets confidence=1.0 and source='manual'.
+    then sets confidence=1.0 and source='manual'. 409 when the stored category
+    is no longer the one the user confirmed.
     """
     existing = get_annotation(conn, annotation_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
+    if existing["category"] != body.category:
+        raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
 
-    if existing["source"] in _MODEL_SOURCES:
-        record_feedback(conn, existing["source"], existing["category"], "confirmed")
-
-    update_annotation(conn, annotation_id, {"confidence": 1.0})
+    _apply_confirmation(conn, existing)
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]])
+    return updated
+
+
+class GroupLabel(BaseModel):
+    category: str
+    subcategory: str | None = None
+    merchant: str | None = None
+    tags: list[str] | None = None
+
+
+class BulkLabelRequest(BaseModel):
+    annotation_ids: list[str]
+    # The label on the card the user answered: confirming the group sends the
+    # card's own label, so no member is stamped with a label nobody saw.
+    label: GroupLabel
+
+
+@router.post("/bulk-label")
+def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """One review answer for a group of transactions (the review queue's
+    "apply to all payments to this payee"). Each member gets the label with
+    the calibration feedback its own PATCH would record: 'confirmed' where its
+    machine label already matched, 'corrected'/'refined' where it didn't. Then
+    the new labels re-decide the machine labels they could change."""
+    try:
+        category_id, subcategory_id = require_category_ids(conn, body.label.category, body.label.subcategory)
+    except CategoryError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    patch = {
+        "category": body.label.category, "subcategory": body.label.subcategory,
+        "category_id": category_id, "subcategory_id": subcategory_id, "confidence": 1.0,
+    }
+    if "merchant" in body.label.model_fields_set:
+        patch["merchant"] = body.label.merchant
+    if "tags" in body.label.model_fields_set:
+        patch["tags"] = dump_string_list(body.label.tags)
+    taught = []
+    for annotation_id in dict.fromkeys(body.annotation_ids):
+        existing = get_annotation(conn, annotation_id)
+        _apply_correction(conn, existing, patch)
+        taught.append(existing["transaction_id"])
+    conn.commit()
+    embed_transactions(conn, taught)
+    return {"updated": len(taught), "reevaluated": reevaluate_after_teaching(conn, taught)}
 
 
 class BulkCategoryRequest(BaseModel):
@@ -610,6 +690,7 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
             "support": r.support,
             "total": r.total,
             "purity": r.purity,
+            "direction": r.direction,
         }
         for r in list_learned_rules(conn)
     ]
@@ -625,24 +706,24 @@ def accuracy(conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.delete("/learned-rules/{counterparty_key:path}", status_code=204)
-def dismiss_learned_rule(counterparty_key: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Dismiss a learned merchant rule so it stops firing and drops off Settings.
-
-    Learned rules have no stored row (they're recomputed from verified labels), so
-    the dismissal is a sticky suppression keyed by counterparty_key. Typically used
-    once the user has added that counterparty to People and the person rule takes
-    over. Idempotent — dismissing an already-dismissed key is a no-op.
-    """
+def dismiss_learned_rule(
+    counterparty_key: str,
+    direction: Literal["debit", "credit"],
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Dismiss one learned rule (payee and direction) so it stops firing and drops
+    off Settings. Learned rules are recomputed from verified labels, so the
+    dismissal is a sticky suppression. Idempotent."""
     from finance_copilot.db.queries.learned_rules import suppress_learned_rule
 
-    suppress_learned_rule(conn, counterparty_key)
+    suppress_learned_rule(conn, counterparty_key, direction)
     conn.commit()
 
 
 @router.get("/review-queue")
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     dev_mode = get_dev_mode(conn)
-    items = list_review_queue(conn, get_confidence_threshold(conn))
+    items = group_review_queue(list_review_queue(conn, get_confidence_threshold(conn)))
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw
@@ -661,6 +742,15 @@ def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
     """How many below-threshold items the user has skipped (snoozed). The queue
     surfaces this so snoozed items are never fully hidden and can be restored."""
     return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
+
+
+@router.post("/review-queue/rescore", status_code=200)
+def review_queue_rescore(conn: sqlite3.Connection = Depends(get_db)):
+    """Re-decide every queued item with the deterministic stages (no LLM), so
+    items that current rules, learned rules, or donors can now settle leave the
+    queue. Also runs after a re-embed job."""
+    changed = rescore_review_queue(conn)
+    return {"resolved": sum(c["resolved"] for c in changed), "changed": len(changed)}
 
 
 @router.post("/review-queue/unsnooze", status_code=200)

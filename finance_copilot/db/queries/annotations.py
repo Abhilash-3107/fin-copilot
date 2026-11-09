@@ -8,6 +8,16 @@ from finance_copilot.models.annotation import Annotation
 from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES
 
 
+def _resolve_label(conn: sqlite3.Connection, category: str, subcategory: str | None) -> tuple:
+    """(category_id, subcategory, subcategory_id) for a machine-written label."""
+    from finance_copilot.db.queries.taxonomy import canonical_subcategory
+
+    category_id, subcategory_id = resolve_category_ids(conn, category, subcategory)
+    if subcategory and subcategory_id is None:
+        subcategory, subcategory_id = canonical_subcategory(conn, category_id, subcategory)
+    return category_id, subcategory, subcategory_id
+
+
 def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
     """Insert an annotation row, resolving category/subcategory ids.
 
@@ -17,12 +27,12 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
     annotated_at / reasoning history. Edits must go through update_annotation.
     Returns True when a row was inserted, False when one already existed.
 
-    Unresolvable names (e.g. LLM free-text subcategories) leave the id NULL —
-    callers that need strictness validate before inserting.
+    A subcategory name outside the taxonomy (an LLM's free text, a learned
+    rule's stale name) is snapped to the sibling it plainly means or dropped,
+    so writes never create orphaned subcategories. Callers that need
+    strictness (a user's choice) validate before inserting.
     """
-    category_id, subcategory_id = resolve_category_ids(
-        conn, annotation.category, annotation.subcategory
-    )
+    category_id, subcategory, subcategory_id = _resolve_label(conn, annotation.category, annotation.subcategory)
     cur = conn.execute(
         """
         INSERT INTO annotations
@@ -36,7 +46,7 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
             annotation.transaction_id,
             annotation.merchant,
             annotation.category,
-            annotation.subcategory,
+            subcategory,
             annotation.tags,
             annotation.confidence,
             annotation.source,
@@ -52,6 +62,58 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
 # UPDATE (SQLite can't parameterize identifiers), so they must never come from
 # request-shaped data — validate against this allowlist to keep the injection
 # surface closed regardless of caller.
+def replace_machine_annotation(
+    conn: sqlite3.Connection,
+    annotation_id: str,
+    *,
+    merchant: str | None,
+    category: str,
+    subcategory: str | None,
+    tags: str | None,
+    confidence: float,
+    source: str,
+    reasoning: str | None,
+) -> bool:
+    """Overwrite a machine-produced annotation with a re-evaluated one.
+
+    The WHERE clause refuses any non-machine row, so a human label can never be
+    replaced even if a caller gets the candidate set wrong. A snooze survives
+    when the category is unchanged (the user already skipped this exact
+    question) and clears when the answer changed. Caller commits.
+    """
+    from finance_copilot.pipeline.sources import MACHINE_SOURCES
+
+    category_id, subcategory, subcategory_id = _resolve_label(conn, category, subcategory)
+    placeholders = ",".join("?" * len(MACHINE_SOURCES))
+    cur = conn.execute(
+        f"""
+        UPDATE annotations
+        SET review_snoozed_at = CASE WHEN category = ? THEN review_snoozed_at ELSE NULL END,
+            merchant = ?, category = ?, subcategory = ?, tags = ?, confidence = ?,
+            source = ?, reasoning = ?, category_id = ?, subcategory_id = ?,
+            annotated_at = datetime('now')
+        WHERE id = ? AND source IN ({placeholders})
+        """,
+        (category, merchant, category, subcategory, tags, confidence, source, reasoning,
+         category_id, subcategory_id, annotation_id, *sorted(MACHINE_SOURCES)),
+    )
+    return cur.rowcount == 1
+
+
+def demote_machine_annotation(conn: sqlite3.Connection, annotation_id: str, cap: float) -> bool:
+    """Cap a machine annotation's confidence so it re-enters the review queue.
+    Never touches human rows. Caller commits."""
+    from finance_copilot.pipeline.sources import MACHINE_SOURCES
+
+    placeholders = ",".join("?" * len(MACHINE_SOURCES))
+    cur = conn.execute(
+        f"UPDATE annotations SET confidence = MIN(confidence, ?) "
+        f"WHERE id = ? AND confidence > ? AND source IN ({placeholders})",
+        (cap, annotation_id, cap, *sorted(MACHINE_SOURCES)),
+    )
+    return cur.rowcount == 1
+
+
 _UPDATABLE_COLUMNS = frozenset(
     {"merchant", "category", "subcategory", "tags", "confidence", "category_id", "subcategory_id"}
 )
@@ -108,7 +170,8 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     placeholders = ",".join("?" for _ in sources)
     rows = conn.execute(
         f"""
-        SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description
+        SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
+               t.counterparty_key
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
         WHERE a.source IN ({placeholders}) AND a.confidence < ?

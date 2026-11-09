@@ -2,12 +2,20 @@ import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { Sparkles, ArrowRight } from 'lucide-react'
 
-// Floating realtime progress card for a running auto-annotate job.
-// `job` is the polled annotation_jobs row ({status, processed, total}) or null.
-// Renders nothing when there is no active job. The whole card links to the
-// transactions page so the user can watch categories land as they're written.
+// What each background job kind is doing, in the user's words, and where the
+// card leads. A re-embed (model switch, or an embed-format upgrade on launch)
+// rebuilds retrieval memory; it categorizes nothing, so it must not say it does.
+const KINDS = {
+  annotate: { title: 'Categorizing your transactions', to: '/transactions' },
+  reembed: { title: 'Refreshing AI memory', to: '/settings' },
+}
+
+// Floating realtime progress card for a running background job.
+// `job` is the polled annotation_jobs row ({status, processed, total, kind}) or
+// null. Renders nothing when there is no active job.
 export default function AnnotationProgress({ job }) {
   if (!job) return null
+  const { title, to } = KINDS[job.kind]
 
   const total = job.total ?? 0
   const processed = job.processed ?? 0
@@ -17,12 +25,12 @@ export default function AnnotationProgress({ job }) {
 
   return createPortal(
     <Link
-      to="/transactions"
+      to={to}
       className="group fixed bottom-5 right-5 z-50 block w-80 bg-[#13151f] border border-[#2d3148] rounded-xl shadow-2xl shadow-black/40 px-4 py-3.5 transition-colors hover:border-[#7c3aed]/70"
     >
       <div className="flex items-center gap-2 mb-2.5">
         <Sparkles size={15} className="text-[#a78bfa] shrink-0" />
-        <span className="text-sm font-medium text-[#e2e8f0]">Categorizing your transactions</span>
+        <span className="text-sm font-medium text-[#e2e8f0]">{title}</span>
         <ArrowRight
           size={14}
           className="ml-auto shrink-0 text-[#94a3b8] opacity-0 transition-opacity group-hover:opacity-100"
