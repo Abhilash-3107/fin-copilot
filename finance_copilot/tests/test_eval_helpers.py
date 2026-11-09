@@ -58,7 +58,7 @@ class TestProviderAbstraction:
     def test_provider_none_skips_llm(self, monkeypatch):
         from finance_copilot.pipeline.llm import annotate_transaction_llm
         monkeypatch.setattr(settings, "llm_provider", "none")
-        assert annotate_transaction_llm({"id": "t1", "raw_description": "x"}, ["Food & Dining"]) is None
+        assert annotate_transaction_llm({"id": "t1", "raw_description": "x", "debit_credit": "debit"}, ["Food & Dining"]) is None
 
     def test_openai_request_shape(self, monkeypatch):
         from finance_copilot.pipeline.llm import _build_provider_request

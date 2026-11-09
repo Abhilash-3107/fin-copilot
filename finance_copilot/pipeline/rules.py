@@ -1,17 +1,33 @@
-"""Rule-based annotation engine: keyword/merchant matching before falling back to LLM."""
+"""Rule-based annotation engine: built-in merchant knowledge (merchant_catalog)
+matched against what a transaction line says."""
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cache
 
+from finance_copilot.config import settings
 from finance_copilot.models.annotation import AnnotationCreate
+from finance_copilot.parsers.description import is_known_shape, parse_description
+from finance_copilot.pipeline.merchant_catalog import (
+    CATEGORY_DIRECTIONS,
+    DISAMBIGUATION_RULES,
+    MERCHANT_RULES,
+    SPENDING,
+    DisambiguationRule,
+    MerchantRule,
+    strip_payment_app,
+)
+
+__all__ = ["DISAMBIGUATION_RULES", "MERCHANT_RULES", "DisambiguationRule", "MerchantRule", "apply_rules"]
+
+RULE_CONFIDENCE = 0.95
 
 
 @cache
 def _compile_pattern(pattern: str) -> re.Pattern:
-    """Compile a keyword to a word-boundary regex so 'emi' can't match 'premium'.
+    """A keyword as a word-bounded regex, so 'emi' can't match 'premium'.
 
     Lookarounds instead of \\b so patterns that start/end with non-word chars
     (e.g. 'd-mart', 'cult.fit') still anchor correctly.
@@ -23,212 +39,104 @@ def _pattern_matches(pattern: str, haystack: str) -> bool:
     return _compile_pattern(pattern).search(haystack) is not None
 
 
-@dataclass
-class DisambiguationRule:
-    """Override a base rule when secondary patterns also match (more specific takes precedence)."""
-    base_patterns: list[str]      # must match one of these first
-    override_patterns: list[str]  # if ANY of these also match → use override
-    category: str
-    subcategory: str | None = None
-    merchant: str | None = None
-    tags: list[str] = field(default_factory=list)
-    match_fields: list[str] = field(default_factory=lambda: ["raw_description", "upi_note"])
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-@dataclass
-class MerchantRule:
-    patterns: list[str]          # case-insensitive substrings to search for
-    category: str
-    subcategory: str | None = None
-    merchant: str | None = None  # canonical merchant name
-    tags: list[str] = field(default_factory=list)
-    match_fields: list[str] = field(default_factory=lambda: ["raw_description", "upi_note"])
+@dataclass(frozen=True)
+class MatchView:
+    """What rules (built-in and user-written) match against, lowercased.
+
+    For a UPI line the parser understands: the payee and the note only, so a
+    bank prefix (HDFC, YESB) or a reference number never triggers a rule, and a
+    payment-app phrase ('Pay To BharatPe') never impersonates the merchant.
+    Other lines: the raw description and stored UPI note.
+    """
+    description: str             # payee + note (UPI) or the raw line
+    note: str
+    payee: str | None            # parsed payee as printed, UPI lines only
+    payee_prefixes: frozenset[str]  # compacted leading words: 'urban', 'urbancompany', ...
+
+    def haystack(self, fields: list[str]) -> str:
+        return " ".join({"raw_description": self.description, "upi_note": self.note}[f] for f in fields)
 
 
-MERCHANT_RULES: list[MerchantRule] = [
-    # --- Food Delivery ---
-    MerchantRule(["swiggy"], "Food & Dining", "Food Delivery", "Swiggy", ["food"]),
-    MerchantRule(["zomato"], "Food & Dining", "Food Delivery", "Zomato", ["food"]),
-    MerchantRule(["instamart"], "Food & Dining", "Food Delivery", "Swiggy Instamart", ["grocery"]),
+def match_view(txn: dict) -> MatchView:
+    raw = txn["raw_description"]
+    parsed = parse_description(raw, settings.upi_noise_keywords)
+    if is_known_shape(parsed) and parsed.counterparty:
+        note = strip_payment_app(parsed.note) or ""
+        words = [_compact(w) for w in parsed.counterparty.split()]
+        prefixes = frozenset("".join(words[: i + 1]) for i in range(len(words)))
+        return MatchView(f"{parsed.counterparty} {note}".strip().lower(), note.lower(), parsed.counterparty, prefixes)
+    note = json.loads(txn["upi_meta"])["note"] or "" if txn.get("upi_meta") else ""
+    return MatchView(raw.lower(), note.lower(), None, frozenset())
 
-    # --- Groceries ---
-    MerchantRule(["bigbasket", "big basket"], "Food & Dining", "Groceries", "BigBasket", ["grocery"]),
-    MerchantRule(["blinkit", "grofers"], "Food & Dining", "Groceries", "Blinkit", ["grocery"]),
-    MerchantRule(["zepto"], "Food & Dining", "Groceries", "Zepto", ["grocery"]),
-    MerchantRule(["dmart", "d-mart"], "Food & Dining", "Groceries", "DMart", ["grocery"]),
 
-    # --- Restaurants / Cafes ---
-    MerchantRule(["starbucks"], "Food & Dining", "Cafe & Snacks", "Starbucks", ["coffee"]),
-    MerchantRule(["cafe coffee day", "ccd"], "Food & Dining", "Cafe & Snacks", "Cafe Coffee Day", ["coffee"]),
-    MerchantRule(["dominos", "domino's"], "Food & Dining", "Restaurants", "Domino's", ["food"]),
-    MerchantRule(["mcdonald", "mcdonalds"], "Food & Dining", "Restaurants", "McDonald's", ["food"]),
-    MerchantRule(["kfc"], "Food & Dining", "Restaurants", "KFC", ["food"]),
+@dataclass(frozen=True)
+class _Compiled:
+    """A catalog rule with its patterns compiled once at import."""
+    regex: re.Pattern
+    multiword_compact: frozenset[str]  # compacted multi-word patterns, entity rules only
 
-    # --- Online Shopping ---
-    MerchantRule(["amazon", "amzn"], "Shopping", "Online Shopping", "Amazon", ["shopping"]),
-    MerchantRule(["flipkart"], "Shopping", "Online Shopping", "Flipkart", ["shopping"]),
-    MerchantRule(["myntra"], "Shopping", "Clothing & Apparel", "Myntra", ["shopping", "clothing"]),
-    MerchantRule(["meesho"], "Shopping", "Online Shopping", "Meesho", ["shopping"]),
-    MerchantRule(["ajio"], "Shopping", "Clothing & Apparel", "AJIO", ["shopping", "clothing"]),
-    MerchantRule(["nykaa"], "Shopping", "General Retail", "Nykaa", ["shopping", "beauty"]),
 
-    # --- Transport ---
-    MerchantRule(["uber"], "Transport", "Cab & Auto", "Uber", ["transport"]),
-    MerchantRule(["ola", "olacabs", "ola cabs"], "Transport", "Cab & Auto", "Ola", ["transport"]),
-    MerchantRule(["rapido"], "Transport", "Cab & Auto", "Rapido", ["transport"]),
-    MerchantRule(["irctc"], "Travel", "Train", "IRCTC", ["travel", "train"]),
-    MerchantRule(["indigo", "air india", "spicejet", "akasa", "vistara", "go first"], "Travel", "Flights", None, ["travel", "flight"]),
-    MerchantRule(["makemytrip", "mmt"], "Travel", None, "MakeMyTrip", ["travel"]),
-    MerchantRule(["goibibo"], "Travel", None, "Goibibo", ["travel"]),
-    MerchantRule(["redbus"], "Travel", "Bus", "redBus", ["travel", "bus"]),
-    MerchantRule(["petrol", "petroleum", "hp petrol", "indian oil", "iocl", "bharat petroleum", "bpcl", "hpcl"], "Transport", "Fuel", None, ["fuel"]),
+def _compile_rule(patterns: list[str], merchant: str | None) -> _Compiled:
+    regex = re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(p.strip().lower()) for p in patterns) + r")(?!\w)"
+    )
+    multiword = frozenset(_compact(p) for p in patterns if " " in p.strip()) if merchant else frozenset()
+    return _Compiled(regex, multiword)
 
-    # --- Bills & Utilities ---
-    MerchantRule(["jio", "reliance jio"], "Bills & Utilities", "Mobile Recharge", "Jio", ["telecom"]),
-    MerchantRule(["airtel"], "Bills & Utilities", "Mobile Recharge", "Airtel", ["telecom"]),
-    # "vi" alone is too false-positive-prone (matches the standalone word in
-    # names/notes even with word boundaries), so require telecom context.
-    MerchantRule(["vodafone", "idea cellular", "vodafone idea", "vi recharge"], "Bills & Utilities", "Mobile Recharge", "Vi", ["telecom"]),
-    MerchantRule(["bsnl"], "Bills & Utilities", "Mobile Recharge", "BSNL", ["telecom"]),
-    MerchantRule(["tata sky", "dish tv", "sun direct", "videocon d2h", "d2h"], "Bills & Utilities", "DTH", None, ["dth"]),
-    MerchantRule(["bescom", "msedcl", "tneb", "tata power", "adani electricity", "electricity bill"], "Bills & Utilities", "Electricity", None, ["electricity"]),
 
-    # --- Entertainment ---
-    MerchantRule(["netflix"], "Entertainment", "Movies & OTT", "Netflix", ["ott"]),
-    MerchantRule(["hotstar", "disney+", "disney plus"], "Entertainment", "Movies & OTT", "Hotstar", ["ott"]),
-    MerchantRule(["spotify"], "Entertainment", "Movies & OTT", "Spotify", ["music"]),
-    MerchantRule(["youtube premium", "youtube music"], "Entertainment", "Movies & OTT", "YouTube Premium", ["ott"]),
-    MerchantRule(["amazon prime", "prime video"], "Entertainment", "Movies & OTT", "Amazon Prime", ["ott"]),
-    MerchantRule(["sonyliv", "sony liv"], "Entertainment", "Movies & OTT", "SonyLIV", ["ott"]),
-    MerchantRule(["zee5"], "Entertainment", "Movies & OTT", "ZEE5", ["ott"]),
-    MerchantRule(["bookmyshow"], "Entertainment", "Events & Concerts", "BookMyShow", ["entertainment"]),
-
-    # --- Financial ---
-    MerchantRule(["salary", "sal cr", "sal credit"], "Income", "Salary", None, ["income", "salary"], ["raw_description"]),
-    MerchantRule(["mutual fund", "mf sip", "sip debit", "nfo"], "Investments", "Mutual Fund SIP", None, ["investment"]),
-    MerchantRule(["emi", "loan emi", "home loan", "car loan", "personal loan"], "Finances", "Loan EMI", None, ["emi"]),
-    MerchantRule(["insurance", "lic", "hdfc life", "sbi life", "icici pru"], "Finances", "Insurance Premium", None, ["insurance"]),
-    MerchantRule(["credit card", "cc payment", "card outstanding"], "Finances", "Credit Card Payment", None, ["credit-card"]),
-    MerchantRule(["income tax", "tds payment", "advance tax", "gst payment"], "Finances", "Tax Payment", None, ["tax"]),
-
-    # --- Income ---
-    # Balance-artifact rows (opening balance / B/F) never reach annotation: ingest
-    # folds them into statements.opening_balance. Interest-paid lines are real
-    # income; matched here so "…Closing Balance" in the text can't confuse later stages.
-    MerchantRule(["int.pd", "interest paid", "interest credit"], "Income", "Interest & Dividends", None, ["interest"], ["raw_description"]),
-
-    # --- Investments (brokers / SIP debits) ---
-    MerchantRule(["indmoney", "ind money"], "Investments", "Mutual Fund SIP", "INDmoney", ["investment"]),
-    MerchantRule(["nach-mut-dr", "nach mut dr"], "Investments", "Mutual Fund SIP", None, ["investment", "sip"]),
-    MerchantRule(["groww"], "Investments", "Mutual Fund SIP", "Groww", ["investment"]),
-    MerchantRule(["zerodha", "coin by zerodha"], "Investments", "Mutual Fund SIP", "Zerodha", ["investment"]),
-    MerchantRule(["kuvera"], "Investments", "Mutual Fund SIP", "Kuvera", ["investment"]),
-
-    # --- ATM / Transfers ---
-    MerchantRule(["atm withdrawal", "atm cash", "atm wd"], "Transfers", "ATM Withdrawal", None, ["cash"]),
-    MerchantRule(["neft", "rtgs", "imps"], "Transfers", "Peer Transfer", None, ["transfer"], ["raw_description"]),
-
-    # --- Transport (public) ---
-    MerchantRule(["irctctourism"], "Transport", "Public Transport", "IRCTC Tourism", ["transport", "metro"]),
-    MerchantRule(["maha mumbai met", "mumbai metro"], "Transport", "Public Transport", "Mumbai Metro", ["transport", "metro"]),
-    MerchantRule(["uts- direct", "uts-direct"], "Transport", "Public Transport", "UTS", ["transport", "train"]),
-
-    # --- Health ---
-    MerchantRule(["pharmeasy", "netmeds", "1mg", "medplus", "apollo pharmacy"], "Health", "Pharmacy", None, ["health", "pharmacy"]),
-    MerchantRule(["apollo hospital", "fortis", "max hospital", "manipal", "aiims"], "Health", "Doctor & Hospital", None, ["health", "hospital"]),
-
-    # --- Personal Care ---
-    MerchantRule(["cult.fit", "cult fit", "curefit"], "Personal Care", "Gym & Fitness", "Cult.fit", ["fitness"]),
-    MerchantRule(["urban company", "urbanclap"], "Personal Care", "Salon & Spa", "Urban Company", ["personal-care"]),
-
-    # --- Education ---
-    MerchantRule(["coursera", "udemy", "udacity", "unacademy", "byju", "upgrad"], "Education", "Online Courses", None, ["education"]),
-    MerchantRule(["school fee", "college fee", "tuition fee"], "Education", "Tuition & Fees", None, ["education"]),
-
-    # --- Housing ---
-    MerchantRule(["rent payment", "house rent", "rental"], "Housing", "Rent", None, ["rent"], ["raw_description", "upi_note"]),
-    MerchantRule(["maintenance", "society charges", "society fee"], "Housing", "Maintenance & Society Charges", None, ["housing"]),
+_MERCHANTS = [(rule, _compile_rule(rule.patterns, rule.merchant)) for rule in MERCHANT_RULES]
+_DISAMBIGUATIONS = [
+    (rule, _compile_rule(rule.base_patterns, rule.merchant), _compile_rule(rule.override_patterns, None))
+    for rule in DISAMBIGUATION_RULES
 ]
 
 
-DISAMBIGUATION_RULES: list[DisambiguationRule] = [
-    # Uber Eats → Food & Dining (overrides the default Uber → Transport rule)
-    DisambiguationRule(
-        base_patterns=["uber", "ubereats"],
-        override_patterns=["eat", "eats", "food", "ubereats"],
-        category="Food & Dining", subcategory="Food Delivery",
-        merchant="Uber Eats", tags=["food"],
-    ),
-    # Amazon Prime Video → Entertainment (overrides Amazon → Shopping)
-    DisambiguationRule(
-        base_patterns=["amazon", "amzn"],
-        override_patterns=["prime video", "primevideo", "prime membership"],
-        category="Entertainment", subcategory="Movies & OTT",
-        merchant="Amazon Prime", tags=["ott"],
-    ),
-    # AWS → Finances (overrides Amazon → Shopping; closest fit in the taxonomy)
-    DisambiguationRule(
-        base_patterns=["amazon", "amzn"],
-        override_patterns=["aws", "amazon web"],
-        category="Finances", subcategory=None,
-        merchant="AWS", tags=["business", "cloud"],
-    ),
-]
+def _names_payee(compiled: _Compiled, view: MatchView) -> bool:
+    """A merchant-naming pattern the word-bounded search can't see: the payee's
+    leading words run the phrase together ('URBANCOMPANY'), or the payee was cut
+    at the bank's print width inside it ('ROPPEN TRANSPOR')."""
+    if not compiled.multiword_compact or view.payee is None:
+        return False
+    if compiled.multiword_compact & view.payee_prefixes:
+        return True
+    if len(view.payee) < settings.counterparty_truncated_min_len:
+        return False
+    cut = _compact(view.payee)
+    return any(p.startswith(cut) for p in compiled.multiword_compact)
 
 
-def _extract_upi_note(txn: dict) -> str:
-    """Pull the UPI note out of upi_meta JSON, returning empty string if absent."""
-    upi_meta = txn.get("upi_meta")
-    if not upi_meta:
-        return ""
-    try:
-        meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
-        return str(meta.get("note", ""))
-    except (json.JSONDecodeError, AttributeError):
-        return ""
+def _hits(compiled: _Compiled, view: MatchView, fields: list[str]) -> bool:
+    return compiled.regex.search(view.haystack(fields)) is not None or _names_payee(compiled, view)
+
+
+def _allowed(category: str, debit_credit: str) -> bool:
+    return debit_credit in CATEGORY_DIRECTIONS.get(category, SPENDING)
+
+
+def _annotation(txn: dict, rule: MerchantRule | DisambiguationRule) -> AnnotationCreate:
+    return AnnotationCreate(
+        transaction_id=txn["id"], merchant=rule.merchant, category=rule.category,
+        subcategory=rule.subcategory, tags=rule.tags, confidence=RULE_CONFIDENCE, source="rule",
+    )
 
 
 def apply_rules(txn: dict) -> AnnotationCreate | None:
-    """Try to match the transaction against MERCHANT_RULES.
+    """The first catalog rule that matches the transaction (source 'rule'), or None.
 
-    Returns an AnnotationCreate with confidence=0.95 and source='model' on first match,
-    or None if no rule matches.
+    Disambiguation rules go first (more specific), then merchant rules in
+    catalog order. A rule only fires in the directions its category describes.
     """
-    upi_note = _extract_upi_note(txn)
-
-    field_values: dict[str, str] = {
-        "raw_description": (txn.get("raw_description") or "").lower(),
-        "upi_note": upi_note.lower(),
-    }
-
-    # Phase 1: disambiguation rules (more specific — checked before MERCHANT_RULES)
-    for drule in DISAMBIGUATION_RULES:
-        haystack = " ".join(field_values[f] for f in drule.match_fields if f in field_values)
-        if any(_pattern_matches(p, haystack) for p in drule.base_patterns):
-            if any(_pattern_matches(p, haystack) for p in drule.override_patterns):
-                return AnnotationCreate(
-                    transaction_id=txn["id"],
-                    merchant=drule.merchant,
-                    category=drule.category,
-                    subcategory=drule.subcategory,
-                    tags=drule.tags,
-                    confidence=0.95,
-                    source="rule",
-                )
-
-    # Phase 2: standard merchant rules
-    for rule in MERCHANT_RULES:
-        haystack = " ".join(field_values[f] for f in rule.match_fields if f in field_values)
-        for pattern in rule.patterns:
-            if _pattern_matches(pattern, haystack):
-                return AnnotationCreate(
-                    transaction_id=txn["id"],
-                    merchant=rule.merchant,
-                    category=rule.category,
-                    subcategory=rule.subcategory,
-                    tags=rule.tags,
-                    confidence=0.95,
-                    source="rule",
-                )
-
+    view = match_view(txn)
+    direction = txn["debit_credit"]
+    for rule, base, override in _DISAMBIGUATIONS:
+        if (_allowed(rule.category, direction) and _hits(base, view, rule.match_fields)
+                and override.regex.search(view.haystack(rule.match_fields))):
+            return _annotation(txn, rule)
+    for rule, compiled in _MERCHANTS:
+        if _allowed(rule.category, direction) and _hits(compiled, view, rule.match_fields):
+            return _annotation(txn, rule)
     return None

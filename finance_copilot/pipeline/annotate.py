@@ -24,9 +24,10 @@ from finance_copilot.db.queries.learned_rules import (
     verified_labels,
 )
 from finance_copilot.db.queries.people import (
+    is_self_relationship,
     list_people,
     person_token_matches,
-    relationship_subcategory,
+    relationship_category,
 )
 from finance_copilot.db.queries.transactions import list_transactions
 from finance_copilot.db.queries.user_rules import annotation_for as user_rule_annotation
@@ -159,14 +160,19 @@ def _match_known_person(
     counterparty_key = txn["counterparty_key"]
     for name, token, relationship in known_people:
         if person_token_matches(token, vpa, counterparty_key, desc):
-            subcategory = relationship_subcategory(relationship)
-            is_family = subcategory == "Family"
+            category, subcategory = relationship_category(relationship)
+            if is_self_relationship(relationship):
+                tags = ["transfer", "self"]
+            elif subcategory == "Family":
+                tags = ["transfer", "family"]
+            else:
+                tags = ["transfer", "peer"]
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=name,
-                category="Transfers",
+                category=category,
                 subcategory=subcategory,
-                tags=["transfer", "family"] if is_family else ["transfer", "peer"],
+                tags=tags,
                 confidence=0.95,
                 source="rule",
             )
@@ -466,6 +472,7 @@ def auto_annotate(
                     embed_text=ctx.get("embed_text"),
                     **_llm_telemetry_fields(llm_result),
                 )
+                _apply_fact_gate(conn, txn, ann, trace, txn["txn_date"])
                 _persist(ann, trace)
                 llm_annotated += 1
                 # Compare the stored (dampened) confidence — it decides review-queue membership
@@ -838,7 +845,7 @@ def _try_rag_annotation(
                 skips=skips,
                 embed_text=embed_text,
             )
-            return AnnotationCreate(
+            ann = AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=donor_ann.get("merchant"),
                 category=top_category,
@@ -846,7 +853,10 @@ def _try_rag_annotation(
                 tags=parse_string_list(donor_ann.get("tags")),
                 confidence=confidence,
                 source="rag_direct",
-            ), trace
+            )
+            # A neighbour's Self Transfer is about the neighbour's payee.
+            _apply_fact_gate(conn, txn, ann, trace, as_of)
+            return ann, trace
         elif donor_ann:
             logger.debug(
                 "rag_direct skipped | txn=%s  donor_source=%s (untrusted) → falling through to rag_prompted",
@@ -990,7 +1000,7 @@ def _try_rag_annotation(
                 majority_count=majority_count,
                 **_llm_telemetry_fields(llm_result),
             )
-            return AnnotationCreate(
+            ann = AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=llm_result.merchant,
                 category=category,
@@ -998,13 +1008,53 @@ def _try_rag_annotation(
                 tags=llm_result.tags,
                 confidence=confidence,
                 source="rag_prompted",
-            ), trace
+            )
+            _apply_fact_gate(conn, txn, ann, trace, as_of)
+            return ann, trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
         skips.append("rag_prompted: llm returned nothing")
         return None, None
 
     skips.append("rag_prompted: no annotated examples to prompt with")
     return None, None
+
+
+def gate_fact_categories(
+    conn: sqlite3.Connection, txn: TxnRow, category: str, subcategory: str | None, confidence: float,
+    *, as_of: str | None,
+) -> tuple[str, str | None, float, str | None]:
+    """Keep a retrieved or model-produced category only when the facts it needs
+    are known.
+
+    Self Transfers means "the payee is me". A name (to the LLM) or a nearby
+    vector (to retrieval) can't establish that, and an unverified one silently
+    drops real spending from every insight. It stands only when the user's own
+    verified labels for this payee and direction (as of as_of, like every other
+    history read) are mostly Self Transfers; a People entry marked "self" is
+    handled by the person rule before any model runs. Otherwise it becomes
+    Transfers > Peer Transfer for review. Returns (category, subcategory,
+    confidence, cap or None).
+    """
+    if category != "Self Transfers":
+        return category, subcategory, confidence, None
+    stats = label_stats(verified_labels(
+        conn, txn["counterparty_key"], txn["debit_credit"], before_txn_date=as_of, exclude_transaction_id=txn["id"],
+    )) if txn["counterparty_key"] else None
+    if stats is not None and stats.category == "Self Transfers" and stats.purity > 0.5:
+        return category, subcategory, confidence, None
+    return "Transfers", "Peer Transfer", min(confidence, settings.rag_defer_confidence_cap), "self_transfer_unverified"
+
+
+def _apply_fact_gate(
+    conn: sqlite3.Connection, txn: TxnRow, ann: AnnotationCreate, trace: ReasoningTrace, as_of: str | None
+) -> None:
+    category, subcategory, confidence, cap = gate_fact_categories(
+        conn, txn, ann.category, ann.subcategory, ann.confidence, as_of=as_of
+    )
+    if cap is not None:
+        ann.category, ann.subcategory, ann.confidence = category, subcategory, confidence
+        trace.final_confidence = confidence
+        trace.caps_applied.append(cap)
 
 
 def _majority_category(categories: list[str]) -> tuple[str | None, int]:
