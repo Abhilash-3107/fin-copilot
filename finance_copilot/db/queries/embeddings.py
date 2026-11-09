@@ -51,8 +51,10 @@ def upsert_embedding(
     transaction_id: str,
     embedding: list[float],
     model_version: str,
+    text_hash: str,
 ) -> None:
-    """Insert or replace embedding in vec_items and track in embedding_meta."""
+    """Insert or replace embedding in vec_items and track in embedding_meta,
+    with the model and the hash of the text it was built from."""
     blob = _serialize_embedding(embedding)
     # vec0 virtual tables reject INSERT OR REPLACE on an existing primary key
     # ("UNIQUE constraint failed"), so replace is delete + insert.
@@ -67,14 +69,15 @@ def upsert_embedding(
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE embedding_meta SET model_version = ?, created_at = datetime('now') WHERE transaction_id = ?",
-            (model_version, transaction_id),
+            "UPDATE embedding_meta SET model_version = ?, text_hash = ?, created_at = datetime('now') "
+            "WHERE transaction_id = ?",
+            (model_version, text_hash, transaction_id),
         )
     else:
         meta_id = str(ulid.ULID())
         conn.execute(
-            "INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES (?, ?, ?)",
-            (meta_id, transaction_id, model_version),
+            "INSERT INTO embedding_meta (id, transaction_id, model_version, text_hash) VALUES (?, ?, ?, ?)",
+            (meta_id, transaction_id, model_version, text_hash),
         )
 
 

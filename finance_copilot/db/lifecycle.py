@@ -53,3 +53,17 @@ def reconcile_database(conn: sqlite3.Connection, *, reset_llm_settings: bool = F
     reaped = reap_interrupted_jobs(conn)
     if reaped:
         logger.warning("failed %d annotation job(s) orphaned by the previous process", reaped)
+    # Parsed description fields and vectors follow the code that derives them: a
+    # parser or embed-text upgrade re-derives on the next launch, no manual step.
+    reconcile_derived(conn)
+
+
+def reconcile_derived(conn: sqlite3.Connection) -> None:
+    """Re-derive stale parsed fields now; rebuild stale vectors in the background."""
+    from finance_copilot.api.routes.embeddings import refresh_stale_embeddings_in_background
+    from finance_copilot.config import settings
+    from finance_copilot.pipeline.derived import reconcile_derived_data
+
+    reconcile_derived_data(conn)
+    if settings.embedding_provider != "none":
+        refresh_stale_embeddings_in_background()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -9,7 +10,10 @@ from pathlib import Path
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
 from finance_copilot.models.transaction import Statement, Transaction
+from finance_copilot.parsers.description import KNOWN_SHAPES
 from finance_copilot.parsers.registry import detect_parser
+
+logger = logging.getLogger(__name__)
 
 # Statement rows that describe the balance itself rather than a money movement.
 # Some bank formats (e.g. Kotak until early 2026) print these as dated rows with
@@ -166,6 +170,33 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
         )
 
     return warnings
+
+
+def check_description_formats(conn: sqlite3.Connection, statement: Statement) -> list[str]:
+    """Warn when UPI lines in a new statement use a layout the parser doesn't fully
+    understand. Such rows still ingest (raw text is kept), but identity, learned
+    rules, and retrieval degrade for them, so the user and the logs should know
+    instead of finding out through a fuller review queue."""
+    known = sorted(KNOWN_SHAPES)
+    shapes = [
+        r[0] for r in conn.execute(
+            f"SELECT json_extract(upi_meta, '$.shape') FROM transactions "
+            f"WHERE statement_id = ? AND upi_meta IS NOT NULL "
+            f"AND json_extract(upi_meta, '$.shape') NOT IN ({','.join('?' * len(known))})",
+            (statement.id, *known),
+        )
+    ]
+    if not shapes:
+        return []
+    logger.warning(
+        "statement %s: %d UPI line(s) in an unrecognized layout (shapes %s)",
+        statement.id, len(shapes), sorted(set(shapes)),
+    )
+    noun = "transaction is" if len(shapes) == 1 else "transactions are"
+    return [
+        f"{len(shapes)} UPI {noun} in a format I don't fully recognise yet, "
+        "so automatic categories may be weaker for them."
+    ]
 
 
 class DuplicateStatementError(ValueError):

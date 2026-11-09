@@ -482,7 +482,7 @@ class TestBuildEmbedText:
         # dilutes the merchant signal the retriever depends on.
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 500.0,
-               "raw_description": "SWIGGY ORDER", "upi_meta": None}
+               "raw_description": "SWIGGY ORDER", "counterparty_key": None, "upi_meta": None}
         result = build_embed_text(txn)
         # Lowercased: nomic-embed-text mangles ALL-CAPS bank text.
         assert result == "debit swiggy order"
@@ -490,7 +490,7 @@ class TestBuildEmbedText:
     def test_with_upi_note(self):
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 500.0,
-               "raw_description": "UPI TRANSFER",
+               "raw_description": "UPI TRANSFER", "counterparty_key": None,
                "upi_meta": json.dumps({"note": "food order"})}
         result = build_embed_text(txn)
         assert "food order" in result
@@ -499,7 +499,7 @@ class TestBuildEmbedText:
     def test_missing_upi_note_key(self):
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "credit", "amount": 10000.0,
-               "raw_description": "SALARY CREDIT",
+               "raw_description": "SALARY CREDIT", "counterparty_key": None,
                "upi_meta": json.dumps({"note": None})}
         result = build_embed_text(txn)
         assert result == "credit salary credit"
@@ -509,22 +509,22 @@ class TestBuildEmbedText:
         # merchant embed identically.
         from finance_copilot.pipeline.embed import build_embed_text
         a = {"debit_credit": "debit", "amount": 228.0,
-             "raw_description": "UPI/OBEROIFC tucksh/121013717523/UPI", "upi_meta": None}
+             "raw_description": "UPI/OBEROIFC tucksh/121013717523/UPI", "counterparty_key": 'OBEROIFC TUCKSH', "upi_meta": None}
         b = {"debit_credit": "debit", "amount": 805.0,
-             "raw_description": "UPI/OBEROIFC tucksh/120580534937/UPI", "upi_meta": None}
+             "raw_description": "UPI/OBEROIFC tucksh/120580534937/UPI", "counterparty_key": 'OBEROIFC TUCKSH', "upi_meta": None}
         assert build_embed_text(a) == build_embed_text(b) == "debit upi/oberoifc tucksh"
 
     def test_keeps_meaningful_upi_note(self):
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 300.0,
-               "raw_description": "UPI/ANANTA KUMAR BO/121066925569/movie tickets",
+               "raw_description": "UPI/ANANTA KUMAR BO/121066925569/movie tickets", "counterparty_key": 'ANANTA KUMAR BO',
                "upi_meta": None}
         assert build_embed_text(txn) == "debit upi/ananta kumar bo/movie tickets"
 
     def test_non_upi_description_untouched(self):
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 100.0,
-               "raw_description": "PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21",
+               "raw_description": "PCD/1280/ETERNAL LIMITED/GURGAON180226/16:21", "counterparty_key": None,
                "upi_meta": None}
         assert build_embed_text(txn) == "debit pcd/1280/eternal limited/gurgaon180226/16:21"
 
@@ -812,7 +812,7 @@ class TestRagPromptedOffExample:
         """When trusted donors are split with no clear winner, confidence is capped
         below threshold so the txn routes to review (selective classification).
 
-        Mirrors the real ANSHU YADAV case: a small UPI to an unknown name whose
+        Mirrors the real ROHIT YADAV case: a small UPI to an unknown name whose
         amount-neighbors are part Transport (cab), part Transfers (family)."""
         from finance_copilot.config import settings
         from finance_copilot.pipeline.annotate import auto_annotate
@@ -1376,7 +1376,18 @@ class TestUpiParsing:
 
     def test_vpa_ref_note_extracted(self):
         meta = self._parse("UPI/merchant@okaxis/118030236405/food order")
-        assert meta == {"vpa": "merchant@okaxis", "ref": "118030236405", "note": "food order"}
+        assert meta == {
+            "vpa": "merchant@okaxis", "ref": "118030236405", "note": "food order",
+            "bank": None, "shape": "upi/name/ref/note",
+        }
+
+    def test_bank_prefixed_layout(self):
+        # Kotak from June 2026: an IFSC bank prefix sits between payee and ref.
+        meta = self._parse("UPI/Blue Tokai Cof/YESB/124907113263/UPI")
+        assert meta == {
+            "vpa": None, "ref": "124907113263", "note": None,
+            "bank": "YESB", "shape": "upi/name/bank/ref/note",
+        }
 
     def test_ref_as_last_segment_is_not_a_note(self):
         meta = self._parse("UPI/Agoda Company P/118030236405")
@@ -1393,7 +1404,9 @@ class TestUpiParsing:
 
     def test_no_vpa_or_ref(self):
         meta = self._parse("UPI/SOME SHOP/groceries")
-        assert meta == {"vpa": None, "ref": None, "note": "groceries"}
+        assert meta == {
+            "vpa": None, "ref": None, "note": "groceries", "bank": None, "shape": "unrecognized",
+        }
 
 
 class TestKnownPersonMatching:
@@ -1402,7 +1415,7 @@ class TestKnownPersonMatching:
 
     def test_exact_vpa_match(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t1", "raw_description": "UPI/rahul@okaxis/118030236405/dinner",
+        txn = {"id": "t1", "raw_description": "UPI/rahul@okaxis/118030236405/dinner", "counterparty_key": 'RAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "118030236405", "note": "dinner"})}
         result = _match_known_person(txn, self._people())
         assert result is not None
@@ -1412,20 +1425,20 @@ class TestKnownPersonMatching:
     def test_different_vpa_does_not_substring_match(self):
         """'rahul@okaxis' must not match 'notrahul@okaxis' when a VPA is present."""
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t2", "raw_description": "UPI/notrahul@okaxis/12345678/x",
+        txn = {"id": "t2", "raw_description": "UPI/notrahul@okaxis/12345678/x", "counterparty_key": 'NOTRAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "notrahul@okaxis", "ref": "12345678", "note": "x"})}
         assert _match_known_person(txn, self._people()) is None
 
     def test_legacy_rows_fall_back_to_substring(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t3", "raw_description": "IMPS rahul@okaxis transfer", "upi_meta": None}
+        txn = {"id": "t3", "raw_description": "IMPS rahul@okaxis transfer", "counterparty_key": None, "upi_meta": None}
         result = _match_known_person(txn, self._people())
         assert result is not None
         assert result.merchant == "Rahul"
 
     def test_family_relationship_maps_to_family_subcategory(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t4", "raw_description": "UPI/ananta@oksbi/1/rent",
+        txn = {"id": "t4", "raw_description": "UPI/ananta@oksbi/1/rent", "counterparty_key": 'ANANTA@OKSBI',
                "upi_meta": json.dumps({"vpa": "ananta@oksbi", "ref": "1", "note": "rent"})}
         result = _match_known_person(txn, [("Ananta", "ananta@oksbi", "dad")])
         assert result is not None
@@ -1435,7 +1448,7 @@ class TestKnownPersonMatching:
 
     def test_non_family_relationship_stays_peer_transfer(self):
         from finance_copilot.pipeline.annotate import _match_known_person
-        txn = {"id": "t5", "raw_description": "UPI/rahul@okaxis/1/x",
+        txn = {"id": "t5", "raw_description": "UPI/rahul@okaxis/1/x", "counterparty_key": 'RAHUL@OKAXIS',
                "upi_meta": json.dumps({"vpa": "rahul@okaxis", "ref": "1", "note": "x"})}
         result = _match_known_person(txn, [("Rahul", "rahul@okaxis", "friend")])
         assert result is not None
@@ -1647,17 +1660,15 @@ class TestEmbeddingsEndpoint:
         self.conn.close()
 
     def test_generate_returns_counts(self):
-        with patch("finance_copilot.api.routes.embeddings.embed_annotated_transactions",
-                   return_value={"embedded": 3, "skipped": 1}):
+        with patch("finance_copilot.api.routes.embeddings.refresh_embeddings",
+                   return_value={"embedded": 3, "model": "m"}):
             response = self.client.post("/api/embeddings/generate", json={})
         assert response.status_code == 200
-        data = response.json()
-        assert data["embedded"] == 3
-        assert data["skipped"] == 1
+        assert response.json() == {"embedded": 3}
 
     def test_generate_with_statement_id(self):
-        with patch("finance_copilot.api.routes.embeddings.embed_annotated_transactions",
-                   return_value={"embedded": 5, "skipped": 0}) as mock_embed:
+        with patch("finance_copilot.api.routes.embeddings.refresh_embeddings",
+                   return_value={"embedded": 5, "model": "m"}) as mock_embed:
             response = self.client.post("/api/embeddings/generate", json={"statement_id": "stmt_01"})
         assert response.status_code == 200
         mock_embed.assert_called_once()
@@ -2038,7 +2049,7 @@ class TestPersonHistoryGate:
         return conn
 
     def _txn(self):
-        return {"id": "t_new", "raw_description": "UPI/SANYA PRASHANT/9999999999/UPI",
+        return {"id": "t_new", "raw_description": "UPI/SANYA PRASHANT/9999999999/UPI", "counterparty_key": 'SANYA PRASHANT',
                 "upi_meta": json.dumps({"vpa": "sanya@okhdfc", "ref": "9", "note": ""}),
                 "txn_date": "2026-02-01", "amount": 500.0, "debit_credit": "debit"}
 
@@ -2072,7 +2083,7 @@ class TestPersonHistoryGate:
     def test_keyword_rule_not_gated(self):
         from finance_copilot.pipeline.annotate import rule_annotation
         conn = self._conn_with_history("Entertainment", 4)
-        txn = {"id": "t_kw", "raw_description": "Swiggy food order", "upi_meta": None,
+        txn = {"id": "t_kw", "raw_description": "Swiggy food order", "counterparty_key": None, "upi_meta": None,
                "txn_date": "2026-02-01", "amount": 300.0, "debit_credit": "debit"}
         result, trace = rule_annotation(conn, txn, [])
         assert result is not None

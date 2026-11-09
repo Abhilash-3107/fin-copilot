@@ -1,67 +1,35 @@
-"""Re-embed every annotated transaction with the current build_embed_text.
+"""Rebuild every stale vector (missing, from another model, or built from text
+that build_embed_text no longer produces) in a DB, e.g. an eval copy.
 
-Needed after changing build_embed_text (stripping the rotating UPI reference and
-the raw amount): the existing stored vectors were built with the old, noisier text
-and are no longer comparable to fresh query embeddings. upsert_embedding does
-INSERT OR REPLACE, so this overwrites vectors in place — no delete needed.
-
-Read-nothing-destructive beyond overwriting vectors; annotations are untouched.
+The app does the same on startup in the background; this is for databases the
+app is not serving. Incremental: rows already current are skipped.
 
 Usage:
-    uv run python -m scripts.reembed_all [--dry-run]
+    DB_PATH=<db> uv run python -m scripts.reembed_all [--dry-run]
 """
 from __future__ import annotations
 
 import argparse
 
-import httpx
-
-from finance_copilot.config import current_embedding_model
-from finance_copilot.db.connection import get_connection
-from finance_copilot.db.queries.embeddings import delete_embeddings, upsert_embedding
-from finance_copilot.pipeline.embed import build_embed_text, get_embeddings_batch
+from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.pipeline.derived import reconcile_derived_data
+from finance_copilot.pipeline.embed import refresh_embeddings, stale_embedding_rows
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true", help="show texts, write nothing")
-    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--dry-run", action="store_true", help="show stale texts, write nothing")
     args = ap.parse_args()
 
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT t.* FROM transactions t "
-        "JOIN annotations a ON a.transaction_id = t.id ORDER BY t.id"
-    ).fetchall()
-    txns = [dict(r) for r in rows]
-    print(f"{len(txns)} annotated transactions to re-embed")
-
+    conn = get_migrated_db()
+    reconcile_derived_data(conn)
     if args.dry_run:
-        for t in txns[:20]:
-            print(f"  {t['txn_date']}  {build_embed_text(t)!r}")
-        print("... (dry run, nothing written)")
+        stale = stale_embedding_rows(conn)
+        print(f"{len(stale)} stale vectors")
+        for txn, text in stale[:20]:
+            print(f"  {txn['txn_date']}  {text!r}")
         return
-
-    model = current_embedding_model()
-    done = 0
-    for i in range(0, len(txns), args.batch_size):
-        batch = txns[i : i + args.batch_size]
-        texts = [build_embed_text(t) for t in batch]
-        try:
-            vectors = get_embeddings_batch(texts)
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
-            print(f"  batch {i}-{i+len(batch)} FAILED: {e} (re-run to fill)")
-            continue
-        # sqlite-vec virtual tables don't honor INSERT OR REPLACE, so clear the
-        # old vector rows for this batch before re-inserting.
-        delete_embeddings(conn, [t["id"] for t in batch])
-        for t, vec in zip(batch, vectors, strict=True):
-            upsert_embedding(conn, t["id"], vec, model)
-            done += 1
-        conn.commit()
-        print(f"  embedded {done}/{len(txns)}")
-
-    print(f"done: {done} re-embedded")
+    print(refresh_embeddings(conn, progress_cb=lambda done, total: print(f"  {done}/{total}", end="\r")))
 
 
 if __name__ == "__main__":

@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # irreducible "recurring contact's occasional off-category spend" — which the
     # late-fusion layer (prior vs LLM disagreement → review) catches, not the floor.
     counterparty_min_observations: int = 2
+    # Shortest payee key that can be a bank's truncation of a longer name
+    # (pipeline/counterparty.truncation_variants). Kotak cuts at 15, or 14 with an
+    # IFSC prefix; 13 covers a cut that lands on a space.
+    counterparty_truncated_min_len: int = 13
     # The shrunk P(category | counterparty) must reach this for the prior to count
     # as a dominant, established signal.
     counterparty_dominance_floor: float = 0.65

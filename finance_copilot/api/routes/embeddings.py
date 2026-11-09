@@ -16,7 +16,7 @@ from finance_copilot.db.queries.embeddings import (
     ensure_vec_dimension,
     get_embedding_stats,
 )
-from finance_copilot.pipeline.embed import embed_annotated_transactions, reembed_all
+from finance_copilot.pipeline.embed import refresh_embeddings, stale_embedding_rows
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,6 @@ class EmbedRequest(BaseModel):
 
 class EmbedResponse(BaseModel):
     embedded: int
-    skipped: int
 
 
 @router.post("/generate", response_model=EmbedResponse)
@@ -37,13 +36,11 @@ def generate_embeddings(
     body: EmbedRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Generate embeddings for all annotated transactions that lack them.
+    """Embed every annotated transaction whose vector is missing or stale.
 
     Scoped to a statement if statement_id is provided, otherwise all statements.
-    Returns counts of newly embedded and already-skipped transactions.
     """
-    result = embed_annotated_transactions(conn, body.statement_id)
-    return result
+    return refresh_embeddings(conn, body.statement_id)
 
 
 @router.delete("/statement/{statement_id}")
@@ -87,7 +84,7 @@ def _run_reembed_job(job_id: str) -> None:
             )
             conn.commit()
 
-        result = reembed_all(conn, progress_cb=progress)
+        result = refresh_embeddings(conn, progress_cb=progress)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
@@ -107,6 +104,57 @@ def _run_reembed_job(job_id: str) -> None:
         conn.close()
 
 
+def enqueue_reembed_job(conn: sqlite3.Connection) -> tuple[dict | None, str | None]:
+    """Insert a queued 'reembed' job under the single-job guard.
+
+    Returns (inflight_job, None) when another job already holds the guard, else
+    (None, new_job_id); the caller runs _run_reembed_job(new_job_id).
+    """
+    from finance_copilot.api.routes.annotations import _reap_stale_jobs
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _reap_stale_jobs(conn)
+        inflight = conn.execute(
+            "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if inflight is not None:
+            conn.commit()
+            return dict(inflight), None
+        job_id = str(ulid.ULID())
+        conn.execute("INSERT INTO annotation_jobs (id, kind) VALUES (?, 'reembed')", (job_id,))
+        conn.commit()
+        return None, job_id
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def refresh_stale_embeddings_in_background() -> None:
+    """Startup: rebuild vectors that are missing, from another model, or built
+    from text that has since changed, on a daemon thread. Finding the stale rows
+    builds every donor's embed text, so it stays off the startup path too."""
+    import threading
+
+    def run() -> None:
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        conn = _open_job_connection()
+        try:
+            stale = len(stale_embedding_rows(conn))
+            if not stale:
+                return
+            _inflight, job_id = enqueue_reembed_job(conn)
+        finally:
+            conn.close()
+        if job_id is not None:
+            logger.info("%d stored vectors are stale - rebuilding them (job %s)", stale, job_id)
+            _run_reembed_job(job_id)
+
+    threading.Thread(target=run, daemon=True, name="embedding-refresh").start()
+
+
 @router.post("/reembed", status_code=202)
 def start_reembed_job(
     background_tasks: BackgroundTasks,
@@ -119,30 +167,9 @@ def start_reembed_job(
     mid-rebuild, so annotation must wait its turn. Poll
     GET /api/annotations/jobs/{id} for progress.
     """
-    from finance_copilot.api.routes.annotations import _reap_stale_jobs
-
-    scheduled_job_id: str | None = None
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        _reap_stale_jobs(conn)
-        inflight = conn.execute(
-            "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
-        ).fetchone()
-        if inflight is not None:
-            conn.commit()
-            return {"job_id": inflight["id"], "status": inflight["status"], "kind": inflight["kind"]}
-
-        job_id = str(ulid.ULID())
-        conn.execute(
-            "INSERT INTO annotation_jobs (id, kind) VALUES (?, 'reembed')",
-            (job_id,),
-        )
-        conn.commit()
-        scheduled_job_id = job_id
-    except Exception:
-        conn.rollback()
-        raise
+    inflight, scheduled_job_id = enqueue_reembed_job(conn)
+    if inflight is not None:
+        return {"job_id": inflight["id"], "status": inflight["status"], "kind": inflight["kind"]}
 
     background_tasks.add_task(_run_reembed_job, scheduled_job_id)
     return {"job_id": scheduled_job_id, "status": "queued", "kind": "reembed"}

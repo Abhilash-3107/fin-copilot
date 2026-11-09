@@ -19,19 +19,25 @@ shrinkage so it degrades gracefully:
 The prior is *fused at the decision layer* (confidence/routing in rag_prompted),
 never baked into the embedding and never used to override the RAG label.
 
-Identity key: the normalized name segment of the UPI description. The bank format
-here carries no VPA (name@bank appears in 1/568 rows); the 2nd "/"-segment of
-`UPI/NAME/ref/note` is the only stable counterparty handle, and it is consistently
-truncated so it collides with itself. Truncation can *false-split* one entity into
-two (ZEPTO vs ZEPTO MARKETPLA) — that only under-counts recurrence (weakens the
-prior), it never over-merges two different people, so it is the safe failure mode.
+Identity key: the payee name parsed out of the UPI description
+(parsers/description.py), upper-cased and whitespace-collapsed. The bank format
+carries no VPA (name@bank appears in 1/568 rows), so the printed name is the only
+stable counterparty handle. Banks print it truncated to a fixed width, and the
+width can change with the layout (Kotak: 15 chars, 14 once an IFSC bank prefix
+was added in June 2026), so one payee can appear as 'OBEROIFC TUCKSH' and
+'OBEROIFC TUCKS'. resolve_counterparty_key folds such truncation variants onto
+the first-seen key at ingest; it only merges when exactly one existing key is
+prefix-compatible, so it can under-merge (weaker prior, the safe failure mode)
+but never fuses two different people.
 """
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from finance_copilot.config import settings
+from finance_copilot.parsers.description import ParsedDescription, parse_description
 
 # Sources whose labels are trustworthy enough to seed a counterparty prior at full
 # weight; machine guesses are downweighted so a recurring RAG-mislabeled
@@ -40,20 +46,109 @@ from finance_copilot.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
 
 
 def normalize_identity(raw_description: str | None) -> str | None:
-    """Return a stable counterparty key from a UPI description, or None.
+    """Return the raw (unresolved) counterparty key from a UPI description, or None.
 
-    Keys on the 2nd segment of `UPI/NAME/ref/note`, upper-cased and whitespace-
-    collapsed. Returns None for non-UPI or unparseable descriptions, in which case
-    the caller treats the counterparty as unknown (no prior).
+    The parsed payee name, upper-cased and whitespace-collapsed. None for non-UPI
+    rails and UPI reversals (a reversal is a credit; sharing the payee's key would
+    mix refunds into that payee's learned rule and prior). Stored rows carry
+    the resolved key in transactions.counterparty_key; read that instead.
     """
-    if not raw_description:
+    return identity_from_parsed(parse_description(raw_description))
+
+
+def identity_from_parsed(parsed: ParsedDescription) -> str | None:
+    """normalize_identity for an already-parsed description."""
+    if parsed.rail != "upi" or not parsed.counterparty:
         return None
-    parts = raw_description.split("/")
-    # Expect at least UPI / NAME / ... — segment[1] is the counterparty name.
-    if len(parts) < 2 or parts[0].strip().upper() != "UPI":
+    return parsed.counterparty.upper()
+
+
+def truncation_variants(a: str, b: str) -> bool:
+    """Whether a and b can be one payee printed at two truncation widths.
+
+    Banks cut the payee field at a fixed width (Kotak: 15, or 14 when an IFSC
+    prefix is present), so the shorter key must itself be a cut: at least
+    counterparty_truncated_min_len chars, and the longer adds one character, or
+    two when the cut landed on a space that whitespace-collapse then dropped
+    ('AGODA COMPANY' vs 'AGODA COMPANY P'). 'MOHAMMED ALI' (a full 12-char name)
+    is never a cut of 'MOHAMMED ALI KH'.
+    """
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < settings.counterparty_truncated_min_len or not long_.startswith(short):
+        return False
+    gap = len(long_) - len(short)
+    return gap == 1 or (gap == 2 and long_[len(short)] == " ")
+
+
+def _stem(key: str) -> str:
+    return key[: settings.counterparty_truncated_min_len]
+
+
+def _unique_partner(key: str, candidates: Iterable[str]) -> str | None:
+    """The one other key that key is a truncation variant of, or None when it
+    has none or several (ambiguous: never guess between people)."""
+    partners = {c for c in candidates if c != key and truncation_variants(key, c)}
+    return partners.pop() if len(partners) == 1 else None
+
+
+def canonical_keys(raw_keys: Iterable[str]) -> dict[str, str]:
+    """Map every raw key to its canonical key: the longest spelling of a payee.
+
+    Two keys merge only when each is the other's unique truncation variant, so
+    the result does not depend on the order statements were uploaded in, and
+    ingest (resolve_counterparty_key) reaches the same answer incrementally.
+    """
+    by_stem: dict[str, set[str]] = {}
+    for key in raw_keys:
+        by_stem.setdefault(_stem(key), set()).add(key)
+    mapping: dict[str, str] = {}
+    for keys in by_stem.values():
+        for key in keys:
+            partner = _unique_partner(key, keys)
+            if partner is not None and _unique_partner(partner, keys) == key:
+                mapping[key] = max(key, partner, key=len)
+            else:
+                mapping[key] = key
+    return mapping
+
+
+def resolve_counterparty_key(conn: sqlite3.Connection, raw_key: str | None) -> str | None:
+    """The canonical key for a payee seen at ingest. Caller commits.
+
+    When the new spelling is the longer one, the stored rows move to it (with
+    any learned-rule suppression), keeping "longest spelling wins" true no
+    matter which statement arrived first.
+    """
+    if raw_key is None:
         return None
-    name = " ".join(parts[1].split()).strip().upper()
-    return name or None
+    if len(raw_key) < settings.counterparty_truncated_min_len:
+        return raw_key
+    stem = _stem(raw_key)
+    stored = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT counterparty_key FROM transactions "
+            "WHERE counterparty_key >= ? AND counterparty_key < ?",
+            (stem, stem + "\U0010ffff"),
+        )
+    ]
+    if raw_key in stored:
+        return raw_key
+    partner = _unique_partner(raw_key, stored)
+    if partner is None or _unique_partner(partner, [*stored, raw_key]) != raw_key:
+        return raw_key
+    if len(partner) >= len(raw_key):
+        return partner
+    rekey_counterparty(conn, partner, raw_key)
+    return raw_key
+
+
+def rekey_counterparty(conn: sqlite3.Connection, old_key: str, new_key: str) -> None:
+    """Move every row (and a learned-rule dismissal) from one key to another. Caller commits."""
+    conn.execute("UPDATE transactions SET counterparty_key = ? WHERE counterparty_key = ?", (new_key, old_key))
+    conn.execute(
+        "UPDATE OR IGNORE learned_rule_suppressions SET counterparty_key = ? WHERE counterparty_key = ?",
+        (new_key, old_key),
+    )
 
 
 def _label_weight(source: str | None) -> float:
@@ -104,11 +199,9 @@ def counterparty_history(
     order must only see labels that existed *before* the transaction being scored,
     otherwise the prior leaks its own answer.
 
-    Identity matching uses the indexed transactions.counterparty_key column
-    (computed via normalize_identity at ingest, backfilled by migration 017) —
-    an indexed lookup instead of the previous full scan of all UPI annotations.
-    The Python-side identity check stays as a cheap exactness guard for the few
-    matched rows (the SQL backfill's whitespace handling is slightly looser).
+    Identity matching uses the indexed transactions.counterparty_key column,
+    which holds the resolved key (truncation variants folded together) computed
+    at ingest and re-derived on parser upgrades (pipeline/derived.py).
     """
     rows = conn.execute(
         """
@@ -124,16 +217,15 @@ def counterparty_history(
         (identity, before_txn_date, before_txn_date, exclude_transaction_id, exclude_transaction_id),
     ).fetchall()
 
-    out: list[dict] = []
-    for row in rows:
-        if normalize_identity(row["raw_description"]) == identity:
-            out.append({
-                "transaction_id": row["transaction_id"],
-                "txn_date": row["txn_date"],
-                "category": row["category"],
-                "source": row["source"],
-            })
-    return out
+    return [
+        {
+            "transaction_id": row["transaction_id"],
+            "txn_date": row["txn_date"],
+            "category": row["category"],
+            "source": row["source"],
+        }
+        for row in rows
+    ]
 
 
 def counterparty_prior(
@@ -159,7 +251,7 @@ def counterparty_prior(
     the probability to 1.0; it takes several consistent labels to clear the
     dominance floor — exactly the recurrence requirement.
     """
-    identity = normalize_identity(txn.get("raw_description"))
+    identity = txn["counterparty_key"]
     if identity is None:
         return CounterpartyPrior()
 

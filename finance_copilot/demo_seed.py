@@ -30,14 +30,17 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import hashlib
 import json
 import random
 from datetime import date
 from pathlib import Path
 
+from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.common import dump_string_list
-from finance_copilot.pipeline.counterparty import normalize_identity
+from finance_copilot.parsers.upi import parse_upi_description
+from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
 
 DEFAULT_DB = str(Path(__file__).parent.parent / "data" / "demo.db")
 
@@ -102,13 +105,22 @@ class Ledger:
             "date": txn_date,
             "amount": round(amount, 2),
             "dc": dc,
-            "desc": desc,
-            "note": note,
-            "counterparty_key": normalize_identity(desc),
+            "desc": _with_ref(desc, note, txn_id),
             # (merchant, category, subcategory, tags, source, confidence)
             "ann": ann,
         })
         return txn_id
+
+
+def _with_ref(desc: str, note: str, txn_id: str) -> str:
+    """Write a demo UPI line the way the bank prints one: UPI/<payee>/<ref>/<note>.
+    Other rails are used as given."""
+    parts = desc.split("/")
+    if parts[0] != "UPI":
+        return desc
+    ref = str(500000000000 + int(hashlib.sha1(txn_id.encode()).hexdigest()[:8], 16) % 99999999999)
+    note_parts = [p for p in [*parts[2:], note] if p]
+    return "/".join([parts[0], parts[1], ref, *note_parts]) if note_parts else f"UPI/{parts[1]}/{ref}/UPI"
 
 
 def _fixed_monthly(led: Ledger, year: int, month: int, rng: random.Random, first_month: bool) -> None:
@@ -439,6 +451,7 @@ def seed(conn, today: date) -> dict:
     # Transactions in chronological order, with running balances computed as
     # we go. Within a day, insertion order (credits first on the 1st) holds.
     balance = OPENING_BALANCE
+    canonical = canonical_keys({k for t in led.txns if (k := normalize_identity(t["desc"]))})
     txn_inserted = 0
     for t in sorted(led.txns, key=lambda t: (t["date"], t["id"])):
         balance += t["amount"] if t["dc"] == "credit" else -t["amount"]
@@ -450,8 +463,8 @@ def seed(conn, today: date) -> dict:
                 running_balance, upi_meta, counterparty_key)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (t["id"], t["statement_id"], t["date"], t["amount"], t["dc"], t["desc"],
-             round(balance, 2), json.dumps({"note": t["note"]}) if t["note"] else None,
-             t["counterparty_key"]))
+             round(balance, 2), parse_upi_description(t["desc"], settings.upi_noise_keywords),
+             canonical[normalize_identity(t["desc"])] if normalize_identity(t["desc"]) else None))
         txn_inserted += 1
 
     ann_inserted = 0

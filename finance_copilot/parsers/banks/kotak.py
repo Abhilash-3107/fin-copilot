@@ -13,6 +13,11 @@ from finance_copilot.parsers.base import StatementParser
 from finance_copilot.parsers.upi import parse_upi_description
 
 DATE_PATTERN = re.compile(r"^\d{1,2}\s+\w{3},\s+\d{4}$")
+# The statement's closing-balance label is extracted into the description cell
+# of the last transaction row ("UPI/ZOMATO/122406278840/UPI Closing Balance").
+# Requires preceding text, so a standalone balance row is left for ingest's
+# balance-artifact handling.
+_TRAILING_BALANCE_LABEL = re.compile(r"\s+(?:closing|opening)\s+balance\s*$", re.IGNORECASE)
 DATE_FORMAT = "%d %b, %Y"
 
 COL_DATE = 0
@@ -72,6 +77,9 @@ class KotakParser(StatementParser):
     def _clean_text(self, raw: str) -> str:
         return raw.replace("\n", " ").strip()
 
+    def _clean_description(self, raw: str) -> str:
+        return _TRAILING_BALANCE_LABEL.sub("", self._clean_text(raw))
+
     def _row_to_transaction(self, row: list) -> Transaction:
         debit_raw = row[COL_DEBIT].strip()
         credit_raw = row[COL_CREDIT].strip()
@@ -85,7 +93,7 @@ class KotakParser(StatementParser):
         else:
             raise ValueError("Row has neither debit nor credit amount")
 
-        raw_description = self._clean_text(row[COL_DESC])
+        raw_description = self._clean_description(row[COL_DESC])
         return Transaction(
             txn_date=self._parse_date(row[COL_DATE]),
             amount=amount,

@@ -14,7 +14,12 @@ from finance_copilot.api.deps import get_db
 from finance_copilot.config import settings
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
-from finance_copilot.pipeline.ingest import DuplicateStatementError, check_continuity, ingest_pdf
+from finance_copilot.pipeline.ingest import (
+    DuplicateStatementError,
+    check_continuity,
+    check_description_formats,
+    ingest_pdf,
+)
 
 router = APIRouter()
 
@@ -63,7 +68,8 @@ def upload_statement(
     finally:
         os.unlink(tmp_path)
 
-    return {**statement.model_dump(), "warnings": check_continuity(conn, statement)}
+    warnings = check_continuity(conn, statement) + check_description_formats(conn, statement)
+    return {**statement.model_dump(), "warnings": warnings}
 
 
 @router.get("")

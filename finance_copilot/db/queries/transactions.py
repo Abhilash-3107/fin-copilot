@@ -83,7 +83,7 @@ def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
     """Insert a transaction row. txn.statement_id must be set before calling."""
     if txn.statement_id is None:
         raise ValueError("transaction.statement_id must be set before inserting")
-    from finance_copilot.pipeline.counterparty import normalize_identity
+    from finance_copilot.pipeline.counterparty import normalize_identity, resolve_counterparty_key
 
     conn.execute(
         """
@@ -100,7 +100,7 @@ def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
             txn.raw_description,
             txn.running_balance,
             txn.upi_meta,
-            normalize_identity(txn.raw_description),
+            resolve_counterparty_key(conn, normalize_identity(txn.raw_description)),
         ),
     )
 

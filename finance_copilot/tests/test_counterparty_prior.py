@@ -115,7 +115,7 @@ class TestCounterpartyPrior:
 
     def test_unknown_counterparty_is_inert(self):
         """New user / never-seen counterparty → no prior, no nudge (cold start)."""
-        txn = {"id": "t", "raw_description": "UPI/BRAND NEW PERSON/9/UPI",
+        txn = {"id": "t", "raw_description": "UPI/BRAND NEW PERSON/9/UPI", "counterparty_key": 'BRAND NEW PERSON',
                "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior == CounterpartyPrior()
@@ -123,7 +123,7 @@ class TestCounterpartyPrior:
         assert not prior.established
 
     def test_non_upi_is_inert(self):
-        txn = {"id": "t", "raw_description": "NEFT SALARY CREDIT", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "NEFT SALARY CREDIT", "counterparty_key": None, "txn_date": "2026-02-01"}
         assert not counterparty_prior(self.conn, txn).established
 
     def test_single_observation_not_established(self):
@@ -133,7 +133,7 @@ class TestCounterpartyPrior:
         routing, even though a category technically 'wins'.
         """
         _insert(self.conn, "p1", "UPI/KARABI BORA/1/UPI", "Transfers", txn_date="2026-01-01")
-        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/2/UPI", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/2/UPI", "counterparty_key": 'KARABI BORA', "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior.n_prior == 1
         assert prior.category == "Transfers"
@@ -144,7 +144,7 @@ class TestCounterpartyPrior:
         for i in range(4):
             _insert(self.conn, f"k{i}", f"UPI/KARABI BORA/{i}/UPI", "Transfers",
                     txn_date=f"2026-01-0{i+1}")
-        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/9/UPI", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "UPI/KARABI BORA/9/UPI", "counterparty_key": 'KARABI BORA', "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior.n_prior == 4
         assert prior.category == "Transfers"
@@ -156,7 +156,7 @@ class TestCounterpartyPrior:
         for i in range(4):
             _insert(self.conn, f"m{i}", f"UPI/SOMEONE/{i}/UPI", "Transport",
                     source="rag_prompted", txn_date=f"2026-01-0{i+1}")
-        txn = {"id": "t", "raw_description": "UPI/SOMEONE/9/UPI", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "UPI/SOMEONE/9/UPI", "counterparty_key": 'SOMEONE', "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior.n_prior == 4
         # 4 machine labels at rag_machine_donor_weight each.
@@ -169,7 +169,7 @@ class TestCounterpartyPrior:
             _insert(self.conn, f"a{i}", f"UPI/MIXED/{i}/UPI", "Transport",
                     txn_date=f"2026-01-0{i+1}")
         _insert(self.conn, "b0", "UPI/MIXED/8/UPI", "Transfers", txn_date="2026-01-08")
-        txn = {"id": "t", "raw_description": "UPI/MIXED/9/UPI", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "UPI/MIXED/9/UPI", "counterparty_key": 'MIXED', "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior.category == "Transport"  # 3 vs 1
         # base = 1/2 categories = 0.5, m=2, winner=3, total=4 → (2*0.5+3)/(2+4)=0.6667
@@ -180,7 +180,7 @@ class TestCounterpartyPrior:
         _insert(self.conn, "old", "UPI/RECUR/1/UPI", "Transport", txn_date="2026-01-01")
         _insert(self.conn, "newer", "UPI/RECUR/2/UPI", "Transport", txn_date="2026-05-01")
         # Scoring a txn dated Feb must not see the May label.
-        txn = {"id": "t", "raw_description": "UPI/RECUR/9/UPI", "txn_date": "2026-02-01"}
+        txn = {"id": "t", "raw_description": "UPI/RECUR/9/UPI", "counterparty_key": 'RECUR', "txn_date": "2026-02-01"}
         prior = counterparty_prior(self.conn, txn)
         assert prior.n_prior == 1
 
