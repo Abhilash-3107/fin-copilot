@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from finance_copilot.config import settings
 from finance_copilot.models.transaction import TxnRow
+from finance_copilot.parsers.description import describe_for_llm, is_known_shape, parse_description
 
 logger = logging.getLogger(__name__)
 
@@ -197,25 +198,41 @@ _SYSTEM_PROMPT = (
     "- 0.85: Strong match with minor ambiguity (e.g. generic 'food' description)\n"
     "- 0.70: Reasonable guess but multiple categories are plausible\n"
     "- 0.50: Weak signal, essentially guessing\n"
-    "Be conservative — only use 0.9+ when you are very certain."
+    "Be conservative — only use 0.9+ when you are very certain.\n"
+    "If you do not recognise the payee, do not guess a business type from its name: "
+    "choose the catch-all category (Miscellaneous or Uncategorized, whichever is "
+    "listed) with low confidence. A payee that is a person's name is a "
+    "person, not a business. Use Self Transfers only when the examples show this "
+    "payee as a self transfer."
 )
+
+
+def _llm_view(raw: str | None, debit_credit: str | None, upi_meta) -> tuple[str, str]:
+    """(description, note) as the model sees them. Understood UPI lines are
+    rewritten from the parse (parsers/description.describe_for_llm); other lines
+    keep the raw text plus the stored UPI note."""
+    if is_known_shape(parse_description(raw)):
+        description, note = describe_for_llm(raw, debit_credit)
+        return description, note or ""
+    note = ""
+    if upi_meta:
+        try:
+            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
+            note = str(meta.get("note") or "")
+        except Exception:
+            pass
+    return raw or "", note
 
 
 def _build_user_prompt(txn: TxnRow, category_list: list[str]) -> str:
     categories_text = "\n".join(f"  - {c}" for c in category_list)
-    upi_note = ""
-    if txn.get("upi_meta"):
-        try:
-            meta = json.loads(txn["upi_meta"]) if isinstance(txn["upi_meta"], str) else txn["upi_meta"]
-            upi_note = str(meta.get("note", ""))
-        except Exception:
-            pass
+    description, upi_note = _llm_view(txn.get("raw_description"), txn.get("debit_credit"), txn.get("upi_meta"))
 
     lines = [
         f"Date: {txn.get('txn_date', '')}",
         f"Amount: {txn.get('amount', '')}",
         f"Direction: {txn.get('debit_credit', '')}",
-        f"Description: {txn.get('raw_description', '')}",
+        f"Description: {description}",
     ]
     if upi_note:
         lines.append(f"UPI Note: {upi_note}")
@@ -249,10 +266,13 @@ def _build_fewshot_user_prompt(
 
     for i, ex in enumerate(similar_examples, 1):
         lines = [f"Example {i}:"]
+        ex_description, ex_note = _llm_view(ex.get("raw_description"), ex.get("debit_credit"), None)
+        if ex_note is None and not is_known_shape(parse_description(ex.get("raw_description"))):
+            ex_note = ex.get("upi_note") or None
         lines.append(f"  Date: {ex.get('txn_date', '')}")
-        lines.append(f"  Description: {ex.get('raw_description', '')}")
-        if ex.get("upi_note"):
-            lines.append(f"  UPI Note: {ex['upi_note']}")
+        lines.append(f"  Description: {ex_description}")
+        if ex_note:
+            lines.append(f"  UPI Note: {ex_note}")
         lines.append(f"  Amount: {ex.get('amount', '')} ({ex.get('debit_credit', '')})")
         cat = ex.get("category", "")
         sub = ex.get("subcategory")

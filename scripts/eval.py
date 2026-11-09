@@ -44,6 +44,7 @@ from finance_copilot.db.queries.people import list_people
 from finance_copilot.pipeline.annotate import (
     _normalize_category,
     _try_rag_annotation,
+    gate_fact_categories,
     rule_annotation,
 )
 from finance_copilot.pipeline.calibration import get_calibrated_dampening
@@ -82,11 +83,14 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     if llm_result is not None:
         category = _normalize_category(llm_result.category, category_list)
         dampening = get_calibrated_dampening(conn, "llm", category)
+        category, subcategory, confidence, _cap = gate_fact_categories(
+            conn, txn, category, llm_result.subcategory, round(llm_result.confidence * dampening, 4)
+        )
         return {
             "stage": "llm",
             "category": category,
-            "subcategory": llm_result.subcategory,
-            "confidence": round(llm_result.confidence * dampening, 4),
+            "subcategory": subcategory,
+            "confidence": confidence,
             "latency_s": time.monotonic() - t0,
         }
 

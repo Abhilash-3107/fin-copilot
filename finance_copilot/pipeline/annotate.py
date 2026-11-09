@@ -24,9 +24,10 @@ from finance_copilot.db.queries.learned_rules import (
     verified_labels,
 )
 from finance_copilot.db.queries.people import (
+    is_self_relationship,
     list_people,
     person_token_matches,
-    relationship_subcategory,
+    relationship_category,
 )
 from finance_copilot.db.queries.transactions import list_transactions
 from finance_copilot.db.queries.user_rules import annotation_for as user_rule_annotation
@@ -159,14 +160,19 @@ def _match_known_person(
     counterparty_key = txn["counterparty_key"]
     for name, token, relationship in known_people:
         if person_token_matches(token, vpa, counterparty_key, desc):
-            subcategory = relationship_subcategory(relationship)
-            is_family = subcategory == "Family"
+            category, subcategory = relationship_category(relationship)
+            if is_self_relationship(relationship):
+                tags = ["transfer", "self"]
+            elif subcategory == "Family":
+                tags = ["transfer", "family"]
+            else:
+                tags = ["transfer", "peer"]
             return AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=name,
-                category="Transfers",
+                category=category,
                 subcategory=subcategory,
-                tags=["transfer", "family"] if is_family else ["transfer", "peer"],
+                tags=tags,
                 confidence=0.95,
                 source="rule",
             )
@@ -466,6 +472,7 @@ def auto_annotate(
                     embed_text=ctx.get("embed_text"),
                     **_llm_telemetry_fields(llm_result),
                 )
+                _apply_fact_gate(conn, txn, ann, trace)
                 _persist(ann, trace)
                 llm_annotated += 1
                 # Compare the stored (dampened) confidence — it decides review-queue membership
@@ -990,7 +997,7 @@ def _try_rag_annotation(
                 majority_count=majority_count,
                 **_llm_telemetry_fields(llm_result),
             )
-            return AnnotationCreate(
+            ann = AnnotationCreate(
                 transaction_id=txn["id"],
                 merchant=llm_result.merchant,
                 category=category,
@@ -998,13 +1005,66 @@ def _try_rag_annotation(
                 tags=llm_result.tags,
                 confidence=confidence,
                 source="rag_prompted",
-            ), trace
+            )
+            _apply_fact_gate(conn, txn, ann, trace)
+            return ann, trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
         skips.append("rag_prompted: llm returned nothing")
         return None, None
 
     skips.append("rag_prompted: no annotated examples to prompt with")
     return None, None
+
+
+def self_transfer_verified(conn: sqlite3.Connection, txn: TxnRow) -> bool:
+    """Whether the user has stated this payee is themselves: a People entry with
+    relationship 'self' that matches it, or their own verified labels for it
+    being mostly Self Transfers."""
+    vpa = None
+    try:
+        meta = json.loads(txn["upi_meta"]) if isinstance(txn.get("upi_meta"), str) else (txn.get("upi_meta") or {})
+        vpa = (meta.get("vpa") or "").lower() or None
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+    key = counterparty_identity(conn, txn)
+    desc = (txn.get("raw_description") or "").lower()
+    for p in list_people(conn):
+        if is_self_relationship(p.get("relationship")) and p.get("upi"):
+            if person_token_matches(p["upi"].lower(), vpa, key, desc):
+                return True
+    if key is None:
+        return False
+    verified = [
+        h["category"] for h in counterparty_history(conn, key, exclude_transaction_id=txn.get("id"))
+        if h["source"] in _VERIFIED_SOURCES
+    ]
+    return bool(verified) and Counter(verified).most_common(1)[0][0] == "Self Transfers"
+
+
+def gate_fact_categories(
+    conn: sqlite3.Connection, txn: TxnRow, category: str, subcategory: str | None, confidence: float
+) -> tuple[str, str | None, float, str | None]:
+    """Keep an AI-produced category only when the facts it needs are known.
+
+    Self Transfers means "the payee is me", which no model can infer from a name;
+    an unverified one would silently drop real spending from every insight. It is
+    rewritten to Transfers > Peer Transfer and sent to review. Returns
+    (category, subcategory, confidence, cap_name or None).
+    """
+    if category != "Self Transfers" or self_transfer_verified(conn, txn):
+        return category, subcategory, confidence, None
+    return "Transfers", "Peer Transfer", min(confidence, settings.rag_defer_confidence_cap), "self_transfer_unverified"
+
+
+def _apply_fact_gate(conn: sqlite3.Connection, txn: TxnRow, ann: AnnotationCreate, trace: ReasoningTrace) -> None:
+    category, subcategory, confidence, cap = gate_fact_categories(
+        conn, txn, ann.category, ann.subcategory, ann.confidence
+    )
+    if cap is None:
+        return
+    ann.category, ann.subcategory, ann.confidence = category, subcategory, confidence
+    trace.final_confidence = confidence
+    trace.caps_applied.append(cap)
 
 
 def _majority_category(categories: list[str]) -> tuple[str | None, int]:

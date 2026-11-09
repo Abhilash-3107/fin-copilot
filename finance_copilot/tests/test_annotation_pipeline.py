@@ -1372,10 +1372,10 @@ class TestRAGDirectAmbiguity:
     def test_far_neighbours_are_not_dissenting_evidence(self):
         """A taught merchant at similarity 1.0 auto-accepts even when top-K is padded
         with unrelated merchants below the similarity floor (the PVR case)."""
-        self._insert_donor("pvr_old", "UPI/PVR INOX Limite/117042580041/UPI", "Entertainment", source="manual")
+        self._insert_donor("pvr_old", "UPI/GALAXY CINEMAS/117042580041/UPI", "Entertainment", source="manual")
         self._insert_donor("air", "UPI/AIR INDIA LIMIT/120314690658/Pay", "Travel")
         self._insert_donor("rapido", "UPI/Rapido/120853547409/UPI", "Transport")
-        ann, trace = self._run("pvr_new", "UPI/PVR INOX Limite/121440823398/UPI", [
+        ann, trace = self._run("pvr_new", "UPI/GALAXY CINEMAS/121440823398/UPI", [
             {"transaction_id": "pvr_old", "distance": 0.0},
             {"transaction_id": "air", "distance": 0.68},
             {"transaction_id": "rapido", "distance": 0.72},
@@ -1431,7 +1431,7 @@ class TestRAGDirectAmbiguity:
         assert trace["caps_applied"] == []
 
     def test_refund_from_the_payee_is_not_a_conflict(self):
-        desc = "UPI/Practo technolo/{}/UPI"
+        desc = "UPI/HEALWELL CLINIC/{}/UPI"
         self._insert_donor("p1", desc.format("111111111111"), "Health", source="manual")
         self._insert_donor("p2", desc.format("222222222222"), "Health", source="manual")
         self._insert_donor("rf", desc.format("333333333333"), "Income", source="manual")
@@ -2357,9 +2357,9 @@ class TestLearnedRules:
         monkeypatch.setattr(settings, "learned_rule_enabled", True)
         conn = self._conn()
         for i in range(3):
-            self._add(conn, f"s{i}", "LICIOUS", "Food & Dining", merchant="Licious",
+            self._add(conn, f"s{i}", "KANAK SWEETS", "Food & Dining", merchant="Kanak Sweets",
                       txn_date="2026-01-05")
-        txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
+        txn = {"id": "new", "raw_description": "UPI/KANAK SWEETS/9/UPI", "counterparty_key": "KANAK SWEETS",
                "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
         result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert result is not None
@@ -2373,8 +2373,8 @@ class TestLearnedRules:
         monkeypatch.setattr(settings, "learned_rule_enabled", False)
         conn = self._conn()
         for i in range(3):
-            self._add(conn, f"s{i}", "LICIOUS", "Food & Dining")
-        txn = {"id": "new", "raw_description": "UPI/LICIOUS/9/UPI", "counterparty_key": "LICIOUS",
+            self._add(conn, f"s{i}", "KANAK SWEETS", "Food & Dining")
+        txn = {"id": "new", "raw_description": "UPI/KANAK SWEETS/9/UPI", "counterparty_key": "KANAK SWEETS",
                "upi_meta": None, "txn_date": "2026-02-01", "amount": 400.0, "debit_credit": "debit"}
         result, trace = rule_annotation(conn, txn, [], as_of=None)
         assert result is None  # falls through to RAG
