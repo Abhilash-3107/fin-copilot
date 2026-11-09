@@ -64,6 +64,9 @@ class ReasoningTrace(BaseModel):
     agreement_factor: float | None = None
     margin_factor: float | None = None
     caps_applied: list[str] = Field(default_factory=list)  # e.g. ["off_example", "defer"]
+    # Set when an existing label was re-decided after new human evidence, e.g.
+    # "teaching" (a label elsewhere) or "rescore" (a queue sweep).
+    trigger: str | None = None
     # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
     counterparty_prior_category: str | None = None
     counterparty_prior_probability: float | None = None

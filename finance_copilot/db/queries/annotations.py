@@ -52,6 +52,58 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
 # UPDATE (SQLite can't parameterize identifiers), so they must never come from
 # request-shaped data — validate against this allowlist to keep the injection
 # surface closed regardless of caller.
+def replace_machine_annotation(
+    conn: sqlite3.Connection,
+    annotation_id: str,
+    *,
+    merchant: str | None,
+    category: str,
+    subcategory: str | None,
+    tags: str | None,
+    confidence: float,
+    source: str,
+    reasoning: str | None,
+) -> bool:
+    """Overwrite a machine-produced annotation with a re-evaluated one.
+
+    The WHERE clause refuses any non-machine row, so a human label can never be
+    replaced even if a caller gets the candidate set wrong. A snooze survives
+    when the category is unchanged (the user already skipped this exact
+    question) and clears when the answer changed. Caller commits.
+    """
+    from finance_copilot.pipeline.sources import MACHINE_SOURCES
+
+    category_id, subcategory_id = resolve_category_ids(conn, category, subcategory)
+    placeholders = ",".join("?" * len(MACHINE_SOURCES))
+    cur = conn.execute(
+        f"""
+        UPDATE annotations
+        SET review_snoozed_at = CASE WHEN category = ? THEN review_snoozed_at ELSE NULL END,
+            merchant = ?, category = ?, subcategory = ?, tags = ?, confidence = ?,
+            source = ?, reasoning = ?, category_id = ?, subcategory_id = ?,
+            annotated_at = datetime('now')
+        WHERE id = ? AND source IN ({placeholders})
+        """,
+        (category, merchant, category, subcategory, tags, confidence, source, reasoning,
+         category_id, subcategory_id, annotation_id, *sorted(MACHINE_SOURCES)),
+    )
+    return cur.rowcount == 1
+
+
+def demote_machine_annotation(conn: sqlite3.Connection, annotation_id: str, cap: float) -> bool:
+    """Cap a machine annotation's confidence so it re-enters the review queue.
+    Never touches human rows. Caller commits."""
+    from finance_copilot.pipeline.sources import MACHINE_SOURCES
+
+    placeholders = ",".join("?" * len(MACHINE_SOURCES))
+    cur = conn.execute(
+        f"UPDATE annotations SET confidence = MIN(confidence, ?) "
+        f"WHERE id = ? AND confidence > ? AND source IN ({placeholders})",
+        (cap, annotation_id, cap, *sorted(MACHINE_SOURCES)),
+    )
+    return cur.rowcount == 1
+
+
 _UPDATABLE_COLUMNS = frozenset(
     {"merchant", "category", "subcategory", "tags", "confidence", "category_id", "subcategory_id"}
 )

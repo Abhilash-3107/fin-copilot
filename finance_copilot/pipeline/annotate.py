@@ -8,7 +8,12 @@ import sqlite3
 from collections import Counter
 
 from finance_copilot.config import settings
-from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.annotations import (
+    demote_machine_annotation,
+    insert_annotation,
+    replace_machine_annotation,
+)
+from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.categories import get_category_names_flat
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
@@ -46,6 +51,7 @@ from finance_copilot.pipeline.llm import (
     top_level_categories,
 )
 from finance_copilot.pipeline.rules import apply_rules
+from finance_copilot.pipeline.sources import MACHINE_SOURCES
 from finance_copilot.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -665,8 +671,12 @@ def _try_rag_annotation(
     category_list: list[str],
     before_txn_date: str | None = None,
     ctx: dict | None = None,
+    allow_llm: bool = True,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
+
+    allow_llm=False stops after the rag_direct decision (no rag_prompted LLM
+    call), for deterministic re-evaluation of existing labels.
 
     Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct'
     or 'rag_prompted', or (None, None) if the embedding service is
@@ -851,6 +861,10 @@ def _try_rag_annotation(
             f"rag_direct: best similarity {cosine_similarity:.4f} < "
             f"rag_direct_threshold {settings.rag_direct_threshold}"
         )
+
+    if not allow_llm:
+        skips.append("rag_prompted: skipped (deterministic re-evaluation)")
+        return None, None
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     # Examples, the majority hint and the off-example check all come from the
@@ -1061,3 +1075,136 @@ def _build_examples_from_similar(
     _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}
     examples.sort(key=lambda e: _SOURCE_PRIORITY.get(e.get("source", ""), 9))
     return examples
+
+
+# ---------------------------------------------------------------------------
+# Re-evaluation: new human evidence re-decides existing machine labels
+# ---------------------------------------------------------------------------
+
+# Bound on how many existing labels one human decision re-decides, so a label
+# on a very common counterparty stays an interactive-latency request.
+_REEVALUATION_LIMIT = 60
+
+
+def reevaluation_candidates(conn: sqlite3.Connection, taught_ids: list[str]) -> list[str]:
+    """Machine-labeled transactions that new labels on `taught_ids` could change:
+    the same resolved counterparty, plus retrieval neighbours above the floor."""
+    taught = set(taught_ids)
+    found: dict[str, None] = {}
+    placeholders = ",".join("?" * len(MACHINE_SOURCES))
+    for txn_id in taught_ids:
+        row = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+        if row is None:
+            continue
+        txn = dict(row)
+        key = counterparty_identity(conn, txn)
+        if key:
+            for r in conn.execute(
+                f"SELECT t.id FROM transactions t JOIN annotations a ON a.transaction_id = t.id "
+                f"WHERE t.counterparty_key = ? AND a.source IN ({placeholders})",
+                (key, *sorted(MACHINE_SOURCES)),
+            ):
+                found.setdefault(r["id"], None)
+        try:
+            vec = get_embedding_single(build_embed_text(txn))
+            neighbours = find_similar(conn, vec, top_k=settings.rag_top_k * 4, exclude_transaction_ids=[txn_id])
+        except Exception as e:  # embeddings are optional; identity alone still helps
+            logger.info("reevaluate | neighbours unavailable for %s: %s", txn_id, e)
+            neighbours = []
+        near = [m["transaction_id"] for m in neighbours if 1.0 - m["distance"] >= settings.rag_similarity_floor]
+        if near:
+            q = ",".join("?" * len(near))
+            for r in conn.execute(
+                f"SELECT transaction_id FROM annotations WHERE transaction_id IN ({q}) "
+                f"AND source IN ({placeholders})",
+                (*near, *sorted(MACHINE_SOURCES)),
+            ):
+                found.setdefault(r["transaction_id"], None)
+    return [t for t in found if t not in taught][:_REEVALUATION_LIMIT]
+
+
+def reevaluate_machine_labels(
+    conn: sqlite3.Connection, transaction_ids: list[str], *, reason: str
+) -> dict:
+    """Re-decide existing machine labels with the deterministic stages only.
+
+    For each machine-labeled transaction: run user rules, the person rule,
+    merchant rules, learned rules, then rag_direct (never the LLM).
+      - An old learned_rule/rag_direct label was itself deterministic, so the
+        fresh decision simply supersedes it (including downwards, back into the
+        review queue); with no decision at all, an auto-accepted one is demoted.
+      - An old LLM label is replaced only by a better decision: one that clears
+        the auto-accept threshold or is more confident; otherwise the guess
+        stays.
+    Human labels are never touched (enforced again in SQL). Idempotent. Commits.
+
+    Returns {"resolved": [ids now at/above the threshold that were below it],
+             "changed": n, "demoted": n}.
+    """
+    threshold = get_confidence_threshold(conn)
+    known_people = [
+        (p["name"], p["upi"].lower(), p.get("relationship")) for p in list_people(conn) if p.get("upi")
+    ]
+    user_rules = list_user_rules(conn, enabled_only=True)
+    category_list = get_category_names_flat(conn)
+    resolved: list[str] = []
+    changed = demoted = 0
+
+    for txn_id in transaction_ids:
+        row = conn.execute(
+            "SELECT t.*, a.id AS annotation_id, a.category AS old_category, "
+            "a.confidence AS old_confidence, a.source AS old_source "
+            "FROM transactions t JOIN annotations a ON a.transaction_id = t.id WHERE t.id = ?",
+            (txn_id,),
+        ).fetchone()
+        if row is None or row["old_source"] not in MACHINE_SOURCES:
+            continue
+        txn = dict(row)
+
+        result, trace = rule_annotation(conn, txn, known_people, user_rules)
+        if result is None:
+            result, trace = _try_rag_annotation(conn, txn, category_list, allow_llm=False)
+
+        deterministic_old = txn["old_source"] in ("learned_rule", "rag_direct")
+        if result is not None:
+            same = result.category == txn["old_category"] and result.confidence == txn["old_confidence"]
+            better = result.confidence >= threshold or result.confidence > txn["old_confidence"]
+            if not same and (deterministic_old or better):
+                if trace is not None:
+                    trace.trigger = reason
+                if replace_machine_annotation(
+                    conn, txn["annotation_id"],
+                    merchant=result.merchant, category=result.category,
+                    subcategory=result.subcategory, tags=dump_string_list(result.tags),
+                    confidence=result.confidence, source=result.source,
+                    reasoning=trace.model_dump_json() if trace is not None else None,
+                ):
+                    changed += 1
+                    if txn["old_confidence"] < threshold <= result.confidence:
+                        resolved.append(txn_id)
+        elif deterministic_old and txn["old_confidence"] >= threshold:
+            # The rule or donor that justified an auto-accepted label is gone.
+            if demote_machine_annotation(conn, txn["annotation_id"], settings.rag_defer_confidence_cap):
+                demoted += 1
+
+    conn.commit()
+    if changed or demoted:
+        logger.info(
+            "reevaluate (%s) | %d candidates  changed=%d resolved=%d demoted=%d",
+            reason, len(transaction_ids), changed, len(resolved), demoted,
+        )
+    return {"resolved": resolved, "changed": changed, "demoted": demoted}
+
+
+def reevaluate_after_teaching(conn: sqlite3.Connection, taught_ids: list[str]) -> dict:
+    """Propagate fresh human labels: re-decide the machine labels they could change."""
+    return reevaluate_machine_labels(conn, reevaluation_candidates(conn, taught_ids), reason="teaching")
+
+
+def rescore_review_queue(conn: sqlite3.Connection) -> dict:
+    """Sweep the whole review queue through deterministic re-evaluation: items
+    that knowledge gained since they were annotated can now settle leave it."""
+    from finance_copilot.db.queries.annotations import list_review_queue
+
+    queued = [r["transaction_id"] for r in list_review_queue(conn, get_confidence_threshold(conn))]
+    return reevaluate_machine_labels(conn, queued, reason="rescore")

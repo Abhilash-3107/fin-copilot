@@ -141,6 +141,11 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
   )
 }
 
+function withResolved(message, sorted) {
+  if (!sorted) return message
+  return `${message} Also sorted ${sorted} similar transaction${sorted === 1 ? '' : 's'}.`
+}
+
 export default function ReviewQueue() {
   const toast = useToast()
   const [queue, setQueue] = useState([])
@@ -245,6 +250,19 @@ export default function ReviewQueue() {
     setIdx(i => i + 1)
   }
 
+  // The server re-decides machine labels a fresh human label can settle (same
+  // payee, near neighbours) and returns the ones that no longer need review.
+  // Drop those still ahead in the queue; cards already passed stay put so the
+  // back button keeps working. Returns how many were removed.
+  function dropResolved(ids) {
+    if (!ids?.length) return 0
+    const resolved = new Set(ids)
+    const here = idxRef.current
+    const ahead = queue.filter((it, i) => i > here && resolved.has(it.transaction_id)).length
+    setQueue(q => q.filter((it, i) => i <= here || !resolved.has(it.transaction_id)))
+    return ahead
+  }
+
   function goBack() {
     if (history.length === 0) return
     const prevIdx = history[history.length - 1]
@@ -284,10 +302,11 @@ export default function ReviewQueue() {
     if (!current) return
     setSaving(true)
     try {
-      await api.post(`/annotations/${current.annotation_id}/confirm`, {})
+      const res = await api.post(`/annotations/${current.annotation_id}/confirm`, {})
       pushHistory()
       record(current.annotation_id, 'confirmed')
-      toast('Got it, thanks!', 'success')
+      const sorted = dropResolved(res?.resolved_transaction_ids)
+      toast(withResolved('Got it, thanks!', sorted), 'success')
       advance()
     } catch (e) {
       toast(`Something went wrong — ${e.message}`, 'error')
@@ -301,7 +320,7 @@ export default function ReviewQueue() {
     if (!payload.category) { toast('Pick a category first', 'error'); return }
     setSaving(true)
     try {
-      await api.patch(`/annotations/${current.annotation_id}`, {
+      const res = await api.patch(`/annotations/${current.annotation_id}`, {
         category: payload.category,
         subcategory: payload.subcategory || null,
         merchant: payload.merchant?.trim() || null,
@@ -309,7 +328,8 @@ export default function ReviewQueue() {
       })
       pushHistory()
       record(current.annotation_id, 'edited')
-      toast("Noted — I'll remember that", 'success')
+      const sorted = dropResolved(res?.resolved_transaction_ids)
+      toast(withResolved("Noted, I'll remember that.", sorted), 'success')
       advance()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
@@ -480,7 +500,11 @@ export default function ReviewQueue() {
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
           </div>
-          <Tooltip content="How sure the AI is about this guess. Below 60% means it's mostly guessing." position="bottom">
+          <Tooltip
+            content="How sure the AI is about this guess. Below 60% means it's mostly guessing."
+            position="bottom"
+            className="block"
+          >
             <ConfidenceBar confidence={item.confidence} />
           </Tooltip>
         </div>

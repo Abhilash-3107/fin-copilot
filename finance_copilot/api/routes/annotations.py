@@ -34,7 +34,11 @@ from finance_copilot.models.annotation import (
     AnnotationPatch,
     AutoAnnotateResult,
 )
-from finance_copilot.pipeline.annotate import auto_annotate
+from finance_copilot.pipeline.annotate import (
+    auto_annotate,
+    reevaluate_after_teaching,
+    rescore_review_queue,
+)
 from finance_copilot.pipeline.embed import (
     build_embed_text,
     embed_transaction,
@@ -71,7 +75,8 @@ def _open_job_connection() -> sqlite3.Connection:
 
 
 def _embed_in_background(transaction_ids: list[str]) -> None:
-    """Re-embed relabelled rows after the response so they serve as RAG donors.
+    """Re-embed relabelled rows after the response so they serve as RAG donors,
+    then let the new labels re-decide the machine labels they could change.
 
     A bulk edit can touch a thousand rows; embedding them inline kept the UI on
     "Applying..." for minutes. Best-effort: a miss is backfilled by
@@ -82,8 +87,32 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
         embed_transactions(conn, transaction_ids)
     except Exception:
         logger.exception("background re-embed failed | txns=%d", len(transaction_ids))
+    try:
+        reevaluate_after_teaching(conn, transaction_ids)
+    except Exception:
+        logger.exception("background re-evaluation failed | txns=%d", len(transaction_ids))
     finally:
         conn.close()
+
+
+def _rescore_quietly(conn: sqlite3.Connection) -> None:
+    try:
+        rescore_review_queue(conn)
+    except Exception:
+        logger.exception("review-queue rescore failed")
+        conn.rollback()
+
+
+def _propagate_teaching(conn: sqlite3.Connection, transaction_id: str) -> list[str]:
+    """Re-decide machine labels one fresh human label could change (same payee,
+    near neighbours). Deterministic stages only, bounded, so it runs inline and
+    the UI can drop what it resolved. Never fails the label write."""
+    try:
+        return reevaluate_after_teaching(conn, [transaction_id])["resolved"]
+    except Exception:
+        logger.exception("re-evaluation after teaching failed | txn=%s", transaction_id)
+        conn.rollback()
+        return []
 
 
 # A live job heartbeats updated_at roughly once per second via its progress
@@ -152,6 +181,8 @@ def _run_annotation_job(
                 last_commit = now
 
         result = auto_annotate(conn, statement_id, transaction_ids, progress_cb=progress)
+        # Labels and donors from this run can settle items queued earlier.
+        _rescore_quietly(conn)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
@@ -298,7 +329,10 @@ def create_annotation(
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
     embed_transaction(conn, annotation.transaction_id)
-    return _annotation_response(annotation)
+    response = _annotation_response(annotation)
+    if body.source == "manual":
+        response["resolved_transaction_ids"] = _propagate_teaching(conn, annotation.transaction_id)
+    return response
 
 
 @router.patch("/{annotation_id}")
@@ -351,8 +385,11 @@ def patch_annotation(
         # Corrected annotations are trusted donors — refresh the embedding (best-effort)
         embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["resolved_transaction_ids"] = (
+        _propagate_teaching(conn, existing["transaction_id"]) if patch else []
+    )
+    return updated
 
 
 @router.post("/{annotation_id}/confirm")
@@ -376,8 +413,9 @@ def confirm_annotation(
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
-    updated = get_annotation(conn, annotation_id)
-    return _as_response(updated)
+    updated = _as_response(get_annotation(conn, annotation_id))
+    updated["resolved_transaction_ids"] = _propagate_teaching(conn, existing["transaction_id"])
+    return updated
 
 
 class BulkCategoryRequest(BaseModel):
@@ -663,6 +701,15 @@ def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
     """How many below-threshold items the user has skipped (snoozed). The queue
     surfaces this so snoozed items are never fully hidden and can be restored."""
     return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
+
+
+@router.post("/review-queue/rescore", status_code=200)
+def review_queue_rescore(conn: sqlite3.Connection = Depends(get_db)):
+    """Re-decide every queued item with the deterministic stages (no LLM), so
+    items that current rules, learned rules, or donors can now settle leave the
+    queue. Also runs after annotation and re-embed jobs."""
+    result = rescore_review_queue(conn)
+    return {"resolved": len(result["resolved"]), "changed": result["changed"]}
 
 
 @router.post("/review-queue/unsnooze", status_code=200)

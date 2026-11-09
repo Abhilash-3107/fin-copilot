@@ -156,3 +156,21 @@ describe('ReviewQueue keyboard shortcuts', () => {
     expect(merchant).toHaveValue('Swiggycs')
   })
 })
+
+describe('ReviewQueue teaching propagation', () => {
+  it('drops siblings the server resolved when a card is confirmed', async () => {
+    stubGet([
+      makeCard(),
+      makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'SWIGGY ORDER 9911' }),
+      makeCard({ annotation_id: 12, transaction_id: 102, raw_description: 'UBER TRIP 77' }),
+    ])
+    mockApi.post.mockResolvedValue({ resolved_transaction_ids: [101] })
+    await renderQueue()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    // The resolved sibling is skipped over: the next card is the unrelated one.
+    expect(await screen.findByText('UBER TRIP 77')).toBeInTheDocument()
+    expect(screen.queryByText('SWIGGY ORDER 9911')).not.toBeInTheDocument()
+  })
+})

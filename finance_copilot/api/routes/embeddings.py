@@ -85,6 +85,10 @@ def _run_reembed_job(job_id: str) -> None:
             conn.commit()
 
         result = refresh_embeddings(conn, progress_cb=progress)
+        # Fresh vectors (new model or embed format) can settle queued items.
+        from finance_copilot.api.routes.annotations import _rescore_quietly
+
+        _rescore_quietly(conn)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
