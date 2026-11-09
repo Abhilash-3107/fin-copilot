@@ -46,6 +46,16 @@ def resolve_category_ids(
     return category_id, subcategory_id
 
 
+def require_category_ids(conn: sqlite3.Connection, category: str, subcategory: str | None) -> tuple[str, str | None]:
+    """resolve_category_ids for names a user chose: unknown names raise CategoryError."""
+    category_id, subcategory_id = resolve_category_ids(conn, category, subcategory)
+    if category_id is None:
+        raise CategoryError(f"Unknown category: {category}")
+    if subcategory and subcategory_id is None:
+        raise CategoryError(f"Unknown subcategory under {category}: {subcategory}")
+    return category_id, subcategory_id
+
+
 def get_category_names_flat(conn: sqlite3.Connection) -> list[str]:
     """Return category strings in 'Category > Subcategory' format for LLM prompts.
 
@@ -139,6 +149,9 @@ def merge_subcategory(conn: sqlite3.Connection, source_id: str, target_id: str) 
     # User rules point at subcategories by id; follow the merge like annotations.
     conn.execute(
         "UPDATE user_rules SET subcategory_id = ? WHERE subcategory_id = ?", (target_id, source_id)
+    )
+    conn.execute(
+        "UPDATE review_policies SET subcategory_id = ? WHERE subcategory_id = ?", (target_id, source_id)
     )
     conn.execute("DELETE FROM categories WHERE id = ?", (source_id,))
     return {"merged_into": target_id, "moved": moved}

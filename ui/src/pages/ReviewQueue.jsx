@@ -141,6 +141,9 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
   )
 }
 
+// The amount ceiling a suggested policy starts with; editable in Settings > Rules.
+const POLICY_DEFAULT_MAX = 500
+
 function withResolved(message, sorted) {
   if (!sorted) return message
   return `${message} Also sorted ${sorted} similar transaction${sorted === 1 ? '' : 's'}.`
@@ -166,6 +169,14 @@ export default function ReviewQueue() {
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
   const [snoozedCount, setSnoozedCount] = useState(0)
+  // One answer for every queued payment to the same payee (on by default).
+  const [applyToGroup, setApplyToGroup] = useState(true)
+  // Policy suggestion: after the user labels a few small payments to people the
+  // same way, offer to make it a standing policy.
+  const [hasPolicy, setHasPolicy] = useState(true)
+  const [personalLabels, setPersonalLabels] = useState({})
+  const [policySuggestion, setPolicySuggestion] = useState(null)
+  const [policyDismissed, setPolicyDismissed] = useState(false)
   const idxRef = useRef(0)
   useEffect(() => { idxRef.current = idx }, [idx])
 
@@ -193,6 +204,10 @@ export default function ReviewQueue() {
     api.get('/annotations/review-queue/snoozed-count')
       .then(r => setSnoozedCount(r.count ?? 0))
       .catch(() => {})
+
+    api.get('/policies')
+      .then(ps => setHasPolicy(Array.isArray(ps) && ps.some(p => p.enabled)))
+      .catch(() => {})
   }, [toast])
 
   const current = queue[idx]
@@ -209,6 +224,7 @@ export default function ReviewQueue() {
         : (current.tags ? current.tags.split(',').filter(Boolean) : []),
     })
     setShowTags(false)
+    setApplyToGroup(true)
     // Re-sync the form only when the card identity changes, not on every render
     // where `current` is a fresh object from a new queue array — otherwise an
     // in-progress edit would be clobbered mid-keystroke.
@@ -250,17 +266,21 @@ export default function ReviewQueue() {
     setIdx(i => i + 1)
   }
 
-  // The server re-decides the machine labels a fresh human label can change
-  // (same payee, near neighbours) and returns every row it rewrote. Cards ahead
-  // in the queue follow it: resolved ones leave, the rest show their new label
-  // so a later confirm vouches for what is actually stored. Cards already
-  // passed stay put so the back button keeps working. Returns how many left.
-  function applyReevaluated(rows) {
-    const byId = new Map(rows.map(r => [r.transaction_id, r]))
+  // After an answer, cards ahead follow the server: the rest of the answered
+  // group leaves, and every machine label the server re-decided (same payee,
+  // near neighbours) leaves when resolved or shows its new label otherwise, so
+  // a later confirm vouches for what is actually stored. Cards already passed
+  // stay put so the back button keeps working. Returns how many re-decided
+  // cards left (the answered group isn't counted).
+  function settle(answered, reevaluated) {
+    const done = new Set(answered.map(it => it.transaction_id))
+    const byId = new Map(reevaluated.map(r => [r.transaction_id, r]))
     const here = idxRef.current
     let left = 0
     const next = queue.flatMap((it, i) => {
-      const r = i > here && byId.get(it.transaction_id)
+      if (i <= here) return [it]
+      if (done.has(it.transaction_id)) return []
+      const r = byId.get(it.transaction_id)
       if (!r) return [it]
       if (r.resolved) { left += 1; return [] }
       const { transaction_id: _id, resolved: _resolved, ...label } = r
@@ -268,6 +288,49 @@ export default function ReviewQueue() {
     })
     setQueue(next)
     return left
+  }
+
+  // The current card plus every later queued payment to the same payee.
+  function groupFromHere() {
+    return queue.filter((it, i) => i >= idx && it.group_key === current.group_key)
+  }
+
+  // Count the distinct people whose small payments the user labels the same
+  // way; at three, offer a standing policy instead of asking again. One payee
+  // answered for several payments is still one piece of evidence.
+  function notePersonalLabel(items, category, subcategory) {
+    if (hasPolicy || policyDismissed) return
+    const payees = items
+      .filter(it => it.payee_kind === 'person' && it.debit_credit === 'debit' && Math.abs(it.amount) <= POLICY_DEFAULT_MAX)
+      .map(it => it.group_key)
+    if (!payees.length) return
+    const key = `${category}|${subcategory || ''}`
+    const seen = new Set([...(personalLabels[key] ?? []), ...payees])
+    setPersonalLabels(m => ({ ...m, [key]: [...seen] }))
+    if (seen.size >= 3) {
+      const draft = { max_amount: POLICY_DEFAULT_MAX, category, subcategory: subcategory || null }
+      api.post('/policies/preview', draft).then(({ matches }) => setPolicySuggestion({ ...draft, matches }))
+    }
+  }
+
+  async function createPolicy() {
+    const { matches: _matches, ...draft } = policySuggestion
+    try {
+      const res = await api.post('/policies', draft)
+      setHasPolicy(true)
+      setPolicySuggestion(null)
+      setQueue(await api.get('/annotations/review-queue'))
+      setIdx(0)
+      setHistory([])
+      toast(
+        res.resolved
+          ? `Policy saved. It sorted ${res.resolved} waiting transaction${res.resolved === 1 ? '' : 's'}.`
+          : 'Policy saved. New small payments to people will be sorted automatically.',
+        'success',
+      )
+    } catch (e) {
+      toast(`Couldn't save the policy - ${e.message}`, 'error')
+    }
   }
 
   function goBack() {
@@ -309,11 +372,18 @@ export default function ReviewQueue() {
     if (!current) return
     setSaving(true)
     try {
-      const res = await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
+      const group = applyToGroup ? groupFromHere() : [current]
+      const label = { category: current.category, subcategory: current.subcategory || null }
+      const res = group.length > 1
+        // One answer for the whole group: the label on this card, as seen.
+        ? await api.post('/annotations/bulk-label', { annotation_ids: group.map(it => it.annotation_id), label })
+        : await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
       pushHistory()
-      record(current.annotation_id, 'confirmed')
-      const sorted = applyReevaluated(res.reevaluated)
-      toast(withResolved('Got it, thanks!', sorted), 'success')
+      group.forEach(it => record(it.annotation_id, 'confirmed'))
+      const sorted = settle(group, res.reevaluated)
+      const message = group.length > 1 ? `Got it, all ${group.length} from ${current.payee} confirmed.` : 'Got it, thanks!'
+      toast(withResolved(message, sorted), 'success')
+      notePersonalLabel(group, current.category, current.subcategory)
       advance()
     } catch (e) {
       if (e.status === 409) {
@@ -336,16 +406,22 @@ export default function ReviewQueue() {
     if (!payload.category) { toast('Pick a category first', 'error'); return }
     setSaving(true)
     try {
-      const res = await api.patch(`/annotations/${current.annotation_id}`, {
+      const label = {
         category: payload.category,
         subcategory: payload.subcategory || null,
         merchant: payload.merchant?.trim() || null,
         tags: payload.tags,
-      })
+      }
+      const group = applyToGroup ? groupFromHere() : [current]
+      const res = group.length > 1
+        ? await api.post('/annotations/bulk-label', { annotation_ids: group.map(it => it.annotation_id), label })
+        : await api.patch(`/annotations/${current.annotation_id}`, label)
       pushHistory()
-      record(current.annotation_id, 'edited')
-      const sorted = applyReevaluated(res.reevaluated)
-      toast(withResolved("Noted, I'll remember that.", sorted), 'success')
+      group.forEach(it => record(it.annotation_id, 'edited'))
+      const sorted = settle(group, res.reevaluated)
+      const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee} updated.` : "Noted, I'll remember that."
+      toast(withResolved(message, sorted), 'success')
+      notePersonalLabel(group, payload.category, payload.subcategory)
       advance()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
@@ -376,7 +452,8 @@ export default function ReviewQueue() {
   // before) keep the latest action in a ref and bind the listener exactly once.
   const keyActionRef = useRef(null)
   keyActionRef.current = e => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+    // Shortcuts stay live on the group checkbox; text fields keep their keys.
+    if ((e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
     if (e.ctrlKey || e.metaKey || e.altKey) return
     if (propagate) return // dialog owns the keyboard
     if (e.key === 'b') goBack()
@@ -384,6 +461,7 @@ export default function ReviewQueue() {
     // machine label would discard the edit and poison calibration.
     else if (e.key === 'c') isDirty ? saveEdit() : confirm()
     else if (e.key === 's') skip()
+    else if (e.key === 'a') setApplyToGroup(v => !v)
     else if (e.key === 'Enter') isDirty ? saveEdit() : confirm()
   }
   useEffect(() => {
@@ -463,6 +541,8 @@ export default function ReviewQueue() {
   const item = current
   const isDebit = item.debit_credit === 'debit'
   const src = item.source ?? 'pending'
+  const groupSize = groupFromHere().length
+  const payeesLeft = new Set(queue.slice(idx).map(it => it.group_key)).size
 
   return (
     <div className="flex flex-col h-full px-4 py-5">
@@ -481,8 +561,38 @@ export default function ReviewQueue() {
         </div>
         <p className="text-[10px] text-[#475569] mt-1">
           {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
+          {payeesLeft > 0 && ` · ${payeesLeft} payee${payeesLeft === 1 ? '' : 's'} left`}
         </p>
       </div>
+
+      {policySuggestion && (
+        <div className="max-w-2xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
+          <p className="flex-1 text-sm text-[#c7d2fe]">
+            Sort small payments (up to ₹{POLICY_DEFAULT_MAX}) to people who aren't in your People list as{' '}
+            <span className="font-semibold text-[#e0e7ff]">
+              {policySuggestion.subcategory ? `${policySuggestion.category} › ${policySuggestion.subcategory}` : policySuggestion.category}
+            </span>{' '}
+            automatically?
+            {policySuggestion.matches > 0 && (
+              <span className="text-[#a5b4fc]">
+                {' '}It would sort {policySuggestion.matches} waiting transaction{policySuggestion.matches === 1 ? '' : 's'} now.
+              </span>
+            )}
+          </p>
+          <button
+            onClick={createPolicy}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-[#6366f1] text-white text-xs font-medium hover:opacity-90 transition-opacity"
+          >
+            Yes, always
+          </button>
+          <button
+            onClick={() => { setPolicySuggestion(null); setPolicyDismissed(true) }}
+            className="shrink-0 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
+          >
+            Not now
+          </button>
+        </div>
+      )}
 
       {/* Card */}
       <div className="max-w-2xl mx-auto w-full bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
@@ -493,6 +603,21 @@ export default function ReviewQueue() {
             <Amount value={item.amount} debitCredit={item.debit_credit} className={`text-xl font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
           </div>
           <p className="text-sm text-[#cbd5e1] leading-relaxed">{item.raw_description}</p>
+          {groupSize > 1 && (
+            <label className="mt-3 flex items-center gap-2 text-xs text-[#94a3b8] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={applyToGroup}
+                onChange={e => setApplyToGroup(e.target.checked)}
+                className="accent-[#6366f1]"
+              />
+              <span>
+                Apply my answer to all {groupSize} payments to{' '}
+                <span className="text-[#cbd5e1]">{item.payee}</span>
+              </span>
+              <kbd className="text-[10px] text-[#64748b] bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd>
+            </label>
+          )}
         </div>
 
         {/* Model's guess + confidence */}
@@ -619,6 +744,9 @@ export default function ReviewQueue() {
         <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">c</kbd> confirm ·
         <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> confirm or save ·
         <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">s</kbd> skip
+        {groupSize > 1 && (
+          <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd> all from this payee</>
+        )}
       </p>
     </div>
   )

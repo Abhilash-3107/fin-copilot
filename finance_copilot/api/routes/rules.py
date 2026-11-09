@@ -7,8 +7,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.queries.categories import CategoryError
 from finance_copilot.db.queries.user_rules import (
-    UserRuleError,
     apply_rule_to_existing,
     create_user_rule,
     delete_user_rule,
@@ -46,7 +46,7 @@ def preview(body: RuleBody, conn: sqlite3.Connection = Depends(get_db)):
     """What this rule would match and change, before it's saved or applied."""
     try:
         return preview_rule(conn, body.pattern, body.category, body.subcategory)
-    except UserRuleError as e:
+    except CategoryError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
 
@@ -54,7 +54,7 @@ def preview(body: RuleBody, conn: sqlite3.Connection = Depends(get_db)):
 def create(body: RuleBody, conn: sqlite3.Connection = Depends(get_db)):
     try:
         rule = create_user_rule(conn, body.pattern, body.category, body.subcategory, body.merchant)
-    except UserRuleError as e:
+    except CategoryError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     conn.commit()
     return rule
@@ -71,7 +71,7 @@ def patch(rule_id: str, body: RulePatch, conn: sqlite3.Connection = Depends(get_
         changes["category"] = current["category"]
     try:
         rule = update_user_rule(conn, rule_id, changes)
-    except UserRuleError as e:
+    except CategoryError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")

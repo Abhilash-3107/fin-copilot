@@ -34,6 +34,7 @@ from finance_copilot.api.routes import (
     insights,
     local_llm,
     people,
+    policies,
     rules,
     statements,
     transactions,
@@ -135,6 +136,7 @@ app.include_router(annotations.router, prefix="/api/annotations", tags=["annotat
 app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
 app.include_router(people.router, prefix="/api/people", tags=["people"])
 app.include_router(rules.router, prefix="/api/rules", tags=["rules"])
+app.include_router(policies.router, prefix="/api/policies", tags=["policies"])
 app.include_router(embeddings.router, prefix="/api/embeddings", tags=["embeddings"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(config.router, prefix="/api/config", tags=["config"])

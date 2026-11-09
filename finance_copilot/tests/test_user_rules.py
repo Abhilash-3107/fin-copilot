@@ -74,9 +74,11 @@ class TestMatching:
         assert match_user_rule(list_user_rules(conn), {"raw_description": "SWIGGY"}) is None
 
     def test_unknown_category_rejected(self, conn):
-        with pytest.raises(UserRuleError):
+        from finance_copilot.db.queries.categories import CategoryError
+
+        with pytest.raises(CategoryError):
             create_user_rule(conn, "x", "Not A Category")
-        with pytest.raises(UserRuleError):
+        with pytest.raises(CategoryError):
             create_user_rule(conn, "x", "Shopping", "Not A Subcategory")
         with pytest.raises(UserRuleError):
             create_user_rule(conn, "   ", "Shopping")

@@ -99,7 +99,7 @@ class Annotation(BaseModel):
     subcategory: str | None = None
     tags: str = ""  # JSON-array string, matches DB column (see queries.common helpers)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported", "policy"]
     annotated_at: datetime | None = None
     reasoning: str | None = None  # JSON-serialized ReasoningTrace, dev mode only
 
@@ -111,7 +111,7 @@ class AnnotationCreate(BaseModel):
     subcategory: str | None = None
     tags: list[str] = []
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported"]
+    source: Literal["manual", "model", "rule", "user_rule", "learned_rule", "rag_direct", "rag_prompted", "llm", "imported", "policy"]
 
 
 class AnnotationPatch(BaseModel):

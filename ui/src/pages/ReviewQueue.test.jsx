@@ -44,6 +44,9 @@ function makeCard(overrides = {}) {
     tags: [],
     confidence: 0.5,
     source: 'llm',
+    group_key: `P${overrides.transaction_id ?? 100}|debit`,
+    group_size: 1,
+    payee: 'SWIGGY',
     ...overrides,
   }
 }
@@ -56,6 +59,7 @@ function stubGet(queue) {
     if (path === '/categories') return Promise.resolve(CATEGORIES)
     if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
     if (path.endsWith('/similar')) return Promise.resolve([]) // no propagation candidates
+    if (path === '/policies') return Promise.resolve([])
     return Promise.resolve(null)
   })
 }
@@ -191,5 +195,78 @@ describe('ReviewQueue teaching propagation', () => {
     await act(async () => {})
 
     expect(mockApi.get.mock.calls.filter(([p]) => p === '/annotations/review-queue').length).toBe(fetches + 1)
+  })
+})
+
+describe('ReviewQueue payee groups', () => {
+  const group = (id, desc, extra = {}) => makeCard({
+    annotation_id: id, transaction_id: 100 + id, raw_description: desc,
+    group_key: 'OBEROIFC TUCKSH|debit', group_size: 2, payee: 'OBEROIFC tucksh', ...extra,
+  })
+
+  it('confirms every queued payment to the payee in one decision', async () => {
+    stubGet([
+      group(10, 'SWIGGY ORDER 8842'),
+      group(11, 'OBEROIFC SECOND 1'),
+      makeCard({ annotation_id: 12, transaction_id: 112, raw_description: 'UBER TRIP 77', group_key: 'UBER|debit', group_size: 1 }),
+    ])
+    mockApi.post.mockResolvedValue({ updated: 2, reevaluated: [] })
+    await renderQueue()
+    expect(screen.getByText(/Apply my answer to all 2 payments to/)).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(await screen.findByText('UBER TRIP 77')).toBeInTheDocument()
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
+      annotation_ids: [10, 11], label: { category: 'Food', subcategory: null },
+    })
+    expect(screen.queryByText('OBEROIFC SECOND 1')).not.toBeInTheDocument()
+  })
+
+  it('"a" turns the group off so only this card is confirmed', async () => {
+    stubGet([group(10, 'SWIGGY ORDER 8842'), group(11, 'OBEROIFC SECOND 1')])
+    await renderQueue()
+
+    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(await screen.findByText('OBEROIFC SECOND 1')).toBeInTheDocument()
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
+  })
+
+  it('keeps the keyboard after the group checkbox is clicked', async () => {
+    stubGet([group(10, 'SWIGGY ORDER 8842'), group(11, 'OBEROIFC SECOND 1')])
+    await renderQueue()
+
+    const box = screen.getByRole('checkbox')
+    fireEvent.click(box)
+    fireEvent.keyDown(box, { key: 'c' })
+
+    expect(await screen.findByText('OBEROIFC SECOND 1')).toBeInTheDocument()
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
+  })
+
+  it('offers a policy after three small payments to people get the same label', async () => {
+    const person = (id, desc) => makeCard({
+      annotation_id: id, transaction_id: 100 + id, raw_description: desc, amount: 40,
+      category: 'Transport', subcategory: 'Cab & Auto', payee_kind: 'person',
+      group_key: `P${id}|debit`, group_size: 1,
+    })
+    stubGet([person(10, 'SWIGGY ORDER 8842'), person(11, 'RIDE TWO'), person(12, 'RIDE THREE'), person(13, 'RIDE FOUR')])
+    mockApi.post.mockImplementation(path => Promise.resolve(
+      path === '/policies' ? { resolved: 1 } : path === '/policies/preview' ? { matches: 2 } : { reevaluated: [] }
+    ))
+    await renderQueue()
+
+    for (const next of ['RIDE TWO', 'RIDE THREE', 'RIDE FOUR']) {
+      fireEvent.keyDown(window, { key: 'Enter' })
+      await screen.findByText(next)
+    }
+    const yes = await screen.findByRole('button', { name: 'Yes, always' })
+    fireEvent.click(yes)
+    await act(async () => {})
+    expect(mockApi.post).toHaveBeenCalledWith('/policies', {
+      max_amount: 500, category: 'Transport', subcategory: 'Cab & Auto',
+    })
   })
 })
