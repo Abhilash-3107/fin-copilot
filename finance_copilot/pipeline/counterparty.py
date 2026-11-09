@@ -190,14 +190,14 @@ def counterparty_history(
     identity: str,
     direction: str,
     *,
-    before_txn_date: str,
+    before_txn_date: str | None,
     exclude_transaction_id: str | None = None,
 ) -> list[dict]:
     """Prior (category, source) labels for one payee in one direction.
 
     Direction is part of identity for history: a refund from a merchant says
-    nothing about what the user spends there. Causal: only labels dated before
-    before_txn_date, so a replay in the eval sees what production saw.
+    nothing about what the user spends there. Causal when before_txn_date is
+    given (see learned_rules.verified_labels); None means every label.
     """
     rows = conn.execute(
         """
@@ -205,10 +205,10 @@ def counterparty_history(
                a.category, a.source
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE t.counterparty_key = ? AND t.debit_credit = ? AND t.txn_date < ?
+        WHERE t.counterparty_key = ? AND t.debit_credit = ? AND (? IS NULL OR t.txn_date < ?)
           AND t.id IS NOT ?
         """,
-        (identity, direction, before_txn_date, exclude_transaction_id),
+        (identity, direction, before_txn_date, before_txn_date, exclude_transaction_id),
     ).fetchall()
 
     return [
@@ -223,7 +223,7 @@ def counterparty_history(
     ]
 
 
-def counterparty_prior(conn: sqlite3.Connection, txn: dict) -> CounterpartyPrior:
+def counterparty_prior(conn: sqlite3.Connection, txn: dict, *, as_of: str | None) -> CounterpartyPrior:
     """Compute the empirical-Bayes recurrence prior for a transaction's counterparty.
 
     Returns an inert CounterpartyPrior (category=None, probability=0) when the
@@ -247,7 +247,7 @@ def counterparty_prior(conn: sqlite3.Connection, txn: dict) -> CounterpartyPrior
 
     history = counterparty_history(
         conn, identity, txn["debit_credit"],
-        before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
+        before_txn_date=as_of, exclude_transaction_id=txn["id"],
     )
     if not history:
         return CounterpartyPrior()

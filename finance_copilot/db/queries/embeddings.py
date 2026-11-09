@@ -14,6 +14,24 @@ def _serialize_embedding(embedding: list[float]) -> bytes:
     return struct.pack(f"{len(embedding)}f", *embedding)
 
 
+def stored_embedding(conn: sqlite3.Connection, transaction_id: str) -> list[float] | None:
+    """The transaction's vector from the active model, or None when it has none.
+
+    Re-evaluation queries with stored vectors: every machine-labeled row was
+    embedded when it was annotated, so recomputing its vector is a network call
+    for nothing, and "no stored vector" is the honest "retrieval can't run".
+    """
+    # embedding_meta is written only alongside a vector, and exists even when
+    # the sqlite-vec extension (and so vec_items) is unavailable.
+    if conn.execute(
+        "SELECT 1 FROM embedding_meta WHERE transaction_id = ? AND model_version = ?",
+        (transaction_id, current_embedding_model()),
+    ).fetchone() is None:
+        return None
+    blob = conn.execute("SELECT embedding FROM vec_items WHERE transaction_id = ?", (transaction_id,)).fetchone()[0]
+    return list(struct.unpack(f"{len(blob) // 4}f", blob))
+
+
 def ensure_vec_dimension(conn: sqlite3.Connection) -> bool:
     """Rebuild vec_items when the active embedding model's dimension differs.
 

@@ -250,17 +250,24 @@ export default function ReviewQueue() {
     setIdx(i => i + 1)
   }
 
-  // The server re-decides machine labels a fresh human label can settle (same
-  // payee, near neighbours) and returns the ones that no longer need review.
-  // Drop those still ahead in the queue; cards already passed stay put so the
-  // back button keeps working. Returns how many were removed.
-  function dropResolved(ids) {
-    if (!ids?.length) return 0
-    const resolved = new Set(ids)
+  // The server re-decides the machine labels a fresh human label can change
+  // (same payee, near neighbours) and returns every row it rewrote. Cards ahead
+  // in the queue follow it: resolved ones leave, the rest show their new label
+  // so a later confirm vouches for what is actually stored. Cards already
+  // passed stay put so the back button keeps working. Returns how many left.
+  function applyReevaluated(rows) {
+    const byId = new Map(rows.map(r => [r.transaction_id, r]))
     const here = idxRef.current
-    const ahead = queue.filter((it, i) => i > here && resolved.has(it.transaction_id)).length
-    setQueue(q => q.filter((it, i) => i <= here || !resolved.has(it.transaction_id)))
-    return ahead
+    let left = 0
+    const next = queue.flatMap((it, i) => {
+      const r = i > here && byId.get(it.transaction_id)
+      if (!r) return [it]
+      if (r.resolved) { left += 1; return [] }
+      const { transaction_id: _id, resolved: _resolved, ...label } = r
+      return [{ ...it, ...label }]
+    })
+    setQueue(next)
+    return left
   }
 
   function goBack() {
@@ -302,13 +309,22 @@ export default function ReviewQueue() {
     if (!current) return
     setSaving(true)
     try {
-      const res = await api.post(`/annotations/${current.annotation_id}/confirm`, {})
+      const res = await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
       pushHistory()
       record(current.annotation_id, 'confirmed')
-      const sorted = dropResolved(res?.resolved_transaction_ids)
+      const sorted = applyReevaluated(res.reevaluated)
       toast(withResolved('Got it, thanks!', sorted), 'success')
       advance()
     } catch (e) {
+      if (e.status === 409) {
+        // The label changed under this card (new evidence settled it); show
+        // the current queue instead of confirming something unseen.
+        toast(`${e.message}. Here's the updated list.`, 'info')
+        setQueue(await api.get('/annotations/review-queue'))
+        setIdx(0)
+        setHistory([])
+        return
+      }
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
       setSaving(false)
@@ -328,7 +344,7 @@ export default function ReviewQueue() {
       })
       pushHistory()
       record(current.annotation_id, 'edited')
-      const sorted = dropResolved(res?.resolved_transaction_ids)
+      const sorted = applyReevaluated(res.reevaluated)
       toast(withResolved("Noted, I'll remember that.", sorted), 'success')
       advance()
       // One correction can fix many: offer the same label for similar

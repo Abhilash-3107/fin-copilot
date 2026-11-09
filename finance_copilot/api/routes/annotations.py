@@ -79,40 +79,15 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
     then let the new labels re-decide the machine labels they could change.
 
     A bulk edit can touch a thousand rows; embedding them inline kept the UI on
-    "Applying..." for minutes. Best-effort: a miss is backfilled by
-    /embeddings/generate.
+    "Applying..." for minutes. embed_transactions is best-effort (a dead
+    provider leaves gaps that /embeddings/generate backfills).
     """
     conn = _open_job_connection()
     try:
         embed_transactions(conn, transaction_ids)
-    except Exception:
-        logger.exception("background re-embed failed | txns=%d", len(transaction_ids))
-    try:
         reevaluate_after_teaching(conn, transaction_ids)
-    except Exception:
-        logger.exception("background re-evaluation failed | txns=%d", len(transaction_ids))
     finally:
         conn.close()
-
-
-def _rescore_quietly(conn: sqlite3.Connection) -> None:
-    try:
-        rescore_review_queue(conn)
-    except Exception:
-        logger.exception("review-queue rescore failed")
-        conn.rollback()
-
-
-def _propagate_teaching(conn: sqlite3.Connection, transaction_id: str) -> list[str]:
-    """Re-decide machine labels one fresh human label could change (same payee,
-    near neighbours). Deterministic stages only, bounded, so it runs inline and
-    the UI can drop what it resolved. Never fails the label write."""
-    try:
-        return reevaluate_after_teaching(conn, [transaction_id])["resolved"]
-    except Exception:
-        logger.exception("re-evaluation after teaching failed | txn=%s", transaction_id)
-        conn.rollback()
-        return []
 
 
 # A live job heartbeats updated_at roughly once per second via its progress
@@ -181,8 +156,6 @@ def _run_annotation_job(
                 last_commit = now
 
         result = auto_annotate(conn, statement_id, transaction_ids, progress_cb=progress)
-        # Labels and donors from this run can settle items queued earlier.
-        _rescore_quietly(conn)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
@@ -331,7 +304,7 @@ def create_annotation(
     embed_transaction(conn, annotation.transaction_id)
     response = _annotation_response(annotation)
     if body.source == "manual":
-        response["resolved_transaction_ids"] = _propagate_teaching(conn, annotation.transaction_id)
+        response["reevaluated"] = reevaluate_after_teaching(conn, [annotation.transaction_id])
     return response
 
 
@@ -386,25 +359,34 @@ def patch_annotation(
         embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
-    updated["resolved_transaction_ids"] = (
-        _propagate_teaching(conn, existing["transaction_id"]) if patch else []
-    )
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]]) if patch else []
     return updated
+
+
+class ConfirmRequest(BaseModel):
+    # The category the user saw and is vouching for. Machine labels can be
+    # re-decided while a card is on screen; confirming must not stamp a label
+    # the user never saw.
+    category: str
 
 
 @router.post("/{annotation_id}/confirm")
 def confirm_annotation(
     annotation_id: str,
+    body: ConfirmRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Mark an annotation as confirmed by a human without changes.
 
     Records a 'confirmed' feedback event for the original (source, category),
-    then sets confidence=1.0 and source='manual'.
+    then sets confidence=1.0 and source='manual'. 409 when the stored category
+    is no longer the one the user confirmed.
     """
     existing = get_annotation(conn, annotation_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
+    if existing["category"] != body.category:
+        raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
 
     if existing["source"] in _MODEL_SOURCES:
         record_feedback(conn, existing["source"], existing["category"], "confirmed")
@@ -414,7 +396,7 @@ def confirm_annotation(
     embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
-    updated["resolved_transaction_ids"] = _propagate_teaching(conn, existing["transaction_id"])
+    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]])
     return updated
 
 
@@ -707,9 +689,9 @@ def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
 def review_queue_rescore(conn: sqlite3.Connection = Depends(get_db)):
     """Re-decide every queued item with the deterministic stages (no LLM), so
     items that current rules, learned rules, or donors can now settle leave the
-    queue. Also runs after annotation and re-embed jobs."""
-    result = rescore_review_queue(conn)
-    return {"resolved": len(result["resolved"]), "changed": result["changed"]}
+    queue. Also runs after a re-embed job."""
+    changed = rescore_review_queue(conn)
+    return {"resolved": sum(c["resolved"] for c in changed), "changed": len(changed)}
 
 
 @router.post("/review-queue/unsnooze", status_code=200)

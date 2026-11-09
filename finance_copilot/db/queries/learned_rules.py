@@ -85,15 +85,15 @@ def verified_labels(
     counterparty_key: str,
     direction: str,
     *,
-    before_txn_date: str,
+    before_txn_date: str | None,
     exclude_transaction_id: str | None = None,
 ) -> list[dict]:
-    """Human-verified labels for one payee and direction, dated strictly before
-    before_txn_date (causal: a replayed transaction sees only earlier labels, so
-    production and the eval harness behave the same).
+    """Human-verified labels for one payee and direction.
 
-    Day granularity: same-day labels are invisible, since intra-day order is
-    unknown and counting a same-day sibling would leak in the eval.
+    before_txn_date makes it causal: only labels dated strictly before it, as a
+    transaction being annotated (or replayed in the eval) would have seen. Same-
+    day labels are invisible, since intra-day order is unknown. None means every
+    label that exists now: re-evaluating stored labels and the Settings listing.
     """
     return [
         dict(r) for r in conn.execute(
@@ -101,11 +101,11 @@ def verified_labels(
             SELECT a.category, a.subcategory, a.merchant, a.tags, a.annotated_at
             FROM annotations a
             JOIN transactions t ON t.id = a.transaction_id
-            WHERE t.counterparty_key = ? AND t.debit_credit = ? AND t.txn_date < ?
+            WHERE t.counterparty_key = ? AND t.debit_credit = ? AND (? IS NULL OR t.txn_date < ?)
               AND a.source IN ({",".join("?" * len(_SOURCES))})
               AND t.id IS NOT ?
             """,
-            (counterparty_key, direction, before_txn_date, *_SOURCES, exclude_transaction_id),
+            (counterparty_key, direction, before_txn_date, before_txn_date, *_SOURCES, exclude_transaction_id),
         )
     ]
 
@@ -155,7 +155,7 @@ def lookup_learned_rule(
     counterparty_key: str,
     direction: str,
     *,
-    before_txn_date: str,
+    before_txn_date: str | None,
     exclude_transaction_id: str | None = None,
 ) -> LearnedRule | None:
     """The established rule for a payee and direction, or None.

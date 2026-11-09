@@ -16,6 +16,7 @@ from finance_copilot.db.queries.embeddings import (
     ensure_vec_dimension,
     get_embedding_stats,
 )
+from finance_copilot.pipeline.annotate import rescore_review_queue
 from finance_copilot.pipeline.embed import refresh_embeddings, stale_embedding_rows
 
 logger = logging.getLogger(__name__)
@@ -85,10 +86,8 @@ def _run_reembed_job(job_id: str) -> None:
             conn.commit()
 
         result = refresh_embeddings(conn, progress_cb=progress)
-        # Fresh vectors (new model or embed format) can settle queued items.
-        from finance_copilot.api.routes.annotations import _rescore_quietly
-
-        _rescore_quietly(conn)
+        # Fresh vectors (new model or embed text) can settle queued items.
+        rescore_review_queue(conn)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')

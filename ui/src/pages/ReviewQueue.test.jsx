@@ -76,8 +76,8 @@ async function renderQueue() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockApi.post.mockResolvedValue({})
-  mockApi.patch.mockResolvedValue({})
+  mockApi.post.mockResolvedValue({ reevaluated: [] })
+  mockApi.patch.mockResolvedValue({ reevaluated: [] })
 })
 
 describe('ReviewQueue keyboard shortcuts', () => {
@@ -92,7 +92,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
 
     // Await the terminal UI first so every post-save state update flushes inside act.
     await screen.findByText("You're all done!")
-    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', {})
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
     expect(mockApi.patch).not.toHaveBeenCalled()
   })
 
@@ -103,7 +103,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     fireEvent.keyDown(window, { key: 'c' })
 
     await screen.findByText("You're all done!")
-    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', {})
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
     expect(mockApi.patch).not.toHaveBeenCalled()
   })
 
@@ -124,7 +124,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
       expect.objectContaining({ category: 'Transport' })
     )
     // Crucially, a dirty card must NOT fire the confirm endpoint.
-    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', {})
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
   })
 
   it('skips persistently via the snooze endpoint without saving anything', async () => {
@@ -138,7 +138,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     await screen.findByText('UBER TRIP')
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/skip', {})
     expect(mockApi.patch).not.toHaveBeenCalled()
-    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', {})
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
   })
 
   it('does not react to shortcuts while typing in an input', async () => {
@@ -152,7 +152,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     await user.click(merchant)
     await user.keyboard('cs')
 
-    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', {})
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
     expect(merchant).toHaveValue('Swiggycs')
   })
 })
@@ -164,13 +164,32 @@ describe('ReviewQueue teaching propagation', () => {
       makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'SWIGGY ORDER 9911' }),
       makeCard({ annotation_id: 12, transaction_id: 102, raw_description: 'UBER TRIP 77' }),
     ])
-    mockApi.post.mockResolvedValue({ resolved_transaction_ids: [101] })
+    mockApi.post.mockResolvedValue({ reevaluated: [
+      { transaction_id: 101, category: 'Food', subcategory: null, merchant: null, confidence: 0.95,
+        source: 'learned_rule', resolved: true },
+      { transaction_id: 102, category: 'Transport', subcategory: 'Cab & Auto', merchant: null, confidence: 0.6,
+        source: 'rag_direct', resolved: false },
+    ] })
     await renderQueue()
 
     fireEvent.keyDown(window, { key: 'Enter' })
 
-    // The resolved sibling is skipped over: the next card is the unrelated one.
+    // The resolved sibling is skipped over; the changed one shows its new label.
     expect(await screen.findByText('UBER TRIP 77')).toBeInTheDocument()
     expect(screen.queryByText('SWIGGY ORDER 9911')).not.toBeInTheDocument()
+    expect(screen.getByText('Cab & Auto', { selector: 'span' })).toBeInTheDocument()
+  })
+
+  it('reloads instead of confirming a label that changed under the card', async () => {
+    const { ApiError } = await import('../lib/api.js')
+    stubGet([makeCard()])
+    mockApi.post.mockRejectedValue(Object.assign(new ApiError('now Transport'), { status: 409 }))
+    await renderQueue()
+    const fetches = mockApi.get.mock.calls.filter(([p]) => p === '/annotations/review-queue').length
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await act(async () => {})
+
+    expect(mockApi.get.mock.calls.filter(([p]) => p === '/annotations/review-queue').length).toBe(fetches + 1)
   })
 })

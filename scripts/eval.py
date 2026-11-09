@@ -56,7 +56,7 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
     """Run the cascade for one golden txn, time-split at its own date. Returns a record."""
     t0 = time.monotonic()
 
-    rule_result, _rule_trace = rule_annotation(conn, txn, known_people)
+    rule_result, _rule_trace = rule_annotation(conn, txn, known_people, as_of=txn["txn_date"])
     if rule_result is not None:
         return {
             "stage": rule_result.source,  # "rule" or "learned_rule"
@@ -67,7 +67,7 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
         }
 
     rag_result, _trace = _try_rag_annotation(
-        conn, txn, category_list, before_txn_date=txn["txn_date"]
+        conn, txn, category_list, before_txn_date=txn["txn_date"], as_of=txn["txn_date"]
     )
     if rag_result is not None:
         return {
