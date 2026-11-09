@@ -1187,11 +1187,11 @@ class TestLearnedRulesEndpoint:
         conn.commit()
         assert client.get("/api/annotations/learned-rules").json()
 
-        resp = client.delete("/api/annotations/learned-rules/SWIGGY")
+        resp = client.delete("/api/annotations/learned-rules/SWIGGY?direction=debit")
         assert resp.status_code == 204
         assert client.get("/api/annotations/learned-rules").json() == []
         # Idempotent.
-        assert client.delete("/api/annotations/learned-rules/SWIGGY").status_code == 204
+        assert client.delete("/api/annotations/learned-rules/SWIGGY?direction=debit").status_code == 204
 
 
 class TestPeopleRelationship:

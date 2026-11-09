@@ -12,7 +12,11 @@ from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.categories import get_category_names_flat
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
-from finance_copilot.db.queries.learned_rules import lookup_learned_rule
+from finance_copilot.db.queries.learned_rules import (
+    label_stats,
+    lookup_learned_rule,
+    verified_labels,
+)
 from finance_copilot.db.queries.people import (
     list_people,
     person_token_matches,
@@ -204,11 +208,9 @@ def rule_annotation(
     # (bounded by this txn's date, excludes self) so production == eval.
     if result is None and settings.learned_rule_enabled:
         learned = lookup_learned_rule(
-            conn,
-            txn["counterparty_key"],
-            before_txn_date=txn.get("txn_date"),
-            exclude_transaction_id=txn.get("id"),
-        )
+            conn, txn["counterparty_key"], txn["debit_credit"],
+            before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
+        ) if txn["counterparty_key"] else None
         if learned is not None:
             logger.info(
                 "learned_rule | txn=%s  → %s/%s  support=%d/%d purity=%.2f",
@@ -572,19 +574,40 @@ def _weighted_trusted_vote(annotated_matches: list[dict]) -> tuple[str | None, f
     return winner, winner_weight / total, trusted_weight
 
 
-def _compute_agreement_factor(annotated_matches: list[dict], top_category: str) -> float:
-    """Discount factor based on how many top-K matches agree on the top category.
+def _compute_agreement_factor(evidence: list[dict], top_category: str) -> float:
+    """Discount factor based on how much of the evidence agrees on the top category.
 
-    Returns 1.0 when all matches agree (no penalty).
-    Returns majority_fraction ** exponent when there's disagreement (gentle penalty).
+    Source-weighted like the vote (_donor_weight), so a machine-labeled neighbour
+    cannot veto a human label at full strength. Returns 1.0 when all evidence
+    agrees, otherwise agreeing_weight_fraction ** rag_agreement_exponent.
     """
-    if not annotated_matches:
-        return 1.0
-    majority_count = sum(1 for m in annotated_matches if m.get("category") == top_category)
-    majority_fraction = majority_count / len(annotated_matches)
-    if majority_fraction >= 1.0:
-        return 1.0
-    return majority_fraction ** settings.rag_agreement_exponent
+    total = sum(_donor_weight(m["source"]) for m in evidence)
+    agree = sum(_donor_weight(m["source"]) for m in evidence if m["category"] == top_category)
+    return (agree / total) ** settings.rag_agreement_exponent
+
+
+def _is_evidence(match: dict) -> bool:
+    """A donor similar enough to count as evidence at all.
+
+    The novelty gate refuses RAG when the best match is below
+    rag_similarity_floor; the same floor applies to every donor. Top-K is
+    otherwise "one relevant merchant + K-1 random ones", and the more merchants
+    a user teaches, the more random neighbours would dilute the vote.
+    """
+    return 1.0 - match["distance"] >= settings.rag_similarity_floor
+
+
+def _contradicts_user(conn: sqlite3.Connection, txn: TxnRow, category: str) -> bool:
+    """Whether the user's own verified labels for this payee (same direction,
+    causal) point elsewhere: mostly another category, or split evenly. Exact text
+    identity is not enough when one payee is paid for different things."""
+    if txn["counterparty_key"] is None:
+        return False
+    stats = label_stats(verified_labels(
+        conn, txn["counterparty_key"], txn["debit_credit"],
+        before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
+    ))
+    return stats is not None and stats.total >= 2 and (stats.category != category or stats.purity <= 0.5)
 
 
 def _compute_margin_factor(top_distance: float, next_diff_distance: float | None) -> float:
@@ -718,8 +741,10 @@ def _try_rag_annotation(
                 "raw_description": donor_txn.get("raw_description"),
             })
 
-    # Deduplicate recurring counterparties to one vote before any agreement logic.
+    # Deduplicate recurring counterparties to one vote before any agreement logic,
+    # then keep only donors similar enough to be evidence.
     annotated_matches = _dedup_donors(annotated_matches)
+    evidence = [m for m in annotated_matches if _is_evidence(m)]
 
     logger.debug(
         "rag | top match | txn=%s  similar_txn=%s  cosine_sim=%.4f  threshold=%.4f  annotated_k=%d",
@@ -728,7 +753,7 @@ def _try_rag_annotation(
 
     # Source-weighted, deduplicated vote across the donors — the basis for
     # confidence and the reject/defer decision (more reliable than top-1 similarity).
-    vote_category, vote_share, trusted_weight = _weighted_trusted_vote(annotated_matches)
+    vote_category, vote_share, trusted_weight = _weighted_trusted_vote(evidence)
 
     # Reasoning trace: the deduped neighbours behind this decision, with their
     # cosine similarity. Built once and shared by both the rag_direct and
@@ -742,6 +767,7 @@ def _try_rag_annotation(
             source=m.get("source"),
             distance=round(m["distance"], 4),
             similarity=round(1.0 - m["distance"], 4),
+            below_floor=not _is_evidence(m),
         )
         for m in annotated_matches
     ]
@@ -750,24 +776,28 @@ def _try_rag_annotation(
     # Only trust human-verified or rule-matched annotations;
     # LLM/RAG-sourced donors fall through to rag_prompted so the LLM re-evaluates.
     if cosine_similarity >= settings.rag_direct_threshold:
-        donor_ann = annotated_matches[0]["annotation"] if annotated_matches else None
+        donor_ann = evidence[0]["annotation"] if evidence else None
         if donor_ann and donor_ann.get("source") in _TRUSTED_SOURCES:
             top_category = donor_ann["category"]
 
             # Agreement factor: penalize if top-K matches disagree on category
-            agreement_factor = _compute_agreement_factor(annotated_matches, top_category)
+            agreement_factor = _compute_agreement_factor(evidence, top_category)
 
             # Margin factor: penalize if nearest different-category match is close.
             # Use the deduped nearest donor's distance so both sides of the margin
             # come from the same (post-dedup) donor set.
-            nearest_distance = annotated_matches[0]["distance"]
+            nearest_distance = evidence[0]["distance"]
             next_diff_distance = next(
-                (m["distance"] for m in annotated_matches if m.get("category") != top_category),
+                (m["distance"] for m in evidence if m.get("category") != top_category),
                 None,
             )
             margin_factor = _compute_margin_factor(nearest_distance, next_diff_distance)
 
             confidence = round(cosine_similarity * agreement_factor * margin_factor, 4)
+            direct_caps: list[str] = []
+            if confidence > settings.rag_defer_confidence_cap and _contradicts_user(conn, txn, top_category):
+                confidence = min(confidence, settings.rag_defer_confidence_cap)
+                direct_caps.append("counterparty_conflict")
             logger.debug(
                 "rag_direct | txn=%s  → %s/%s  cosine=%.4f  agreement=%.4f  margin=%.4f  conf=%.4f  donor_source=%s",
                 txn["id"], top_category, donor_ann.get("subcategory"),
@@ -778,11 +808,13 @@ def _try_rag_annotation(
                 final_confidence=confidence,
                 best_similarity=round(cosine_similarity, 4),
                 neighbours=trace_neighbours,
+                evidence_count=len(evidence),
                 vote_category=vote_category,
                 vote_share=round(vote_share, 4) if vote_share is not None else None,
                 trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
                 agreement_factor=round(agreement_factor, 4),
                 margin_factor=round(margin_factor, 4),
+                caps_applied=direct_caps,
                 thresholds=_threshold_snapshot(
                     "rag_similarity_floor", "rag_direct_threshold", "rag_margin_safe",
                     "rag_agreement_exponent", "rag_machine_donor_weight",
@@ -821,7 +853,9 @@ def _try_rag_annotation(
         )
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
-    examples = _build_examples_from_similar(conn, similar, ann_by_txn)
+    # Examples, the majority hint and the off-example check all come from the
+    # same evidence the vote uses: below-floor neighbours are not shown either.
+    examples = _build_examples_from_similar(conn, [m for m in similar if _is_evidence(m)], ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
         # Pass the example-category majority as a hint so the LLM weighs the
@@ -902,6 +936,7 @@ def _try_rag_annotation(
                 final_confidence=confidence,
                 best_similarity=round(best_similarity, 4),
                 neighbours=trace_neighbours,
+                evidence_count=len(evidence),
                 vote_category=vote_category,
                 vote_share=round(vote_share, 4) if vote_share is not None else None,
                 trusted_weight=round(trusted_weight, 4) if trusted_weight is not None else None,
@@ -1009,14 +1044,7 @@ def _build_examples_from_similar(
         ann_row = ann_by_txn.get(match["transaction_id"])
         if txn_row is None or ann_row is None:
             continue
-        upi_note = ""
-        upi_meta = txn_row["upi_meta"] if "upi_meta" in txn_row.keys() else None
-        if upi_meta:
-            try:
-                meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
-                upi_note = str(meta.get("note", ""))
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        upi_note = json.loads(txn_row["upi_meta"])["note"] if txn_row["upi_meta"] else None
         examples.append({
             "raw_description": txn_row["raw_description"],
             "upi_note": upi_note,

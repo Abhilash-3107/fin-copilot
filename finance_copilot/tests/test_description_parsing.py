@@ -179,7 +179,7 @@ class TestResolver:
         # Newer statement (short spelling) uploaded first, then the older one.
         conn = _conn()
         _ingest(conn, "new", "UPI/OBEROIFC tucks/YESB/125146338066/UPI", day=20)
-        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('OBEROIFC TUCKS')")
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key, direction) VALUES ('OBEROIFC TUCKS', 'debit')")
         _ingest(conn, "old", "UPI/OBEROIFC tucksh/118364694521/UPI", day=1)
         keys = {r[0] for r in conn.execute("SELECT counterparty_key FROM transactions")}
         assert keys == {"OBEROIFC TUCKSH"}
@@ -210,7 +210,7 @@ class TestLearnedRuleAcrossLayouts:
         _ingest(conn, "new", "UPI/OBEROIFC tucks/YESB/125146338066/UPI", day=22)
         conn.commit()
         row = dict(conn.execute("SELECT * FROM transactions WHERE id = 'new'").fetchone())
-        rule = lookup_learned_rule(conn, row["counterparty_key"])
+        rule = lookup_learned_rule(conn, row["counterparty_key"], "debit", before_txn_date=row["txn_date"])
         assert rule is not None
         assert rule.category == "Food & Dining"
 
@@ -232,7 +232,7 @@ class TestRederive:
                  "RAVI KUMAR SHA"),
             ],
         )
-        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('OBEROIFC TUCKS')")
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key, direction) VALUES ('OBEROIFC TUCKS', 'debit')")
         conn.commit()
 
     def test_keys_resolved_to_longest_spelling(self):
@@ -264,7 +264,7 @@ class TestRederive:
             "counterparty_key) VALUES (?, 's1', '2026-06-01', 1, 'debit', ?, 'MERGED')",
             [("x", "UPI/FIRST PAYEE/118364694521/UPI"), ("y", "UPI/SECOND PAYEE/118364694522/UPI")],
         )
-        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('MERGED')")
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key, direction) VALUES ('MERGED', 'debit')")
         rederive_descriptions(conn)
         assert [r[0] for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions")] == ["MERGED"]
 

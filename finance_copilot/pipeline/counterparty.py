@@ -188,39 +188,34 @@ class CounterpartyPrior:
 def counterparty_history(
     conn: sqlite3.Connection,
     identity: str,
+    direction: str,
     *,
-    before_txn_date: str | None = None,
+    before_txn_date: str,
     exclude_transaction_id: str | None = None,
 ) -> list[dict]:
-    """Fetch prior (category, source) labels for a counterparty identity.
+    """Prior (category, source) labels for one payee in one direction.
 
-    Only annotated transactions are returned. `before_txn_date` and
-    `exclude_transaction_id` enforce causality: a backtest replaying history in time
-    order must only see labels that existed *before* the transaction being scored,
-    otherwise the prior leaks its own answer.
-
-    Identity matching uses the indexed transactions.counterparty_key column,
-    which holds the resolved key (truncation variants folded together) computed
-    at ingest and re-derived on parser upgrades (pipeline/derived.py).
+    Direction is part of identity for history: a refund from a merchant says
+    nothing about what the user spends there. Causal: only labels dated before
+    before_txn_date, so a replay in the eval sees what production saw.
     """
     rows = conn.execute(
         """
-        SELECT t.id AS transaction_id, t.txn_date, t.raw_description,
+        SELECT t.id AS transaction_id, t.txn_date, t.debit_credit,
                a.category, a.source
         FROM annotations a
         JOIN transactions t ON t.id = a.transaction_id
-        WHERE t.counterparty_key = ?
-          AND a.category IS NOT NULL
-          AND (? IS NULL OR t.txn_date < ?)
-          AND (? IS NULL OR t.id != ?)
+        WHERE t.counterparty_key = ? AND t.debit_credit = ? AND t.txn_date < ?
+          AND t.id IS NOT ?
         """,
-        (identity, before_txn_date, before_txn_date, exclude_transaction_id, exclude_transaction_id),
+        (identity, direction, before_txn_date, exclude_transaction_id),
     ).fetchall()
 
     return [
         {
             "transaction_id": row["transaction_id"],
             "txn_date": row["txn_date"],
+            "debit_credit": row["debit_credit"],
             "category": row["category"],
             "source": row["source"],
         }
@@ -228,12 +223,7 @@ def counterparty_history(
     ]
 
 
-def counterparty_prior(
-    conn: sqlite3.Connection,
-    txn: dict,
-    *,
-    before_txn_date: str | None = None,
-) -> CounterpartyPrior:
+def counterparty_prior(conn: sqlite3.Connection, txn: dict) -> CounterpartyPrior:
     """Compute the empirical-Bayes recurrence prior for a transaction's counterparty.
 
     Returns an inert CounterpartyPrior (category=None, probability=0) when the
@@ -256,10 +246,8 @@ def counterparty_prior(
         return CounterpartyPrior()
 
     history = counterparty_history(
-        conn,
-        identity,
-        before_txn_date=before_txn_date or txn.get("txn_date"),
-        exclude_transaction_id=txn.get("id"),
+        conn, identity, txn["debit_credit"],
+        before_txn_date=txn["txn_date"], exclude_transaction_id=txn["id"],
     )
     if not history:
         return CounterpartyPrior()

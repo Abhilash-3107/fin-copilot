@@ -86,6 +86,14 @@ class AnnotationResponse(BaseModel):
         ),
     )
 
+    @field_validator("merchant")
+    @classmethod
+    def _not_a_bank_line(cls, v: str | None) -> str | None:
+        # Small models often echo the description ("UPI/NAME/1207.../self") as
+        # the merchant; that is the bank's encoding, not a name, and once a user
+        # confirms it a learned rule would copy it onto every future payment.
+        return None if v and v.count("/") >= 2 else v
+
     @field_validator("reasoning")
     @classmethod
     def _truncate_reasoning(cls, v: str | None) -> str | None:

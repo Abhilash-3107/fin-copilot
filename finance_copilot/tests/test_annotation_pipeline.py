@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from finance_copilot.config import settings
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.annotations import get_annotation_by_transaction
 from finance_copilot.pipeline.rules import apply_rules
@@ -996,24 +997,20 @@ class TestAgreementFactor:
     def test_all_agree_returns_one(self):
         from finance_copilot.pipeline.annotate import _compute_agreement_factor
         matches = [
-            {"category": "Shopping"},
-            {"category": "Shopping"},
-            {"category": "Shopping"},
+            {"category": "Shopping", "source": "manual"},
+            {"category": "Shopping", "source": "manual"},
+            {"category": "Shopping", "source": "manual"},
         ]
         assert _compute_agreement_factor(matches, "Shopping") == 1.0
-
-    def test_empty_matches_returns_one(self):
-        from finance_copilot.pipeline.annotate import _compute_agreement_factor
-        assert _compute_agreement_factor([], "Shopping") == 1.0
 
     def test_three_of_five_agree(self):
         from finance_copilot.pipeline.annotate import _compute_agreement_factor
         matches = [
-            {"category": "Shopping"},
-            {"category": "Shopping"},
-            {"category": "Shopping"},
-            {"category": "Entertainment"},
-            {"category": "Entertainment"},
+            {"category": "Shopping", "source": "manual"},
+            {"category": "Shopping", "source": "manual"},
+            {"category": "Shopping", "source": "manual"},
+            {"category": "Entertainment", "source": "manual"},
+            {"category": "Entertainment", "source": "manual"},
         ]
         factor = _compute_agreement_factor(matches, "Shopping")
         # majority_fraction = 3/5 = 0.6, exponent = 0.3
@@ -1022,7 +1019,7 @@ class TestAgreementFactor:
 
     def test_four_of_five_agree_gentle_penalty(self):
         from finance_copilot.pipeline.annotate import _compute_agreement_factor
-        matches = [{"category": "Shopping"}] * 4 + [{"category": "Transport"}]
+        matches = [{"category": "Shopping", "source": "manual"}] * 4 + [{"category": "Transport", "source": "manual"}]
         factor = _compute_agreement_factor(matches, "Shopping")
         expected = 0.8 ** 0.3
         assert abs(factor - expected) < 1e-6
@@ -1030,7 +1027,7 @@ class TestAgreementFactor:
 
     def test_one_of_five_agree_strong_penalty(self):
         from finance_copilot.pipeline.annotate import _compute_agreement_factor
-        matches = [{"category": "Shopping"}] + [{"category": "Transport"}] * 4
+        matches = [{"category": "Shopping", "source": "manual"}] + [{"category": "Transport", "source": "manual"}] * 4
         factor = _compute_agreement_factor(matches, "Shopping")
         expected = 0.2 ** 0.3
         assert abs(factor - expected) < 1e-6
@@ -1360,6 +1357,90 @@ class TestRAGDirectAmbiguity:
         assert ann is not None
         # All agree, no different category → both factors = 1.0
         assert abs(ann["confidence"] - round(0.95, 4)) < 1e-4
+
+    def _run(self, target_id, description, similar):
+        from finance_copilot.db.queries.annotations import get_annotation_by_transaction
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        _insert_txn(self.conn, target_id, description)
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", return_value=[0.1] * 768), \
+             patch("finance_copilot.pipeline.annotate.find_similar", return_value=similar):
+            auto_annotate(self.conn, transaction_ids=[target_id])
+        ann = get_annotation_by_transaction(self.conn, target_id)
+        return ann, json.loads(ann["reasoning"])
+
+    def test_far_neighbours_are_not_dissenting_evidence(self):
+        """A taught merchant at similarity 1.0 auto-accepts even when top-K is padded
+        with unrelated merchants below the similarity floor (the PVR case)."""
+        self._insert_donor("pvr_old", "UPI/PVR INOX Limite/117042580041/UPI", "Entertainment", source="manual")
+        self._insert_donor("air", "UPI/AIR INDIA LIMIT/120314690658/Pay", "Travel")
+        self._insert_donor("rapido", "UPI/Rapido/120853547409/UPI", "Transport")
+        ann, trace = self._run("pvr_new", "UPI/PVR INOX Limite/121440823398/UPI", [
+            {"transaction_id": "pvr_old", "distance": 0.0},
+            {"transaction_id": "air", "distance": 0.68},
+            {"transaction_id": "rapido", "distance": 0.72},
+        ])
+        assert ann["source"] == "rag_direct"
+        assert ann["confidence"] == 1.0
+        assert trace["agreement_factor"] == 1.0
+        assert [n["below_floor"] for n in trace["neighbours"]] == [False, True, True]
+
+    def test_near_different_category_still_penalizes(self):
+        """A dissenting donor above the floor is real evidence and still counts."""
+        self._insert_donor("a", "merchant alpha", "Shopping", source="manual")
+        self._insert_donor("b", "merchant alpha two", "Entertainment", source="manual")
+        ann, _ = self._run("t", "merchant alpha three", [
+            {"transaction_id": "a", "distance": 0.0},
+            {"transaction_id": "b", "distance": 0.2},  # similarity 0.80 >= floor
+        ])
+        assert ann["confidence"] < 1.0
+
+    def test_machine_neighbour_cannot_veto_at_full_weight(self):
+        self._insert_donor("human", "merchant beta", "Shopping", source="manual")
+        self._insert_donor("guess", "merchant beta llm", "Travel", source="llm")
+        ann, trace = self._run("t", "merchant beta again", [
+            {"transaction_id": "human", "distance": 0.0},
+            {"transaction_id": "guess", "distance": 0.2},
+        ])
+        # Weighted agreement: 1.0 / (1.0 + rag_machine_donor_weight).
+        expected = (1.0 / (1.0 + settings.rag_machine_donor_weight)) ** settings.rag_agreement_exponent
+        assert abs(trace["agreement_factor"] - round(expected, 4)) < 1e-4
+
+    def _history(self, labels):
+        desc = "UPI/RAVI KUMAR SHA/{}/UPI"
+        for i, cat in enumerate(labels):
+            self._insert_donor(f"h{i}", desc.format(f"11111111111{i}"), cat, source="manual")
+        # History is strictly causal (same-day labels are invisible), so date it earlier.
+        self.conn.execute("UPDATE transactions SET txn_date = '2026-01-01' WHERE id LIKE 'h%'")
+        self.conn.commit()
+        return self._run("target", desc.format("444444444444"), [{"transaction_id": "h0", "distance": 0.0}])
+
+    def test_split_verified_history_goes_to_a_human(self):
+        ann, trace = self._history(["Food & Dining", "Housing"])
+        assert ann["confidence"] <= settings.rag_defer_confidence_cap
+        assert "counterparty_conflict" in trace["caps_applied"]
+
+    def test_history_pointing_elsewhere_goes_to_a_human(self):
+        # Nearest donor says Food, but the user mostly labels this payee Housing.
+        ann, trace = self._history(["Food & Dining", "Housing", "Housing"])
+        assert "counterparty_conflict" in trace["caps_applied"]
+
+    def test_one_stray_label_does_not_lock_a_merchant_out(self):
+        ann, trace = self._history(["Food & Dining"] * 8 + ["Groceries"])
+        assert ann["confidence"] == 1.0
+        assert trace["caps_applied"] == []
+
+    def test_refund_from_the_payee_is_not_a_conflict(self):
+        desc = "UPI/Practo technolo/{}/UPI"
+        self._insert_donor("p1", desc.format("111111111111"), "Health", source="manual")
+        self._insert_donor("p2", desc.format("222222222222"), "Health", source="manual")
+        self._insert_donor("rf", desc.format("333333333333"), "Income", source="manual")
+        self.conn.execute("UPDATE transactions SET txn_date = '2026-01-01' WHERE id IN ('p1','p2','rf')")
+        self.conn.execute("UPDATE transactions SET debit_credit = 'credit' WHERE id = 'rf'")
+        self.conn.commit()
+        ann, trace = self._run("p3", desc.format("444444444444"), [{"transaction_id": "p1", "distance": 0.0}])
+        assert ann["confidence"] == 1.0
+        assert trace["caps_applied"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -2135,11 +2216,12 @@ class TestLearnedRules:
         return conn
 
     def _add(self, conn, txn_id, key, category, source="manual", subcategory=None,
-             merchant=None, tags="", txn_date="2026-01-10", annotated_at="2026-01-10"):
+             merchant=None, tags="", txn_date="2026-01-10", annotated_at="2026-01-10",
+             debit_credit="debit"):
         conn.execute(
             "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
-            "VALUES (?, 'stmt_01', ?, 100.0, 'debit', ?, ?)",
-            (txn_id, txn_date, f"UPI/{key}/1/UPI", key),
+            "VALUES (?, 'stmt_01', ?, 100.0, ?, ?, ?)",
+            (txn_id, txn_date, debit_credit, f"UPI/{key}/1/UPI", key),
         )
         conn.execute(
             "INSERT INTO annotations (id, transaction_id, category, subcategory, merchant, tags, confidence, source, annotated_at) "
@@ -2153,7 +2235,7 @@ class TestLearnedRules:
         conn = self._conn()
         for i in range(3):
             self._add(conn, f"s{i}", "SWIGGY", "Food & Dining", subcategory="Delivery", merchant="Swiggy")
-        rule = lookup_learned_rule(conn, "SWIGGY")
+        rule = lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01")
         assert rule is not None
         assert rule.category == "Food & Dining"
         assert rule.subcategory == "Delivery"
@@ -2170,26 +2252,40 @@ class TestLearnedRules:
         conn = self._conn()
         for i in range(3):
             self._add(conn, f"s{i}", "SWIGGY", "Food & Dining", merchant="Swiggy")
-        assert lookup_learned_rule(conn, "SWIGGY") is not None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01") is not None
 
-        suppress_learned_rule(conn, "SWIGGY")
+        suppress_learned_rule(conn, "SWIGGY", "debit")
         conn.commit()
-        assert lookup_learned_rule(conn, "SWIGGY") is None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01") is None
         assert all(r.counterparty_key != "SWIGGY" for r in list_learned_rules(conn))
 
         # Idempotent, and restore brings it back.
-        suppress_learned_rule(conn, "SWIGGY")
-        assert restore_learned_rule(conn, "SWIGGY") is True
-        assert restore_learned_rule(conn, "SWIGGY") is False
+        suppress_learned_rule(conn, "SWIGGY", "debit")
+        assert restore_learned_rule(conn, "SWIGGY", "debit") is True
+        assert restore_learned_rule(conn, "SWIGGY", "debit") is False
         conn.commit()
-        assert lookup_learned_rule(conn, "SWIGGY") is not None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01") is not None
+
+    def test_refund_neither_breaks_nor_receives_the_payment_rule(self):
+        """A rule is per counterparty and direction: a merchant's refund credit
+        doesn't dilute its payment rule, and the payment rule never labels refunds."""
+        from finance_copilot.db.queries.learned_rules import list_learned_rules, lookup_learned_rule
+        conn = self._conn()
+        for i in range(3):
+            self._add(conn, f"p{i}", "PRACTO TECHNOLO", "Health")
+        self._add(conn, "r0", "PRACTO TECHNOLO", "Income", debit_credit="credit")
+        debit_rule = lookup_learned_rule(conn, "PRACTO TECHNOLO", "debit", before_txn_date="2099-01-01")
+        assert debit_rule is not None and debit_rule.category == "Health" and debit_rule.purity == 1.0
+        assert lookup_learned_rule(conn, "PRACTO TECHNOLO", "credit", before_txn_date="2099-01-01") is None
+        listed = list_learned_rules(conn)
+        assert [(r.counterparty_key, r.direction) for r in listed] == [("PRACTO TECHNOLO", "debit")]
 
     def test_below_support_not_promoted(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule
         conn = self._conn()
         self._add(conn, "s0", "SWIGGY", "Food & Dining")
         self._add(conn, "s1", "SWIGGY", "Food & Dining")
-        assert lookup_learned_rule(conn, "SWIGGY") is None  # only 2 < min_support 3
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01") is None  # only 2 < min_support 3
 
     def test_low_purity_not_promoted(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule
@@ -2199,14 +2295,14 @@ class TestLearnedRules:
             self._add(conn, f"f{i}", "MIXED", "Food & Dining")
         for i in range(2):
             self._add(conn, f"sh{i}", "MIXED", "Shopping")
-        assert lookup_learned_rule(conn, "MIXED") is None
+        assert lookup_learned_rule(conn, "MIXED", "debit", before_txn_date="2099-01-01") is None
 
     def test_machine_labels_do_not_promote(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule
         conn = self._conn()
         for i in range(4):
             self._add(conn, f"m{i}", "BOTMERCH", "Shopping", source="llm")
-        assert lookup_learned_rule(conn, "BOTMERCH") is None  # no verified labels
+        assert lookup_learned_rule(conn, "BOTMERCH", "debit", before_txn_date="2099-01-01") is None  # no verified labels
 
     def test_causal_cutoff_excludes_future_labels(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule
@@ -2214,9 +2310,9 @@ class TestLearnedRules:
         for i in range(3):
             self._add(conn, f"c{i}", "SWIGGY", "Food & Dining", txn_date=f"2026-02-0{i+1}")
         # Scoring a txn dated before the history sees nothing.
-        assert lookup_learned_rule(conn, "SWIGGY", before_txn_date="2026-01-15") is None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2026-01-15") is None
         # Dated after, it fires.
-        assert lookup_learned_rule(conn, "SWIGGY", before_txn_date="2026-03-01") is not None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2026-03-01") is not None
 
     def test_excludes_self(self):
         from finance_copilot.db.queries.learned_rules import lookup_learned_rule
@@ -2224,7 +2320,7 @@ class TestLearnedRules:
         for i in range(3):
             self._add(conn, f"e{i}", "SWIGGY", "Food & Dining")
         # Excluding one of the 3 drops support to 2 → not established.
-        assert lookup_learned_rule(conn, "SWIGGY", exclude_transaction_id="e0") is None
+        assert lookup_learned_rule(conn, "SWIGGY", "debit", before_txn_date="2099-01-01", exclude_transaction_id="e0") is None
 
     def test_list_matches_per_key_lookup(self):
         # 4.2: the single-query listing must agree exactly with the per-key
@@ -2245,14 +2341,14 @@ class TestLearnedRules:
         # Only the two established keys appear, support-desc.
         assert [r.counterparty_key for r in listed] == ["LICIOUS", "SWIGGY"]
         for r in listed:
-            direct = lookup_learned_rule(conn, r.counterparty_key)
+            direct = lookup_learned_rule(conn, r.counterparty_key, "debit", before_txn_date="2099-01-01")
             assert direct is not None
             assert (r.category, r.subcategory, r.merchant, r.support, r.total, r.purity) == (
                 direct.category, direct.subcategory, direct.merchant,
                 direct.support, direct.total, direct.purity,
             )
         for key in ("MIXED", "BOTMERCH"):
-            assert lookup_learned_rule(conn, key) is None
+            assert lookup_learned_rule(conn, key, "debit", before_txn_date="2099-01-01") is None
             assert all(r.counterparty_key != key for r in listed)
 
     def test_pipeline_stage_applies_when_enabled(self, monkeypatch):
