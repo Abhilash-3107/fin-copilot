@@ -10,7 +10,7 @@ from pathlib import Path
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
 from finance_copilot.models.transaction import Statement, Transaction
-from finance_copilot.parsers.description import is_known_shape, parse_description
+from finance_copilot.parsers.description import KNOWN_SHAPES
 from finance_copilot.parsers.registry import detect_parser
 
 logger = logging.getLogger(__name__)
@@ -177,24 +177,24 @@ def check_description_formats(conn: sqlite3.Connection, statement: Statement) ->
     understand. Such rows still ingest (raw text is kept), but identity, learned
     rules, and retrieval degrade for them, so the user and the logs should know
     instead of finding out through a fuller review queue."""
-    unknown: list[str] = []
-    for row in conn.execute(
-        "SELECT raw_description FROM transactions WHERE statement_id = ?", (statement.id,)
-    ):
-        parsed = parse_description(row["raw_description"])
-        if parsed.is_upi and not is_known_shape(parsed):
-            unknown.append(row["raw_description"])
-    if not unknown:
+    known = sorted(KNOWN_SHAPES)
+    shapes = [
+        r[0] for r in conn.execute(
+            f"SELECT json_extract(upi_meta, '$.shape') FROM transactions "
+            f"WHERE statement_id = ? AND upi_meta IS NOT NULL "
+            f"AND json_extract(upi_meta, '$.shape') NOT IN ({','.join('?' * len(known))})",
+            (statement.id, *known),
+        )
+    ]
+    if not shapes:
         return []
-    # Log the layout, not the payee: keep only the token classes.
-    sample = parse_description(unknown[0]).shape
     logger.warning(
-        "statement %s: %d UPI line(s) in an unrecognized layout (e.g. shape %s)",
-        statement.id, len(unknown), sample,
+        "statement %s: %d UPI line(s) in an unrecognized layout (shapes %s)",
+        statement.id, len(shapes), sorted(set(shapes)),
     )
-    noun = "transaction is" if len(unknown) == 1 else "transactions are"
+    noun = "transaction is" if len(shapes) == 1 else "transactions are"
     return [
-        f"{len(unknown)} UPI {noun} in a format I don't fully recognise yet, "
+        f"{len(shapes)} UPI {noun} in a format I don't fully recognise yet, "
         "so automatic categories may be weaker for them."
     ]
 

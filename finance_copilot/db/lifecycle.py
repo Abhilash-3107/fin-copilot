@@ -59,18 +59,11 @@ def reconcile_database(conn: sqlite3.Connection, *, reset_llm_settings: bool = F
 
 
 def reconcile_derived(conn: sqlite3.Connection) -> None:
-    """Re-derive stale parsed fields; rebuild stale vectors in the background."""
-    from finance_copilot.api.routes.embeddings import start_reembed_in_background
+    """Re-derive stale parsed fields now; rebuild stale vectors in the background."""
+    from finance_copilot.api.routes.embeddings import refresh_stale_embeddings_in_background
     from finance_copilot.config import settings
     from finance_copilot.pipeline.derived import reconcile_derived_data
 
-    if not reconcile_derived_data(conn):
-        return
-    if settings.embedding_provider == "none":
-        logger.warning("stored vectors are from an older embed format; RAG is off until a re-embed")
-        return
-    job_id = start_reembed_in_background(conn)
-    logger.info(
-        "stored vectors are from an older model or embed format - re-embedding in the background (job %s)",
-        job_id or "deferred: another job is running",
-    )
+    reconcile_derived_data(conn)
+    if settings.embedding_provider != "none":
+        refresh_stale_embeddings_in_background()

@@ -24,20 +24,19 @@ from finance_copilot.parsers.description import (
     is_known_shape,
     parse_description,
 )
+from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import (
-    KeyResolver,
-    counterparty_identity,
+    canonical_keys,
     normalize_identity,
-    pick_canonical_key,
     resolve_counterparty_key,
+    truncation_variants,
 )
 from finance_copilot.pipeline.derived import (
     PARSER_VERSION_KEY,
-    embeddings_stale,
     reconcile_derived_data,
     rederive_descriptions,
 )
-from finance_copilot.pipeline.embed import build_embed_text
+from finance_copilot.pipeline.embed import build_embed_text, embed_text_hash, stale_embedding_rows
 
 NOISE = settings.upi_noise_keywords
 FIXTURES = Path(__file__).parent / "fixtures" / "description_shapes.jsonl"
@@ -60,7 +59,7 @@ def _conn() -> sqlite3.Connection:
 def _ingest(conn, txn_id: str, desc: str, day: int = 1, month: int = 6) -> None:
     insert_transaction(conn, Transaction(
         id=txn_id, statement_id="s1", txn_date=date(2026, month, day), amount=100.0,
-        debit_credit="debit", raw_description=desc,
+        debit_credit="debit", raw_description=desc, upi_meta=parse_upi_description(desc, NOISE),
     ))
 
 
@@ -129,7 +128,8 @@ class TestLayoutInvariance:
                              ids=lambda c: c["raw"][:40])
     def test_noise_never_reaches_embed_text(self, case):
         p = parse_description(case["raw"], NOISE)
-        text = build_embed_text({"debit_credit": "debit", "raw_description": case["raw"]})
+        key = normalize_identity(case["raw"])
+        text = build_embed_text({"debit_credit": "debit", "raw_description": case["raw"], "counterparty_key": key})
         assert p.ref not in text
         if p.bank_code:
             assert f"/{p.bank_code.lower()}/" not in text
@@ -138,53 +138,59 @@ class TestLayoutInvariance:
     def test_note_appears_once(self):
         text = build_embed_text({"debit_credit": "debit",
                                  "raw_description": "UPI/Licious/121979067994/UPI Collect",
-                                 "upi_meta": json.dumps({"note": "UPI Collect"})})
+                                 "upi_meta": json.dumps({"note": "UPI Collect"}),
+                                 "counterparty_key": "LICIOUS"})
         assert text == "debit upi/licious/upi collect"
 
 
 class TestResolver:
-    def test_folds_truncation_variant(self):
-        assert pick_canonical_key("OBEROIFC TUCKS", ["OBEROIFC TUCKSH"]) == "OBEROIFC TUCKSH"
-        assert pick_canonical_key("OBEROIFC TUCKSH", ["OBEROIFC TUCKS"]) == "OBEROIFC TUCKS"
+    @pytest.mark.parametrize(("a", "b"), [
+        ("OBEROIFC TUCKS", "OBEROIFC TUCKSH"),     # 14 vs 15: bank prefix took a char
+        ("AGODA COMPANY", "AGODA COMPANY P"),      # the cut landed on a space
+        ("ROPPEN TRANSPO", "ROPPEN TRANSPOR"),
+    ])
+    def test_truncation_variants(self, a, b):
+        assert truncation_variants(a, b) and truncation_variants(b, a)
 
-    def test_never_merges_distinct_people_sharing_a_prefix(self):
-        # Same first 13 chars, different last letter: two people, not a truncation.
-        assert pick_canonical_key("CHANDRA KUMAR P", ["CHANDRA KUMAR S"]) == "CHANDRA KUMAR P"
+    @pytest.mark.parametrize(("a", "b"), [
+        ("MOHAMMED ALI", "MOHAMMED ALI KH"),       # a full 12-char name is not a cut
+        ("VIKRAM SINGH P", "VIKRAM SINGH S"),    # same length, different people
+        ("SMILE DENTIST", "SMILE DENTIST CLINIC"), # far longer: a different name
+        ("MEDKART PHARM", "MEDKART PHARMAC"),      # two chars, no space at the cut
+        ("ASHOK", "ASHOK KUMAR"),
+    ])
+    def test_not_truncation_variants(self, a, b):
+        assert not truncation_variants(a, b)
 
-    def test_short_names_match_only_exactly(self):
-        # Below the min length the bank prints names in full.
-        assert pick_canonical_key("ASHOK", ["ASHOK KUMAR"]) == "ASHOK"
-        assert pick_canonical_key("OBEROIFC", ["OBEROIFC SOUTH"]) == "OBEROIFC"
+    def test_canonical_is_the_longest_spelling_in_any_order(self):
+        keys = ["OBEROIFC TUCKS", "OBEROIFC TUCKSH", "MOHAMMED ALI", "MOHAMMED ALI KH", "MOHAMMED ALIYA"]
+        for order in (keys, list(reversed(keys))):
+            got = canonical_keys(order)
+            assert got["OBEROIFC TUCKS"] == got["OBEROIFC TUCKSH"] == "OBEROIFC TUCKSH"
+            assert got["MOHAMMED ALI"] == "MOHAMMED ALI"
+            assert got["MOHAMMED ALI KH"] == "MOHAMMED ALI KH"
+            assert got["MOHAMMED ALIYA"] == "MOHAMMED ALIYA"
 
     def test_ambiguous_refuses_to_merge(self):
-        assert pick_canonical_key("OBEROIFC TUCKS", ["OBEROIFC TUCKSH", "OBEROIFC TUCKSX"]) == "OBEROIFC TUCKS"
+        got = canonical_keys(["OBEROIFC TUCKS", "OBEROIFC TUCKSH", "OBEROIFC TUCKSX"])
+        assert got == {k: k for k in ("OBEROIFC TUCKS", "OBEROIFC TUCKSH", "OBEROIFC TUCKSX")}
 
-    def test_large_length_gap_is_not_truncation(self):
-        assert pick_canonical_key("SMILE DENTIST", ["SMILE DENTIST CLINIC"]) == "SMILE DENTIST"
-
-    def test_exact_hit_wins(self):
-        assert pick_canonical_key("OBEROIFC TUCKS", ["OBEROIFC TUCKSH", "OBEROIFC TUCKS"]) == "OBEROIFC TUCKS"
-
-    def test_db_resolver_uses_stored_keys(self):
+    def test_ingest_order_reaches_the_same_answer(self):
+        # Newer statement (short spelling) uploaded first, then the older one.
         conn = _conn()
-        _ingest(conn, "a", "UPI/OBEROIFC tucksh/118364694521/UPI")
-        assert resolve_counterparty_key(conn, "OBEROIFC TUCKS") == "OBEROIFC TUCKSH"
-        assert resolve_counterparty_key(conn, None) is None
+        _ingest(conn, "new", "UPI/OBEROIFC tucks/YESB/125146338066/UPI", day=20)
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('OBEROIFC TUCKS')")
+        _ingest(conn, "old", "UPI/OBEROIFC tucksh/118364694521/UPI", day=1)
+        keys = {r[0] for r in conn.execute("SELECT counterparty_key FROM transactions")}
+        assert keys == {"OBEROIFC TUCKSH"}
+        assert [r[0] for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions")] == [
+            "OBEROIFC TUCKSH"
+        ]
 
-    def test_in_memory_resolver_matches_db_resolver(self):
-        r = KeyResolver()
-        assert r.resolve("OBEROIFC TUCKSH") == "OBEROIFC TUCKSH"
-        assert r.resolve("OBEROIFC TUCKS") == "OBEROIFC TUCKSH"
-        assert r.resolve("CHANDRA KUMAR P") == "CHANDRA KUMAR P"
-        assert r.resolve("CHANDRA KUMAR S") == "CHANDRA KUMAR S"
-        assert r.resolve(None) is None
-
-    def test_identity_prefers_stored_key_then_resolves(self):
+    def test_short_full_names_never_absorb_longer_ones(self):
         conn = _conn()
-        _ingest(conn, "a", "UPI/OBEROIFC tucksh/118364694521/UPI")
-        assert counterparty_identity(conn, {"counterparty_key": "STORED"}) == "STORED"
-        eval_row = {"raw_description": "UPI/OBEROIFC tucks/YESB/125146338066/UPI"}
-        assert counterparty_identity(conn, eval_row) == "OBEROIFC TUCKSH"
+        _ingest(conn, "a", "UPI/MOHAMMED ALI/118364694521/UPI")
+        assert resolve_counterparty_key(conn, "MOHAMMED ALI KH") == "MOHAMMED ALI KH"
 
     def test_reversal_has_no_identity(self):
         # A refund credit must not feed the payee's learned rule / prior.
@@ -204,15 +210,15 @@ class TestLearnedRuleAcrossLayouts:
         _ingest(conn, "new", "UPI/OBEROIFC tucks/YESB/125146338066/UPI", day=22)
         conn.commit()
         row = dict(conn.execute("SELECT * FROM transactions WHERE id = 'new'").fetchone())
-        rule = lookup_learned_rule(conn, counterparty_identity(conn, row))
+        rule = lookup_learned_rule(conn, row["counterparty_key"])
         assert rule is not None
         assert rule.category == "Food & Dining"
 
 
 class TestRederive:
     def _seed_stale(self, conn):
-        # Rows as the previous parser stored them: raw (unresolved) keys and the
-        # old upi_meta shape.
+        # Rows as an older parser stored them: raw (unresolved) keys and the old
+        # upi_meta shape.
         conn.executemany(
             "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, "
             "raw_description, upi_meta, counterparty_key) VALUES (?, 's1', ?, 1, 'debit', ?, ?, ?)",
@@ -224,29 +230,25 @@ class TestRederive:
                 ("c", "2026-06-21", "UPI/RAVI KUMAR SHA/123807871595/UPI (Value Date: 28-May-26)",
                  json.dumps({"vpa": None, "ref": "123807871595", "note": "UPI (Value Date: 28-May-26)"}),
                  "RAVI KUMAR SHA"),
-                ("d", "2026-06-22", "UPI/NETFLIX/AUTOPAY", json.dumps({"note": "Netflix plan"}), "NETFLIX"),
             ],
         )
         conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('OBEROIFC TUCKS')")
         conn.commit()
 
-    def test_keys_resolved_in_date_order(self):
+    def test_keys_resolved_to_longest_spelling(self):
         conn = _conn()
         self._seed_stale(conn)
         result = rederive_descriptions(conn)
-        conn.commit()
         keys = dict(conn.execute("SELECT id, counterparty_key FROM transactions").fetchall())
         assert keys["a"] == keys["b"] == "OBEROIFC TUCKSH"
         assert result["keys_moved"] == 1
 
-    def test_upi_meta_refreshed_for_known_shapes_only(self):
+    def test_rederive_equals_reingest(self):
         conn = _conn()
         self._seed_stale(conn)
         rederive_descriptions(conn)
-        meta = {r[0]: json.loads(r[1]) for r in conn.execute("SELECT id, upi_meta FROM transactions")}
-        assert meta["b"]["bank"] == "YESB"
-        assert meta["c"]["note"] is None  # value-date trailer no longer read as a note
-        assert meta["d"]["note"] == "Netflix plan"  # unrecognized layout keeps the stored note
+        for r in conn.execute("SELECT raw_description, upi_meta FROM transactions"):
+            assert r["upi_meta"] == parse_upi_description(r["raw_description"], NOISE)
 
     def test_suppression_follows_moved_key(self):
         conn = _conn()
@@ -255,6 +257,17 @@ class TestRederive:
         keys = [r[0] for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions")]
         assert keys == ["OBEROIFC TUCKSH"]
 
+    def test_suppression_stays_when_a_key_splits(self):
+        conn = _conn()
+        conn.executemany(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, "
+            "counterparty_key) VALUES (?, 's1', '2026-06-01', 1, 'debit', ?, 'MERGED')",
+            [("x", "UPI/FIRST PAYEE/118364694521/UPI"), ("y", "UPI/SECOND PAYEE/118364694522/UPI")],
+        )
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key) VALUES ('MERGED')")
+        rederive_descriptions(conn)
+        assert [r[0] for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions")] == ["MERGED"]
+
     def test_reconcile_runs_once_per_version(self):
         conn = _conn()
         self._seed_stale(conn)
@@ -262,28 +275,35 @@ class TestRederive:
         stored = conn.execute("SELECT value FROM app_settings WHERE key = ?", (PARSER_VERSION_KEY,)).fetchone()
         assert int(stored[0]) == DESCRIPTION_PARSER_VERSION
         # A second run with the version current must not touch rows.
-        conn.execute("UPDATE transactions SET counterparty_key = 'SENTINEL' WHERE id = 'd'")
+        conn.execute("UPDATE transactions SET counterparty_key = 'SENTINEL' WHERE id = 'c'")
         conn.commit()
         reconcile_derived_data(conn)
-        assert conn.execute("SELECT counterparty_key FROM transactions WHERE id = 'd'").fetchone()[0] == "SENTINEL"
+        assert conn.execute("SELECT counterparty_key FROM transactions WHERE id = 'c'").fetchone()[0] == "SENTINEL"
 
-    def test_rederive_that_changes_rows_requests_a_rebuild(self):
-        from finance_copilot.config import current_embedding_stamp
 
-        conn = _conn()
-        self._seed_stale(conn)
-        conn.execute("INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES ('e1', 'a', ?)",
-                     (current_embedding_stamp(),))
+class TestStaleEmbeddings:
+    def _annotated(self, conn, txn_id, desc):
+        _ingest(conn, txn_id, desc)
+        insert_annotation(conn, Annotation(transaction_id=txn_id, category="Food & Dining",
+                                           confidence=1.0, source="manual"))
         conn.commit()
-        assert reconcile_derived_data(conn) is True  # keys moved -> embed text moved
-        assert reconcile_derived_data(conn) is False  # current version, current stamp
 
-    def test_embeddings_stale_detects_old_stamp(self):
+    def _meta(self, conn, txn_id, model, text_hash):
+        conn.execute("INSERT INTO embedding_meta (id, transaction_id, model_version, text_hash) VALUES (?, ?, ?, ?)",
+                     (f"e_{txn_id}", txn_id, model, text_hash))
+
+    def test_missing_other_model_and_changed_text_are_stale(self):
+        from finance_copilot.config import current_embedding_model
+
         conn = _conn()
-        self._seed_stale(conn)
-        assert embeddings_stale(conn) is False  # no vectors at all: nothing to rebuild
-        conn.execute("INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES ('e1', 'a', 'nomic-embed-text')")
-        assert embeddings_stale(conn) is True
+        for t in ("missing", "other_model", "changed", "current"):
+            self._annotated(conn, t, f"UPI/PAYEE {t.upper()}/11836469{len(t):04d}/UPI")
+        texts = {r["id"]: build_embed_text(dict(r)) for r in conn.execute("SELECT * FROM transactions")}
+        self._meta(conn, "other_model", "some-other-model", embed_text_hash(texts["other_model"]))
+        self._meta(conn, "changed", current_embedding_model(), embed_text_hash("an older text"))
+        self._meta(conn, "current", current_embedding_model(), embed_text_hash(texts["current"]))
+        stale = {txn["id"] for txn, _text in stale_embedding_rows(conn)}
+        assert stale == {"missing", "other_model", "changed"}
 
 
 class TestFormatWarning:

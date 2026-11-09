@@ -32,7 +32,6 @@ but never fuses two different people.
 """
 from __future__ import annotations
 
-import bisect
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -51,8 +50,8 @@ def normalize_identity(raw_description: str | None) -> str | None:
 
     The parsed payee name, upper-cased and whitespace-collapsed. None for non-UPI
     rails and UPI reversals (a reversal is a credit; sharing the payee's key would
-    mix refunds into that payee's learned rule and prior). Use
-    counterparty_identity() when a stored, resolved key may be available.
+    mix refunds into that payee's learned rule and prior). Stored rows carry
+    the resolved key in transactions.counterparty_key; read that instead.
     """
     return identity_from_parsed(parse_description(raw_description))
 
@@ -64,84 +63,92 @@ def identity_from_parsed(parsed: ParsedDescription) -> str | None:
     return parsed.counterparty.upper()
 
 
-def _prefix_compatible(a: str, b: str) -> bool:
-    """Whether a and b can be the same payee printed at two truncation widths."""
-    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
-    return (
-        len(short) >= settings.counterparty_prefix_min_len
-        and len(long_) - len(short) <= settings.counterparty_prefix_max_delta
-        and long_.startswith(short)
-    )
+def truncation_variants(a: str, b: str) -> bool:
+    """Whether a and b can be one payee printed at two truncation widths.
 
-
-def pick_canonical_key(raw_key: str, candidates: Iterable[str]) -> str:
-    """Resolve raw_key against existing keys: itself if already known, else the
-    single prefix-compatible existing key, else itself (no match or ambiguous).
-
-    Short names (below counterparty_prefix_min_len) are never truncated by the
-    bank, so they only ever match exactly.
+    Banks cut the payee field at a fixed width (Kotak: 15, or 14 when an IFSC
+    prefix is present), so the shorter key must itself be a cut: at least
+    counterparty_truncated_min_len chars, and the longer adds one character, or
+    two when the cut landed on a space that whitespace-collapse then dropped
+    ('AGODA COMPANY' vs 'AGODA COMPANY P'). 'MOHAMMED ALI' (a full 12-char name)
+    is never a cut of 'MOHAMMED ALI KH'.
     """
-    compatible: set[str] = set()
-    for key in candidates:
-        if key == raw_key:
-            return raw_key
-        if _prefix_compatible(raw_key, key):
-            compatible.add(key)
-    if len(compatible) == 1:
-        return compatible.pop()
-    return raw_key
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < settings.counterparty_truncated_min_len or not long_.startswith(short):
+        return False
+    gap = len(long_) - len(short)
+    return gap == 1 or (gap == 2 and long_[len(short)] == " ")
+
+
+def _stem(key: str) -> str:
+    return key[: settings.counterparty_truncated_min_len]
+
+
+def _unique_partner(key: str, candidates: Iterable[str]) -> str | None:
+    """The one other key that key is a truncation variant of, or None when it
+    has none or several (ambiguous: never guess between people)."""
+    partners = {c for c in candidates if c != key and truncation_variants(key, c)}
+    return partners.pop() if len(partners) == 1 else None
+
+
+def canonical_keys(raw_keys: Iterable[str]) -> dict[str, str]:
+    """Map every raw key to its canonical key: the longest spelling of a payee.
+
+    Two keys merge only when each is the other's unique truncation variant, so
+    the result does not depend on the order statements were uploaded in, and
+    ingest (resolve_counterparty_key) reaches the same answer incrementally.
+    """
+    by_stem: dict[str, set[str]] = {}
+    for key in raw_keys:
+        by_stem.setdefault(_stem(key), set()).add(key)
+    mapping: dict[str, str] = {}
+    for keys in by_stem.values():
+        for key in keys:
+            partner = _unique_partner(key, keys)
+            if partner is not None and _unique_partner(partner, keys) == key:
+                mapping[key] = max(key, partner, key=len)
+            else:
+                mapping[key] = key
+    return mapping
 
 
 def resolve_counterparty_key(conn: sqlite3.Connection, raw_key: str | None) -> str | None:
-    """Fold a truncation variant onto the counterparty key already stored for it.
+    """The canonical key for a payee seen at ingest. Caller commits.
 
-    Candidates share the first counterparty_prefix_min_len characters, found by
-    an index range scan on transactions.counterparty_key.
+    When the new spelling is the longer one, the stored rows move to it (with
+    any learned-rule suppression), keeping "longest spelling wins" true no
+    matter which statement arrived first.
     """
-    if not raw_key:
+    if raw_key is None:
         return None
-    if len(raw_key) < settings.counterparty_prefix_min_len:
+    if len(raw_key) < settings.counterparty_truncated_min_len:
         return raw_key
-    stem = raw_key[: settings.counterparty_prefix_min_len]
-    rows = conn.execute(
-        "SELECT DISTINCT counterparty_key FROM transactions "
-        "WHERE counterparty_key >= ? AND counterparty_key < ?",
-        (stem, stem + "\U0010ffff"),
-    ).fetchall()
-    return pick_canonical_key(raw_key, (r[0] for r in rows))
+    stem = _stem(raw_key)
+    stored = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT counterparty_key FROM transactions "
+            "WHERE counterparty_key >= ? AND counterparty_key < ?",
+            (stem, stem + "\U0010ffff"),
+        )
+    ]
+    if raw_key in stored:
+        return raw_key
+    partner = _unique_partner(raw_key, stored)
+    if partner is None or _unique_partner(partner, [*stored, raw_key]) != raw_key:
+        return raw_key
+    if len(partner) >= len(raw_key):
+        return partner
+    rekey_counterparty(conn, partner, raw_key)
+    return raw_key
 
 
-class KeyResolver:
-    """In-memory resolve_counterparty_key for bulk re-derivation, where the
-    stored keys are the stale ones being replaced. Feed rows in date order."""
-
-    def __init__(self) -> None:
-        self._sorted: list[str] = []
-
-    def resolve(self, raw_key: str | None) -> str | None:
-        if not raw_key:
-            return None
-        if len(raw_key) >= settings.counterparty_prefix_min_len:
-            stem = raw_key[: settings.counterparty_prefix_min_len]
-            lo = bisect.bisect_left(self._sorted, stem)
-            hi = bisect.bisect_left(self._sorted, stem + "\U0010ffff")
-            key = pick_canonical_key(raw_key, self._sorted[lo:hi])
-        else:
-            key = raw_key
-        i = bisect.bisect_left(self._sorted, key)
-        if i == len(self._sorted) or self._sorted[i] != key:
-            self._sorted.insert(i, key)
-        return key
-
-
-def counterparty_identity(conn: sqlite3.Connection, txn: dict) -> str | None:
-    """The resolved counterparty key for a transaction: the stored column when the
-    row has one, else parsed from the description and resolved against the DB
-    (eval rows and not-yet-stored transactions)."""
-    stored = txn.get("counterparty_key")
-    if stored:
-        return stored
-    return resolve_counterparty_key(conn, normalize_identity(txn.get("raw_description")))
+def rekey_counterparty(conn: sqlite3.Connection, old_key: str, new_key: str) -> None:
+    """Move every row (and a learned-rule dismissal) from one key to another. Caller commits."""
+    conn.execute("UPDATE transactions SET counterparty_key = ? WHERE counterparty_key = ?", (new_key, old_key))
+    conn.execute(
+        "UPDATE OR IGNORE learned_rule_suppressions SET counterparty_key = ? WHERE counterparty_key = ?",
+        (new_key, old_key),
+    )
 
 
 def _label_weight(source: str | None) -> float:
@@ -244,7 +251,7 @@ def counterparty_prior(
     the probability to 1.0; it takes several consistent labels to clear the
     dominance floor — exactly the recurrence requirement.
     """
-    identity = counterparty_identity(conn, txn)
+    identity = txn["counterparty_key"]
     if identity is None:
         return CounterpartyPrior()
 

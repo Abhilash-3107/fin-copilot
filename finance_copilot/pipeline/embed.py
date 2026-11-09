@@ -7,6 +7,7 @@ treats as "quietly skip the embedding-dependent feature".
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -14,8 +15,8 @@ from pathlib import Path
 
 import httpx
 
-from finance_copilot.config import current_embedding_stamp, settings
-from finance_copilot.db.queries.embeddings import get_embedded_transaction_ids, upsert_embedding
+from finance_copilot.config import current_embedding_model, settings
+from finance_copilot.db.queries.embeddings import upsert_embedding
 from finance_copilot.models.transaction import TxnRow
 from finance_copilot.parsers.description import is_known_shape, parse_description
 
@@ -39,25 +40,6 @@ def local_embeddings_installed() -> bool:
     return importlib.util.find_spec("fastembed") is not None
 
 
-def normalize_description_for_embedding(raw_description: str) -> str:
-    """The description part of the embed text.
-
-    UPI lines in a layout the parser understands become 'UPI/<payee>[/<note>]':
-    the rotating reference, the IFSC bank prefix, and the value-date trailer are
-    transaction noise that would make two visits to the same merchant look only
-    ~0.6 similar (below rag_similarity_floor). Everything else, including UPI
-    lines in an unrecognized layout, is left verbatim: stripping refs/dates from
-    non-UPI descriptions was evaluated (E5, 2026-07-02) and rejected.
-    """
-    if not raw_description:
-        return ""
-    parsed = parse_description(raw_description, settings.upi_noise_keywords)
-    if not is_known_shape(parsed) or not parsed.counterparty:
-        return raw_description
-    head = "UPI" if parsed.rail == "upi" else "REV-UPI"
-    return f"{head}/{parsed.counterparty}/{parsed.note}" if parsed.note else f"{head}/{parsed.counterparty}"
-
-
 def build_embed_text(txn: TxnRow) -> str:
     """Canonical embedding text: '{debit_credit} {description}', lowercased.
 
@@ -77,26 +59,24 @@ def build_embed_text(txn: TxnRow) -> str:
     embeddings (cosine 1.0). Lowercasing recovers normal subword tokens and the
     names separate cleanly (~0.7).
 
-    Any change to the output must bump config.EMBED_TEXT_VERSION.
+    Each vector records a hash of this text (embedding_meta.text_hash), so a
+    change to the output is picked up row by row by refresh_embeddings.
     """
     dc = txn.get("debit_credit", "")
     raw = txn.get("raw_description", "") or ""
     parsed = parse_description(raw, settings.upi_noise_keywords)
     if is_known_shape(parsed) and parsed.counterparty:
         head = "upi" if parsed.rail == "upi" else "rev-upi"
-        payee = (txn.get("counterparty_key") if parsed.rail == "upi" else None) or parsed.counterparty
+        payee = txn["counterparty_key"] if parsed.rail == "upi" else parsed.counterparty
         desc = f"{head}/{payee}/{parsed.note}" if parsed.note else f"{head}/{payee}"
         return " ".join(p for p in (dc, desc) if p).strip().lower()
 
-    upi_note = ""
-    upi_meta = txn.get("upi_meta")
-    if upi_meta:
-        try:
-            meta = json.loads(upi_meta) if isinstance(upi_meta, str) else upi_meta
-            upi_note = str(meta.get("note") or "")
-        except (json.JSONDecodeError, AttributeError):
-            pass
+    upi_note = json.loads(txn["upi_meta"])["note"] if txn.get("upi_meta") else None
     return " ".join(p for p in (dc, raw, upi_note) if p).strip().lower()
+
+
+def embed_text_hash(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()[:16]
 
 
 # One in-process fastembed model, loaded lazily on first embed. Keyed by model
@@ -171,8 +151,8 @@ def embed_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
         ).fetchone()
         if row is None:
             return False
-        vector = get_embedding_single(build_embed_text(dict(row)))
-        upsert_embedding(conn, transaction_id, vector, current_embedding_stamp())
+        text = build_embed_text(dict(row))
+        upsert_embedding(conn, transaction_id, get_embedding_single(text), current_embedding_model(), embed_text_hash(text))
         conn.commit()
         return True
     except Exception as e:
@@ -202,102 +182,72 @@ def embed_transactions(
             ).fetchall()
         ]
 
-    model_version = current_embedding_stamp()
+    model_version = current_embedding_model()
     embedded = 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
+        texts = [build_embed_text(t) for t in batch]
         try:
-            vectors = get_embeddings_batch([build_embed_text(t) for t in batch])
+            vectors = get_embeddings_batch(texts)
         except EmbeddingsUnavailable:
             break
         except Exception:
             logger.warning("embedding batch failed; skipping %d texts", len(batch), exc_info=True)
             continue
-        for txn, vec in zip(batch, vectors, strict=True):
-            upsert_embedding(conn, txn["id"], vec, model_version)
+        for txn, text, vec in zip(batch, texts, vectors, strict=True):
+            upsert_embedding(conn, txn["id"], vec, model_version, embed_text_hash(text))
             embedded += 1
         conn.commit()
     return embedded
 
 
-def embed_annotated_transactions(
-    conn: sqlite3.Connection,
-    statement_id: str | None = None,
-    batch_size: int = 32,
-) -> dict:
-    """Generate embeddings for all annotated transactions that lack embeddings.
-
-    Returns {"embedded": N, "skipped": M} where skipped = already had embeddings.
-    Failed batches are skipped so the user can re-run to fill gaps.
-    """
+def stale_embedding_rows(conn: sqlite3.Connection, statement_id: str | None = None) -> list[tuple[dict, str]]:
+    """Annotated transactions whose vector is missing, from another model, or
+    built from text other than what build_embed_text produces now; each with
+    its current text. Annotated rows are the RAG donor pool."""
     query = """
-        SELECT t.* FROM transactions t
+        SELECT t.*, em.model_version AS _model, em.text_hash AS _hash
+        FROM transactions t
         JOIN annotations a ON a.transaction_id = t.id
+        LEFT JOIN embedding_meta em ON em.transaction_id = t.id
     """
     params: list = []
     if statement_id:
         query += " WHERE t.statement_id = ?"
         params.append(statement_id)
-    query += " ORDER BY t.id"
-
-    rows = conn.execute(query, params).fetchall()
-    all_txns = [dict(row) for row in rows]
-
-    already_embedded = get_embedded_transaction_ids(conn, statement_id)
-    to_embed = [t for t in all_txns if t["id"] not in already_embedded]
-
-    embedded_count = 0
-    model_version = current_embedding_stamp()
-
-    for i in range(0, len(to_embed), batch_size):
-        batch = to_embed[i : i + batch_size]
-        texts = [build_embed_text(txn) for txn in batch]
-        try:
-            vectors = get_embeddings_batch(texts)
-        except EmbeddingsUnavailable:
-            break  # no provider at all - retrying the next batch can't help
-        except Exception:
-            logger.warning("embedding batch failed; skipping %d texts", len(batch), exc_info=True)
-            continue
-
-        # One vector per txn; strict= surfaces a count mismatch instead of
-        # silently dropping the tail.
-        for txn, vec in zip(batch, vectors, strict=True):
-            upsert_embedding(conn, txn["id"], vec, model_version)
-            embedded_count += 1
-
-    conn.commit()
-    return {"embedded": embedded_count, "skipped": len(already_embedded)}
+    model = current_embedding_model()
+    stale = []
+    for row in conn.execute(query + " ORDER BY t.id", params):
+        txn = dict(row)
+        text = build_embed_text(txn)
+        if txn.pop("_model") != model or txn.pop("_hash") != embed_text_hash(text):
+            stale.append((txn, text))
+    return stale
 
 
-def reembed_all(
+def refresh_embeddings(
     conn: sqlite3.Connection,
+    statement_id: str | None = None,
     batch_size: int = 32,
     progress_cb=None,
 ) -> dict:
-    """Re-embed every annotated transaction with the current provider/model.
+    """Embed every stale annotated transaction (see stale_embedding_rows).
 
-    Used after an embedding-provider switch: vectors from the old model stay
-    filtered out by the embedding_meta model_version check, and this overwrites
-    them in place (upsert) so RAG resumes in the new vector space. Raises on a
-    dead provider - a re-embed that silently produces nothing would strand the
-    user with RAG off and no explanation.
+    Incremental and resumable: rows already current are skipped, and a run cut
+    short leaves the rest stale for the next one. Raises on a dead provider: a
+    rebuild that silently produces nothing would strand RAG with no
+    explanation.
     """
-    rows = conn.execute(
-        "SELECT t.* FROM transactions t "
-        "JOIN annotations a ON a.transaction_id = t.id ORDER BY t.id"
-    ).fetchall()
-    txns = [dict(r) for r in rows]
-    model_version = current_embedding_stamp()
-
+    stale = stale_embedding_rows(conn, statement_id)
+    model = current_embedding_model()
     done = 0
-    for i in range(0, len(txns), batch_size):
-        batch = txns[i : i + batch_size]
-        vectors = get_embeddings_batch([build_embed_text(t) for t in batch])
-        for txn, vec in zip(batch, vectors, strict=True):
-            upsert_embedding(conn, txn["id"], vec, model_version)
+    for i in range(0, len(stale), batch_size):
+        batch = stale[i : i + batch_size]
+        vectors = get_embeddings_batch([text for _txn, text in batch])
+        for (txn, text), vec in zip(batch, vectors, strict=True):
+            upsert_embedding(conn, txn["id"], vec, model, embed_text_hash(text))
             done += 1
         conn.commit()
         if progress_cb:
-            progress_cb(done, len(txns))
-    return {"embedded": done, "model": model_version}
+            progress_cb(done, len(stale))
+    return {"embedded": done, "model": model}

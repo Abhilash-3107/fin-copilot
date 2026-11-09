@@ -25,13 +25,11 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-# Bump whenever parse output for an existing description can change, or a
-# migration repairs stored raw descriptions. Stored in app_settings; a mismatch
-# on startup re-derives upi_meta and counterparty_key for every stored
-# transaction and rebuilds vectors (pipeline/derived.py).
-#   2: token-class grammar, IFSC bank prefix, truncation-variant keys
-#   3: re-derive after migration 027 stripped leaked balance labels
-DESCRIPTION_PARSER_VERSION = 3
+# Bump whenever parse output for an existing description can change. Stored in
+# app_settings; a mismatch on startup re-derives upi_meta and counterparty_key
+# for every stored transaction (pipeline/derived.py). A migration that repairs
+# raw descriptions deletes the stored value instead of bumping this.
+DESCRIPTION_PARSER_VERSION = 2
 
 SHAPE_UNRECOGNIZED = "unrecognized"
 
@@ -83,7 +81,7 @@ def parse_description(raw: str | None, noise_keywords: Iterable[str] = ()) -> Pa
         text = text[: m.start()].rstrip()
 
     tokens = text.split("/")
-    rail = _RAIL_HEADS.get(tokens[0].strip().upper()) if tokens else None
+    rail = _RAIL_HEADS.get(tokens[0].strip().upper())
     if rail is None or len(tokens) < 2:
         return _OTHER
 
@@ -136,9 +134,12 @@ def _clean_note(
     return note_raw
 
 
+KNOWN_SHAPES = frozenset({
+    "upi/name/ref/note", "upi/name/bank/ref/note",
+    "rev-upi/name/ref/note", "rev-upi/name/bank/ref/note",
+})
+
+
 def is_known_shape(parsed: ParsedDescription) -> bool:
     """Whether a UPI description matched a layout the grammar fully understands."""
-    return parsed.shape in (
-        "upi/name/ref/note", "upi/name/bank/ref/note",
-        "rev-upi/name/ref/note", "rev-upi/name/bank/ref/note",
-    )
+    return parsed.shape in KNOWN_SHAPES

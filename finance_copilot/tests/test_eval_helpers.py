@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 
 from finance_copilot.config import settings
-from finance_copilot.pipeline.embed import normalize_description_for_embedding
+from finance_copilot.pipeline.embed import build_embed_text
 from finance_copilot.pipeline.llm import _logprob_category_confidence
 
 
@@ -43,16 +43,15 @@ class TestLogprobConfidence:
 
 class TestDescriptionNormalization:
     def test_upi_ref_stripped(self):
-        assert (
-            normalize_description_for_embedding("UPI/SWIGGY/512345678901/UPI")
-            == "UPI/SWIGGY"
-        )
+        txn = {"debit_credit": "debit", "raw_description": "UPI/SWIGGY/512345678901/UPI",
+               "counterparty_key": "SWIGGY"}
+        assert build_embed_text(txn) == "debit upi/swiggy"
 
     def test_non_upi_left_untouched(self):
         # Stripping refs/dates from non-UPI descriptions was evaluated (E5,
         # 2026-07-02) and rejected; they must pass through verbatim.
         desc = "NEFT-AXISCN0123456789-ACME CORP-20/01/26"
-        assert normalize_description_for_embedding(desc) == desc
+        assert build_embed_text({"debit_credit": "credit", "raw_description": desc}) == f"credit {desc.lower()}"
 
 
 class TestProviderAbstraction:

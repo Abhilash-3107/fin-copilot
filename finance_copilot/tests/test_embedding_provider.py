@@ -126,8 +126,8 @@ class TestEnsureVecDimension:
             "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
             "VALUES ('t1', 's1', '2026-01-10', 10.0, 'debit', 'x')"
         )
-        upsert_embedding(conn, "t1", [0.0] * n, "m1")
-        upsert_embedding(conn, "t1", [1.0] * n, "m2")
+        upsert_embedding(conn, "t1", [0.0] * n, "m1", "h1")
+        upsert_embedding(conn, "t1", [1.0] * n, "m2", "h2")
         conn.commit()
         assert conn.execute("SELECT COUNT(*) FROM vec_items WHERE transaction_id='t1'").fetchone()[0] == 1
         assert conn.execute(

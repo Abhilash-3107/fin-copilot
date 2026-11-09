@@ -33,9 +33,7 @@ from finance_copilot.models.transaction import TxnRow
 from finance_copilot.pipeline.calibration import get_calibrated_dampening
 from finance_copilot.pipeline.counterparty import (
     CounterpartyPrior,
-    counterparty_identity,
     counterparty_prior,
-    normalize_identity,
 )
 from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
 from finance_copilot.pipeline.llm import (
@@ -147,7 +145,7 @@ def _match_known_person(
             pass
 
     desc = (txn.get("raw_description") or "").lower()
-    counterparty_key = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
+    counterparty_key = txn["counterparty_key"]
     for name, token, relationship in known_people:
         if person_token_matches(token, vpa, counterparty_key, desc):
             subcategory = relationship_subcategory(relationship)
@@ -207,7 +205,7 @@ def rule_annotation(
     if result is None and settings.learned_rule_enabled:
         learned = lookup_learned_rule(
             conn,
-            counterparty_identity(conn, txn),
+            txn["counterparty_key"],
             before_txn_date=txn.get("txn_date"),
             exclude_transaction_id=txn.get("id"),
         )

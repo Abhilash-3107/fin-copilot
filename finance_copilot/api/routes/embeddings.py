@@ -16,7 +16,7 @@ from finance_copilot.db.queries.embeddings import (
     ensure_vec_dimension,
     get_embedding_stats,
 )
-from finance_copilot.pipeline.embed import embed_annotated_transactions, reembed_all
+from finance_copilot.pipeline.embed import refresh_embeddings, stale_embedding_rows
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,6 @@ class EmbedRequest(BaseModel):
 
 class EmbedResponse(BaseModel):
     embedded: int
-    skipped: int
 
 
 @router.post("/generate", response_model=EmbedResponse)
@@ -37,13 +36,11 @@ def generate_embeddings(
     body: EmbedRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Generate embeddings for all annotated transactions that lack them.
+    """Embed every annotated transaction whose vector is missing or stale.
 
     Scoped to a statement if statement_id is provided, otherwise all statements.
-    Returns counts of newly embedded and already-skipped transactions.
     """
-    result = embed_annotated_transactions(conn, body.statement_id)
-    return result
+    return refresh_embeddings(conn, body.statement_id)
 
 
 @router.delete("/statement/{statement_id}")
@@ -87,7 +84,7 @@ def _run_reembed_job(job_id: str) -> None:
             )
             conn.commit()
 
-        result = reembed_all(conn, progress_cb=progress)
+        result = refresh_embeddings(conn, progress_cb=progress)
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
@@ -134,17 +131,28 @@ def enqueue_reembed_job(conn: sqlite3.Connection) -> tuple[dict | None, str | No
         raise
 
 
-def start_reembed_in_background(conn: sqlite3.Connection) -> str | None:
-    """Queue a re-embed and run it on a daemon thread, for callers outside a
-    request (startup reconciliation). Returns the job id, or None when another
-    job is already in flight."""
+def refresh_stale_embeddings_in_background() -> None:
+    """Startup: rebuild vectors that are missing, from another model, or built
+    from text that has since changed, on a daemon thread. Finding the stale rows
+    builds every donor's embed text, so it stays off the startup path too."""
     import threading
 
-    _inflight, job_id = enqueue_reembed_job(conn)
-    if job_id is None:
-        return None
-    threading.Thread(target=_run_reembed_job, args=(job_id,), daemon=True, name="reembed").start()
-    return job_id
+    def run() -> None:
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        conn = _open_job_connection()
+        try:
+            stale = len(stale_embedding_rows(conn))
+            if not stale:
+                return
+            _inflight, job_id = enqueue_reembed_job(conn)
+        finally:
+            conn.close()
+        if job_id is not None:
+            logger.info("%d stored vectors are stale - rebuilding them (job %s)", stale, job_id)
+            _run_reembed_job(job_id)
+
+    threading.Thread(target=run, daemon=True, name="embedding-refresh").start()
 
 
 @router.post("/reembed", status_code=202)

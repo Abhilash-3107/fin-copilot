@@ -34,7 +34,6 @@ from finance_copilot.models.annotation import (
     AutoAnnotateResult,
 )
 from finance_copilot.pipeline.annotate import auto_annotate
-from finance_copilot.pipeline.counterparty import counterparty_identity
 from finance_copilot.pipeline.embed import (
     build_embed_text,
     embed_transaction,
@@ -489,7 +488,7 @@ def similar_candidates(
 
     # Same-counterparty candidates via the indexed, resolved counterparty_key
     # (truncation variants of one payee share it; see pipeline/counterparty.py).
-    identity = counterparty_identity(conn, txn)
+    identity = txn["counterparty_key"]
     if identity is not None:
         rows = conn.execute(
             "SELECT id FROM transactions WHERE counterparty_key = ? AND id != ?",

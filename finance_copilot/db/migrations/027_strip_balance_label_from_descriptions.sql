@@ -13,3 +13,7 @@ WHERE raw_description LIKE '_% Closing Balance';
 UPDATE transactions
 SET raw_description = RTRIM(SUBSTR(raw_description, 1, LENGTH(raw_description) - LENGTH(' Opening Balance')))
 WHERE raw_description LIKE '_% Opening Balance';
+
+-- The repaired descriptions re-derive their upi_meta and counterparty_key on
+-- the next startup (pipeline/derived.py runs when no parser version is stored).
+DELETE FROM app_settings WHERE key = 'description_parser_version';
