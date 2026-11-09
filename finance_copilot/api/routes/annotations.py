@@ -34,7 +34,7 @@ from finance_copilot.models.annotation import (
     AutoAnnotateResult,
 )
 from finance_copilot.pipeline.annotate import auto_annotate
-from finance_copilot.pipeline.counterparty import normalize_identity
+from finance_copilot.pipeline.counterparty import counterparty_identity
 from finance_copilot.pipeline.embed import (
     build_embed_text,
     embed_transaction,
@@ -487,19 +487,16 @@ def similar_candidates(
     except Exception as e:
         logger.warning("apply-similar | embedding unavailable, identity-only | %s", e)
 
-    # Same-counterparty candidates via the indexed counterparty_key (migration 017),
-    # not a full scan of every UPI row. The Python-side normalize_identity check
-    # stays as an exactness guard for the few matched rows, matching
-    # counterparty_history() so the two identity paths never diverge.
-    identity = txn.get("counterparty_key") or normalize_identity(txn.get("raw_description"))
+    # Same-counterparty candidates via the indexed, resolved counterparty_key
+    # (truncation variants of one payee share it; see pipeline/counterparty.py).
+    identity = counterparty_identity(conn, txn)
     if identity is not None:
         rows = conn.execute(
-            "SELECT id, raw_description FROM transactions WHERE counterparty_key = ? AND id != ?",
+            "SELECT id FROM transactions WHERE counterparty_key = ? AND id != ?",
             (identity, txn["id"]),
         ).fetchall()
         for r in rows:
-            if normalize_identity(r["raw_description"]) == identity:
-                candidate_ids.setdefault(r["id"], None)
+            candidate_ids.setdefault(r["id"], None)
 
     if not candidate_ids:
         return []

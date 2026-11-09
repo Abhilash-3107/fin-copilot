@@ -107,6 +107,46 @@ def _run_reembed_job(job_id: str) -> None:
         conn.close()
 
 
+def enqueue_reembed_job(conn: sqlite3.Connection) -> tuple[dict | None, str | None]:
+    """Insert a queued 'reembed' job under the single-job guard.
+
+    Returns (inflight_job, None) when another job already holds the guard, else
+    (None, new_job_id); the caller runs _run_reembed_job(new_job_id).
+    """
+    from finance_copilot.api.routes.annotations import _reap_stale_jobs
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _reap_stale_jobs(conn)
+        inflight = conn.execute(
+            "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if inflight is not None:
+            conn.commit()
+            return dict(inflight), None
+        job_id = str(ulid.ULID())
+        conn.execute("INSERT INTO annotation_jobs (id, kind) VALUES (?, 'reembed')", (job_id,))
+        conn.commit()
+        return None, job_id
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def start_reembed_in_background(conn: sqlite3.Connection) -> str | None:
+    """Queue a re-embed and run it on a daemon thread, for callers outside a
+    request (startup reconciliation). Returns the job id, or None when another
+    job is already in flight."""
+    import threading
+
+    _inflight, job_id = enqueue_reembed_job(conn)
+    if job_id is None:
+        return None
+    threading.Thread(target=_run_reembed_job, args=(job_id,), daemon=True, name="reembed").start()
+    return job_id
+
+
 @router.post("/reembed", status_code=202)
 def start_reembed_job(
     background_tasks: BackgroundTasks,
@@ -119,30 +159,9 @@ def start_reembed_job(
     mid-rebuild, so annotation must wait its turn. Poll
     GET /api/annotations/jobs/{id} for progress.
     """
-    from finance_copilot.api.routes.annotations import _reap_stale_jobs
-
-    scheduled_job_id: str | None = None
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        _reap_stale_jobs(conn)
-        inflight = conn.execute(
-            "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
-        ).fetchone()
-        if inflight is not None:
-            conn.commit()
-            return {"job_id": inflight["id"], "status": inflight["status"], "kind": inflight["kind"]}
-
-        job_id = str(ulid.ULID())
-        conn.execute(
-            "INSERT INTO annotation_jobs (id, kind) VALUES (?, 'reembed')",
-            (job_id,),
-        )
-        conn.commit()
-        scheduled_job_id = job_id
-    except Exception:
-        conn.rollback()
-        raise
+    inflight, scheduled_job_id = enqueue_reembed_job(conn)
+    if inflight is not None:
+        return {"job_id": inflight["id"], "status": inflight["status"], "kind": inflight["kind"]}
 
     background_tasks.add_task(_run_reembed_job, scheduled_job_id)
     return {"job_id": scheduled_job_id, "status": "queued", "kind": "reembed"}

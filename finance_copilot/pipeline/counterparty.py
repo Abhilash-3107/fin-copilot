@@ -19,19 +19,26 @@ shrinkage so it degrades gracefully:
 The prior is *fused at the decision layer* (confidence/routing in rag_prompted),
 never baked into the embedding and never used to override the RAG label.
 
-Identity key: the normalized name segment of the UPI description. The bank format
-here carries no VPA (name@bank appears in 1/568 rows); the 2nd "/"-segment of
-`UPI/NAME/ref/note` is the only stable counterparty handle, and it is consistently
-truncated so it collides with itself. Truncation can *false-split* one entity into
-two (ZEPTO vs ZEPTO MARKETPLA) — that only under-counts recurrence (weakens the
-prior), it never over-merges two different people, so it is the safe failure mode.
+Identity key: the payee name parsed out of the UPI description
+(parsers/description.py), upper-cased and whitespace-collapsed. The bank format
+carries no VPA (name@bank appears in 1/568 rows), so the printed name is the only
+stable counterparty handle. Banks print it truncated to a fixed width, and the
+width can change with the layout (Kotak: 15 chars, 14 once an IFSC bank prefix
+was added in June 2026), so one payee can appear as 'OBEROIFC TUCKSH' and
+'OBEROIFC TUCKS'. resolve_counterparty_key folds such truncation variants onto
+the first-seen key at ingest; it only merges when exactly one existing key is
+prefix-compatible, so it can under-merge (weaker prior, the safe failure mode)
+but never fuses two different people.
 """
 from __future__ import annotations
 
+import bisect
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from finance_copilot.config import settings
+from finance_copilot.parsers.description import ParsedDescription, parse_description
 
 # Sources whose labels are trustworthy enough to seed a counterparty prior at full
 # weight; machine guesses are downweighted so a recurring RAG-mislabeled
@@ -40,20 +47,101 @@ from finance_copilot.pipeline.sources import TRUSTED_SOURCES as _TRUSTED_SOURCES
 
 
 def normalize_identity(raw_description: str | None) -> str | None:
-    """Return a stable counterparty key from a UPI description, or None.
+    """Return the raw (unresolved) counterparty key from a UPI description, or None.
 
-    Keys on the 2nd segment of `UPI/NAME/ref/note`, upper-cased and whitespace-
-    collapsed. Returns None for non-UPI or unparseable descriptions, in which case
-    the caller treats the counterparty as unknown (no prior).
+    The parsed payee name, upper-cased and whitespace-collapsed. None for non-UPI
+    rails and UPI reversals (a reversal is a credit; sharing the payee's key would
+    mix refunds into that payee's learned rule and prior). Use
+    counterparty_identity() when a stored, resolved key may be available.
     """
-    if not raw_description:
+    return identity_from_parsed(parse_description(raw_description))
+
+
+def identity_from_parsed(parsed: ParsedDescription) -> str | None:
+    """normalize_identity for an already-parsed description."""
+    if parsed.rail != "upi" or not parsed.counterparty:
         return None
-    parts = raw_description.split("/")
-    # Expect at least UPI / NAME / ... — segment[1] is the counterparty name.
-    if len(parts) < 2 or parts[0].strip().upper() != "UPI":
+    return parsed.counterparty.upper()
+
+
+def _prefix_compatible(a: str, b: str) -> bool:
+    """Whether a and b can be the same payee printed at two truncation widths."""
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    return (
+        len(short) >= settings.counterparty_prefix_min_len
+        and len(long_) - len(short) <= settings.counterparty_prefix_max_delta
+        and long_.startswith(short)
+    )
+
+
+def pick_canonical_key(raw_key: str, candidates: Iterable[str]) -> str:
+    """Resolve raw_key against existing keys: itself if already known, else the
+    single prefix-compatible existing key, else itself (no match or ambiguous).
+
+    Short names (below counterparty_prefix_min_len) are never truncated by the
+    bank, so they only ever match exactly.
+    """
+    compatible: set[str] = set()
+    for key in candidates:
+        if key == raw_key:
+            return raw_key
+        if _prefix_compatible(raw_key, key):
+            compatible.add(key)
+    if len(compatible) == 1:
+        return compatible.pop()
+    return raw_key
+
+
+def resolve_counterparty_key(conn: sqlite3.Connection, raw_key: str | None) -> str | None:
+    """Fold a truncation variant onto the counterparty key already stored for it.
+
+    Candidates share the first counterparty_prefix_min_len characters, found by
+    an index range scan on transactions.counterparty_key.
+    """
+    if not raw_key:
         return None
-    name = " ".join(parts[1].split()).strip().upper()
-    return name or None
+    if len(raw_key) < settings.counterparty_prefix_min_len:
+        return raw_key
+    stem = raw_key[: settings.counterparty_prefix_min_len]
+    rows = conn.execute(
+        "SELECT DISTINCT counterparty_key FROM transactions "
+        "WHERE counterparty_key >= ? AND counterparty_key < ?",
+        (stem, stem + "\U0010ffff"),
+    ).fetchall()
+    return pick_canonical_key(raw_key, (r[0] for r in rows))
+
+
+class KeyResolver:
+    """In-memory resolve_counterparty_key for bulk re-derivation, where the
+    stored keys are the stale ones being replaced. Feed rows in date order."""
+
+    def __init__(self) -> None:
+        self._sorted: list[str] = []
+
+    def resolve(self, raw_key: str | None) -> str | None:
+        if not raw_key:
+            return None
+        if len(raw_key) >= settings.counterparty_prefix_min_len:
+            stem = raw_key[: settings.counterparty_prefix_min_len]
+            lo = bisect.bisect_left(self._sorted, stem)
+            hi = bisect.bisect_left(self._sorted, stem + "\U0010ffff")
+            key = pick_canonical_key(raw_key, self._sorted[lo:hi])
+        else:
+            key = raw_key
+        i = bisect.bisect_left(self._sorted, key)
+        if i == len(self._sorted) or self._sorted[i] != key:
+            self._sorted.insert(i, key)
+        return key
+
+
+def counterparty_identity(conn: sqlite3.Connection, txn: dict) -> str | None:
+    """The resolved counterparty key for a transaction: the stored column when the
+    row has one, else parsed from the description and resolved against the DB
+    (eval rows and not-yet-stored transactions)."""
+    stored = txn.get("counterparty_key")
+    if stored:
+        return stored
+    return resolve_counterparty_key(conn, normalize_identity(txn.get("raw_description")))
 
 
 def _label_weight(source: str | None) -> float:
@@ -104,11 +192,9 @@ def counterparty_history(
     order must only see labels that existed *before* the transaction being scored,
     otherwise the prior leaks its own answer.
 
-    Identity matching uses the indexed transactions.counterparty_key column
-    (computed via normalize_identity at ingest, backfilled by migration 017) —
-    an indexed lookup instead of the previous full scan of all UPI annotations.
-    The Python-side identity check stays as a cheap exactness guard for the few
-    matched rows (the SQL backfill's whitespace handling is slightly looser).
+    Identity matching uses the indexed transactions.counterparty_key column,
+    which holds the resolved key (truncation variants folded together) computed
+    at ingest and re-derived on parser upgrades (pipeline/derived.py).
     """
     rows = conn.execute(
         """
@@ -124,16 +210,15 @@ def counterparty_history(
         (identity, before_txn_date, before_txn_date, exclude_transaction_id, exclude_transaction_id),
     ).fetchall()
 
-    out: list[dict] = []
-    for row in rows:
-        if normalize_identity(row["raw_description"]) == identity:
-            out.append({
-                "transaction_id": row["transaction_id"],
-                "txn_date": row["txn_date"],
-                "category": row["category"],
-                "source": row["source"],
-            })
-    return out
+    return [
+        {
+            "transaction_id": row["transaction_id"],
+            "txn_date": row["txn_date"],
+            "category": row["category"],
+            "source": row["source"],
+        }
+        for row in rows
+    ]
 
 
 def counterparty_prior(
@@ -159,7 +244,7 @@ def counterparty_prior(
     the probability to 1.0; it takes several consistent labels to clear the
     dominance floor — exactly the recurrence requirement.
     """
-    identity = normalize_identity(txn.get("raw_description"))
+    identity = counterparty_identity(conn, txn)
     if identity is None:
         return CounterpartyPrior()
 

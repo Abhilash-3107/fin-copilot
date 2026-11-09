@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # irreducible "recurring contact's occasional off-category spend" — which the
     # late-fusion layer (prior vs LLM disagreement → review) catches, not the floor.
     counterparty_min_observations: int = 2
+    # Truncation-variant resolution for counterparty keys (pipeline/counterparty.py).
+    # Banks print payee names cut to a fixed width that can shift with the layout
+    # (Kotak: 15 chars, 14 with an IFSC prefix). Two keys are folded together only
+    # when the shorter is at least min_len chars (names that short are printed in
+    # full) and the longer extends it by at most max_delta chars.
+    counterparty_prefix_min_len: int = 12
+    counterparty_prefix_max_delta: int = 3
     # The shrunk P(category | counterparty) must reach this for the prior to count
     # as a dominant, established signal.
     counterparty_dominance_floor: float = 0.65
@@ -220,6 +227,19 @@ def current_embedding_model() -> str:
     if settings.embedding_provider == "local":
         return settings.local_embedding_model
     return settings.ollama_embedding_model
+
+
+# Version of the text pipeline/embed.py:build_embed_text produces. Part of the
+# embedding stamp, so vectors built from an older text format are filtered out
+# of retrieval like vectors from another model, and startup schedules a rebuild
+# (pipeline/derived.py). Bump on any change to build_embed_text's output.
+EMBED_TEXT_VERSION = 2
+
+
+def current_embedding_stamp() -> str:
+    """Identity stamped into embedding_meta.model_version and required at
+    retrieval: model plus embed-text version, so neither ever mixes."""
+    return f"{current_embedding_model()}#text-v{EMBED_TEXT_VERSION}"
 
 
 def current_embedding_dim() -> int:

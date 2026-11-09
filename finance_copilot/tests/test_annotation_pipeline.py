@@ -812,7 +812,7 @@ class TestRagPromptedOffExample:
         """When trusted donors are split with no clear winner, confidence is capped
         below threshold so the txn routes to review (selective classification).
 
-        Mirrors the real ANSHU YADAV case: a small UPI to an unknown name whose
+        Mirrors the real ROHIT YADAV case: a small UPI to an unknown name whose
         amount-neighbors are part Transport (cab), part Transfers (family)."""
         from finance_copilot.config import settings
         from finance_copilot.pipeline.annotate import auto_annotate
@@ -1376,7 +1376,18 @@ class TestUpiParsing:
 
     def test_vpa_ref_note_extracted(self):
         meta = self._parse("UPI/merchant@okaxis/118030236405/food order")
-        assert meta == {"vpa": "merchant@okaxis", "ref": "118030236405", "note": "food order"}
+        assert meta == {
+            "vpa": "merchant@okaxis", "ref": "118030236405", "note": "food order",
+            "bank": None, "shape": "upi/name/ref/note",
+        }
+
+    def test_bank_prefixed_layout(self):
+        # Kotak from June 2026: an IFSC bank prefix sits between payee and ref.
+        meta = self._parse("UPI/Blue Tokai Cof/YESB/124907113263/UPI")
+        assert meta == {
+            "vpa": None, "ref": "124907113263", "note": None,
+            "bank": "YESB", "shape": "upi/name/bank/ref/note",
+        }
 
     def test_ref_as_last_segment_is_not_a_note(self):
         meta = self._parse("UPI/Agoda Company P/118030236405")
@@ -1393,7 +1404,9 @@ class TestUpiParsing:
 
     def test_no_vpa_or_ref(self):
         meta = self._parse("UPI/SOME SHOP/groceries")
-        assert meta == {"vpa": None, "ref": None, "note": "groceries"}
+        assert meta == {
+            "vpa": None, "ref": None, "note": "groceries", "bank": None, "shape": "unrecognized",
+        }
 
 
 class TestKnownPersonMatching:

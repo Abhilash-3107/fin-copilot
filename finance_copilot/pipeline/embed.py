@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 from pathlib import Path
 
 import httpx
 
-from finance_copilot.config import current_embedding_model, settings
+from finance_copilot.config import current_embedding_stamp, settings
 from finance_copilot.db.queries.embeddings import get_embedded_transaction_ids, upsert_embedding
 from finance_copilot.models.transaction import TxnRow
+from finance_copilot.parsers.description import is_known_shape, parse_description
 
 logger = logging.getLogger(__name__)
 
@@ -39,46 +39,55 @@ def local_embeddings_installed() -> bool:
     return importlib.util.find_spec("fastembed") is not None
 
 
-# UPI descriptions are 'UPI/<merchant>/<numeric-ref>/<note>'. The 12-ish-digit
-# reference is unique per transaction, so leaving it in the embed text makes two
-# visits to the *same* merchant look only ~0.6-0.9 similar instead of ~1.0 — which
-# drops recurring merchants below rag_similarity_floor and breaks RAG retrieval.
-# Strip just the numeric ref segment; keep merchant and the trailing note (which
-# can carry real signal like 'movie tickets'). Non-UPI descriptions are untouched.
-_UPI_REF_RE = re.compile(r"^(UPI/[^/]+)/\d{4,}/(.*)$", re.IGNORECASE)
-
-
 def normalize_description_for_embedding(raw_description: str) -> str:
-    """Drop the rotating UPI numeric reference so recurring merchants embed consistently.
+    """The description part of the embed text.
 
-    Non-UPI descriptions (NEFT/IMPS/POS/ATM/VISA) are left untouched: stripping
-    their numeric refs and dates was evaluated (E5, 2026-07-02) and rejected.
+    UPI lines in a layout the parser understands become 'UPI/<payee>[/<note>]':
+    the rotating reference, the IFSC bank prefix, and the value-date trailer are
+    transaction noise that would make two visits to the same merchant look only
+    ~0.6 similar (below rag_similarity_floor). Everything else, including UPI
+    lines in an unrecognized layout, is left verbatim: stripping refs/dates from
+    non-UPI descriptions was evaluated (E5, 2026-07-02) and rejected.
     """
     if not raw_description:
         return ""
-    m = _UPI_REF_RE.match(raw_description.strip())
-    if not m:
+    parsed = parse_description(raw_description, settings.upi_noise_keywords)
+    if not is_known_shape(parsed) or not parsed.counterparty:
         return raw_description
-    merchant, note = m.group(1), m.group(2).strip()
-    # Collapse the boilerplate 'UPI' note to nothing; keep meaningful notes.
-    if note.upper() == "UPI":
-        note = ""
-    return f"{merchant}/{note}" if note else merchant
+    head = "UPI" if parsed.rail == "upi" else "REV-UPI"
+    return f"{head}/{parsed.counterparty}/{parsed.note}" if parsed.note else f"{head}/{parsed.counterparty}"
 
 
 def build_embed_text(txn: TxnRow) -> str:
-    """Build canonical text for embedding: '{debit_credit} {description-without-ref} {upi_note}'.
+    """Canonical embedding text: '{debit_credit} {description}', lowercased.
 
-    The raw per-transaction amount and the rotating UPI reference number are
-    deliberately excluded — both are transaction-unique noise that dilutes the
-    merchant/counterparty signal the retriever depends on.
+    Understood UPI lines embed as '{dc} upi/{payee}[/{note}]', where payee is the
+    stored, resolved counterparty_key when present, so truncation variants of one
+    payee ('OBEROIFC TUCKSH' / 'OBEROIFC TUCKS') embed identically. Boilerplate
+    notes ('UPI', 'NO REMARKS', ...) are dropped and the note appears once.
+
+    Other rows keep the previous format: '{dc} {raw description} {upi note}'.
+
+    The amount is deliberately excluded: it is per-transaction noise that dilutes
+    the merchant/counterparty signal the retriever depends on.
 
     The result is lowercased: nomic-embed-text tokenizes ALL-CAPS bank-statement
     text into near-meaningless fragments, so distinct uppercase personal-name
     payees (e.g. 'M S KINGSTON PR' vs 'AABID ALI SO NA') collapse to *identical*
     embeddings (cosine 1.0). Lowercasing recovers normal subword tokens and the
     names separate cleanly (~0.7).
+
+    Any change to the output must bump config.EMBED_TEXT_VERSION.
     """
+    dc = txn.get("debit_credit", "")
+    raw = txn.get("raw_description", "") or ""
+    parsed = parse_description(raw, settings.upi_noise_keywords)
+    if is_known_shape(parsed) and parsed.counterparty:
+        head = "upi" if parsed.rail == "upi" else "rev-upi"
+        payee = (txn.get("counterparty_key") if parsed.rail == "upi" else None) or parsed.counterparty
+        desc = f"{head}/{payee}/{parsed.note}" if parsed.note else f"{head}/{payee}"
+        return " ".join(p for p in (dc, desc) if p).strip().lower()
+
     upi_note = ""
     upi_meta = txn.get("upi_meta")
     if upi_meta:
@@ -87,12 +96,7 @@ def build_embed_text(txn: TxnRow) -> str:
             upi_note = str(meta.get("note") or "")
         except (json.JSONDecodeError, AttributeError):
             pass
-    parts = [
-        txn.get("debit_credit", ""),
-        normalize_description_for_embedding(txn.get("raw_description", "")),
-        upi_note,
-    ]
-    return " ".join(p for p in parts if p).strip().lower()
+    return " ".join(p for p in (dc, raw, upi_note) if p).strip().lower()
 
 
 # One in-process fastembed model, loaded lazily on first embed. Keyed by model
@@ -168,7 +172,7 @@ def embed_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
         if row is None:
             return False
         vector = get_embedding_single(build_embed_text(dict(row)))
-        upsert_embedding(conn, transaction_id, vector, current_embedding_model())
+        upsert_embedding(conn, transaction_id, vector, current_embedding_stamp())
         conn.commit()
         return True
     except Exception as e:
@@ -198,7 +202,7 @@ def embed_transactions(
             ).fetchall()
         ]
 
-    model_version = current_embedding_model()
+    model_version = current_embedding_stamp()
     embedded = 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
@@ -243,7 +247,7 @@ def embed_annotated_transactions(
     to_embed = [t for t in all_txns if t["id"] not in already_embedded]
 
     embedded_count = 0
-    model_version = current_embedding_model()
+    model_version = current_embedding_stamp()
 
     for i in range(0, len(to_embed), batch_size):
         batch = to_embed[i : i + batch_size]
@@ -284,7 +288,7 @@ def reembed_all(
         "JOIN annotations a ON a.transaction_id = t.id ORDER BY t.id"
     ).fetchall()
     txns = [dict(r) for r in rows]
-    model_version = current_embedding_model()
+    model_version = current_embedding_stamp()
 
     done = 0
     for i in range(0, len(txns), batch_size):

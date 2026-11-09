@@ -6,7 +6,7 @@ import struct
 
 import ulid
 
-from finance_copilot.config import current_embedding_dim, current_embedding_model
+from finance_copilot.config import current_embedding_dim, current_embedding_stamp
 
 
 def _serialize_embedding(embedding: list[float]) -> bytes:
@@ -148,7 +148,7 @@ def find_similar(
         f"JOIN embedding_meta em ON em.transaction_id = t.id "
         f"WHERE t.id IN ({placeholders}) AND em.model_version = ?"
     )
-    params: list = list(candidate_ids) + [current_embedding_model()]
+    params: list = list(candidate_ids) + [current_embedding_stamp()]
     if before_txn_date is not None:
         query += " AND t.txn_date < ?"
         params.append(before_txn_date)

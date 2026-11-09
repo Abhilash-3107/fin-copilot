@@ -193,7 +193,7 @@ class TestContinuityCheck:
         conn = _make_conn()
         self._seed_statement(conn, "2026-04", "2026-04-01", "2026-04-30", 46000.0, 90349.69)
         stmt = _ingest(conn, [
-            _txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69),
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
         ], b"%PDF may")
         assert check_continuity(conn, stmt) == []
         conn.close()
@@ -202,7 +202,7 @@ class TestContinuityCheck:
         conn = _make_conn()
         self._seed_statement(conn, "2026-03", "2026-03-01", "2026-03-31", 50000.0, 45994.25)
         stmt = _ingest(conn, [
-            _txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69),
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
         ], b"%PDF may after gap")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
@@ -230,7 +230,7 @@ class TestContinuityCheck:
         self._seed_statement(conn, "2026-04", "2026-04-01", "2026-04-30",
                              10000.0, 12345.0, bank="hdfc")
         stmt = _ingest(conn, [
-            _txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69),
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
         ], b"%PDF cross bank", bank="fake")
         assert check_continuity(conn, stmt) == []
         conn.close()
@@ -240,7 +240,7 @@ class TestContinuityCheck:
         self._seed_statement(conn, "2026-04", "2026-04-01", "2026-04-30",
                              10000.0, 12345.0, bank="fake", account_ref="1111222233")
         stmt = _ingest(conn, [
-            _txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69),
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
         ], b"%PDF second account", bank="fake", account_ref="9999888877")
         assert check_continuity(conn, stmt) == []
         conn.close()
@@ -250,7 +250,7 @@ class TestContinuityCheck:
         self._seed_statement(conn, "2026-04", "2026-04-01", "2026-04-30",
                              10000.0, 12345.0, bank="fake", account_ref="1111222233")
         stmt = _ingest(conn, [
-            _txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69),
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
         ], b"%PDF same account gap", bank="fake", account_ref="1111222233")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
@@ -315,7 +315,7 @@ class TestUploadRouteWarnings:
             from fastapi.testclient import TestClient
 
             client = TestClient(app)
-            rows = [_txn("UPI/ZOMATO/1/UPI", amount=100.0, dc="debit", balance=90249.69)]
+            rows = [_txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69)]
             with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=_fake_parser(rows)):
                 resp = client.post(
                     "/api/statements/upload",

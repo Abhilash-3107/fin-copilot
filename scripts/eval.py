@@ -47,6 +47,7 @@ from finance_copilot.pipeline.annotate import (
     rule_annotation,
 )
 from finance_copilot.pipeline.calibration import get_calibrated_dampening
+from finance_copilot.pipeline.derived import reconcile_derived_data
 from finance_copilot.pipeline.llm import annotate_transaction_llm
 
 
@@ -101,6 +102,14 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
     # Migrate like app startup does: the pipeline under test reads the current
     # schema (e.g. user_rules), and an eval DB copy may predate it.
     conn = get_migrated_db(db_path)
+    # Also reconcile derived fields like startup does, so parser upgrades are
+    # evaluated on re-derived keys rather than whatever the copy last stored.
+    if reconcile_derived_data(conn):
+        print(
+            "WARNING: stored vectors predate the current embed text/model; RAG stages "
+            "will see no donors. Re-embed this DB first (scripts.reembed_all).",
+            flush=True,
+        )
     category_list = get_category_names_flat(conn)
     # Mirrors auto_annotate's construction (3-tuples incl. relationship).
     known_people = [
@@ -114,6 +123,12 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
         golden = golden[:limit]
 
     records = []
+    # Golden rows are stored transactions: carry their resolved counterparty key,
+    # exactly as the live pipeline reads it from the row.
+    stored_keys = dict(conn.execute("SELECT id, counterparty_key FROM transactions").fetchall())
+    for g in golden:
+        g.setdefault("counterparty_key", stored_keys.get(g["id"]))
+
     for i, g in enumerate(golden, 1):
         pred = _predict(conn, g, category_list, known_people)
         pred["transaction_id"] = g["id"]
