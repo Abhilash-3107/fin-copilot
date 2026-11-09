@@ -25,10 +25,13 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-# Bump whenever parse output for an existing description can change. Stored in
-# app_settings; a mismatch on startup re-derives upi_meta and counterparty_key
-# for every stored transaction (pipeline/derived.py).
-DESCRIPTION_PARSER_VERSION = 2
+# Bump whenever parse output for an existing description can change, or a
+# migration repairs stored raw descriptions. Stored in app_settings; a mismatch
+# on startup re-derives upi_meta and counterparty_key for every stored
+# transaction and rebuilds vectors (pipeline/derived.py).
+#   2: token-class grammar, IFSC bank prefix, truncation-variant keys
+#   3: re-derive after migration 027 stripped leaked balance labels
+DESCRIPTION_PARSER_VERSION = 3
 
 SHAPE_UNRECOGNIZED = "unrecognized"
 

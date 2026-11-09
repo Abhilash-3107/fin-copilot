@@ -122,8 +122,10 @@ def reconcile_derived_data(conn: sqlite3.Connection) -> bool:
     """Re-derive parsed description fields when the parser version moved.
 
     Returns True when stored vectors are stale and a re-embed should be
-    scheduled. Commits its own work.
+    scheduled: either they carry an old stamp, or the re-derivation changed
+    rows (keys and notes feed the embed text). Commits its own work.
     """
+    rederived_rows = 0
     if _stored_version(conn) != DESCRIPTION_PARSER_VERSION:
         result = rederive_descriptions(conn)
         conn.execute(
@@ -132,8 +134,10 @@ def reconcile_derived_data(conn: sqlite3.Connection) -> bool:
             (PARSER_VERSION_KEY, str(DESCRIPTION_PARSER_VERSION)),
         )
         conn.commit()
+        rederived_rows = result["updated"]
         logger.info(
             "description parser v%d: re-derived %d/%d transactions, %d counterparty keys moved | shapes=%s",
             DESCRIPTION_PARSER_VERSION, result["updated"], result["rows"], result["keys_moved"], result["shapes"],
         )
-    return embeddings_stale(conn)
+    has_vectors = conn.execute("SELECT 1 FROM embedding_meta LIMIT 1").fetchone() is not None
+    return embeddings_stale(conn) or (rederived_rows > 0 and has_vectors)

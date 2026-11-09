@@ -267,6 +267,17 @@ class TestRederive:
         reconcile_derived_data(conn)
         assert conn.execute("SELECT counterparty_key FROM transactions WHERE id = 'd'").fetchone()[0] == "SENTINEL"
 
+    def test_rederive_that_changes_rows_requests_a_rebuild(self):
+        from finance_copilot.config import current_embedding_stamp
+
+        conn = _conn()
+        self._seed_stale(conn)
+        conn.execute("INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES ('e1', 'a', ?)",
+                     (current_embedding_stamp(),))
+        conn.commit()
+        assert reconcile_derived_data(conn) is True  # keys moved -> embed text moved
+        assert reconcile_derived_data(conn) is False  # current version, current stamp
+
     def test_embeddings_stale_detects_old_stamp(self):
         conn = _conn()
         self._seed_stale(conn)
