@@ -1,13 +1,18 @@
 [build-system]
-requires = ["hatchling"]
+# 1.27+ implements PEP 639 (SPDX license expression + bundled license files).
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "finance-copilot"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first personal finance tool: parses bank statement PDFs and auto-categorizes transactions with rules, RAG, and a local LLM."
 readme = "README.md"
-license = { text = "MIT" }
+# Source-available: free to use, self-host, modify and contribute to, but not
+# to resell as a competing product. Each release becomes MIT two years after
+# it ships. 0.1.0 and 0.1.1 were published under MIT.
+license = "FSL-1.1-MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["finance", "personal-finance", "bank-statements", "local-first"]
 classifiers = [
@@ -16,22 +21,36 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Framework :: FastAPI",
     "Topic :: Office/Business :: Financial",
 ]
+# Upper bounds sit below the next major of stable (>=1.0) dependencies, plus
+# below 1.0 for typer and httpx, mature 0.x libraries where 1.0 is the natural
+# point for breaking changes. uvx resolves
+# fresh and ignores uv.lock, so an uncapped major would break new installs the
+# day it ships. 0.x deps stay uncapped; the CI python-compat fresh-resolve
+# matrix catches breakage there. cryptography majors arrive almost every
+# release and only touch PDF decryption, so it is left uncapped too.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "pdfplumber>=0.11",
     "cryptography>=43",        # password-protected statement PDFs (AES)
-    "pydantic>=2.7",
-    "pydantic-settings>=2.3",
-    "typer>=0.12",
-    "rich>=13",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "typer>=0.12,<1",
+    "rich>=13,<16",
     "sqlite-vec>=0.1.6",
     "python-ulid>=2.6",
-    "httpx>=0.27",
+    "httpx>=0.27,<1",
     "python-multipart>=0.0.9", # FastAPI multipart uploads (statement PDFs)
-    "platformdirs>=4",         # per-OS app-data directory for the packaged app
+    "platformdirs>=4,<5",        # per-OS app-data directory for the packaged app
     # In-process embeddings (RAG with zero setup). Deliberately a hard dependency:
     # the whole point of phase 2 is that a fresh install has working retrieval
     # without Ollama, an API key, or any decision.
@@ -59,7 +78,9 @@ Changelog = "https://github.com/Abhilash-3107/fin-copilot/blob/main/CHANGELOG.md
 Issues = "https://github.com/Abhilash-3107/fin-copilot/issues"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+# httpx2: starlette.testclient deprecated plain httpx in favour of this fork
+# (3.11+ only; 3.10 falls back to httpx with a deprecation warning).
+dev = ["pytest>=8", "ruff>=0.6", "httpx2>=2.16; python_version >= '3.11'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["finance_copilot"]
@@ -76,8 +97,18 @@ exclude = ["finance_copilot/tests"]
 [tool.hatch.build.targets.sdist]
 # The sdist is a source snapshot for `pip install` from source; it needs the
 # built UI too because most installers won't have Node.
-include = ["finance_copilot", "ui/dist", "README.md", "pyproject.toml", "hatch_build.py"]
-exclude = ["finance_copilot/tests"]
+# Leading slashes anchor to the project root; a bare "README.md" is a
+# gitignore-style pattern that also pulled in deploy/demo/README.md.
+include = [
+    "/finance_copilot",
+    "/ui/dist",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/hatch_build.py",
+]
+exclude = ["/finance_copilot/tests"]
 # ui/dist is gitignored (it is a build output), so it must be declared an
 # artifact or hatchling's VCS-ignore filter drops it from the sdist.
 artifacts = ["ui/dist"]
@@ -97,7 +128,7 @@ ignore = [
     # fighting over long SQL strings and comments.
     "E501",
     # B008: FastAPI's Depends()/Query() in argument defaults is the framework's
-    # documented, correct pattern — not the mutable-default footgun B008 targets.
+    # documented, correct pattern - not the mutable-default footgun B008 targets.
     "B008",
 ]
 

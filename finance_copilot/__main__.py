@@ -1,4 +1,4 @@
-"""Run the API server: `python -m src`.
+"""Run the API server: `python -m finance_copilot`.
 
 Owns the host default (127.0.0.1) so the API - and every bank statement it
 serves - is loopback-only unless the user deliberately opts into LAN exposure.

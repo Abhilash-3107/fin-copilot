@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from finance_copilot import app_version
 from finance_copilot.config import settings
 
 app = typer.Typer(help="Finance Copilot CLI", no_args_is_help=True)
@@ -94,7 +95,7 @@ def _patch(base: str, annotation_id: str, payload: dict) -> None:
 @app.command()
 def version():
     """Show version."""
-    console.print("finance-copilot 0.1.1")
+    console.print(f"finance-copilot {app_version()}")
 
 
 if __name__ == "__main__":

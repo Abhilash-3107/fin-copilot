@@ -17,17 +17,11 @@ import sys
 import threading
 import time
 import webbrowser
-from importlib import metadata
 from pathlib import Path
 
 import httpx
 
-
-def _version() -> str:
-    try:
-        return metadata.version("finance-copilot")
-    except metadata.PackageNotFoundError:
-        return "0.0.0.dev0 (checkout)"
+from finance_copilot import app_version
 
 
 def _free_port() -> int:
@@ -73,13 +67,13 @@ def _open_when_healthy(port: int, open_browser: bool) -> None:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             if _instance_alive(port):
-                print(f"\nFinance Copilot is running at {url}")
-                print("Your data stays on this machine. Press Ctrl-C to quit.")
+                print(f"\nFinance Copilot is running at {url}", flush=True)
+                print("Your data stays on this machine. Press Ctrl-C to quit.", flush=True)
                 if open_browser:
                     webbrowser.open(url)
                 return
             time.sleep(0.25)
-        print(f"Server did not become healthy within 30s; check {url} manually.")
+        print(f"Server did not become healthy within 30s; check {url} manually.", flush=True)
 
     threading.Thread(target=poll, daemon=True).start()
 
@@ -89,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="finance-copilot",
         description="Local-first personal finance: parse bank statements, categorize, review.",
     )
-    parser.add_argument("--version", action="version", version=f"finance-copilot {_version()}")
+    parser.add_argument("--version", action="version", version=f"finance-copilot {app_version()}")
     parser.add_argument("--data-dir", help="where the database lives (default: platform app-data dir)")
     parser.add_argument("--port", type=int, help="fixed port (default: an OS-assigned free port)")
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
@@ -111,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = _read_runtime(data_dir)
     if runtime and _instance_alive(runtime.get("port", -1)):
         url = f"http://127.0.0.1:{runtime['port']}"
-        print(f"Finance Copilot is already running at {url}")
+        print(f"Finance Copilot is already running at {url}", flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         return 0
