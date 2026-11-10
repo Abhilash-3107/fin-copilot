@@ -370,9 +370,21 @@ class RunGuard:
         self.llm_error: str | None = None
         self.embed_error: str | None = None
         self.embeddings_off = False
-        self.stages_off: set[str] = set()
+        self.stages_off: dict[str, str] = {}  # stage -> why it went off
         self._streaks: dict[str, _Streak] = {}
         self._embed_failures = 0
+        self._llm_unreachable = False  # tripped on LLMUnavailableError
+        self._calls_skipped = 0  # LLM calls the open breaker stopped
+
+    @property
+    def reported_llm_error(self) -> str | None:
+        """llm_error, if the user needs to hear it: the provider was unusable,
+        or a failure streak switched the LLM off and that cost later rows their
+        call. A streak that trips on the very last rows changed nothing, and
+        an error toast over a mostly-labelled run would only mislead."""
+        if self.llm_error is not None and (self._llm_unreachable or self._calls_skipped):
+            return self.llm_error
+        return None
 
     def embed(self, text: str) -> list[float]:
         """Embedding for text. Raises on failure, and once switched off without calling."""
@@ -397,7 +409,11 @@ class RunGuard:
         self._embed_failures = 0
         return vec
 
-    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, **kwargs):
+    def llm_off_reason(self, stage: str = PLAIN_LLM_STAGE) -> str | None:
+        """Why calls at this stage are switched off for the run, or None."""
+        return self.llm_error or self.stages_off.get(stage)
+
+    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, known_hard: bool = False, **kwargs):
         """fn(*args, **kwargs), or None when it fails or the breaker is open.
 
         stage names the prompt this call belongs to. Streaks are counted per
@@ -405,13 +421,24 @@ class RunGuard:
         fallback counts once in each, and a prompt that only fails at one
         stage (few-shot examples pushing it past a context window) switches
         off only that stage: its rows still fall through to the plain prompt.
+
+        known_hard marks a row that already failed at an earlier stage. The
+        plain stage only sees rows earlier stages couldn't label, so such rows
+        bunch up there even when they were far apart in the run; a bad answer
+        from one doesn't advance the failure streak (it says nothing new about
+        the provider). A timeout still does, so a provider that hangs keeps
+        its bounded cost.
         """
-        if self.llm_error is not None or stage in self.stages_off or settings.llm_provider == "none":
+        if settings.llm_provider == "none":
+            return None
+        if self.llm_off_reason(stage) is not None:
+            self._calls_skipped += 1
             return None
         streak = self._streaks.setdefault(stage, _Streak())
         try:
             result = fn(*args, **kwargs)
         except LLMUnavailableError as e:
+            self._llm_unreachable = True
             self._trip(str(e))
             return None
         except LLMTimeout as e:
@@ -438,6 +465,9 @@ class RunGuard:
                 return result
             streak.timeouts = 0  # an answer, even a bad one, breaks a timeout streak
             reason = "the model's answers aren't valid JSON for the schema"
+        if known_hard and streak.timeouts == 0:
+            logger.warning("llm %s gave no usable answer for a known-hard row | %s", stage, reason)
+            return None
         streak.failures += 1
         logger.warning("llm %s gave no usable answer (%d in a row) | %s", stage, streak.failures, reason)
         if streak.failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
@@ -448,7 +478,7 @@ class RunGuard:
         if stage == PLAIN_LLM_STAGE:  # the last resort: nothing left to fall back to
             self._trip(reason)
         else:
-            self.stages_off.add(stage)
+            self.stages_off[stage] = reason
             logger.warning(
                 "llm %s off for the rest of this run, rows fall through to the plain prompt | %s",
                 stage, reason,
@@ -627,6 +657,14 @@ def auto_annotate(
     )
     if needs_llm:
         logger.info("stage 4 | llm | %d txns", len(needs_llm))
+        # Rows whose few-shot call already failed go last (a stable sort keeps
+        # the rest in order). They are the likeliest to fail again, and served
+        # first they'd bunch into a failure streak ahead of fresh rows that
+        # never got a try; see RunGuard.llm(known_hard=...).
+        def _known_hard(txn: dict) -> bool:
+            return bool(rag_ctx_by_txn.get(txn["id"], {}).get("rag_llm_failed"))
+
+        needs_llm.sort(key=_known_hard)
         # Recurring transactions share normalized descriptions — call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
@@ -639,7 +677,9 @@ def auto_annotate(
             llm_result = llm_cache.get(cache_key)
             if llm_result is None:
                 _release_write_lock()
-                llm_result = guard.llm(annotate_transaction_llm, txn, category_list)
+                llm_result = guard.llm(
+                    annotate_transaction_llm, txn, category_list, known_hard=_known_hard(txn)
+                )
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
             elif llm_result is not None:
@@ -703,7 +743,7 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
         ai_active=settings.llm_provider != "none",
-        llm_error=guard.llm_error,
+        llm_error=guard.reported_llm_error,
         embed_error=guard.embed_error,
     )
 
@@ -1087,6 +1127,10 @@ def _try_rag_annotation(
     if not allow_llm:
         skips.append("rag_prompted: skipped (deterministic re-evaluation)")
         return None, None
+    off = guard.llm_off_reason("rag_prompted") if guard is not None else None
+    if off is not None:
+        skips.append(f"rag_prompted: off for the rest of this run ({off})")
+        return None, None
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     # Examples, the majority hint and the off-example check all come from the
@@ -1223,6 +1267,7 @@ def _try_rag_annotation(
             return ann, trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
         skips.append("rag_prompted: llm returned nothing")
+        ctx["rag_llm_failed"] = True  # the plain-prompt stage serves it last
         return None, None
 
     skips.append("rag_prompted: no annotated examples to prompt with")

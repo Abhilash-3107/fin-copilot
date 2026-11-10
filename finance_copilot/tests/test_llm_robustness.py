@@ -122,6 +122,15 @@ class TestLLMTransportRetries:
              pytest.raises(LLMUnavailableError, match="ConnectTimeout"):
             annotate_transaction_llm(_TXN, _CATS)
 
+    def test_exhausted_rate_limit_fails_the_row_not_the_provider(self):
+        """A 429 heals mid-run (a requests-per-minute quota), so once retries
+        run out it fails this row; the run's guard stops after a streak."""
+        with patch("httpx.post", return_value=_resp(429)) as p, patch("time.sleep"), \
+             pytest.raises(LLMRequestRejected, match="rate-limited") as exc:
+            annotate_transaction_llm(_TXN, _CATS)
+        assert not isinstance(exc.value, LLMUnavailableError)
+        assert p.call_count == 3
+
     def test_persistent_5xx_gives_up_after_max_attempts(self):
         with patch("httpx.post", return_value=_resp(503)) as p, patch("time.sleep"), \
              pytest.raises(LLMUnavailableError, match="HTTP 503"):
@@ -303,6 +312,35 @@ class TestRunGuard:
         assert "timed out on 2 requests in a row" in guard.llm_error
         assert "LLM_TIMEOUT_S" in guard.llm_error  # the env var a user can actually set
 
+    @pytest.mark.parametrize("between", [
+        LLMRequestRejected("HTTP 400"),
+        RuntimeError("odd"),
+    ])
+    def test_any_answer_or_error_between_timeouts_breaks_the_streak(self, between):
+        from finance_copilot.pipeline.annotate import RunGuard
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        guard = RunGuard()
+        slow = LLMTimeout("no answer within the time limit")
+        fn = MagicMock(side_effect=[slow, between, slow, "ok"])
+        assert [guard.llm(fn) for _ in range(4)] == [None, None, None, "ok"]
+        assert guard.llm_error is None
+
+    def test_known_hard_rows_count_timeouts_but_not_bad_answers(self):
+        from finance_copilot.pipeline.annotate import RunGuard
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        guard = RunGuard()
+        bad = MagicMock(return_value=None)
+        for _ in range(10):
+            guard.llm(bad, known_hard=True)
+        assert bad.call_count == 10 and guard.llm_error is None
+
+        slow = MagicMock(side_effect=LLMTimeout("no answer within the time limit"))
+        guard.llm(slow, known_hard=True)
+        guard.llm(slow, known_hard=True)
+        assert "timed out on 2 requests in a row" in guard.llm_error
+
     def test_timeouts_also_count_toward_the_failure_limit(self):
         """Alternating timeouts and bad answers never make 2 timeouts in a row,
         but they're still 5 failed rows in a row."""
@@ -330,7 +368,8 @@ class TestRunGuard:
             assert guard.llm(plain) == "ok"
         assert few_shot.call_count == 5  # off after 5 in a row, for this stage only
         assert plain.call_count == 6
-        assert guard.stages_off == {"rag_prompted"}
+        assert set(guard.stages_off) == {"rag_prompted"}
+        assert "5 requests in a row failed" in guard.llm_off_reason("rag_prompted")
         assert guard.llm_error is None
 
     def test_unavailable_in_any_stage_switches_the_llm_off(self):
@@ -531,36 +570,70 @@ class TestCircuitBreakerInPipeline:
         assert result.llm_failed == 1
         assert result.llm_error is None
 
-    def _rag_then_plain(self, rag_effect, plain_effect):
-        """Run auto_annotate with every row going through rag_prompted (via the
-        guard, as the real stage does) and then, on failure, the plain prompt."""
-        from finance_copilot.pipeline import annotate
+    def _scenario(self, rag: dict[str, str], plain: dict[str, str]):
+        """Run auto_annotate where each row behaves as scripted per stage:
+        "ok", "slow" (LLMTimeout), "bad" (unparseable -> None), "reject" (400),
+        "down" (LLMUnavailableError); rag "novel" means no neighbours, so the
+        row goes straight to the plain prompt. The fake rag stage mirrors the
+        real one's guard handling (off check, failure marking).
 
-        rag_llm = MagicMock(side_effect=rag_effect)
+        Returns (result, rag_calls, plain_calls) with calls as row ids in order.
+        """
+        from finance_copilot.models.annotation import AnnotationCreate
+        from finance_copilot.pipeline import annotate
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+
+        def behave(kind: str):
+            if kind == "ok":
+                return ok
+            if kind == "bad":
+                return None
+            raise {
+                "slow": LLMTimeout("no answer within the time limit"),
+                "reject": LLMRequestRejected("provider rejected this request (HTTP 400)"),
+                "down": LLMUnavailableError("can't reach the provider"),
+            }[kind]
+
+        rag_calls, plain_calls = [], []
+
+        def rag_llm(txn):
+            rag_calls.append(txn["id"])
+            return behave(rag[txn["id"]])
 
         def fake_rag(conn, txn, category_list, ctx=None, *, as_of, guard=None, **_):
-            guard.llm(rag_llm, txn, stage="rag_prompted")
-            return None, None
+            if rag[txn["id"]] == "novel" or guard.llm_off_reason("rag_prompted") is not None:
+                return None, None
+            if guard.llm(rag_llm, txn, stage="rag_prompted") is None:
+                ctx["rag_llm_failed"] = True
+                return None, None
+            return AnnotationCreate(
+                transaction_id=txn["id"], category="Shopping", confidence=0.7, source="rag_prompted"
+            ), None
+
+        def plain_llm(txn, _cats):
+            plain_calls.append(txn["id"])
+            return behave(plain[txn["id"]])
 
         with patch.object(annotate, "_try_rag_annotation", side_effect=fake_rag), \
-             patch.object(annotate, "annotate_transaction_llm", side_effect=plain_effect) as plain:
-            return annotate.auto_annotate(self.conn), rag_llm, plain
+             patch.object(annotate, "annotate_transaction_llm", side_effect=plain_llm):
+            result = annotate.auto_annotate(self.conn)
+        return result, rag_calls, plain_calls
+
+    def _rows(self, n: int) -> list[str]:
+        self._unknown_rows(n)
+        return [f"u{i}" for i in range(n)]
 
     def test_one_slow_row_timing_out_in_both_stages_is_one_failed_row(self):
         """Review probe: a degenerate row times out at rag_prompted and again at
         the plain prompt. That's one bad row, not 'two in a row'."""
-        from finance_copilot.pipeline.llm import LLMTimeout
+        ids = self._rows(4)
+        rag = {i: "bad" for i in ids} | {"u0": "slow"}
+        plain = {i: "ok" for i in ids} | {"u0": "slow"}
+        result, _, plain_calls = self._scenario(rag, plain)
 
-        self._unknown_rows(4)
-        slow = LLMTimeout("no answer within the time limit")
-        ok = AnnotationResponse(category="Shopping", confidence=0.7)
-        # u0 is slow everywhere; u1..u3 have no few-shot answer but a plain one.
-        result, _, plain = self._rag_then_plain(
-            rag_effect=[slow, None, None, None],
-            plain_effect=[slow, ok, ok, ok],
-        )
-
-        assert plain.call_count == 4
+        assert sorted(plain_calls) == ids
         assert result.llm_annotated == 3
         assert result.llm_failed == 1
         assert result.llm_error is None
@@ -569,14 +642,87 @@ class TestCircuitBreakerInPipeline:
         """Review probe: the endpoint rejects the longer few-shot prompt (context
         window) but takes the plain one. rag_prompted goes off; every row is
         still labelled by the plain prompt, and no outage is reported."""
-        self._unknown_rows(6)
-        too_long = LLMRequestRejected("provider rejected this request (HTTP 400: context_length_exceeded)")
-        ok = AnnotationResponse(category="Shopping", confidence=0.7)
-        result, rag_llm, plain = self._rag_then_plain(rag_effect=too_long, plain_effect=lambda *_: ok)
+        ids = self._rows(6)
+        result, rag_calls, plain_calls = self._scenario(
+            rag={i: "reject" for i in ids}, plain={i: "ok" for i in ids}
+        )
 
-        assert rag_llm.call_count == 5
-        assert plain.call_count == 6
+        assert len(rag_calls) == 5
+        assert sorted(plain_calls) == ids
         assert result.llm_annotated == 6
+        assert result.llm_error is None
+
+    def test_scattered_slow_rows_do_not_bunch_into_a_trip(self):
+        """Review probe (round 5): slow rows far apart in the run all land in
+        the plain stage together. Fresh rows are served first, so nothing that
+        main would label is lost, and a trip on the last rows isn't reported."""
+        ids = self._rows(12)
+        # u0..u5 go through rag_prompted (u2, u5 slow everywhere, the rest
+        # healthy); u6..u11 are novel and need the plain prompt.
+        rag = {i: "ok" for i in ids[:6]} | {i: "novel" for i in ids[6:]} | {"u2": "slow", "u5": "slow"}
+        plain = {i: "ok" for i in ids} | {"u2": "slow", "u5": "slow"}
+        result, _, plain_calls = self._scenario(rag, plain)
+
+        # Fresh (novel) rows first, the two known-hard rows last.
+        assert set(plain_calls[:6]) == set(ids[6:])
+        assert set(plain_calls[6:]) == {"u2", "u5"}
+        assert result.llm_annotated + result.rag_prompted_annotated == 10  # what main labels
+        assert result.llm_failed == 2
+        assert result.llm_error is None
+
+    def test_scattered_bad_json_rows_do_not_bunch_into_a_trip(self):
+        ids = self._rows(10)
+        bad = {"u0", "u2", "u4", "u6", "u7"}
+        rag = {i: "ok" for i in ids[:8]} | {"u8": "novel", "u9": "novel"} | {i: "bad" for i in bad}
+        plain = {i: "ok" for i in ids} | {i: "bad" for i in bad}
+        result, _, plain_calls = self._scenario(rag, plain)
+
+        assert set(plain_calls[:2]) == {"u8", "u9"}
+        assert sorted(plain_calls[2:]) == sorted(bad)  # every known-hard row still tried
+        assert result.llm_annotated + result.rag_prompted_annotated == 5
+        assert result.llm_error is None
+
+    def test_hung_provider_is_still_bounded_with_known_hard_rows(self):
+        """Known-hard rows don't count bad answers, but timeouts still count:
+        a provider that hangs costs ~4 calls, not one per row."""
+        ids = self._rows(8)
+        result, rag_calls, plain_calls = self._scenario(
+            rag={i: "slow" for i in ids}, plain={i: "slow" for i in ids}
+        )
+
+        assert len(rag_calls) == 2  # rag_prompted off after 2 timeouts
+        assert len(plain_calls) == 2  # trips after 2 ...
+        assert set(plain_calls).isdisjoint(rag_calls)  # ... spent on fresh rows, not known-hard ones
+        assert result.llm_failed == 8
+        assert "timed out on 2 requests in a row" in result.llm_error  # it cost rows: reported
+
+    def test_provider_dying_on_the_last_row_is_still_reported(self):
+        """Unlike a streak, an unreachable provider is reported even when it
+        cost no later row: the user needs to know it's down."""
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        self._unknown_rows(3)
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm",
+                   side_effect=[ok, ok, LLMUnavailableError("can't reach the provider")]):
+            result = auto_annotate(self.conn)
+
+        assert result.llm_annotated == 2
+        assert result.llm_error == "can't reach the provider"
+
+    def test_streak_trip_on_the_last_rows_is_not_reported(self):
+        """A streak that trips with nothing left to skip changed nothing: no
+        error toast over an otherwise normal run."""
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        self._unknown_rows(5)
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm", return_value=None) as llm:
+            result = auto_annotate(self.conn)
+
+        assert llm.call_count == 5  # tripped on the 5th and last row
+        assert result.llm_failed == 5
         assert result.llm_error is None
 
     def test_hung_provider_trips_after_two_timed_out_rows(self):

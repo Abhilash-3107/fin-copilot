@@ -154,8 +154,14 @@ def _post_chat(
         detail = _error_detail(e.response)
         if status in _REQUEST_REJECTED_STATUS:
             raise LLMRequestRejected(f"provider rejected this request (HTTP {status}{detail})") from e
+        tries = retrying.statistics.get("attempt_number", 1)
+        if status == 429:
+            # Rate limits heal mid-run (a requests-per-minute quota on a BYOM
+            # endpoint): fail this row, and let a streak of them stop the run.
+            raise LLMRequestRejected(
+                f"provider rate-limited this request after {tries} attempt(s) (HTTP 429{detail})"
+            ) from e
         if status in _RETRYABLE_STATUS:
-            tries = retrying.statistics.get("attempt_number", 1)
             raise LLMUnavailableError(
                 f"provider still failing after {tries} attempt(s) (HTTP {status}{detail})"
             ) from e
