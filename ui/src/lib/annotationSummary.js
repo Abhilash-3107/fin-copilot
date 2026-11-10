@@ -30,11 +30,16 @@ export function annotationSummary(result) {
 
   const done = `All done! ${fromRules} matched by rules, ${fromHistory} from history, ${result.llm_annotated ?? 0} by AI`
   // Retrieval or the history-guided prompt dropped out mid-run: still a
-  // success, but the AI worked without your history for part of it, which is
-  // much less accurate, so say so.
-  const degraded = result.embed_error || result.rag_prompted_error
-  if (degraded) {
-    return { type: 'info', message: `${done}. Matching from history was unavailable (${degraded})` }
+  // success, but part of the run got less help from your history (much less
+  // accurate), so say so.
+  if (result.embed_error) {
+    return { type: 'info', message: `${done}. Matching from history was unavailable (${result.embed_error})` }
+  }
+  if (result.rag_prompted_error) {
+    return {
+      type: 'info',
+      message: `${done}. The AI stopped using your past categories as examples (${result.rag_prompted_error})`,
+    }
   }
   return { type: 'success', message: done }
 }

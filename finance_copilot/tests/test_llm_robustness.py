@@ -270,24 +270,37 @@ class TestRunGuard:
         assert fn.call_count == 1
         assert guard.llm_error == "down"
 
-    def test_consecutive_failures_of_any_kind_trip_and_success_resets(self):
-        """Rejections, unparseable answers (None) and unexpected exceptions all
-        count toward the same in-a-row limit; one good answer resets it."""
+    def test_provider_failures_trip_and_any_reply_resets(self):
+        """Rejections, rate limits and unexpected exceptions count toward the
+        in-a-row limit. Any reply resets it, an unusable one included: the
+        provider answered, so it's up (the row itself just fails)."""
         from finance_copilot.pipeline.annotate import _MAX_CONSECUTIVE_LLM_FAILURES, RunGuard
 
         assert _MAX_CONSECUTIVE_LLM_FAILURES == 5
         guard = RunGuard()
         rejected = LLMRequestRejected("HTTP 400")
-        weird = UnicodeEncodeError("ascii", "sk-​", 3, 4, "ordinal not in range")
+        weird = UnicodeEncodeError("ascii", "sk-\u200b", 3, 4, "ordinal not in range")
         fn = MagicMock(side_effect=[
-            rejected, None, weird, None, "ok",              # 4 failures, then reset
-            rejected, None, weird, None, rejected,          # 5 in a row: trips
+            rejected, weird, rejected, weird, None,            # 4 failures, then a reply resets
+            rejected, weird, rejected, weird, rejected,        # 5 in a row: trips
             "unreached",
         ])
         results = [guard.llm(fn) for _ in range(11)]
-        assert results == [None] * 4 + ["ok"] + [None] * 6
+        assert results == [None] * 11
         assert fn.call_count == 10
         assert guard.llm_error.startswith("5 requests in a row failed; last: HTTP 400")
+
+    def test_bad_answers_never_trip(self):
+        """An unusable answer is about the row; main had no breaker for it,
+        and the per-call budget already caps what it costs."""
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        guard = RunGuard()
+        fn = MagicMock(return_value=None)
+        for _ in range(50):
+            assert guard.llm(fn) is None
+        assert fn.call_count == 50
+        assert guard.llm_error is None
 
     def test_unexpected_exception_never_escapes(self):
         from finance_copilot.pipeline.annotate import RunGuard
@@ -326,39 +339,16 @@ class TestRunGuard:
         assert [guard.llm(fn) for _ in range(4)] == [None, None, None, "ok"]
         assert guard.llm_error is None
 
-    def test_known_hard_rows_count_rejections(self):
-        from finance_copilot.pipeline.annotate import RunGuard
-
-        guard = RunGuard()
-        refused = MagicMock(side_effect=LLMRequestRejected("provider rate-limited this request (HTTP 429)"))
-        for _ in range(5):
-            guard.llm(refused, known_hard=True)
-        assert "5 requests in a row failed" in guard.llm_error
-
-    def test_known_hard_rows_count_timeouts_but_not_bad_answers(self):
-        from finance_copilot.pipeline.annotate import RunGuard
-        from finance_copilot.pipeline.llm import LLMTimeout
-
-        guard = RunGuard()
-        bad = MagicMock(return_value=None)
-        for _ in range(10):
-            guard.llm(bad, known_hard=True)
-        assert bad.call_count == 10 and guard.llm_error is None
-
-        slow = MagicMock(side_effect=LLMTimeout("no answer within the time limit"))
-        guard.llm(slow, known_hard=True)
-        guard.llm(slow, known_hard=True)
-        assert "timed out on 2 requests in a row" in guard.llm_error
-
     def test_timeouts_also_count_toward_the_failure_limit(self):
-        """Alternating timeouts and bad answers never make 2 timeouts in a row,
-        but they're still 5 failed rows in a row."""
+        """Alternating timeouts and rejections never make 2 timeouts in a row,
+        but they're still 5 failed calls in a row."""
         from finance_copilot.pipeline.annotate import RunGuard
         from finance_copilot.pipeline.llm import LLMTimeout
 
         guard = RunGuard()
         slow = LLMTimeout("no answer within the time limit")
-        fn = MagicMock(side_effect=[slow, None, slow, None, slow, "unreached"])
+        rejected = LLMRequestRejected("HTTP 400")
+        fn = MagicMock(side_effect=[slow, rejected, slow, rejected, slow, "unreached"])
         assert [guard.llm(fn) for _ in range(6)] == [None] * 6
         assert fn.call_count == 5
         assert guard.llm_error.startswith("5 requests in a row failed")
@@ -378,7 +368,7 @@ class TestRunGuard:
         assert few_shot.call_count == 5  # off after 5 in a row, for this stage only
         assert plain.call_count == 6
         assert set(guard.stages_off) == {"rag_prompted"}
-        assert "5 requests in a row failed" in guard.llm_off_reason("rag_prompted")
+        assert "5 requests in a row failed" in guard.stages_off["rag_prompted"]
         assert guard.llm_error is None
 
     def test_unavailable_in_any_stage_switches_the_llm_off(self):
@@ -507,9 +497,9 @@ class TestCircuitBreakerInPipeline:
         assert result.llm_failed == 7
         assert "5 requests in a row failed" in result.llm_error
 
-    def test_model_that_never_answers_in_json_trips_the_breaker(self):
-        """A chatty BYOM model that ignores the schema returns 200s that never
-        parse: that must not cost every row of a big import."""
+    def test_model_that_never_answers_in_json_fails_rows_without_tripping(self):
+        """A chatty model that ignores the schema still replies: every row is
+        tried (as on main), each failing on its own, and no outage is claimed."""
         from finance_copilot.pipeline.annotate import auto_annotate
 
         self._unknown_rows(8)
@@ -517,9 +507,9 @@ class TestCircuitBreakerInPipeline:
              patch(f"{_ANNOTATE}.annotate_transaction_llm", return_value=None) as llm:
             result = auto_annotate(self.conn)
 
-        assert llm.call_count == 5
+        assert llm.call_count == 8
         assert result.llm_failed == 8
-        assert "aren't valid JSON" in result.llm_error
+        assert result.llm_error is None
 
     def test_unexpected_llm_exception_does_not_fail_the_run(self):
         from finance_copilot.pipeline.annotate import auto_annotate
@@ -612,7 +602,7 @@ class TestCircuitBreakerInPipeline:
             return behave(rag[txn["id"]])
 
         def fake_rag(conn, txn, category_list, ctx=None, *, as_of, guard=None, **_):
-            if rag[txn["id"]] == "novel" or guard.llm_off_reason("rag_prompted") is not None:
+            if rag[txn["id"]] == "novel" or guard.skip_reason("rag_prompted") is not None:
                 return None, None
             if guard.llm(rag_llm, txn, stage="rag_prompted") is None:
                 ctx["rag_llm_failed"] = True
@@ -660,6 +650,16 @@ class TestCircuitBreakerInPipeline:
         assert sorted(plain_calls) == ids
         assert result.llm_annotated == 6
         assert result.llm_error is None
+        # The 6th row lost its few-shot try, so the drop-out is noted for the user.
+        assert "5 requests in a row failed" in result.rag_prompted_error
+
+    def test_few_shot_drop_out_on_the_last_row_is_not_reported(self):
+        ids = self._rows(5)
+        result, rag_calls, _ = self._scenario(
+            rag={i: "reject" for i in ids}, plain={i: "ok" for i in ids}
+        )
+        assert len(rag_calls) == 5  # tripped on the last few-shot row: nothing skipped
+        assert result.rag_prompted_error is None
 
     def test_scattered_slow_rows_do_not_bunch_into_a_trip(self):
         """Review probe (round 5): slow rows far apart in the run all land in
@@ -672,7 +672,7 @@ class TestCircuitBreakerInPipeline:
         plain = {i: "ok" for i in ids} | {"u2": "slow", "u5": "slow"}
         result, _, plain_calls = self._scenario(rag, plain)
 
-        # Fresh (novel) rows first, the two known-hard rows last.
+        # Fresh (novel) rows first, the two that failed few-shot last.
         assert set(plain_calls[:6]) == set(ids[6:])
         assert set(plain_calls[6:]) == {"u2", "u5"}
         assert result.llm_annotated + result.rag_prompted_annotated == 10  # what main labels
@@ -687,13 +687,12 @@ class TestCircuitBreakerInPipeline:
         result, _, plain_calls = self._scenario(rag, plain)
 
         assert set(plain_calls[:2]) == {"u8", "u9"}
-        assert sorted(plain_calls[2:]) == sorted(bad)  # every known-hard row still tried
+        assert sorted(plain_calls[2:]) == sorted(bad)  # every row that failed few-shot still tried
         assert result.llm_annotated + result.rag_prompted_annotated == 5
         assert result.llm_error is None
 
-    def test_hung_provider_is_still_bounded_with_known_hard_rows(self):
-        """Known-hard rows don't count bad answers, but timeouts still count:
-        a provider that hangs costs ~4 calls, not one per row."""
+    def test_hung_provider_is_bounded(self):
+        """A provider that hangs costs ~4 slow calls (2 per stage), not one per row."""
         ids = self._rows(8)
         result, rag_calls, plain_calls = self._scenario(
             rag={i: "slow" for i in ids}, plain={i: "slow" for i in ids}
@@ -701,16 +700,16 @@ class TestCircuitBreakerInPipeline:
 
         assert len(rag_calls) == 2  # rag_prompted off after 2 timeouts
         assert len(plain_calls) == 2  # trips after 2 ...
-        assert set(plain_calls).isdisjoint(rag_calls)  # ... spent on fresh rows, not known-hard ones
+        assert set(plain_calls).isdisjoint(rag_calls)  # ... spent on fresh rows, not ones that failed few-shot
         assert result.llm_failed == 8
         assert "timed out on 2 requests in a row" in result.llm_error  # it cost rows: reported
 
-    def test_known_hard_rows_still_trip_on_rejections_and_rate_limits(self):
-        """Review probe (round 6): only bad answers are exempt for known-hard
-        rows. A quota running out during a tail of them must still trip."""
+    def test_rejection_tail_trips_even_after_few_shot_failures(self):
+        """A quota running out during a tail of rows that failed few-shot
+        still trips (and is reported, since it skipped a row)."""
         ids = self._rows(12)
         # Alternating few-shot outcomes never trip rag_prompted, but leave six
-        # known-hard rows for the plain stage; there, every call is refused.
+        # rows for the plain stage; there, every call is refused.
         rag = {i: ("bad" if n % 2 == 0 else "ok") for n, i in enumerate(ids)}
         plain = {i: "reject" for i in ids}
         result, _, plain_calls = self._scenario(rag, plain)
@@ -719,9 +718,9 @@ class TestCircuitBreakerInPipeline:
         assert result.llm_failed == 6
         assert "5 requests in a row failed" in result.llm_error  # the 6th row was skipped: reported
 
-    def test_a_recurring_hard_description_is_one_hard_row_not_five_failures(self):
-        """Review probe (round 6): identical biller lines fail alike at
-        temperature 0; a run of them must not switch the AI off."""
+    def test_a_recurring_hard_description_does_not_switch_the_ai_off(self):
+        """Identical biller lines fail alike at temperature 0; bad answers never
+        trip, so a run of them costs only those rows."""
         from finance_copilot.pipeline.annotate import auto_annotate
 
         for i in range(5):
@@ -778,7 +777,7 @@ class TestCircuitBreakerInPipeline:
         assert result.llm_annotated == 2
 
     def test_real_rag_stage_skips_quietly_once_rag_prompted_is_off(self):
-        """With the few-shot stage off, a row isn't marked known-hard (it never
+        """With the few-shot stage off, a row isn't marked as failed (it never
         failed), its trace says why, and the skipped call isn't counted as one
         the plain-stage breaker cost."""
         from finance_copilot.db.queries.annotations import insert_annotation
@@ -807,6 +806,7 @@ class TestCircuitBreakerInPipeline:
         assert "rag_llm_failed" not in ctx
         assert ctx["skips"][-1] == "rag_prompted: off for the rest of this run (the model timed out on 2 requests in a row)"
         assert guard.reported_llm_error is None
+        assert guard.reported_stage_error("rag_prompted") == "the model timed out on 2 requests in a row"
 
     def test_provider_dying_on_the_last_row_is_still_reported(self):
         """Unlike a streak, an unreachable provider is reported even when it
@@ -830,7 +830,8 @@ class TestCircuitBreakerInPipeline:
 
         self._unknown_rows(5)
         with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
-             patch(f"{_ANNOTATE}.annotate_transaction_llm", return_value=None) as llm:
+             patch(f"{_ANNOTATE}.annotate_transaction_llm",
+                   side_effect=LLMRequestRejected("provider rejected this request (HTTP 400)")) as llm:
             result = auto_annotate(self.conn)
 
         assert llm.call_count == 5  # tripped on the 5th and last row

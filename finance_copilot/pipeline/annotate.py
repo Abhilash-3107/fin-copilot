@@ -322,13 +322,13 @@ def rule_annotation(
     return result, trace
 
 
-# Rows in a row with no usable LLM answer (rejected, unparseable after the
-# re-asks, or an unexpected error) after which the provider counts as broken
-# rather than unlucky: a misconfigured endpoint fails every request the same way.
+# Provider-level failures in a row (rejected requests, exhausted rate limits,
+# unexpected errors) after which a prompt stage counts as broken rather than
+# unlucky: a misconfigured endpoint fails every request the same way.
 _MAX_CONSECUTIVE_LLM_FAILURES = 5
-# Timed-out rows in a row after which the provider counts as hung (or far too
-# slow for llm_timeout_s). Lower than the above because each one costs the
-# whole per-call budget; one slow row on its own is tolerated.
+# Timed-out rows in a row after which a stage counts as hung (or far too slow
+# for llm_timeout_s). Lower than the above because each one costs the whole
+# per-call budget; one slow row on its own is tolerated.
 _MAX_CONSECUTIVE_LLM_TIMEOUTS = 2
 # Embedding failures in a row (timeouts, 5xx) before retrieval is switched off
 # for the run. A refused connection or a configured-off provider switches it
@@ -351,19 +351,25 @@ class RunGuard:
     Paying the full timeout and retry budget again for every remaining row
     would turn a stopped, hung or misconfigured provider into an hours-long
     run, so each dependency is switched off for the rest of the run once it
-    has shown it can't serve:
+    has shown it can't serve. Only provider-level signals count:
 
     - LLM: off for the run at once on LLMUnavailableError (the client raises
       it only after its own retries). Per prompt stage, after
-      _MAX_CONSECUTIVE_LLM_TIMEOUTS timed-out rows in a row or
-      _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with no usable answer of any
-      kind: that switches off the rag_prompted stage alone (rows fall through
-      to the plain prompt), or the LLM for the run when it's the plain stage.
-      llm_error says why the LLM went off, for the UI.
+      _MAX_CONSECUTIVE_LLM_TIMEOUTS timeouts in a row or
+      _MAX_CONSECUTIVE_LLM_FAILURES provider failures in a row: that switches
+      off the rag_prompted stage alone (rows fall through to the plain
+      prompt), or the LLM for the run when it's the plain stage.
+      A bad answer (the model replied, but not usable JSON) fails only its
+      row and counts as a reply: it says the provider is up, and the per-call
+      budget already caps what it costs. That is the same as before the
+      breaker existed, never slower.
     - Embeddings: at once when the provider is configured off or refuses the
       connection, else after _MAX_CONSECUTIVE_EMBED_FAILURES failures in a row.
-      Rows then skip retrieval and go to the plain LLM. embed_error says why,
-      except when embeddings are simply configured off (the normal no-RAG state).
+      Rows then skip retrieval and go to the plain LLM.
+
+    llm_error / stage_error / embed_error say why, for the UI; a breaker that
+    tripped on the last rows and skipped nothing isn't reported (it changed
+    nothing, and an error over a labelled run would only mislead).
     """
 
     def __init__(self) -> None:
@@ -374,17 +380,20 @@ class RunGuard:
         self._streaks: dict[str, _Streak] = {}
         self._embed_failures = 0
         self._llm_unreachable = False  # tripped on LLMUnavailableError
-        self._calls_skipped = 0  # LLM calls the open breaker stopped
+        self._skipped_after_trip = 0  # calls the LLM-wide breaker stopped
+        self._skipped_by_stage: dict[str, int] = {}  # calls a stage breaker stopped
 
     @property
     def reported_llm_error(self) -> str | None:
-        """llm_error, if the user needs to hear it: the provider was unusable,
-        or a failure streak switched the LLM off and that cost later rows their
-        call. A streak that trips on the very last rows changed nothing, and
-        an error toast over a mostly-labelled run would only mislead."""
-        if self.llm_error is not None and (self._llm_unreachable or self._calls_skipped):
+        """llm_error, if the user needs it: the provider was unreachable, or a
+        streak switched the LLM off and that cost later rows their call."""
+        if self.llm_error is not None and (self._llm_unreachable or self._skipped_after_trip):
             return self.llm_error
         return None
+
+    def reported_stage_error(self, stage: str) -> str | None:
+        """Why a stage went off, if that cost later rows their call there."""
+        return self.stages_off.get(stage) if self._skipped_by_stage.get(stage) else None
 
     def embed(self, text: str) -> list[float]:
         """Embedding for text. Raises on failure, and once switched off without calling."""
@@ -409,11 +418,17 @@ class RunGuard:
         self._embed_failures = 0
         return vec
 
-    def llm_off_reason(self, stage: str = PLAIN_LLM_STAGE) -> str | None:
-        """Why calls at this stage are switched off for the run, or None."""
-        return self.llm_error or self.stages_off.get(stage)
+    def skip_reason(self, stage: str = PLAIN_LLM_STAGE) -> str | None:
+        """Why a call at this stage won't be made (and record the skip), or None."""
+        if self.llm_error is not None:
+            self._skipped_after_trip += 1
+            return self.llm_error
+        if stage in self.stages_off:
+            self._skipped_by_stage[stage] = self._skipped_by_stage.get(stage, 0) + 1
+            return self.stages_off[stage]
+        return None
 
-    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, known_hard: bool = False, **kwargs):
+    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, **kwargs):
         """fn(*args, **kwargs), or None when it fails or the breaker is open.
 
         stage names the prompt this call belongs to. Streaks are counted per
@@ -421,22 +436,10 @@ class RunGuard:
         fallback counts once in each, and a prompt that only fails at one
         stage (few-shot examples pushing it past a context window) switches
         off only that stage: its rows still fall through to the plain prompt.
-
-        known_hard marks a row already known to be hard: it failed at an
-        earlier stage, or a row with the same description just failed. The
-        plain stage only sees rows earlier stages couldn't label, so such rows
-        bunch up there even when they were far apart in the run; a bad answer
-        from one doesn't advance the failure streak (it says nothing new about
-        the provider). Timeouts, rejections and rate limits still do, so a
-        provider that hangs or runs out of quota keeps its bounded cost.
         """
-        if settings.llm_provider == "none":
-            return None
-        if self.llm_off_reason(stage) is not None:
-            self._calls_skipped += 1
+        if settings.llm_provider == "none" or self.skip_reason(stage) is not None:
             return None
         streak = self._streaks.setdefault(stage, _Streak())
-        bad_answer = False
         try:
             result = fn(*args, **kwargs)
         except LLMUnavailableError as e:
@@ -445,6 +448,7 @@ class RunGuard:
             return None
         except LLMTimeout as e:
             streak.timeouts += 1
+            streak.failures += 1
             if streak.timeouts >= _MAX_CONSECUTIVE_LLM_TIMEOUTS:
                 return self._stage_off(
                     stage,
@@ -452,29 +456,23 @@ class RunGuard:
                     "machine is just slow, start the app with LLM_TIMEOUT_S set higher (seconds)",
                 )
             reason = str(e)
-        except LLMRequestRejected as e:
-            streak.timeouts = 0
-            reason = str(e)
         except Exception as e:
-            # Anything else (a bad character in the API key, a non-UTF-8 body)
-            # fails the row, never the job; repeats trip the breaker below.
-            logger.warning("llm call raised unexpectedly", exc_info=True)
+            # A rejected request or rate limit (LLMRequestRejected), or anything
+            # unexpected (a bad character in the API key, a non-UTF-8 body):
+            # fails the row, never the job; a streak of them trips the stage.
+            if not isinstance(e, LLMRequestRejected):
+                logger.warning("llm call raised unexpectedly", exc_info=True)
             streak.timeouts = 0
-            reason = f"{type(e).__name__}: {e}"
+            streak.failures += 1
+            reason = f"{e}" if isinstance(e, LLMRequestRejected) else f"{type(e).__name__}: {e}"
         else:
-            if result is not None:
-                streak.failures = streak.timeouts = 0
-                return result
-            streak.timeouts = 0  # an answer, even a bad one, breaks a timeout streak
-            reason = "the model's answers aren't valid JSON for the schema"
-            bad_answer = True
-        # Only a bad answer is exempt for a known-hard row: rejections and
-        # rate limits are about the provider, and must keep tripping it.
-        if known_hard and bad_answer:
-            logger.warning("llm %s gave no usable answer for a known-hard row | %s", stage, reason)
-            return None
-        streak.failures += 1
-        logger.warning("llm %s gave no usable answer (%d in a row) | %s", stage, streak.failures, reason)
+            # The provider replied. Even an unusable answer says it's up, so it
+            # ends both streaks; the row itself just fails.
+            streak.failures = streak.timeouts = 0
+            if result is None:
+                logger.warning("llm %s gave an unusable answer (this row only)", stage)
+            return result
+        logger.warning("llm %s call failed (%d in a row) | %s", stage, streak.failures, reason)
         if streak.failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
             return self._stage_off(stage, f"{streak.failures} requests in a row failed; last: {reason}")
         return None
@@ -663,17 +661,14 @@ def auto_annotate(
     if needs_llm:
         logger.info("stage 4 | llm | %d txns", len(needs_llm))
         # Rows whose few-shot call already failed go last (a stable sort keeps
-        # the rest in order). They are the likeliest to fail again, and served
-        # first they'd bunch into a failure streak ahead of fresh rows that
-        # never got a try; see RunGuard.llm(known_hard=...).
-        def _known_hard(txn: dict) -> bool:
-            return bool(rag_ctx_by_txn.get(txn["id"], {}).get("rag_llm_failed"))
-
-        needs_llm.sort(key=_known_hard)
+        # the rest in order). This stage only sees rows earlier stages couldn't
+        # label, so slow rows that were far apart in the run would otherwise
+        # sit next to each other here and trip the timeout streak ahead of
+        # fresh rows that never got a try.
+        needs_llm.sort(key=lambda t: bool(rag_ctx_by_txn.get(t["id"], {}).get("rag_llm_failed")))
         # Recurring transactions share normalized descriptions — call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
-        failed_keys: set = set()
         for txn in needs_llm:
             logger.debug("llm | txn=%s  desc=%r  amount=%.2f", txn["id"], txn["raw_description"], txn["amount"])
             cache_key = (
@@ -683,15 +678,9 @@ def auto_annotate(
             llm_result = llm_cache.get(cache_key)
             if llm_result is None:
                 _release_write_lock()
-                # A description that just failed (recurring biller lines at
-                # temperature 0 fail alike) is known-hard too: a run of them
-                # is one hard description, not five signs of a broken provider.
-                hard = _known_hard(txn) or (cache_key[0] and cache_key in failed_keys)
-                llm_result = guard.llm(annotate_transaction_llm, txn, category_list, known_hard=bool(hard))
+                llm_result = guard.llm(annotate_transaction_llm, txn, category_list)
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
-                elif llm_result is None:
-                    failed_keys.add(cache_key)
             elif llm_result is not None:
                 logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
@@ -755,7 +744,7 @@ def auto_annotate(
         ai_active=settings.llm_provider != "none",
         llm_error=guard.reported_llm_error,
         embed_error=guard.embed_error,
-        rag_prompted_error=guard.stages_off.get("rag_prompted"),
+        rag_prompted_error=guard.reported_stage_error("rag_prompted"),
     )
 
 
@@ -1138,7 +1127,7 @@ def _try_rag_annotation(
     if not allow_llm:
         skips.append("rag_prompted: skipped (deterministic re-evaluation)")
         return None, None
-    off = guard.llm_off_reason("rag_prompted") if guard is not None else None
+    off = guard.skip_reason("rag_prompted") if guard is not None else None
     if off is not None:
         skips.append(f"rag_prompted: off for the rest of this run ({off})")
         return None, None
