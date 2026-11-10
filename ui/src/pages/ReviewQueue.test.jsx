@@ -288,3 +288,60 @@ describe('ReviewQueue payee groups', () => {
     })
   })
 })
+
+describe('ReviewQueue custom categories', () => {
+  it('creates a new category from the chips, selects it, and saves the card with it', async () => {
+    const user = userEvent.setup()
+    stubGet([makeCard()])
+    mockApi.post.mockImplementation(path => {
+      if (path === '/categories') return Promise.resolve({ id: 99, name: 'Pet Care', parent_id: null })
+      return Promise.resolve({ reevaluated: [] })
+    })
+    await renderQueue()
+
+    await user.click(screen.getByRole('button', { name: /New category/ }))
+    await user.type(screen.getByLabelText('New category name'), 'Pet Care{Enter}')
+
+    expect(mockApi.post).toHaveBeenCalledWith('/categories', { name: 'Pet Care' })
+    // The new chip appears, is selected, and the card is now dirty.
+    expect(await screen.findByRole('button', { name: 'Pet Care' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Save & Next/ })).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'c' })
+    await screen.findByText("You're all done!")
+    expect(mockApi.patch).toHaveBeenCalledWith(
+      '/annotations/10',
+      expect.objectContaining({ category: 'Pet Care' })
+    )
+  })
+
+  it('creates a subcategory under the selected category', async () => {
+    const user = userEvent.setup()
+    stubGet([makeCard()])
+    mockApi.post.mockImplementation((path, body) => {
+      if (path === '/categories/subcategories') {
+        return Promise.resolve({ id: 100, name: body.name, parent_id: body.parent_id })
+      }
+      return Promise.resolve({ reevaluated: [] })
+    })
+    await renderQueue()
+
+    await user.click(screen.getByRole('button', { name: /New subcategory/ }))
+    await user.type(screen.getByLabelText('New subcategory in Food'), 'Street Food{Enter}')
+
+    expect(mockApi.post).toHaveBeenCalledWith('/categories/subcategories', { parent_id: 1, name: 'Street Food' })
+    expect(await screen.findByRole('button', { name: 'Street Food' })).toBeInTheDocument()
+  })
+
+  it('keeps the field open when the server rejects the name', async () => {
+    const user = userEvent.setup()
+    stubGet([makeCard()])
+    mockApi.post.mockRejectedValue(new Error("'Food' already exists"))
+    await renderQueue()
+
+    await user.click(screen.getByRole('button', { name: /New category/ }))
+    await user.type(screen.getByLabelText('New category name'), 'Food{Enter}')
+
+    expect(await screen.findByLabelText('New category name')).toHaveValue('Food')
+  })
+})
