@@ -7,6 +7,9 @@ import re
 import sqlite3
 from pathlib import Path
 
+import pdfplumber
+from pdfminer.pdfdocument import PDFPasswordIncorrect
+
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
 from finance_copilot.models.transaction import Statement, Transaction
@@ -210,6 +213,33 @@ class DuplicateStatementError(ValueError):
         self.existing = existing
 
 
+class PasswordRequiredError(ValueError):
+    """Raised when the PDF is encrypted and no password, or the wrong one, was given."""
+
+    def __init__(self, password_given: bool):
+        super().__init__(
+            "That password didn't unlock this PDF. Check it and try again."
+            if password_given
+            else "This PDF is password-protected. Enter its password and upload again."
+        )
+        self.password_given = password_given
+
+
+def _check_unlocks(pdf_path: str, password: str | None) -> None:
+    """Fail with a clear message when the PDF is locked, before parser detection.
+
+    Parsers' detect() swallows open errors (a locked PDF just "isn't theirs"),
+    which would otherwise surface as a misleading "no parser found".
+    """
+    try:
+        pdfplumber.open(pdf_path, password=password).close()
+    except Exception as exc:
+        # pdfplumber wraps pdfminer's error as the first arg of PdfminerException.
+        # Any other open failure is left to parser detection to report.
+        if any(isinstance(arg, PDFPasswordIncorrect) for arg in exc.args):
+            raise PasswordRequiredError(password_given=bool(password)) from exc
+
+
 def ingest_pdf(
     pdf_path: str,
     password: str | None = None,
@@ -230,14 +260,19 @@ def ingest_pdf(
         if existing:
             raise DuplicateStatementError(dict(existing))
 
+        _check_unlocks(pdf_path, password)
         parser = detect_parser(pdf_path, password=password)
         if parser is None:
-            raise ValueError(f"No parser found for PDF: {pdf_path}")
+            raise ValueError(
+                "I couldn't find a transaction table I can read in this PDF. "
+                "Kotak statements are supported, and other banks work when the "
+                "statement has a running-balance column."
+            )
 
         parsed = parser.parse(pdf_path, password=password)
         transactions, opening_balance, closing_balance = _split_balance_artifacts(parsed)
         if not transactions:
-            raise ValueError(f"Parser returned no transactions for: {pdf_path}")
+            raise ValueError("I found no transactions in this statement.")
 
         period_start = min(t.txn_date for t in transactions)
         period_end = max(t.txn_date for t in transactions)

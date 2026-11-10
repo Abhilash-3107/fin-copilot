@@ -21,6 +21,7 @@ import pdfplumber
 
 from finance_copilot.config import settings
 from finance_copilot.models.transaction import Transaction
+from finance_copilot.parsers.bank_identity import identify_bank
 from finance_copilot.parsers.base import StatementParser
 from finance_copilot.parsers.upi import parse_upi_description
 
@@ -50,13 +51,6 @@ _DATE_FORMATS = [
 _AMOUNT_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _DRCR_RE = re.compile(r"\b(cr|dr|credit|debit)\b\.?", re.IGNORECASE)
 _CURRENCY_RE = re.compile(r"(?:₹|inr|rs\.?)", re.IGNORECASE)
-
-# For labeling the statement when a known bank's name appears on page 1.
-_BANK_NAMES = [
-    "hdfc", "icici", "sbi", "state bank", "axis", "kotak", "yes bank",
-    "idfc", "indusind", "punjab national", "canara", "union bank",
-    "bank of baroda", "federal", "rbl", "au small finance",
-]
 
 _VERIFY_TOLERANCE = 0.011  # rupee rounding slack on balance arithmetic
 _MIN_VERIFIED_FRACTION = 0.8
@@ -394,8 +388,5 @@ class GenericStatementParser(StatementParser):
         return result
 
     def _detect_bank_name(self, page_text: str) -> str:
-        haystack = page_text.lower()
-        for name in _BANK_NAMES:
-            if name in haystack:
-                return f"{name} (auto)"
-        return "generic"
+        bank = identify_bank(page_text)
+        return f"{bank} (auto)" if bank else "generic"
