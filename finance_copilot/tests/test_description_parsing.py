@@ -89,6 +89,16 @@ class TestGrammarFixtures:
         assert p.ref == "123456789012"
         assert not is_known_shape(p)
 
+    @pytest.mark.parametrize("raw", [
+        "UPI/SHOP/shop@okicici/HDFC/123456789012/UPI",   # a VPA is a field, not a name
+        "UPI/SHOP/HDFC/YESB/123456789012/UPI",           # two bank codes
+        "UPI/SHOP/AB12/HDFC/123456789012/UPI",           # an id-like token
+    ])
+    def test_structural_qualifiers_are_not_absorbed_into_the_payee(self, raw):
+        p = parse_description(raw, NOISE)
+        assert p.shape == "upi/name/?/ref/note"
+        assert p.counterparty == "SHOP"
+
     def test_no_ref_is_unrecognized_but_keeps_payee(self):
         p = parse_description("UPI/NETFLIX/AUTOPAY", NOISE)
         assert p.shape == "unrecognized"

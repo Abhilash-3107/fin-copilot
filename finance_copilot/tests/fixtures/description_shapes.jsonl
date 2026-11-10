@@ -16,3 +16,6 @@
 {"raw": "NEFT HDFCH00714141560 INDSTOCKS PVT LTD DSCNB A C", "rail": "other", "shape": "other", "counterparty": null, "bank_code": null, "ref": null, "note": null, "value_date": null}
 {"raw": "PCD/1280/DISTRICT DINING/9958050291180226/13:36", "rail": "other", "shape": "other", "counterparty": null, "bank_code": null, "ref": null, "note": null, "value_date": null}
 {"raw": "NACH-MUT-DR-INDIAN CLEARING CORP-P52617097X151772", "rail": "other", "shape": "other", "counterparty": null, "bank_code": null, "ref": null, "note": null, "value_date": null}
+{"raw": "UPI/BREVISTAY HOSP/utib/100000000101/UPI", "rail": "upi", "shape": "upi/name/bank/ref/note", "counterparty": "BREVISTAY HOSP", "bank_code": "UTIB", "ref": "100000000101", "note": null, "value_date": null}
+{"raw": "UPI/M/S.HARRISONS /ICIC/100000000102/UPI", "rail": "upi", "shape": "upi/name/bank/ref/note", "counterparty": "M/S.HARRISONS", "bank_code": "ICIC", "ref": "100000000102", "note": null, "value_date": null}
+{"raw": "UPI/M/S.HARRISONS /100000000103/UPI", "rail": "upi", "shape": "upi/name/ref/note", "counterparty": "M/S.HARRISONS", "bank_code": null, "ref": "100000000103", "note": null, "value_date": null}

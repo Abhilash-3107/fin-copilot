@@ -12,7 +12,10 @@ Parsing is by token class, not position:
   - the counterparty is always the first token after the rail head,
   - the reference is the first later run of 6+ digits,
   - tokens between counterparty and reference are qualifiers; a 4-letter
-    uppercase token there is the IFSC bank prefix,
+    token right before the reference is the IFSC bank prefix (Kotak sometimes
+    prints it lowercase: "utib"),
+  - any other qualifiers are the rest of a payee name that contains '/'
+    ("UPI/M/S.HARRISONS /ICIC/<ref>", i.e. "Messrs Harrisons"),
   - everything after the reference is the note (re-joined: notes may hold '/').
 
 Non-UPI rails (NEFT/IMPS/POS/ATM/...) are returned as rail "other" with no
@@ -29,15 +32,18 @@ from dataclasses import dataclass
 # app_settings; a mismatch on startup re-derives upi_meta and counterparty_key
 # for every stored transaction (pipeline/derived.py). A migration that repairs
 # raw descriptions deletes the stored value instead of bumping this.
-DESCRIPTION_PARSER_VERSION = 2
+DESCRIPTION_PARSER_VERSION = 3
 
 SHAPE_UNRECOGNIZED = "unrecognized"
 
 _RAIL_HEADS = {"UPI": "upi", "REV-UPI": "upi_reversal"}
 
 _REF_RE = re.compile(r"^\d{6,}$")
-# IFSC bank prefix, e.g. YESB, HDFC, AIRP, SBIN.
-_BANK_RE = re.compile(r"^[A-Z]{4}$")
+# IFSC bank prefix, e.g. YESB, HDFC, AIRP, SBIN, and lowercase "utib" as Kotak
+# sometimes prints it. Only trusted in the slot right before the reference.
+_BANK_RE = re.compile(r"^[A-Za-z]{4}$")
+# An uppercase bank-like token anywhere else means the layout is ambiguous.
+_STRICT_BANK_RE = re.compile(r"^[A-Z]{4}$")
 # name@provider with a real provider handle (2+ letters): rejects order ids like
 # 'Oid3192692657@A' that merely contain an '@'.
 _VPA_RE = re.compile(r"^[\w.\-]{2,}@[A-Za-z]{2,}\w*$")
@@ -106,20 +112,35 @@ def parse_description(raw: str | None, noise_keywords: Iterable[str] = ()) -> Pa
 
     bank_code = None
     head = "upi" if rail == "upi" else "rev-upi"
-    if not qualifiers:
-        shape = f"{head}/name/ref/note"
-    elif len(qualifiers) == 1 and _BANK_RE.match(qualifiers[0]):
-        bank_code = qualifiers[0]
-        shape = f"{head}/name/bank/ref/note"
-    else:
+    if qualifiers and _BANK_RE.match(qualifiers[-1]):
+        bank_code = qualifiers[-1].upper()
+        qualifiers = qualifiers[:-1]
+    if qualifiers and not _is_payee_continuation(qualifiers):
         # Parsed (payee, ref, note are all still found) but a layout we haven't
         # seen: flagged so ingest can report it.
+        bank_code = None
         shape = f"{head}/name/?/ref/note"
+    else:
+        if qualifiers:
+            counterparty = _collapse("/".join([tokens[1], *qualifiers]))
+        shape = f"{head}/name/bank/ref/note" if bank_code else f"{head}/name/ref/note"
 
     return ParsedDescription(
         rail=rail, shape=shape, counterparty=counterparty, bank_code=bank_code, ref=ref,
         vpa=vpa, note_raw=note_raw, note=_clean_note(note_raw, noise_keywords, vpa, ref),
         value_date=value_date,
+    )
+
+
+def _is_payee_continuation(tokens: list[str]) -> bool:
+    """Whether the tokens read as the rest of a payee name that contained '/'.
+
+    Rejects anything that looks like a structural field (a VPA, a bank code, a
+    number), so a genuinely new layout is still reported rather than absorbed.
+    """
+    return all(
+        not _VPA_RE.match(t) and not _STRICT_BANK_RE.match(t) and not any(c.isdigit() for c in t)
+        for t in tokens
     )
 
 
