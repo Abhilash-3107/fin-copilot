@@ -32,6 +32,12 @@ describe('annotationSummary', () => {
     )
   })
 
+  it('notes when the history-guided prompt was switched off mid-run', () => {
+    const s = annotationSummary({ ...base, rag_prompted_error: 'the model timed out on 2 requests in a row' })
+    expect(s.type).toBe('info')
+    expect(s.message).toContain('Matching from history was unavailable (the model timed out on 2 requests in a row)')
+  })
+
   it('treats no-AI as the normal state, not an error', () => {
     const s = annotationSummary({ ...base, ai_active: false, llm_failed: 5 })
     expect(s.type).toBe('success')

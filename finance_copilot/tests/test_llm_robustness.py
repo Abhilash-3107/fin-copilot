@@ -326,6 +326,15 @@ class TestRunGuard:
         assert [guard.llm(fn) for _ in range(4)] == [None, None, None, "ok"]
         assert guard.llm_error is None
 
+    def test_known_hard_rows_count_rejections(self):
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        guard = RunGuard()
+        refused = MagicMock(side_effect=LLMRequestRejected("provider rate-limited this request (HTTP 429)"))
+        for _ in range(5):
+            guard.llm(refused, known_hard=True)
+        assert "5 requests in a row failed" in guard.llm_error
+
     def test_known_hard_rows_count_timeouts_but_not_bad_answers(self):
         from finance_copilot.pipeline.annotate import RunGuard
         from finance_copilot.pipeline.llm import LLMTimeout
@@ -695,6 +704,109 @@ class TestCircuitBreakerInPipeline:
         assert set(plain_calls).isdisjoint(rag_calls)  # ... spent on fresh rows, not known-hard ones
         assert result.llm_failed == 8
         assert "timed out on 2 requests in a row" in result.llm_error  # it cost rows: reported
+
+    def test_known_hard_rows_still_trip_on_rejections_and_rate_limits(self):
+        """Review probe (round 6): only bad answers are exempt for known-hard
+        rows. A quota running out during a tail of them must still trip."""
+        ids = self._rows(12)
+        # Alternating few-shot outcomes never trip rag_prompted, but leave six
+        # known-hard rows for the plain stage; there, every call is refused.
+        rag = {i: ("bad" if n % 2 == 0 else "ok") for n, i in enumerate(ids)}
+        plain = {i: "reject" for i in ids}
+        result, _, plain_calls = self._scenario(rag, plain)
+
+        assert len(plain_calls) == 5
+        assert result.llm_failed == 6
+        assert "5 requests in a row failed" in result.llm_error  # the 6th row was skipped: reported
+
+    def test_a_recurring_hard_description_is_one_hard_row_not_five_failures(self):
+        """Review probe (round 6): identical biller lines fail alike at
+        temperature 0; a run of them must not switch the AI off."""
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        for i in range(5):
+            _insert_txn(self.conn, f"w{i}", "ZQXW WEIRD BILLER 0042")
+        for i in range(10):
+            _insert_txn(self.conn, f"h{i}", f"zqx healthy vendor {i}")
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+
+        def llm(txn, _cats):
+            return None if txn["raw_description"].startswith("ZQXW") else ok
+
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm", side_effect=llm):
+            result = auto_annotate(self.conn)
+
+        assert result.llm_annotated == 10
+        assert result.llm_failed == 5
+        assert result.llm_error is None
+
+    def test_real_rag_stage_marks_a_failed_few_shot_row_for_last(self):
+        """End to end through the real _try_rag_annotation: a row whose
+        few-shot call fails is flagged and served after fresh rows."""
+        from finance_copilot.db.queries.annotations import insert_annotation
+        from finance_copilot.models.annotation import Annotation
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        _insert_txn(self.conn, "d1", "zqx donor shop")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="d1", merchant=None, category="Shopping", subcategory=None,
+            tags="[]", confidence=1.0, source="manual",
+        ))
+        _insert_txn(self.conn, "hard", "zqx neighbour shop")
+        _insert_txn(self.conn, "fresh", "zqx novel thing")
+        self.conn.commit()
+
+        def similar(conn, vec, top_k=5, exclude_transaction_ids=None, before_txn_date=None):
+            # Similarity 0.8: above the novelty floor, below rag_direct.
+            return [{"transaction_id": "d1", "distance": 0.2}] if "hard" in exclude_transaction_ids else []
+
+        order = []
+
+        def plain(txn, _cats):
+            order.append(txn["id"])
+            return AnnotationResponse(category="Shopping", confidence=0.7)
+
+        with patch(f"{_ANNOTATE}.get_embedding_single", return_value=[0.1, 0.2]), \
+             patch(f"{_ANNOTATE}.find_similar", side_effect=similar), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm_with_examples", return_value=None) as few_shot, \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm", side_effect=plain):
+            result = auto_annotate(self.conn)
+
+        assert few_shot.call_count == 1  # only "hard" had examples
+        assert order == ["fresh", "hard"]
+        assert result.llm_annotated == 2
+
+    def test_real_rag_stage_skips_quietly_once_rag_prompted_is_off(self):
+        """With the few-shot stage off, a row isn't marked known-hard (it never
+        failed), its trace says why, and the skipped call isn't counted as one
+        the plain-stage breaker cost."""
+        from finance_copilot.db.queries.annotations import insert_annotation
+        from finance_copilot.models.annotation import Annotation
+        from finance_copilot.pipeline.annotate import RunGuard, _try_rag_annotation
+
+        _insert_txn(self.conn, "d1", "zqx donor shop")
+        insert_annotation(self.conn, Annotation(
+            transaction_id="d1", merchant=None, category="Shopping", subcategory=None,
+            tags="[]", confidence=1.0, source="manual",
+        ))
+        txn = _insert_txn(self.conn, "hard", "zqx neighbour shop")
+        self.conn.commit()
+        guard = RunGuard()
+        guard.stages_off["rag_prompted"] = "the model timed out on 2 requests in a row"
+        ctx = {"skips": [], "embed_text": None}
+
+        with patch(f"{_ANNOTATE}.get_embedding_single", return_value=[0.1, 0.2]), \
+             patch(f"{_ANNOTATE}.find_similar", return_value=[{"transaction_id": "d1", "distance": 0.2}]), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm_with_examples") as few_shot:
+            assert _try_rag_annotation(
+                self.conn, dict(txn), ["Shopping"], ctx=ctx, as_of="2026-01-15", guard=guard
+            ) == (None, None)
+
+        few_shot.assert_not_called()
+        assert "rag_llm_failed" not in ctx
+        assert ctx["skips"][-1] == "rag_prompted: off for the rest of this run (the model timed out on 2 requests in a row)"
+        assert guard.reported_llm_error is None
 
     def test_provider_dying_on_the_last_row_is_still_reported(self):
         """Unlike a streak, an unreachable provider is reported even when it

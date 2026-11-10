@@ -145,3 +145,7 @@ class AutoAnnotateResult(BaseModel):
     # off for the rest of it (rows went straight to the plain LLM, which is less
     # accurate). Not set when embeddings are simply configured off.
     embed_error: str | None = None
+    # Set when the few-shot (rag_prompted) prompt kept failing and was switched
+    # off for the rest of the run: its rows fell back to the plain prompt,
+    # which is much less accurate. The UI notes it like embed_error.
+    rag_prompted_error: str | None = None

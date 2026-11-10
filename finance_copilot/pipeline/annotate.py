@@ -422,12 +422,13 @@ class RunGuard:
         stage (few-shot examples pushing it past a context window) switches
         off only that stage: its rows still fall through to the plain prompt.
 
-        known_hard marks a row that already failed at an earlier stage. The
+        known_hard marks a row already known to be hard: it failed at an
+        earlier stage, or a row with the same description just failed. The
         plain stage only sees rows earlier stages couldn't label, so such rows
         bunch up there even when they were far apart in the run; a bad answer
         from one doesn't advance the failure streak (it says nothing new about
-        the provider). A timeout still does, so a provider that hangs keeps
-        its bounded cost.
+        the provider). Timeouts, rejections and rate limits still do, so a
+        provider that hangs or runs out of quota keeps its bounded cost.
         """
         if settings.llm_provider == "none":
             return None
@@ -435,6 +436,7 @@ class RunGuard:
             self._calls_skipped += 1
             return None
         streak = self._streaks.setdefault(stage, _Streak())
+        bad_answer = False
         try:
             result = fn(*args, **kwargs)
         except LLMUnavailableError as e:
@@ -465,7 +467,10 @@ class RunGuard:
                 return result
             streak.timeouts = 0  # an answer, even a bad one, breaks a timeout streak
             reason = "the model's answers aren't valid JSON for the schema"
-        if known_hard and streak.timeouts == 0:
+            bad_answer = True
+        # Only a bad answer is exempt for a known-hard row: rejections and
+        # rate limits are about the provider, and must keep tripping it.
+        if known_hard and bad_answer:
             logger.warning("llm %s gave no usable answer for a known-hard row | %s", stage, reason)
             return None
         streak.failures += 1
@@ -668,6 +673,7 @@ def auto_annotate(
         # Recurring transactions share normalized descriptions — call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
+        failed_keys: set = set()
         for txn in needs_llm:
             logger.debug("llm | txn=%s  desc=%r  amount=%.2f", txn["id"], txn["raw_description"], txn["amount"])
             cache_key = (
@@ -677,11 +683,15 @@ def auto_annotate(
             llm_result = llm_cache.get(cache_key)
             if llm_result is None:
                 _release_write_lock()
-                llm_result = guard.llm(
-                    annotate_transaction_llm, txn, category_list, known_hard=_known_hard(txn)
-                )
+                # A description that just failed (recurring biller lines at
+                # temperature 0 fail alike) is known-hard too: a run of them
+                # is one hard description, not five signs of a broken provider.
+                hard = _known_hard(txn) or (cache_key[0] and cache_key in failed_keys)
+                llm_result = guard.llm(annotate_transaction_llm, txn, category_list, known_hard=bool(hard))
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
+                elif llm_result is None:
+                    failed_keys.add(cache_key)
             elif llm_result is not None:
                 logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
@@ -745,6 +755,7 @@ def auto_annotate(
         ai_active=settings.llm_provider != "none",
         llm_error=guard.reported_llm_error,
         embed_error=guard.embed_error,
+        rag_prompted_error=guard.stages_off.get("rag_prompted"),
     )
 
 
