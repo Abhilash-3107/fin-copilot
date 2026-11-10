@@ -127,7 +127,7 @@ class TestRowToTransaction:
 
 class TestKotakParserAttributes:
     def test_version(self):
-        assert KotakParser.version == "1.0.0"
+        assert KotakParser.version == "1.1.0"
 
     def test_bank_name(self):
         assert KotakParser.bank_name == "kotak"
@@ -237,3 +237,83 @@ class TestSmokeFixture:
         txns = parser.parse(pdf)
         assert len(txns) == 8
         assert txns[-1].running_balance == 101755.25
+
+
+# ---------------------------------------------------------------------------
+# Kotak's mid-2026 layout: "#" column, "01 Jul 2026" dates, and no "Kotak"
+# text on page one (the name is only in the logo image). Rows mirror the real
+# pdfplumber output, with synthetic names and numbers.
+# ---------------------------------------------------------------------------
+
+_CURRENT_LAYOUT_PAGE_TEXT = """Account Statement
+01 Jul 2026 - 31 Jul 2026
+Test User Account No. 1234567890
+MICR 400485012 IFSC Code KKBK0000123
+Savings Account Transactions
+# Date Description Chq/Ref. No. Withdrawal (Dr.) Deposit (Cr.) Balance
+7 01 Jul 2026 UPI/TEST USER/HDFC/100000000007/self UPI-200000000007 2,000.00 8,000.00
+"""
+
+_CURRENT_LAYOUT_TABLE = [
+    ["Savings Account Transactions", None, None, None, None, None, None],
+    ["#", "Date", "Description", "Chq/Ref. No.", "Withdrawal (Dr.)", "Deposit (Cr.)", "Balance"],
+    ["-", "-", "Opening Balance", "-", "-", "-", "10,000.00"],
+    ["1", "01 Jul 2026", "UPI/Urban Company/YESB/100000000001/UPI", "UPI-200000000001", "500.00", "", "9,500.00"],
+    ["2", "01 Jul 2026", "UPI/TEST USER/HDFC/100000000002/self", "UPI-200000000002", "1,500.00", "", "8,000.00"],
+    ["3", "02 Jul 2026", "NACH-MUT-DR-INDIAN CLEARING CORP-\nP52617097X151772", "NACHDR020626001898\n67", "1,000.00", "", "7,000.00"],
+    ["4", "03 Jul 2026", "UPI/EMPLOYER/ICIC/100000000004/Salary", "UPI-200000000004", "", "50,000.00", "57,000.00"],
+]
+
+
+class TestKotakCurrentLayout:
+    def test_identified_by_ifsc_not_by_counterparty_bank_names(self):
+        from finance_copilot.parsers.bank_identity import identify_bank
+
+        assert identify_bank(_CURRENT_LAYOUT_PAGE_TEXT) == "kotak"
+
+    def test_parses_and_balance_checks_rows(self):
+        txns = KotakParser()._parse_current([_CURRENT_LAYOUT_TABLE])
+
+        assert [(t.txn_date, t.amount, t.debit_credit, t.running_balance) for t in txns] == [
+            (date(2026, 7, 1), 500.0, "debit", 9500.0),
+            (date(2026, 7, 1), 1500.0, "debit", 8000.0),
+            (date(2026, 7, 2), 1000.0, "debit", 7000.0),
+            (date(2026, 7, 3), 50000.0, "credit", 57000.0),
+        ]
+        assert txns[2].raw_description == "NACH-MUT-DR-INDIAN CLEARING CORP- P52617097X151772"
+        assert txns[0].upi_meta is not None
+
+    def test_legacy_reader_ignores_current_layout(self):
+        assert KotakParser()._parse_legacy([_CURRENT_LAYOUT_TABLE]) == []
+
+    def test_unverifiable_layout_fails_loudly(self):
+        broken = [row[:] for row in _CURRENT_LAYOUT_TABLE]
+        for row in broken[3:]:
+            row[6] = "1.00"  # balances that never reconcile
+        with pytest.raises(ValueError, match="layout"):
+            KotakParser()._parse_current([broken])
+
+
+class TestBankIdentity:
+    def setup_method(self):
+        from finance_copilot.parsers.bank_identity import identify_bank
+
+        self.identify = identify_bank
+
+    def test_ifsc_beats_names_in_transactions(self):
+        text = "HDFC BANK\nIFSC: KKBK0001234\nDate Description Amount\nUPI/X/HDFC/1/UPI"
+        assert self.identify(text) == "kotak"
+
+    def test_name_in_header_used_without_ifsc(self):
+        assert self.identify("ICICI Bank Statement\nDate Particulars Amount\n") == "icici"
+
+    def test_names_below_table_heading_are_ignored(self):
+        text = "Account Statement\nDate Narration Withdrawal\nUPI/A/HDFC/1/UPI\nNEFT KOTAK MAHINDRA"
+        assert self.identify(text) is None
+
+    def test_counterparty_code_without_ifsc_label_is_ignored(self):
+        assert self.identify("Statement\nDate Description\nUPI/A/KKBK0001234/UPI") is None
+
+    def test_sbi_needs_a_word_boundary(self):
+        assert self.identify("SBINTERNATIONAL LTD\nDate Description") is None
+        assert self.identify("SBI\nDate Description") == "sbi"

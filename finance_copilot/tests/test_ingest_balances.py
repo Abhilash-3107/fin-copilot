@@ -329,3 +329,36 @@ class TestUploadRouteWarnings:
         finally:
             app.dependency_overrides.pop(api_get_db, None)
             conn.close()
+
+
+class TestLockedPdf:
+    def _ingest_locked(self, password):
+        from pdfminer.pdfdocument import PDFPasswordIncorrect
+        from pdfplumber.utils.exceptions import PdfminerException
+
+        from finance_copilot.pipeline.ingest import PasswordRequiredError
+
+        conn = _make_conn()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF locked " + (password or "none").encode())
+            path = tmp.name
+        try:
+            with patch(
+                "finance_copilot.pipeline.ingest.pdfplumber.open",
+                side_effect=PdfminerException(PDFPasswordIncorrect()),
+            ), pytest.raises(PasswordRequiredError) as exc_info:
+                ingest_pdf(path, password=password, conn=conn)
+        finally:
+            Path(path).unlink()
+            conn.close()
+        return exc_info.value
+
+    def test_missing_password_asks_for_one(self):
+        err = self._ingest_locked(None)
+        assert "password-protected" in str(err)
+        assert not err.password_given
+
+    def test_wrong_password_says_so(self):
+        err = self._ingest_locked("nope")
+        assert "didn't unlock" in str(err)
+        assert err.password_given

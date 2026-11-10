@@ -17,7 +17,7 @@ function BalancedBadge({ check }) {
     <Tooltip content={ok
       ? 'Every running-balance step reconciles with its amount - the parse is internally consistent.'
       : "Some rows don't reconcile against the running balance; this statement may have been parsed imperfectly."}>
-      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${
+      <span className={`inline-flex items-center gap-1 whitespace-nowrap text-xs px-2 py-0.5 rounded-full font-medium ${
         ok ? 'bg-[#14532d] text-[#86efac]' : 'bg-[#451a03] text-[#fdba74]'
       }`}>
         {ok ? <Check size={12} /> : <AlertTriangle size={12} />}
@@ -39,7 +39,7 @@ function CoverageBadge({ done, total }) {
       : 'bg-[#451a03] text-[#fdba74]'
   const label = full ? 'Full' : none ? 'None' : 'Partial'
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
+    <span className={`whitespace-nowrap text-xs px-2 py-0.5 rounded-full font-medium ${cls}`}>
       {label} · {done}/{total}
     </span>
   )
@@ -84,6 +84,9 @@ export default function Upload() {
   function onFileChange(e) {
     const f = e.target.files[0]
     if (f) setFile(f)
+    // Clear the input so picking the same file again (after an upload, a
+    // delete or Cancel) still fires a change event.
+    e.target.value = ''
   }
 
   async function handleUpload() {
@@ -213,7 +216,7 @@ export default function Upload() {
   }
 
   return (
-    <div className="px-6 py-5 space-y-6 max-w-4xl">
+    <div className="px-6 py-5 space-y-6 max-w-5xl">
       <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
 
       {/* Drop zone */}
@@ -300,7 +303,7 @@ export default function Upload() {
       )}
 
       {/* Statement history */}
-      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-x-auto">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
           Your Statements
         </p>
@@ -351,7 +354,7 @@ export default function Upload() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-[#94a3b8]">{formatMonth(s.statement_month)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{formatMonth(s.statement_month)}</td>
                   <td className="px-4 py-3">
                     <BalancedBadge check={s.balance_check} />
                   </td>
@@ -378,7 +381,7 @@ export default function Upload() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <Tooltip content="Use AI to automatically categorize transactions in this statement">
