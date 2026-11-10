@@ -1,4 +1,18 @@
-"""Kotak bank statement PDF parser."""
+"""Kotak bank statement PDF parser.
+
+Kotak has shipped two statement layouts:
+
+- Legacy (through early 2026): six columns, dates like "01 Feb, 2026", and
+  "Kotak" in the page-one text.
+- Current (from mid 2026): a numbered "#" column, dates like "01 Jul 2026",
+  separate Withdrawal (Dr.) / Deposit (Cr.) columns, and the bank's name only
+  in the logo image, so the IFSC code is what identifies it.
+
+The legacy layout keeps its fixed-column reader. Anything else goes through
+the generic header-driven reader, which only accepts the rows when the running
+balance reconciles, so a future layout change fails loudly instead of
+ingesting wrong amounts.
+"""
 from __future__ import annotations
 
 import re
@@ -9,7 +23,9 @@ import pdfplumber
 
 from finance_copilot.config import settings
 from finance_copilot.models.transaction import Transaction
+from finance_copilot.parsers.bank_identity import identify_bank
 from finance_copilot.parsers.base import StatementParser
+from finance_copilot.parsers.generic import extract_transactions
 from finance_copilot.parsers.upi import parse_upi_description
 
 DATE_PATTERN = re.compile(r"^\d{1,2}\s+\w{3},\s+\d{4}$")
@@ -29,35 +45,58 @@ COL_BALANCE = 5
 
 
 class KotakParser(StatementParser):
-    version: str = "1.0.0"
+    version: str = "1.1.0"
     bank_name: str = "kotak"
 
     def detect(self, pdf_path: str, password: str | None = None) -> bool:
         try:
             with pdfplumber.open(pdf_path, password=password) as pdf:
                 text = pdf.pages[0].extract_text() or ""
-                return "KOTAK" in text.upper()
         except Exception:
             return False
+        return identify_bank(text) == "kotak"
 
     def parse(self, pdf_path: str, password: str | None = None) -> list[Transaction]:
-        transactions: list[Transaction] = []
         with pdfplumber.open(pdf_path, password=password) as pdf:
-            for page in pdf.pages:
-                table = page.extract_table()
-                if not table:
+            pages = [
+                (page.extract_table(), [t for t in page.extract_tables() if t])
+                for page in pdf.pages
+            ]
+
+        transactions = self._parse_legacy([main for main, _ in pages if main])
+        if transactions:
+            return transactions
+        return self._parse_current([t for _, tables in pages for t in tables])
+
+    def _parse_legacy(self, tables: list[list[list[str | None]]]) -> list[Transaction]:
+        transactions: list[Transaction] = []
+        for table in tables:
+            for row in table:
+                if row is None:
                     continue
-                for row in table:
-                    if row is None:
-                        continue
-                    row = [cell or "" for cell in row]
-                    if not self._is_transaction_row(row):
-                        continue
-                    try:
-                        transactions.append(self._row_to_transaction(row))
-                    except Exception as exc:
-                        warnings.warn(f"KotakParser: skipping row {row!r}: {exc}", stacklevel=2)
+                row = [cell or "" for cell in row]
+                if not self._is_transaction_row(row):
+                    continue
+                try:
+                    transactions.append(self._row_to_transaction(row))
+                except Exception as exc:
+                    warnings.warn(f"KotakParser: skipping row {row!r}: {exc}", stacklevel=2)
         return transactions
+
+    def _parse_current(self, tables: list[list[list[str | None]]]) -> list[Transaction]:
+        result = extract_transactions(tables)
+        if not result.is_confident:
+            raise ValueError(
+                "This Kotak statement's layout isn't one I can read reliably yet "
+                f"(read {len(result.transactions)} rows, running balance matched "
+                f"{result.verified_fraction:.0%} of them)."
+            )
+        for txn in result.transactions:
+            cleaned = self._clean_description(txn.raw_description)
+            if cleaned != txn.raw_description:
+                txn.raw_description = cleaned
+                txn.upi_meta = parse_upi_description(cleaned, settings.upi_noise_keywords)
+        return result.transactions
 
     def _is_transaction_row(self, row: list) -> bool:
         if len(row) < 6:
