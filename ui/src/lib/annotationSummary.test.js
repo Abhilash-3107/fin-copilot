@@ -16,10 +16,11 @@ describe('annotationSummary', () => {
   })
 
   it('surfaces a provider outage instead of "All done!"', () => {
-    const s = annotationSummary({ ...base, llm_annotated: 0, llm_failed: 6, llm_error: 'HTTP 503' })
+    const s = annotationSummary({ ...base, llm_annotated: 2, llm_failed: 6, llm_error: 'HTTP 503' })
     expect(s.type).toBe('error')
-    expect(s.message).toContain("Couldn't reach the AI model (HTTP 503)")
-    expect(s.message).toContain('7 categorized by your rules and history, 6 left for the next run')
+    expect(s.message).toBe(
+      "The AI model isn't available (HTTP 503). 4 matched by rules, 3 from history, 2 by AI, 6 left for the next run"
+    )
     expect(summaryDuration(s)).toBe(9000)
   })
 

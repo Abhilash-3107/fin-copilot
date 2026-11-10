@@ -3,6 +3,7 @@ import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pe
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
@@ -48,6 +49,7 @@ function CoverageBadge({ done, total }) {
 
 export default function Upload() {
   const toast = useToast()
+  const { startAnnotation } = useAnnotationJob()
   const [statements, setStatements] = useState([])
   const [file, setFile] = useState(null)
   const [password, setPassword] = useState('')
@@ -138,7 +140,9 @@ export default function Upload() {
     setAnnotatingId(stmt.id)
     setLastResult(null)
     try {
-      const result = await api.post('/annotations/auto-annotate', { statement_id: stmt.id })
+      // The job flow, like every other entry point: one run at a time, progress
+      // in the floating card, and the stale-job reaper behind it.
+      const result = await startAnnotation({ statement_id: stmt.id })
       setLastResult(result)
       const summary = annotationSummary(result)
       toast(summary.message, summary.type, summaryDuration(summary))
@@ -279,8 +283,8 @@ export default function Upload() {
           </div>
           {lastResult.llm_error && (
             <p className="text-xs text-[#fca5a5] mt-3">
-              The AI model stopped responding ({lastResult.llm_error}), so this run skipped it for the
-              rest. Check it in{' '}
+              The AI model isn&apos;t available ({lastResult.llm_error}), so this run stopped using it.
+              Check it in{' '}
               <a href="/settings" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</a>{' '}
               and run again to categorize what&apos;s left.
             </p>

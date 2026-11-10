@@ -10,6 +10,9 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => noopToast,
 }))
+vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
+  useAnnotationJob: () => ({ job: null, startAnnotation: vi.fn() }),
+}))
 
 import Upload from './Upload.jsx'
 

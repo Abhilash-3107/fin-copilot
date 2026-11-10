@@ -16,14 +16,15 @@ export function annotationSummary(result) {
   }
 
   if (result.llm_error) {
-    // The provider failed mid-run and the server stopped calling it; what it
-    // couldn't reach stays unlabelled for the next run.
+    // The provider failed (unreachable, or refused the requests) and the
+    // server stopped calling it; what's left stays unlabelled for the next run.
+    // Labels the AI made before that still count.
     return {
       type: 'error',
       message:
-        `Couldn't reach the AI model (${result.llm_error}). ` +
-        `${fromRules + fromHistory} categorized by your rules and history, ` +
-        `${result.llm_failed ?? 0} left for the next run`,
+        `The AI model isn't available (${result.llm_error}). ` +
+        `${fromRules} matched by rules, ${fromHistory} from history, ` +
+        `${result.llm_annotated ?? 0} by AI, ${result.llm_failed ?? 0} left for the next run`,
     }
   }
 

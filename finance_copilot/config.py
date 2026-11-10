@@ -136,9 +136,11 @@ class Settings(BaseSettings):
     # CPU is the long case. A connection that can't even be opened fails in 5s.
     # Transient failures (connection refused/reset, timeouts, 429, 5xx) are
     # retried with jittered exponential backoff up to llm_max_attempts; anything
-    # else (bad key, unknown model) fails at once. Worst case per call is about
-    # llm_max_attempts * llm_timeout_s, which must stay well under the job
-    # reaper's STALE_JOB_MINUTES (10) or a slow-but-live job reads as dead.
+    # else (bad key, unknown model) fails at once. One transaction's whole LLM
+    # call, retries and self-repair re-asks included, is capped at
+    # llm_max_attempts * llm_timeout_s (llm.call_budget_s), which must stay
+    # well under the job reaper's STALE_JOB_MINUTES (10) or a slow-but-live
+    # job reads as dead.
     llm_timeout_s: float = 60.0
     llm_max_attempts: int = 3
     # Replace verbalized LLM confidence with token-logprob mass on the category

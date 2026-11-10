@@ -446,7 +446,7 @@ requires-dist = [
     { name = "python-ulid", specifier = ">=2.6" },
     { name = "rich", specifier = ">=13,<16" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
-    { name = "tenacity", specifier = ">=8.2,<10" },
+    { name = "tenacity", specifier = ">=8.3,<10" },
     { name = "typer", specifier = ">=0.12,<1" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

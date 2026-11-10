@@ -51,8 +51,13 @@ from finance_copilot.pipeline.counterparty import (
     CounterpartyPrior,
     counterparty_prior,
 )
-from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
+from finance_copilot.pipeline.embed import (
+    EmbeddingsUnavailable,
+    build_embed_text,
+    get_embedding_single,
+)
 from finance_copilot.pipeline.llm import (
+    LLMRequestRejected,
     LLMUnavailableError,
     annotate_transaction_llm,
     annotate_transaction_llm_with_examples,
@@ -314,6 +319,62 @@ def rule_annotation(
     return result, trace
 
 
+# Rejected requests in a row after which the provider counts as misconfigured
+# rather than unlucky: a bad endpoint rejects every request the same way.
+_MAX_CONSECUTIVE_REJECTIONS = 3
+
+
+class RunGuard:
+    """Per-run circuit breakers for a run's two external dependencies.
+
+    Embeddings are disabled for the rest of the run on their first failure
+    (they fail per provider, not per text). The LLM is disabled on its first
+    LLMUnavailableError, which the client raises only after its own retries,
+    or after _MAX_CONSECUTIVE_REJECTIONS rejected requests in a row. Paying the
+    full timeout and retry budget again for every remaining row would turn a
+    stopped or hung Ollama into an hours-long run.
+    """
+
+    def __init__(self) -> None:
+        self.embed_error: str | None = None
+        self.llm_error: str | None = None
+        self._rejections = 0
+
+    def embed(self, text: str) -> list[float]:
+        """Embedding for text. Raises on failure, and once tripped without calling."""
+        if self.embed_error is not None:
+            raise EmbeddingsUnavailable(f"disabled for this run: {self.embed_error}")
+        try:
+            return get_embedding_single(text)
+        except Exception as e:
+            self.embed_error = f"{type(e).__name__}: {e}"
+            level = logging.INFO if isinstance(e, EmbeddingsUnavailable) else logging.WARNING
+            logger.log(level, "embeddings unavailable, skipping retrieval for the rest of this run | %s", self.embed_error)
+            raise
+
+    def llm(self, fn, *args, **kwargs):
+        """fn(*args, **kwargs), or None when it fails or the breaker is open."""
+        if self.llm_error is not None:
+            return None
+        try:
+            result = fn(*args, **kwargs)
+        except LLMUnavailableError as e:
+            self._trip(str(e))
+            return None
+        except LLMRequestRejected as e:
+            self._rejections += 1
+            logger.warning("llm rejected a request (%d in a row) | %s", self._rejections, e)
+            if self._rejections >= _MAX_CONSECUTIVE_REJECTIONS:
+                self._trip(f"{self._rejections} requests in a row were rejected; last: {e}")
+            return None
+        self._rejections = 0
+        return result
+
+    def _trip(self, error: str) -> None:
+        self.llm_error = error
+        logger.error("LLM provider unavailable, skipping the LLM for the rest of this run | %s", error)
+
+
 def auto_annotate(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
@@ -389,16 +450,7 @@ def auto_annotate(
             conn.commit()
         uncommitted = 0
 
-    # Circuit breaker: the first LLMUnavailableError (raised only after the
-    # client's own retries) means the provider is down or misconfigured. Paying
-    # the full retry budget again for every remaining transaction would turn a
-    # stopped Ollama into an hours-long run, so stop calling it instead.
-    llm_error: str | None = None
-
-    def _trip_breaker(e: LLMUnavailableError) -> None:
-        nonlocal llm_error
-        llm_error = str(e)
-        logger.error("LLM provider unavailable, skipping the LLM for the rest of this run | %s", e)
+    guard = RunGuard()
 
     stage = load_stage_context(conn)
     known_people = stage.known_people
@@ -411,6 +463,13 @@ def auto_annotate(
     def _tick() -> None:
         nonlocal processed
         processed += 1
+        if progress_cb is not None:
+            progress_cb(processed, total)
+
+    def _heartbeat() -> None:
+        # A row that falls through a slow stage (an embedding or LLM call that
+        # failed) isn't processed yet but still proves the worker is alive;
+        # without this a run of such rows reads as a dead job to the reaper.
         if progress_cb is not None:
             progress_cb(processed, total)
 
@@ -458,14 +517,10 @@ def auto_annotate(
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
         for txn in needs_rag:
             _release_write_lock()
-            try:
-                rag_result, rag_trace = _try_rag_annotation(
-                    conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]],
-                    as_of=txn["txn_date"], allow_llm=llm_error is None,
-                )
-            except LLMUnavailableError as e:
-                _trip_breaker(e)
-                rag_result, rag_trace = None, None
+            rag_result, rag_trace = _try_rag_annotation(
+                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]],
+                as_of=txn["txn_date"], guard=guard,
+            )
             if rag_result is not None:
                 _persist(rag_result, rag_trace)
                 _tick()
@@ -477,6 +532,7 @@ def auto_annotate(
                     low_confidence += 1
             else:
                 needs_llm.append(txn)
+                _heartbeat()
 
     # --- Stage 4: Plain LLM pass ---
     logger.info(
@@ -495,12 +551,9 @@ def auto_annotate(
                 txn.get("debit_credit") or "",
             )
             llm_result = llm_cache.get(cache_key)
-            if llm_result is None and llm_error is None:
+            if llm_result is None and guard.llm_error is None:
                 _release_write_lock()
-                try:
-                    llm_result = annotate_transaction_llm(txn, category_list)
-                except LLMUnavailableError as e:
-                    _trip_breaker(e)
+                llm_result = guard.llm(annotate_transaction_llm, txn, category_list)
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
             elif llm_result is not None:
@@ -564,7 +617,7 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
         ai_active=settings.llm_provider != "none",
-        llm_error=llm_error,
+        llm_error=guard.llm_error,
     )
 
 
@@ -740,6 +793,7 @@ def _try_rag_annotation(
     as_of: str | None,
     query_vec: list[float] | None = None,
     allow_llm: bool = True,
+    guard: RunGuard | None = None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
 
@@ -747,6 +801,8 @@ def _try_rag_annotation(
     rule_annotation). query_vec, when given, is the transaction's stored vector
     and no embedding call is made. allow_llm=False stops after the rag_direct
     decision (no rag_prompted LLM call), for deterministic re-evaluation.
+    guard, when given (auto_annotate), routes the embedding and LLM calls
+    through the run's circuit breakers; without it they raise as usual.
 
     Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct'
     or 'rag_prompted', or (None, None) if the embedding service is
@@ -766,9 +822,12 @@ def _try_rag_annotation(
     skips: list[str] = ctx["skips"]
 
     embed_text = build_embed_text(txn)
+    if query_vec is None and guard is not None and guard.embed_error is not None:
+        skips.append(f"rag: embeddings unavailable for the rest of this run ({guard.embed_error})")
+        return None, None
     if query_vec is None:
         try:
-            query_vec = get_embedding_single(embed_text)
+            query_vec = guard.embed(embed_text) if guard is not None else get_embedding_single(embed_text)
         except Exception as e:
             logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
             skips.append(f"rag: embedding failed ({e})")
@@ -939,6 +998,9 @@ def _try_rag_annotation(
     if not allow_llm:
         skips.append("rag_prompted: skipped (deterministic re-evaluation)")
         return None, None
+    if guard is not None and guard.llm_error is not None:
+        skips.append("rag_prompted: skipped (AI unavailable for the rest of this run)")
+        return None, None
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     # Examples, the majority hint and the off-example check all come from the
@@ -952,8 +1014,11 @@ def _try_rag_annotation(
         # judges against the real prompt content.
         example_categories = [e["category"] for e in examples if e.get("category")]
         majority_category, majority_count = _majority_category(example_categories)
-        llm_result = annotate_transaction_llm_with_examples(
-            txn, category_list, examples, majority_category, majority_count
+        llm_args = (txn, category_list, examples, majority_category, majority_count)
+        llm_result = (
+            guard.llm(annotate_transaction_llm_with_examples, *llm_args)
+            if guard is not None
+            else annotate_transaction_llm_with_examples(*llm_args)
         )
         if llm_result is not None:
             category = _normalize_category(llm_result.category, category_list)

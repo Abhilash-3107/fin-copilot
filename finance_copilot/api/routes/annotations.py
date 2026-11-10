@@ -68,7 +68,9 @@ def auto_annotate_endpoint(
     body: AutoAnnotateRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Synchronous annotation — fine for scripts/small batches. The UI uses the job flow."""
+    """Synchronous annotation, for scripts and the CLI. Every UI entry point uses
+    the job flow (POST /auto-annotate/jobs), which adds the single-job guard,
+    progress, and the stale-job reaper; this path has none of them."""
     return auto_annotate(conn, body.statement_id, body.transaction_ids)
 
 
@@ -103,10 +105,12 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
         conn.close()
 
 
-# A live job heartbeats updated_at roughly once per second via its progress
-# callback; the longest silent stretch is one LLM call with its retries, at
-# most about settings.llm_max_attempts * llm_timeout_s (3 min by default). A job
-# quiet for this long has no worker behind it.
+# A live job heartbeats updated_at via its progress callback after every row,
+# whatever the row's outcome. The longest silent stretch is one row: an
+# embedding call (60s read cap) plus one LLM call, which llm.call_budget_s()
+# caps across all its retries and re-asks (3 min by default). A job quiet for
+# this long has no worker behind it. test_stale_window_covers_one_row_budget
+# keeps the defaults honest.
 STALE_JOB_MINUTES = 10
 
 
@@ -118,11 +122,10 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     new job request, a page mount — can flip these to failed so nothing polls a
     zombie forever. Returns the number of jobs reaped. Caller commits.
 
-    Reads before writing: a live worker holds the write lock across a slow LLM
-    call (its progress UPDATE commits at most once a second), so an unconditional
-    UPDATE here made every status poll wait out busy_timeout and 500 with
-    "database is locked" mid-run. A WAL read never blocks, and when something
-    really is stale there is no live writer left to wait on.
+    Reads before writing: polls are frequent and almost never find anything
+    stale, so they shouldn't need the write lock at all. A WAL read never
+    blocks; an unconditional UPDATE here once made every poll 500 with
+    "database is locked" while the worker was mid-write.
     """
     stale_where = (
         "WHERE status IN ('queued','running') "
