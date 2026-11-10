@@ -111,6 +111,17 @@ class TestLLMTransportRetries:
             annotate_transaction_llm(_TXN, _CATS)
         assert p.call_count == settings.llm_max_attempts
 
+    def test_read_vs_connect_timeout(self):
+        """Connected-but-slow fails the row; can't-even-connect is the provider."""
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        with patch("httpx.post", side_effect=httpx.ReadTimeout("slow")), patch("time.sleep"), \
+             pytest.raises(LLMTimeout):
+            annotate_transaction_llm(_TXN, _CATS)
+        with patch("httpx.post", side_effect=httpx.ConnectTimeout("no route")), patch("time.sleep"), \
+             pytest.raises(LLMUnavailableError, match="ConnectTimeout"):
+            annotate_transaction_llm(_TXN, _CATS)
+
     def test_persistent_5xx_gives_up_after_max_attempts(self):
         with patch("httpx.post", return_value=_resp(503)) as p, patch("time.sleep"), \
              pytest.raises(LLMUnavailableError, match="HTTP 503"):
@@ -275,6 +286,22 @@ class TestRunGuard:
         guard = RunGuard()
         assert guard.llm(MagicMock(side_effect=AttributeError("'list' object has no attribute 'get'"))) is None
         assert guard.llm_error is None  # one failure is a row, not an outage
+
+    def test_one_timeout_is_tolerated_two_in_a_row_trip(self):
+        from finance_copilot.pipeline.annotate import _MAX_CONSECUTIVE_LLM_TIMEOUTS, RunGuard
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        assert _MAX_CONSECUTIVE_LLM_TIMEOUTS == 2
+        guard = RunGuard()
+        slow = LLMTimeout("no answer within the time limit")
+        fn = MagicMock(side_effect=[slow, "ok", slow, None, slow, slow, "unreached"])
+        results = [guard.llm(fn) for _ in range(7)]
+        # slow / ok resets / slow / bad answer breaks the timeout streak /
+        # slow / slow -> trips
+        assert results == [None, "ok", None, None, None, None, None]
+        assert fn.call_count == 6
+        assert "timed out on 2 requests in a row" in guard.llm_error
+        assert "raise llm_timeout_s" in guard.llm_error
 
     def test_ai_off_never_calls_the_llm(self, monkeypatch):
         from finance_copilot.pipeline.annotate import RunGuard
@@ -445,6 +472,38 @@ class TestCircuitBreakerInPipeline:
         assert llm.call_count == 2
         assert result.llm_annotated == 2
         assert result.llm_error is None
+
+    def test_one_slow_row_does_not_switch_the_ai_off(self):
+        """A healthy provider and one row whose answer outlasts llm_timeout_s:
+        that row fails, every other row is still labelled."""
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        self._unknown_rows(4)
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm",
+                   side_effect=[LLMTimeout("no answer within the time limit"), ok, ok, ok]) as llm:
+            result = auto_annotate(self.conn)
+
+        assert llm.call_count == 4
+        assert result.llm_annotated == 3
+        assert result.llm_failed == 1
+        assert result.llm_error is None
+
+    def test_hung_provider_trips_after_two_timed_out_rows(self):
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        self._unknown_rows(6)
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm",
+                   side_effect=LLMTimeout("no answer within the time limit")) as llm:
+            result = auto_annotate(self.conn)
+
+        assert llm.call_count == 2
+        assert result.llm_failed == 6
+        assert "timed out on 2 requests in a row" in result.llm_error
 
 
 class TestHeartbeat:

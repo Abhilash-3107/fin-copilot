@@ -53,6 +53,13 @@ describe('runAnnotationJob', () => {
     expect(fetch).toHaveBeenCalledTimes(2) // never polled the other job
   })
 
+  it('refuses a re-embed even when the scope matches (Dashboard sorts everything: {})', async () => {
+    // Same statement_id (null) as the request, so only the kind check stops it.
+    vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'reembed', statement_id: null })))
+    await expect(runAnnotationJob({}, null, 0)).rejects.toBeInstanceOf(JobBusyError)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it("refuses another statement's run", async () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'annotate', statement_id: 's2' })))
     await expect(runAnnotationJob({ statement_id: 's1' }, null, 0))

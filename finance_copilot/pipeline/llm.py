@@ -49,6 +49,17 @@ class LLMRequestRejected(RuntimeError):
     """
 
 
+class LLMTimeout(LLMRequestRejected):
+    """The provider accepted the connection but didn't answer in time, on
+    every attempt this call could afford.
+
+    That can be this row alone (an answer that takes too long to generate, and
+    at temperature 0 every retry takes as long) or a hung provider, so it fails
+    the row; a batch should stop after a couple in a row rather than wait out
+    the full budget on every remaining row.
+    """
+
+
 # Statuses worth another try: the provider is busy, restarting or loading a
 # model.
 _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -64,8 +75,7 @@ def call_budget_s() -> float:
     """Wall-clock ceiling for one transaction's LLM call.
 
     Transport retries, backoff and the self-repair re-asks all share it, so a
-    call can never run past this however the failures combine. The annotation
-    job's stale-heartbeat window must stay comfortably above it.
+    call can never run past this however the failures combine.
     """
     return settings.llm_timeout_s * max(1, settings.llm_max_attempts)
 
@@ -150,6 +160,12 @@ def _post_chat(
                 f"provider still failing after {tries} attempt(s) (HTTP {status}{detail})"
             ) from e
         raise LLMUnavailableError(f"provider refused the request (HTTP {status}{detail})") from e
+    except httpx.ReadTimeout as e:
+        # Connected, but no answer in time: not proof the provider is down.
+        tries = retrying.statistics.get("attempt_number", 1)
+        raise LLMTimeout(
+            f"no answer within the time limit ({tries} attempt(s), llm_timeout_s={settings.llm_timeout_s:g})"
+        ) from e
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         # Transport errors once retries run out, plus anything else httpx raises
         # (bad URL, redirect loop): none of it is about this transaction.

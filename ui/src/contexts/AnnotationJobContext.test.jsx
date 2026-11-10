@@ -43,7 +43,7 @@ describe('AnnotationJobProvider', () => {
     const { result } = renderHook(() => useAnnotationJob(), { wrapper })
     await waitFor(() => expect(result.current.job?.kind).toBe('reembed'))
 
-    await expect(result.current.startAnnotation({})).rejects.toBeInstanceOf(JobBusyError)
+    await expect(result.current.startAnnotation({})).rejects.toThrow("memory is being rebuilt")
     expect(api.runAnnotationJob).not.toHaveBeenCalled()
   })
 })

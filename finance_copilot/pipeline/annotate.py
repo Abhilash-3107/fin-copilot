@@ -60,6 +60,7 @@ from finance_copilot.pipeline.embed import (
 )
 from finance_copilot.pipeline.llm import (
     LLMRequestRejected,
+    LLMTimeout,
     LLMUnavailableError,
     annotate_transaction_llm,
     annotate_transaction_llm_with_examples,
@@ -325,6 +326,10 @@ def rule_annotation(
 # re-asks, or an unexpected error) after which the provider counts as broken
 # rather than unlucky: a misconfigured endpoint fails every request the same way.
 _MAX_CONSECUTIVE_LLM_FAILURES = 5
+# Timed-out rows in a row after which the provider counts as hung (or far too
+# slow for llm_timeout_s). Lower than the above because each one costs the
+# whole per-call budget; one slow row on its own is tolerated.
+_MAX_CONSECUTIVE_LLM_TIMEOUTS = 2
 # Embedding failures in a row (timeouts, 5xx) before retrieval is switched off
 # for the run. A refused connection or a configured-off provider switches it
 # off at once: those can't heal mid-run.
@@ -340,8 +345,9 @@ class RunGuard:
     has shown it can't serve:
 
     - LLM: at once on LLMUnavailableError (the client raises it only after its
-      own retries), or after _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with
-      no usable answer. llm_error says why, for the UI.
+      own retries), after _MAX_CONSECUTIVE_LLM_TIMEOUTS timed-out rows in a
+      row, or after _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with no usable
+      answer of any kind. llm_error says why, for the UI.
     - Embeddings: at once when the provider is configured off or refuses the
       connection, else after _MAX_CONSECUTIVE_EMBED_FAILURES failures in a row.
       Rows then skip retrieval and go to the plain LLM. embed_error says why,
@@ -353,6 +359,7 @@ class RunGuard:
         self.embed_error: str | None = None
         self.embeddings_off = False
         self._llm_failures = 0
+        self._llm_timeouts = 0
         self._embed_failures = 0
 
     def embed(self, text: str) -> list[float]:
@@ -387,17 +394,29 @@ class RunGuard:
         except LLMUnavailableError as e:
             self._trip(str(e))
             return None
-        except LLMRequestRejected as e:
+        except LLMTimeout as e:
+            self._llm_timeouts += 1
+            if self._llm_timeouts >= _MAX_CONSECUTIVE_LLM_TIMEOUTS:
+                self._trip(
+                    f"the model timed out on {self._llm_timeouts} requests in a row ({e}); "
+                    "if this machine is just slow, raise llm_timeout_s"
+                )
+                return None
             return self._failed(str(e))
+        except LLMRequestRejected as e:
+            reason = str(e)
         except Exception as e:
             # Anything else (a bad character in the API key, a non-UTF-8 body)
             # fails the row, never the job; repeats trip the breaker below.
             logger.warning("llm call raised unexpectedly", exc_info=True)
-            return self._failed(f"{type(e).__name__}: {e}")
-        if result is None:
-            return self._failed("the model's answers aren't valid JSON for the schema")
-        self._llm_failures = 0
-        return result
+            reason = f"{type(e).__name__}: {e}"
+        else:
+            if result is not None:
+                self._llm_failures = self._llm_timeouts = 0
+                return result
+            reason = "the model's answers aren't valid JSON for the schema"
+        self._llm_timeouts = 0  # an answer (even a bad one) breaks a timeout streak
+        return self._failed(reason)
 
     def _failed(self, reason: str) -> None:
         self._llm_failures += 1
@@ -504,8 +523,9 @@ def auto_annotate(
 
     def _heartbeat() -> None:
         # A row that falls through a slow stage (an embedding or LLM call that
-        # failed) isn't processed yet but still proves the worker is alive;
-        # without this a run of such rows reads as a dead job to the reaper.
+        # failed) isn't processed yet but still proves the worker is alive.
+        # The reaper already skips live workers (api/live_jobs.py); this keeps
+        # updated_at fresh as a backstop to that.
         if progress_cb is not None:
             progress_cb(processed, total)
 
@@ -587,7 +607,7 @@ def auto_annotate(
                 txn.get("debit_credit") or "",
             )
             llm_result = llm_cache.get(cache_key)
-            if llm_result is None and guard.llm_error is None:
+            if llm_result is None:
                 _release_write_lock()
                 llm_result = guard.llm(annotate_transaction_llm, txn, category_list)
                 if llm_result is not None and cache_key[0]:
@@ -859,6 +879,8 @@ def _try_rag_annotation(
     skips: list[str] = ctx["skips"]
 
     embed_text = build_embed_text(txn)
+    # guard.embed would raise anyway once off; skipping here just keeps the
+    # log to one "embeddings unavailable" line per run instead of one per row.
     if query_vec is None and guard is not None and guard.embeddings_off:
         skips.append(f"rag: embeddings off for the rest of this run ({guard.embed_error or 'not configured'})")
         return None, None
@@ -1034,9 +1056,6 @@ def _try_rag_annotation(
 
     if not allow_llm:
         skips.append("rag_prompted: skipped (deterministic re-evaluation)")
-        return None, None
-    if guard is not None and guard.llm_error is not None:
-        skips.append("rag_prompted: skipped (AI unavailable for the rest of this run)")
         return None, None
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt

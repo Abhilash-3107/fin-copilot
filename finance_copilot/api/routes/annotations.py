@@ -108,8 +108,9 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
 
 # A job with a live worker in this process is never reaped (live_jobs), so
 # this window only has to catch orphans: a worker that died, or a task that
-# never got scheduled. Live workers still heartbeat updated_at after every row
-# for the progress card.
+# never got scheduled. Workers still heartbeat updated_at after every row, as
+# a backstop that keeps the time window meaningful on its own (e.g. if a worker
+# ever runs where this process's registry can't see it).
 STALE_JOB_MINUTES = 10
 
 

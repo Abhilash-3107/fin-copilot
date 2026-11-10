@@ -11,11 +11,14 @@ export function AnnotationJobProvider({ children }) {
   const [job, setJob] = useState(null)
   // Guards the mount re-attach from racing a locally started job.
   const attached = useRef(false)
+  // The tracked job's kind, for a busy message that names what's running.
+  const trackedKind = useRef(null)
+  useEffect(() => { trackedKind.current = job?.kind ?? null }, [job])
 
   const startAnnotation = useCallback(async body => {
     // A job this tab already tracks (started here or re-attached on mount)
     // holds the slot; don't overwrite its card with a run that can't start.
-    if (attached.current) throw new JobBusyError(null)
+    if (attached.current) throw new JobBusyError(trackedKind.current)
     // Show the card immediately (indeterminate) instead of waiting for the
     // first poll to come back.
     attached.current = true

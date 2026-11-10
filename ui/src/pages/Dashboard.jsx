@@ -422,7 +422,9 @@ export default function Dashboard() {
   const [reviewCount, setReviewCount] = useState(0)
   const [accuracy, setAccuracy] = useState([])
   const [loading, setLoading] = useState(true)
-  const { startAnnotation } = useAnnotationJob()
+  // Any tracked run (this page, another page, or re-attached after a reload)
+  // holds the single job slot, so the sort button waits for it.
+  const { job, startAnnotation } = useAnnotationJob()
   const [annotating, setAnnotating] = useState(false)
   const [seedingDemo, setSeedingDemo] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
@@ -601,7 +603,7 @@ export default function Dashboard() {
           annotation={data.annotation}
           verdict={data.verdict}
           month={data.month}
-          annotating={annotating}
+          annotating={annotating || job != null}
           onSort={sortTransactions}
         />
       ) : (

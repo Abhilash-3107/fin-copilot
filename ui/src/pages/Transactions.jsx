@@ -133,7 +133,8 @@ export default function Transactions() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
-  const { startAnnotation } = useAnnotationJob()
+  // Any tracked run holds the single job slot, so Auto-annotate waits for it.
+  const { job, startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const loadRef = useRef(0)
 
@@ -546,7 +547,7 @@ export default function Transactions() {
         <Tooltip content="Use AI to automatically categorize transactions in this statement">
           <button
             onClick={autoAnnotate}
-            disabled={autoAnnotating || !selectedStmt}
+            disabled={autoAnnotating || !selectedStmt || job != null}
             className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Zap size={13} />
