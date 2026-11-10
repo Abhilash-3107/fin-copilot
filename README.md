@@ -124,6 +124,9 @@ OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3.5:4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 CONFIDENCE_THRESHOLD=0.85
+# Seconds the AI model may take to answer one request (default 60). Raise it on
+# a slow machine if categorization reports that the model timed out.
+LLM_TIMEOUT_S=60
 ```
 
 For password-protected statement PDFs, enter the password in the upload form: it is sent with the upload request, not stored.

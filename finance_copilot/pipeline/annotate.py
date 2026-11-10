@@ -334,6 +334,15 @@ _MAX_CONSECUTIVE_LLM_TIMEOUTS = 2
 # for the run. A refused connection or a configured-off provider switches it
 # off at once: those can't heal mid-run.
 _MAX_CONSECUTIVE_EMBED_FAILURES = 2
+# The plain-prompt LLM stage: the pipeline's last resort, so a streak there
+# switches the LLM off for the run.
+PLAIN_LLM_STAGE = "llm"
+
+
+@dataclass
+class _Streak:
+    failures: int = 0
+    timeouts: int = 0
 
 
 class RunGuard:
@@ -344,10 +353,13 @@ class RunGuard:
     run, so each dependency is switched off for the rest of the run once it
     has shown it can't serve:
 
-    - LLM: at once on LLMUnavailableError (the client raises it only after its
-      own retries), after _MAX_CONSECUTIVE_LLM_TIMEOUTS timed-out rows in a
-      row, or after _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with no usable
-      answer of any kind. llm_error says why, for the UI.
+    - LLM: off for the run at once on LLMUnavailableError (the client raises
+      it only after its own retries). Per prompt stage, after
+      _MAX_CONSECUTIVE_LLM_TIMEOUTS timed-out rows in a row or
+      _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with no usable answer of any
+      kind: that switches off the rag_prompted stage alone (rows fall through
+      to the plain prompt), or the LLM for the run when it's the plain stage.
+      llm_error says why the LLM went off, for the UI.
     - Embeddings: at once when the provider is configured off or refuses the
       connection, else after _MAX_CONSECUTIVE_EMBED_FAILURES failures in a row.
       Rows then skip retrieval and go to the plain LLM. embed_error says why,
@@ -358,8 +370,8 @@ class RunGuard:
         self.llm_error: str | None = None
         self.embed_error: str | None = None
         self.embeddings_off = False
-        self._llm_failures = 0
-        self._llm_timeouts = 0
+        self.stages_off: set[str] = set()
+        self._streaks: dict[str, _Streak] = {}
         self._embed_failures = 0
 
     def embed(self, text: str) -> list[float]:
@@ -385,44 +397,62 @@ class RunGuard:
         self._embed_failures = 0
         return vec
 
-    def llm(self, fn, *args, **kwargs):
-        """fn(*args, **kwargs), or None when it fails or the breaker is open."""
-        if self.llm_error is not None or settings.llm_provider == "none":
+    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, **kwargs):
+        """fn(*args, **kwargs), or None when it fails or the breaker is open.
+
+        stage names the prompt this call belongs to. Streaks are counted per
+        stage, so one row failing in both rag_prompted and then the plain
+        fallback counts once in each, and a prompt that only fails at one
+        stage (few-shot examples pushing it past a context window) switches
+        off only that stage: its rows still fall through to the plain prompt.
+        """
+        if self.llm_error is not None or stage in self.stages_off or settings.llm_provider == "none":
             return None
+        streak = self._streaks.setdefault(stage, _Streak())
         try:
             result = fn(*args, **kwargs)
         except LLMUnavailableError as e:
             self._trip(str(e))
             return None
         except LLMTimeout as e:
-            self._llm_timeouts += 1
-            if self._llm_timeouts >= _MAX_CONSECUTIVE_LLM_TIMEOUTS:
-                self._trip(
-                    f"the model timed out on {self._llm_timeouts} requests in a row ({e}); "
-                    "if this machine is just slow, raise llm_timeout_s"
+            streak.timeouts += 1
+            if streak.timeouts >= _MAX_CONSECUTIVE_LLM_TIMEOUTS:
+                return self._stage_off(
+                    stage,
+                    f"the model timed out on {streak.timeouts} requests in a row ({e}); if this "
+                    "machine is just slow, start the app with LLM_TIMEOUT_S set higher (seconds)",
                 )
-                return None
-            return self._failed(str(e))
+            reason = str(e)
         except LLMRequestRejected as e:
+            streak.timeouts = 0
             reason = str(e)
         except Exception as e:
             # Anything else (a bad character in the API key, a non-UTF-8 body)
             # fails the row, never the job; repeats trip the breaker below.
             logger.warning("llm call raised unexpectedly", exc_info=True)
+            streak.timeouts = 0
             reason = f"{type(e).__name__}: {e}"
         else:
             if result is not None:
-                self._llm_failures = self._llm_timeouts = 0
+                streak.failures = streak.timeouts = 0
                 return result
+            streak.timeouts = 0  # an answer, even a bad one, breaks a timeout streak
             reason = "the model's answers aren't valid JSON for the schema"
-        self._llm_timeouts = 0  # an answer (even a bad one) breaks a timeout streak
-        return self._failed(reason)
+        streak.failures += 1
+        logger.warning("llm %s gave no usable answer (%d in a row) | %s", stage, streak.failures, reason)
+        if streak.failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
+            return self._stage_off(stage, f"{streak.failures} requests in a row failed; last: {reason}")
+        return None
 
-    def _failed(self, reason: str) -> None:
-        self._llm_failures += 1
-        logger.warning("llm gave no usable answer (%d in a row) | %s", self._llm_failures, reason)
-        if self._llm_failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
-            self._trip(f"{self._llm_failures} requests in a row failed; last: {reason}")
+    def _stage_off(self, stage: str, reason: str) -> None:
+        if stage == PLAIN_LLM_STAGE:  # the last resort: nothing left to fall back to
+            self._trip(reason)
+        else:
+            self.stages_off.add(stage)
+            logger.warning(
+                "llm %s off for the rest of this run, rows fall through to the plain prompt | %s",
+                stage, reason,
+            )
         return None
 
     def _trip(self, error: str) -> None:
@@ -1072,7 +1102,7 @@ def _try_rag_annotation(
         majority_category, majority_count = _majority_category(example_categories)
         llm_args = (txn, category_list, examples, majority_category, majority_count)
         llm_result = (
-            guard.llm(annotate_transaction_llm_with_examples, *llm_args)
+            guard.llm(annotate_transaction_llm_with_examples, *llm_args, stage="rag_prompted")
             if guard is not None
             else annotate_transaction_llm_with_examples(*llm_args)
         )

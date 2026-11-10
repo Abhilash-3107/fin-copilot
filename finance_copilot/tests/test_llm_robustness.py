@@ -301,7 +301,47 @@ class TestRunGuard:
         assert results == [None, "ok", None, None, None, None, None]
         assert fn.call_count == 6
         assert "timed out on 2 requests in a row" in guard.llm_error
-        assert "raise llm_timeout_s" in guard.llm_error
+        assert "LLM_TIMEOUT_S" in guard.llm_error  # the env var a user can actually set
+
+    def test_timeouts_also_count_toward_the_failure_limit(self):
+        """Alternating timeouts and bad answers never make 2 timeouts in a row,
+        but they're still 5 failed rows in a row."""
+        from finance_copilot.pipeline.annotate import RunGuard
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        guard = RunGuard()
+        slow = LLMTimeout("no answer within the time limit")
+        fn = MagicMock(side_effect=[slow, None, slow, None, slow, "unreached"])
+        assert [guard.llm(fn) for _ in range(6)] == [None] * 6
+        assert fn.call_count == 5
+        assert guard.llm_error.startswith("5 requests in a row failed")
+
+    def test_streaks_are_per_stage(self):
+        """A failing few-shot stage switches off only itself; the plain prompt
+        keeps its own streak and still runs."""
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        guard = RunGuard()
+        rejected = LLMRequestRejected("HTTP 400: context_length_exceeded")
+        few_shot = MagicMock(side_effect=rejected)
+        plain = MagicMock(return_value="ok")
+        for _ in range(6):
+            assert guard.llm(few_shot, stage="rag_prompted") is None
+            assert guard.llm(plain) == "ok"
+        assert few_shot.call_count == 5  # off after 5 in a row, for this stage only
+        assert plain.call_count == 6
+        assert guard.stages_off == {"rag_prompted"}
+        assert guard.llm_error is None
+
+    def test_unavailable_in_any_stage_switches_the_llm_off(self):
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        guard = RunGuard()
+        assert guard.llm(MagicMock(side_effect=LLMUnavailableError("down")), stage="rag_prompted") is None
+        plain = MagicMock()
+        assert guard.llm(plain) is None
+        plain.assert_not_called()
+        assert guard.llm_error == "down"
 
     def test_ai_off_never_calls_the_llm(self, monkeypatch):
         from finance_copilot.pipeline.annotate import RunGuard
@@ -489,6 +529,54 @@ class TestCircuitBreakerInPipeline:
         assert llm.call_count == 4
         assert result.llm_annotated == 3
         assert result.llm_failed == 1
+        assert result.llm_error is None
+
+    def _rag_then_plain(self, rag_effect, plain_effect):
+        """Run auto_annotate with every row going through rag_prompted (via the
+        guard, as the real stage does) and then, on failure, the plain prompt."""
+        from finance_copilot.pipeline import annotate
+
+        rag_llm = MagicMock(side_effect=rag_effect)
+
+        def fake_rag(conn, txn, category_list, ctx=None, *, as_of, guard=None, **_):
+            guard.llm(rag_llm, txn, stage="rag_prompted")
+            return None, None
+
+        with patch.object(annotate, "_try_rag_annotation", side_effect=fake_rag), \
+             patch.object(annotate, "annotate_transaction_llm", side_effect=plain_effect) as plain:
+            return annotate.auto_annotate(self.conn), rag_llm, plain
+
+    def test_one_slow_row_timing_out_in_both_stages_is_one_failed_row(self):
+        """Review probe: a degenerate row times out at rag_prompted and again at
+        the plain prompt. That's one bad row, not 'two in a row'."""
+        from finance_copilot.pipeline.llm import LLMTimeout
+
+        self._unknown_rows(4)
+        slow = LLMTimeout("no answer within the time limit")
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+        # u0 is slow everywhere; u1..u3 have no few-shot answer but a plain one.
+        result, _, plain = self._rag_then_plain(
+            rag_effect=[slow, None, None, None],
+            plain_effect=[slow, ok, ok, ok],
+        )
+
+        assert plain.call_count == 4
+        assert result.llm_annotated == 3
+        assert result.llm_failed == 1
+        assert result.llm_error is None
+
+    def test_few_shot_prompt_rejected_still_labels_via_plain_prompt(self):
+        """Review probe: the endpoint rejects the longer few-shot prompt (context
+        window) but takes the plain one. rag_prompted goes off; every row is
+        still labelled by the plain prompt, and no outage is reported."""
+        self._unknown_rows(6)
+        too_long = LLMRequestRejected("provider rejected this request (HTTP 400: context_length_exceeded)")
+        ok = AnnotationResponse(category="Shopping", confidence=0.7)
+        result, rag_llm, plain = self._rag_then_plain(rag_effect=too_long, plain_effect=lambda *_: ok)
+
+        assert rag_llm.call_count == 5
+        assert plain.call_count == 6
+        assert result.llm_annotated == 6
         assert result.llm_error is None
 
     def test_hung_provider_trips_after_two_timed_out_rows(self):
