@@ -4,6 +4,11 @@ import { api } from '../lib/api.js'
 // Module-level cache — avoids refetching on every panel open within a session
 let _cache = null
 
+// Drop the cache when another screen adds a category, so the next picker refetches.
+export function resetCategoryPickerCache() {
+  _cache = null
+}
+
 const SELECT_CLASS =
   'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] transition-colors'
 

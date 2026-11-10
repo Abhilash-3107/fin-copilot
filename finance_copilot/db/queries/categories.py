@@ -85,6 +85,21 @@ def _get_category(conn: sqlite3.Connection, category_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def add_category(conn: sqlite3.Connection, name: str) -> dict:
+    """Create a top-level category. Caller commits."""
+    name = " ".join(name.split())
+    if not name:
+        raise CategoryError("Category name can't be empty")
+    dup = conn.execute(
+        "SELECT 1 FROM categories WHERE parent_id IS NULL AND name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if dup:
+        raise CategoryError(f"'{name}' already exists")
+    new_id = str(ulid.ULID())
+    conn.execute("INSERT INTO categories (id, name, parent_id) VALUES (?, ?, NULL)", (new_id, name))
+    return {"id": new_id, "name": name, "parent_id": None}
+
+
 def add_subcategory(conn: sqlite3.Connection, parent_id: str, name: str) -> dict:
     """Create a subcategory under a top-level category. Caller commits."""
     name = name.strip()
