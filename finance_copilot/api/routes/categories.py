@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.categories import (
     CategoryError,
+    add_category,
     add_subcategory,
     get_category_tree,
     merge_subcategory,
@@ -27,6 +28,21 @@ router = APIRouter()
 def list_categories(conn: sqlite3.Connection = Depends(get_db)):
     """Return all categories as flat list: [{id, name, parent_id, color}]."""
     return get_category_tree(conn)
+
+
+class AddCategory(BaseModel):
+    name: str
+
+
+@router.post("", status_code=201)
+def create_category(body: AddCategory, conn: sqlite3.Connection = Depends(get_db)):
+    """Add a top-level category."""
+    try:
+        created = add_category(conn, body.name)
+    except CategoryError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    conn.commit()
+    return created
 
 
 class AddSubcategory(BaseModel):

@@ -667,6 +667,31 @@ class TestCategoryManagement:
         cats = client.get("/api/categories").json()
         return next(c for c in cats if c["name"] == "Food & Dining" and c["parent_id"] is None)
 
+    def test_add_top_level_category(self, client_conn):
+        client, conn, _ = client_conn
+        resp = client.post("/api/categories", json={"name": "  Pet   Care "})
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "Pet Care"
+        cats = client.get("/api/categories").json()
+        assert any(c["name"] == "Pet Care" and c["parent_id"] is None for c in cats)
+
+    def test_add_category_rejects_duplicate_and_empty(self, client_conn):
+        client, conn, _ = client_conn
+        assert client.post("/api/categories", json={"name": "food & dining"}).status_code == 422
+        assert client.post("/api/categories", json={"name": "   "}).status_code == 422
+
+    def test_new_category_usable_for_annotation(self, client_conn):
+        client, conn, _ = client_conn
+        client.post("/api/categories", json={"name": "Pet Care"})
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','t','1','2026-01')")
+        conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                     "VALUES ('tx','s1','2026-01-10',10.0,'debit','x')")
+        conn.commit()
+        resp = client.post("/api/annotations", json={"transaction_id": "tx", "category": "Pet Care", "source": "manual"})
+        assert resp.status_code in (200, 201)
+        row = conn.execute("SELECT category, category_id FROM annotations WHERE transaction_id='tx'").fetchone()
+        assert row["category"] == "Pet Care" and row["category_id"]
+
     def test_add_subcategory(self, client_conn):
         client, conn, _ = client_conn
         parent = self._parent(client)

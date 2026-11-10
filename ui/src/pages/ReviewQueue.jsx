@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy } from 'lucide-react'
+import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy, Plus } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -8,6 +8,7 @@ import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import ReasoningPanel from '../components/ReasoningPanel.jsx'
+import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
 
 // Module-level category cache
 let _catCache = null
@@ -25,19 +26,57 @@ function ConfidenceBar({ confidence }) {
   )
 }
 
-function CategoryChips({ tree, category, subcategory, onChange }) {
+// Inline "name it" field for a new category or subcategory. Enter saves, Escape cancels.
+function NewNameInput({ placeholder, onSubmit, onCancel }) {
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit() {
+    const value = name.trim()
+    if (!value || busy) return
+    setBusy(true)
+    const ok = await onSubmit(value)
+    if (!ok) setBusy(false)
+  }
+
+  return (
+    <input
+      autoFocus
+      value={name}
+      disabled={busy}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      maxLength={60}
+      onChange={e => setName(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') { e.preventDefault(); submit() }
+        if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+      }}
+      onBlur={() => { if (!name.trim() && !busy) onCancel() }}
+      className="w-40 bg-[#0f1117] border border-[#6366f1] text-[#e2e8f0] px-2.5 py-1 rounded-full text-xs focus:outline-none placeholder:text-[#475569]"
+    />
+  )
+}
+
+const NEW_CHIP_CLASS =
+  'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border border-dashed border-[#3d4468] text-[#64748b] hover:border-[#6366f1] hover:text-[#a5b4fc] transition-colors'
+
+function CategoryChips({ tree, category, subcategory, onChange, onCreate }) {
+  const [adding, setAdding] = useState(null) // 'category' | 'subcategory' | null
   const roots = useMemo(() => tree.filter(c => !c.parent_id), [tree])
-  const children = useMemo(() => {
-    if (!category) return []
-    const parent = roots.find(r => r.name === category)
-    if (!parent) return []
-    return tree.filter(c => c.parent_id === parent.id)
-  }, [tree, category, roots])
+  const parent = useMemo(() => (category ? roots.find(r => r.name === category) : null), [roots, category])
+  const children = useMemo(() => (parent ? tree.filter(c => c.parent_id === parent.id) : []), [tree, parent])
+
+  async function create(kind, name) {
+    const created = await onCreate(kind === 'category' ? null : parent.id, name)
+    if (created) setAdding(null)
+    return !!created
+  }
 
   return (
     <div className="space-y-2.5">
       {/* Category chips */}
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {roots.map(r => (
           <button
             key={r.id}
@@ -51,11 +90,22 @@ function CategoryChips({ tree, category, subcategory, onChange }) {
             {r.name}
           </button>
         ))}
+        {adding === 'category' ? (
+          <NewNameInput
+            placeholder="New category name"
+            onSubmit={name => create('category', name)}
+            onCancel={() => setAdding(null)}
+          />
+        ) : (
+          <button onClick={() => setAdding('category')} className={NEW_CHIP_CLASS}>
+            <Plus size={11} /> New category
+          </button>
+        )}
       </div>
 
-      {/* Subcategory chips — appear inline when a category with subs is selected */}
-      {children.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pl-1 border-l-2 border-[#6366f1]/30">
+      {/* Subcategory chips — appear inline when a category is selected */}
+      {parent && (
+        <div className="flex flex-wrap items-center gap-1.5 pl-1 border-l-2 border-[#6366f1]/30">
           {children.map(c => (
             <button
               key={c.id}
@@ -69,6 +119,17 @@ function CategoryChips({ tree, category, subcategory, onChange }) {
               {c.name}
             </button>
           ))}
+          {adding === 'subcategory' ? (
+            <NewNameInput
+              placeholder={`New subcategory in ${category}`}
+              onSubmit={name => create('subcategory', name)}
+              onCancel={() => setAdding(null)}
+            />
+          ) : (
+            <button onClick={() => setAdding('subcategory')} className={NEW_CHIP_CLASS}>
+              <Plus size={11} /> New subcategory
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -457,6 +518,26 @@ export default function ReviewQueue() {
     }
   }
 
+  // Create a category (parentId null) or subcategory, add it to the shared
+  // trees, and select it on the current card. Returns the node, or null on failure.
+  async function handleCreateCategory(parentId, name) {
+    try {
+      const created = parentId
+        ? await api.post('/categories/subcategories', { parent_id: parentId, name })
+        : await api.post('/categories', { name })
+      const next = [...(_catCache ?? tree), created]
+      _catCache = next
+      resetCategoryPickerCache()
+      setTree(next)
+      const parentName = parentId ? next.find(c => c.id === parentId)?.name : created.name
+      handleCategoryChange({ category: parentName, subcategory: parentId ? created.name : '' })
+      return created
+    } catch (e) {
+      toast(`Couldn't add "${name}" - ${e.message}`, 'error')
+      return null
+    }
+  }
+
   function handleCategoryChange({ category, subcategory }) {
     setForm(f => ({ ...f, category, subcategory, tags: [] }))
   }
@@ -677,6 +758,7 @@ export default function ReviewQueue() {
             category={form.category}
             subcategory={form.subcategory}
             onChange={handleCategoryChange}
+            onCreate={handleCreateCategory}
           />
 
           {/* Optional: merchant + tags collapsible */}
