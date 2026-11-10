@@ -967,6 +967,38 @@ class TestAnnotationJobs:
         assert job["status"] == "failed"
         assert "stale" in job["error"]
 
+    def test_poll_does_not_block_on_live_worker_write_lock(self, file_db_client):
+        """A live worker holds the write lock across a slow LLM call. Polling
+        must not need that lock when nothing is stale, or the poll waits out
+        busy_timeout and 500s with "database is locked" mid-run."""
+        import time
+
+        from finance_copilot.db import connection as dbc
+
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed, updated_at) "
+            "VALUES ('live','running',101,65, datetime('now'))"
+        )
+        conn.commit()
+
+        from finance_copilot.config import settings
+
+        worker = dbc.get_connection(settings.db_path)
+        worker.execute("PRAGMA busy_timeout=0")
+        # Uncommitted progress UPDATE, as the worker leaves it during an LLM call
+        worker.execute("UPDATE annotation_jobs SET processed=66 WHERE id='live'")
+        try:
+            started = time.monotonic()
+            resp = client.get("/api/annotations/jobs/live")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
+            assert client.get("/api/annotations/jobs?active=1").status_code == 200
+            assert time.monotonic() - started < 2
+        finally:
+            worker.rollback()
+            worker.close()
+
     def test_active_jobs_listing_for_reattach(self, file_db_client):
         """GET /jobs?active=1 returns the in-flight job so the UI can re-attach
         its progress card after a reload; a fresh live job is returned, a stale

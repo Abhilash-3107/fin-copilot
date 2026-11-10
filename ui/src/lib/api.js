@@ -86,10 +86,25 @@ export const api = {
 // Poll an existing job id until it finishes.
 // onProgress receives the job row ({status, processed, total, ...}) on each poll.
 // Resolves with the AutoAnnotateResult; rejects if the job fails.
+//
+// A failed poll is not a failed job: the worker keeps running server-side, so a
+// transient error (a 5xx, a dropped connection) is retried. Only a 4xx (job
+// gone, auth) or MAX_POLL_FAILURES consecutive errors give up.
+export const MAX_POLL_FAILURES = 5
+
 export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
+  let failures = 0
   for (;;) {
     await new Promise(r => setTimeout(r, pollMs))
-    const job = await api.get(`/annotations/jobs/${jobId}`)
+    let job
+    try {
+      job = await api.get(`/annotations/jobs/${jobId}`)
+    } catch (err) {
+      const clientError = err instanceof ApiError && err.status >= 400 && err.status < 500
+      if (clientError || ++failures >= MAX_POLL_FAILURES) throw err
+      continue
+    }
+    failures = 0
     onProgress?.(job)
     if (job.status === 'completed') return job.result
     if (job.status === 'failed') throw new ApiError(500, job.error || 'Annotation job failed')

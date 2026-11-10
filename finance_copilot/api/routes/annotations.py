@@ -108,12 +108,22 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     worker died (or the task never got scheduled). Any observer — a status poll, a
     new job request, a page mount — can flip these to failed so nothing polls a
     zombie forever. Returns the number of jobs reaped. Caller commits.
+
+    Reads before writing: a live worker holds the write lock across a slow LLM
+    call (its progress UPDATE commits at most once a second), so an unconditional
+    UPDATE here made every status poll wait out busy_timeout and 500 with
+    "database is locked" mid-run. A WAL read never blocks, and when something
+    really is stale there is no live writer left to wait on.
     """
+    stale_where = (
+        "WHERE status IN ('queued','running') "
+        f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+    )
+    if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1").fetchone() is None:
+        return 0
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
-        "error='Went stale without a worker', updated_at=datetime('now') "
-        f"WHERE status IN ('queued','running') "
-        f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}"
     )
     return cur.rowcount
 
