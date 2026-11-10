@@ -158,6 +158,19 @@ export default function ReviewQueue() {
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [showTags, setShowTags] = useState(false)
   const [saving, setSaving] = useState(false)
+  // The keyboard can fire again before `saving` re-renders (a quick double
+  // press of c or Enter), so the in-flight check reads a ref, not the state.
+  const savingRef = useRef(false)
+  function beginSave() {
+    if (savingRef.current) return false
+    savingRef.current = true
+    setSaving(true)
+    return true
+  }
+  function endSave() {
+    savingRef.current = false
+    setSaving(false)
+  }
   // Per-card outcome keyed by annotation_id ('confirmed' | 'edited' | 'skipped').
   // Stats are derived from this, so going back to a card and changing your mind
   // re-keys the same entry instead of double-counting — the server already
@@ -334,14 +347,16 @@ export default function ReviewQueue() {
   }
 
   function goBack() {
-    if (history.length === 0) return
+    // Moving while a save is in flight would let its advance() land on a card
+    // the user never saw.
+    if (history.length === 0 || savingRef.current) return
     const prevIdx = history[history.length - 1]
     setHistory(h => h.slice(0, -1))
     setIdx(prevIdx)
   }
 
   function skip() {
-    if (!current) return
+    if (!current || savingRef.current) return
     const id = current.annotation_id
     pushHistory()
     record(id, 'skipped')
@@ -369,8 +384,7 @@ export default function ReviewQueue() {
   }
 
   async function confirm() {
-    if (!current) return
-    setSaving(true)
+    if (!current || !beginSave()) return
     try {
       const group = applyToGroup ? groupFromHere() : [current]
       const label = { category: current.category, subcategory: current.subcategory || null }
@@ -397,14 +411,14 @@ export default function ReviewQueue() {
       }
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
-      setSaving(false)
+      endSave()
     }
   }
 
   async function saveEdit(overrides = {}) {
     const payload = { ...form, ...overrides }
     if (!payload.category) { toast('Pick a category first', 'error'); return }
-    setSaving(true)
+    if (!beginSave()) return
     try {
       const label = {
         category: payload.category,
@@ -439,7 +453,7 @@ export default function ReviewQueue() {
     } catch (e) {
       toast(`Something went wrong — ${e.message}`, 'error')
     } finally {
-      setSaving(false)
+      endSave()
     }
   }
 

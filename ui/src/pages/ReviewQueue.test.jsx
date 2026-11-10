@@ -145,6 +145,24 @@ describe('ReviewQueue keyboard shortcuts', () => {
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
   })
 
+  it('ignores repeat keys while a confirm is in flight', async () => {
+    stubGet([makeCard(), makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })])
+    let finish
+    mockApi.post.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    await renderQueue()
+
+    // A quick double press, then skip and back, all before the save returns.
+    fireEvent.keyDown(window, { key: 'c' })
+    fireEvent.keyDown(window, { key: 'c' })
+    fireEvent.keyDown(window, { key: 's' })
+    fireEvent.keyDown(window, { key: 'b' })
+    await act(async () => finish({ reevaluated: [] }))
+
+    // One request, and the queue moved exactly one card: nothing skipped unseen.
+    await screen.findByText('UBER TRIP')
+    expect(mockApi.post.mock.calls).toEqual([['/annotations/10/confirm', { category: 'Food' }]])
+  })
+
   it('does not react to shortcuts while typing in an input', async () => {
     const user = userEvent.setup()
     stubGet([makeCard()])
