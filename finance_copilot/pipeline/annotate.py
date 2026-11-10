@@ -1127,10 +1127,6 @@ def _try_rag_annotation(
     if not allow_llm:
         skips.append("rag_prompted: skipped (deterministic re-evaluation)")
         return None, None
-    off = guard.skip_reason("rag_prompted") if guard is not None else None
-    if off is not None:
-        skips.append(f"rag_prompted: off for the rest of this run ({off})")
-        return None, None
 
     # rag_prompted: inject similar examples as few-shot context into the LLM prompt
     # Examples, the majority hint and the off-example check all come from the
@@ -1138,6 +1134,12 @@ def _try_rag_annotation(
     examples = _build_examples_from_similar(conn, [m for m in similar if _is_evidence(m)], ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
+        # Checked only once there is a call to skip, so a row with no examples
+        # never counts as one the switched-off stage cost.
+        off = guard.skip_reason("rag_prompted") if guard is not None else None
+        if off is not None:
+            skips.append(f"rag_prompted: off for the rest of this run ({off})")
+            return None, None
         # Pass the example-category majority as a hint so the LLM weighs the
         # retrieved neighbors over its pretraining prior. Use the categories the
         # LLM actually sees (the selected examples), so the off-example cap below

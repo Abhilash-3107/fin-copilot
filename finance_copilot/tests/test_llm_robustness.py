@@ -808,6 +808,24 @@ class TestCircuitBreakerInPipeline:
         assert guard.reported_llm_error is None
         assert guard.reported_stage_error("rag_prompted") == "the model timed out on 2 requests in a row"
 
+    def test_row_without_examples_is_not_a_skip_of_the_off_stage(self):
+        """A row whose neighbours carry no labels would never have made the
+        few-shot call, so it can't count as one the switched-off stage cost."""
+        from finance_copilot.pipeline.annotate import RunGuard, _try_rag_annotation
+
+        _insert_txn(self.conn, "d1", "zqx unlabelled neighbour")  # no annotation: no examples
+        txn = _insert_txn(self.conn, "row", "zqx neighbour shop")
+        self.conn.commit()
+        guard = RunGuard()
+        guard.stages_off["rag_prompted"] = "the model timed out on 2 requests in a row"
+
+        with patch(f"{_ANNOTATE}.get_embedding_single", return_value=[0.1, 0.2]), \
+             patch(f"{_ANNOTATE}.find_similar", return_value=[{"transaction_id": "d1", "distance": 0.2}]):
+            _try_rag_annotation(self.conn, dict(txn), ["Shopping"], ctx={"skips": [], "embed_text": None},
+                                as_of="2026-01-15", guard=guard)
+
+        assert guard.reported_stage_error("rag_prompted") is None
+
     def test_provider_dying_on_the_last_row_is_still_reported(self):
         """Unlike a streak, an unreachable provider is reported even when it
         cost no later row: the user needs to know it's down."""
