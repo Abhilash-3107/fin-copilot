@@ -8,6 +8,8 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
+import httpx
+
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     demote_machine_annotation,
@@ -319,42 +321,66 @@ def rule_annotation(
     return result, trace
 
 
-# Rejected requests in a row after which the provider counts as misconfigured
-# rather than unlucky: a bad endpoint rejects every request the same way.
-_MAX_CONSECUTIVE_REJECTIONS = 3
+# Rows in a row with no usable LLM answer (rejected, unparseable after the
+# re-asks, or an unexpected error) after which the provider counts as broken
+# rather than unlucky: a misconfigured endpoint fails every request the same way.
+_MAX_CONSECUTIVE_LLM_FAILURES = 5
+# Embedding failures in a row (timeouts, 5xx) before retrieval is switched off
+# for the run. A refused connection or a configured-off provider switches it
+# off at once: those can't heal mid-run.
+_MAX_CONSECUTIVE_EMBED_FAILURES = 2
 
 
 class RunGuard:
     """Per-run circuit breakers for a run's two external dependencies.
 
-    Embeddings are disabled for the rest of the run on their first failure
-    (they fail per provider, not per text). The LLM is disabled on its first
-    LLMUnavailableError, which the client raises only after its own retries,
-    or after _MAX_CONSECUTIVE_REJECTIONS rejected requests in a row. Paying the
-    full timeout and retry budget again for every remaining row would turn a
-    stopped or hung Ollama into an hours-long run.
+    Paying the full timeout and retry budget again for every remaining row
+    would turn a stopped, hung or misconfigured provider into an hours-long
+    run, so each dependency is switched off for the rest of the run once it
+    has shown it can't serve:
+
+    - LLM: at once on LLMUnavailableError (the client raises it only after its
+      own retries), or after _MAX_CONSECUTIVE_LLM_FAILURES rows in a row with
+      no usable answer. llm_error says why, for the UI.
+    - Embeddings: at once when the provider is configured off or refuses the
+      connection, else after _MAX_CONSECUTIVE_EMBED_FAILURES failures in a row.
+      Rows then skip retrieval and go to the plain LLM. embed_error says why,
+      except when embeddings are simply configured off (the normal no-RAG state).
     """
 
     def __init__(self) -> None:
-        self.embed_error: str | None = None
         self.llm_error: str | None = None
-        self._rejections = 0
+        self.embed_error: str | None = None
+        self.embeddings_off = False
+        self._llm_failures = 0
+        self._embed_failures = 0
 
     def embed(self, text: str) -> list[float]:
-        """Embedding for text. Raises on failure, and once tripped without calling."""
-        if self.embed_error is not None:
-            raise EmbeddingsUnavailable(f"disabled for this run: {self.embed_error}")
+        """Embedding for text. Raises on failure, and once switched off without calling."""
+        if self.embeddings_off:
+            raise EmbeddingsUnavailable(f"off for this run: {self.embed_error or 'not configured'}")
         try:
-            return get_embedding_single(text)
-        except Exception as e:
-            self.embed_error = f"{type(e).__name__}: {e}"
-            level = logging.INFO if isinstance(e, EmbeddingsUnavailable) else logging.WARNING
-            logger.log(level, "embeddings unavailable, skipping retrieval for the rest of this run | %s", self.embed_error)
+            vec = get_embedding_single(text)
+        except EmbeddingsUnavailable:
+            self.embeddings_off = True  # configured off: not an error
             raise
+        except Exception as e:
+            self._embed_failures += 1
+            permanent = isinstance(e, (httpx.ConnectError, httpx.InvalidURL, httpx.UnsupportedProtocol))
+            if permanent or self._embed_failures >= _MAX_CONSECUTIVE_EMBED_FAILURES:
+                self.embeddings_off = True
+                self.embed_error = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "embeddings unavailable, skipping retrieval for the rest of this run | %s",
+                    self.embed_error,
+                )
+            raise
+        self._embed_failures = 0
+        return vec
 
     def llm(self, fn, *args, **kwargs):
         """fn(*args, **kwargs), or None when it fails or the breaker is open."""
-        if self.llm_error is not None:
+        if self.llm_error is not None or settings.llm_provider == "none":
             return None
         try:
             result = fn(*args, **kwargs)
@@ -362,13 +388,23 @@ class RunGuard:
             self._trip(str(e))
             return None
         except LLMRequestRejected as e:
-            self._rejections += 1
-            logger.warning("llm rejected a request (%d in a row) | %s", self._rejections, e)
-            if self._rejections >= _MAX_CONSECUTIVE_REJECTIONS:
-                self._trip(f"{self._rejections} requests in a row were rejected; last: {e}")
-            return None
-        self._rejections = 0
+            return self._failed(str(e))
+        except Exception as e:
+            # Anything else (a bad character in the API key, a non-UTF-8 body)
+            # fails the row, never the job; repeats trip the breaker below.
+            logger.warning("llm call raised unexpectedly", exc_info=True)
+            return self._failed(f"{type(e).__name__}: {e}")
+        if result is None:
+            return self._failed("the model's answers aren't valid JSON for the schema")
+        self._llm_failures = 0
         return result
+
+    def _failed(self, reason: str) -> None:
+        self._llm_failures += 1
+        logger.warning("llm gave no usable answer (%d in a row) | %s", self._llm_failures, reason)
+        if self._llm_failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
+            self._trip(f"{self._llm_failures} requests in a row failed; last: {reason}")
+        return None
 
     def _trip(self, error: str) -> None:
         self.llm_error = error
@@ -618,6 +654,7 @@ def auto_annotate(
         already_annotated=already_annotated_count,
         ai_active=settings.llm_provider != "none",
         llm_error=guard.llm_error,
+        embed_error=guard.embed_error,
     )
 
 
@@ -822,8 +859,8 @@ def _try_rag_annotation(
     skips: list[str] = ctx["skips"]
 
     embed_text = build_embed_text(txn)
-    if query_vec is None and guard is not None and guard.embed_error is not None:
-        skips.append(f"rag: embeddings unavailable for the rest of this run ({guard.embed_error})")
+    if query_vec is None and guard is not None and guard.embeddings_off:
+        skips.append(f"rag: embeddings off for the rest of this run ({guard.embed_error or 'not configured'})")
         return None, None
     if query_vec is None:
         try:

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { getActiveAnnotationJob, pollAnnotationJob, runAnnotationJob } from '../lib/api.js'
+import { JobBusyError, getActiveAnnotationJob, pollAnnotationJob, runAnnotationJob } from '../lib/api.js'
 
 const AnnotationJobContext = createContext(null)
 
@@ -13,6 +13,9 @@ export function AnnotationJobProvider({ children }) {
   const attached = useRef(false)
 
   const startAnnotation = useCallback(async body => {
+    // A job this tab already tracks (started here or re-attached on mount)
+    // holds the slot; don't overwrite its card with a run that can't start.
+    if (attached.current) throw new JobBusyError(null)
     // Show the card immediately (indeterminate) instead of waiting for the
     // first poll to come back.
     attached.current = true

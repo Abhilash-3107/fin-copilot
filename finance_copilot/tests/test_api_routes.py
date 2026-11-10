@@ -1077,6 +1077,74 @@ class TestAnnotationJobs:
         assert job["result"]["llm_failed"] == 2
         assert "can't reach the provider" in job["result"]["llm_error"]
 
+    def test_live_worker_is_never_reaped_however_quiet(self, file_db_client):
+        """A slow live worker (cold model load, long retry, big download) keeps
+        its job; only an in-flight row with no worker in this process is an orphan."""
+        from finance_copilot.api import live_jobs
+
+        client, conn = file_db_client
+        for job_id in ("slow", "orphan"):
+            conn.execute(
+                "INSERT INTO annotation_jobs (id, status, updated_at) "
+                "VALUES (?, 'running', datetime('now','-1 hour'))",
+                (job_id,),
+            )
+        conn.commit()
+
+        with patch.object(live_jobs, "_live", {"slow"}):
+            assert client.get("/api/annotations/jobs/slow").json()["status"] == "running"
+            orphan = client.get("/api/annotations/jobs/orphan").json()
+        assert orphan["status"] == "failed"
+        assert "stale" in orphan["error"]
+
+    def test_every_job_worker_registers_as_live(self):
+        from finance_copilot.api.routes.annotations import _run_annotation_job
+        from finance_copilot.api.routes.embeddings import _run_reembed_job
+        from finance_copilot.api.routes.local_llm import _run_download_job
+
+        for worker in (_run_annotation_job, _run_reembed_job, _run_download_job):
+            assert hasattr(worker, "__wrapped__"), worker.__name__
+
+    def test_live_registration_lasts_exactly_the_worker_run(self):
+        from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
+
+        seen = []
+
+        @tracks_live_job
+        def worker(job_id):
+            seen.append(live_job_ids())
+            raise RuntimeError("worker crashed")
+
+        with pytest.raises(RuntimeError):
+            worker("j1")
+        assert seen == [["j1"]]
+        assert live_job_ids() == []
+
+    def test_second_start_says_what_it_reattached_to(self, file_db_client):
+        """The single-job guard hands back the in-flight job; the response must
+        say so, and what kind and scope it is, so the UI never shows a re-embed's
+        or another statement's result as this run's."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, kind, status, updated_at) "
+            "VALUES ('re', 'reembed', 'running', datetime('now'))"
+        )
+        conn.commit()
+
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={"statement_id": "s9"})
+        assert resp.json() == {
+            "job_id": "re", "status": "running", "kind": "reembed", "statement_id": None, "attached": True,
+        }
+
+    def test_job_connection_waits_longer_for_the_lock(self, file_db_client):
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        c = _open_job_connection()
+        try:
+            assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+        finally:
+            c.close()
+
     def test_active_jobs_listing_for_reattach(self, file_db_client):
         """GET /jobs?active=1 returns the in-flight job so the UI can re-attach
         its progress card after a reload; a fresh live job is returned, a stale

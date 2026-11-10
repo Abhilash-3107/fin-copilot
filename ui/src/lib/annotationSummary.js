@@ -28,10 +28,13 @@ export function annotationSummary(result) {
     }
   }
 
-  return {
-    type: 'success',
-    message: `All done! ${fromRules} matched by rules, ${fromHistory} from history, ${result.llm_annotated ?? 0} by AI`,
+  const done = `All done! ${fromRules} matched by rules, ${fromHistory} from history, ${result.llm_annotated ?? 0} by AI`
+  if (result.embed_error) {
+    // Retrieval went down mid-run: still a success, but the AI worked without
+    // your history for part of it, so say so.
+    return { type: 'info', message: `${done}. Matching from history was unavailable (${result.embed_error})` }
   }
+  return { type: 'success', message: done }
 }
 
 // Toast duration: errors stay up long enough to read the provider message.

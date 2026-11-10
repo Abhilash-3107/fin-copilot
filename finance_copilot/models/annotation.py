@@ -141,3 +141,7 @@ class AutoAnnotateResult(BaseModel):
     # transaction still waiting on the LLM from that point counts as llm_failed
     # and stays unlabelled for the next run. The UI shows this message.
     llm_error: str | None = None
+    # Set when the embedding provider failed mid-run and retrieval was switched
+    # off for the rest of it (rows went straight to the plain LLM, which is less
+    # accurate). Not set when embeddings are simply configured off.
+    embed_error: str | None = None

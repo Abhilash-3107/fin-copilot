@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     count_snoozed,
@@ -105,37 +106,40 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
         conn.close()
 
 
-# A live job heartbeats updated_at via its progress callback after every row,
-# whatever the row's outcome. The longest silent stretch is one row: an
-# embedding call (60s read cap) plus one LLM call, which llm.call_budget_s()
-# caps across all its retries and re-asks (3 min by default). A job quiet for
-# this long has no worker behind it. test_stale_window_covers_one_row_budget
-# keeps the defaults honest.
+# A job with a live worker in this process is never reaped (live_jobs), so
+# this window only has to catch orphans: a worker that died, or a task that
+# never got scheduled. Live workers still heartbeat updated_at after every row
+# for the progress card.
 STALE_JOB_MINUTES = 10
 
 
 def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
-    """Fail in-flight jobs whose heartbeat has gone quiet past STALE_JOB_MINUTES.
+    """Fail in-flight jobs with no live worker whose heartbeat has gone quiet
+    past STALE_JOB_MINUTES: the worker died, or the task never got scheduled.
 
-    A live job heartbeats updated_at ~once per second; a longer silence means the
-    worker died (or the task never got scheduled). Any observer — a status poll, a
-    new job request, a page mount — can flip these to failed so nothing polls a
-    zombie forever. Returns the number of jobs reaped. Caller commits.
+    Any observer (a status poll, a new job request, a page mount) can flip these
+    to failed so nothing polls a zombie forever. A job whose worker is running
+    in this process is skipped however long it has been quiet, so a slow call
+    can never get a live job reaped and a duplicate run started beside it.
+    Returns the number of jobs reaped. Caller commits.
 
     Reads before writing: polls are frequent and almost never find anything
     stale, so they shouldn't need the write lock at all. A WAL read never
     blocks; an unconditional UPDATE here once made every poll 500 with
     "database is locked" while the worker was mid-write.
     """
+    live = live_job_ids()
     stale_where = (
         "WHERE status IN ('queued','running') "
         f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+        + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
     )
-    if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1").fetchone() is None:
+    if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1", live).fetchone() is None:
         return 0
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
-        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}"
+        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}",
+        live,
     )
     return cur.rowcount
 
@@ -155,6 +159,7 @@ def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+@tracks_live_job
 def _run_annotation_job(
     job_id: str,
     statement_id: str | None,
@@ -234,12 +239,21 @@ def start_auto_annotate_job(
         _reap_stale_jobs(conn)
 
         inflight = conn.execute(
-            "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
+            "SELECT id, status, kind, statement_id FROM annotation_jobs "
+            "WHERE status IN ('queued','running') ORDER BY created_at LIMIT 1"
         ).fetchone()
         if inflight is not None:
             conn.commit()
-            return {"job_id": inflight["id"], "status": inflight["status"]}
+            # Say it's a re-attach and to what: the in-flight job may be a
+            # different kind (a re-embed) or another statement's run, and the
+            # caller must not present its result as the run it asked for.
+            return {
+                "job_id": inflight["id"],
+                "status": inflight["status"],
+                "kind": inflight["kind"],
+                "statement_id": inflight["statement_id"],
+                "attached": True,
+            }
 
         job_id = str(ulid.ULID())
         conn.execute(

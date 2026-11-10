@@ -222,13 +222,21 @@ class TestCallDeadline:
         assert timeout.read <= 7.0
         assert timeout.connect <= 5.0
 
-    def test_stale_window_covers_one_row_budget(self):
-        """The job reaper must never see a live worker as dead: one row is at
-        most an embedding call (60s read) plus one capped LLM call."""
-        from finance_copilot.api.routes.annotations import STALE_JOB_MINUTES
+    def test_unsupported_scheme_is_not_retried(self, monkeypatch):
+        monkeypatch.setattr(settings, "ollama_url", "ftp://localhost:11434")
+        with patch("time.sleep") as sleep, pytest.raises(LLMUnavailableError, match="UnsupportedProtocol"):
+            annotate_transaction_llm(_TXN, _CATS)
+        sleep.assert_not_called()
 
-        worst_row_s = 60 + 5 + call_budget_s()
-        assert worst_row_s * 2 < STALE_JOB_MINUTES * 60
+    def test_embedding_call_has_short_connect_timeout(self, monkeypatch):
+        from finance_copilot.pipeline.embed import get_embedding_single
+
+        monkeypatch.setattr(settings, "embedding_provider", "ollama")
+        ok = httpx.Response(200, json={"embeddings": [[0.1, 0.2]]}, request=httpx.Request("POST", _URL))
+        with patch("httpx.post", return_value=ok) as p:
+            assert get_embedding_single("x") == [0.1, 0.2]
+        timeout = p.call_args.kwargs["timeout"]
+        assert timeout.connect == 5.0 and timeout.read == 60.0
 
 
 class TestRunGuard:
@@ -242,29 +250,87 @@ class TestRunGuard:
         assert fn.call_count == 1
         assert guard.llm_error == "down"
 
-    def test_consecutive_rejections_trip_and_success_resets(self):
+    def test_consecutive_failures_of_any_kind_trip_and_success_resets(self):
+        """Rejections, unparseable answers (None) and unexpected exceptions all
+        count toward the same in-a-row limit; one good answer resets it."""
+        from finance_copilot.pipeline.annotate import _MAX_CONSECUTIVE_LLM_FAILURES, RunGuard
+
+        assert _MAX_CONSECUTIVE_LLM_FAILURES == 5
+        guard = RunGuard()
+        rejected = LLMRequestRejected("HTTP 400")
+        weird = UnicodeEncodeError("ascii", "sk-​", 3, 4, "ordinal not in range")
+        fn = MagicMock(side_effect=[
+            rejected, None, weird, None, "ok",              # 4 failures, then reset
+            rejected, None, weird, None, rejected,          # 5 in a row: trips
+            "unreached",
+        ])
+        results = [guard.llm(fn) for _ in range(11)]
+        assert results == [None] * 4 + ["ok"] + [None] * 6
+        assert fn.call_count == 10
+        assert guard.llm_error.startswith("5 requests in a row failed; last: HTTP 400")
+
+    def test_unexpected_exception_never_escapes(self):
         from finance_copilot.pipeline.annotate import RunGuard
 
         guard = RunGuard()
-        rejected = LLMRequestRejected("HTTP 400")
-        fn = MagicMock(side_effect=[rejected, rejected, "ok", rejected, rejected, rejected, "unreached"])
-        results = [guard.llm(fn) for _ in range(7)]
-        assert results == [None, None, "ok", None, None, None, None]
-        assert fn.call_count == 6
-        assert "3 requests in a row were rejected" in guard.llm_error
+        assert guard.llm(MagicMock(side_effect=AttributeError("'list' object has no attribute 'get'"))) is None
+        assert guard.llm_error is None  # one failure is a row, not an outage
 
-    def test_embedding_failure_trips_embeddings_only(self):
+    def test_ai_off_never_calls_the_llm(self, monkeypatch):
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        guard = RunGuard()
+        fn = MagicMock()
+        for _ in range(10):
+            assert guard.llm(fn) is None
+        fn.assert_not_called()
+        assert guard.llm_error is None  # AI off is the normal no-AI state, not an outage
+
+    @pytest.mark.parametrize("exc", [httpx.ConnectError("refused"), httpx.InvalidURL("bad")])
+    def test_embedding_connect_failure_switches_off_at_once(self, exc):
         from finance_copilot.pipeline.annotate import RunGuard
         from finance_copilot.pipeline.embed import EmbeddingsUnavailable
 
         guard = RunGuard()
-        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=httpx.ConnectError("refused")) as emb:
-            with pytest.raises(httpx.ConnectError):
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=exc) as emb:
+            with pytest.raises(type(exc)):
                 guard.embed("a")
-            with pytest.raises(EmbeddingsUnavailable, match="disabled for this run"):
+            with pytest.raises(EmbeddingsUnavailable, match="off for this run"):
                 guard.embed("b")
         assert emb.call_count == 1
+        assert guard.embeddings_off and type(exc).__name__ in guard.embed_error
         assert guard.llm_error is None
+
+    def test_one_embedding_timeout_is_tolerated_two_in_a_row_are_not(self):
+        from finance_copilot.pipeline.annotate import RunGuard
+
+        guard = RunGuard()
+        timeout = httpx.ReadTimeout("slow")
+        side = [timeout, [0.1], timeout, timeout, [0.2]]
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=side) as emb:
+            outcomes = []
+            for _ in range(5):
+                try:
+                    outcomes.append(guard.embed("x"))
+                except Exception as e:
+                    outcomes.append(type(e).__name__)
+        assert outcomes == ["ReadTimeout", [0.1], "ReadTimeout", "ReadTimeout", "EmbeddingsUnavailable"]
+        assert emb.call_count == 4
+        assert "ReadTimeout" in guard.embed_error
+
+    def test_embeddings_configured_off_is_not_an_error(self):
+        from finance_copilot.pipeline.annotate import RunGuard
+        from finance_copilot.pipeline.embed import EmbeddingsUnavailable
+
+        guard = RunGuard()
+        with patch(f"{_ANNOTATE}.get_embedding_single",
+                   side_effect=EmbeddingsUnavailable("embedding_provider is 'none'")) as emb:
+            for _ in range(3):
+                with pytest.raises(EmbeddingsUnavailable):
+                    guard.embed("x")
+        assert emb.call_count == 1
+        assert guard.embeddings_off and guard.embed_error is None
 
 
 class TestCircuitBreakerInPipeline:
@@ -316,17 +382,43 @@ class TestCircuitBreakerInPipeline:
     def test_repeated_rejections_trip_the_breaker(self):
         from finance_copilot.pipeline.annotate import auto_annotate
 
-        self._unknown_rows(5)
+        self._unknown_rows(7)
         with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
              patch(f"{_ANNOTATE}.annotate_transaction_llm",
                    side_effect=LLMRequestRejected("provider rejected this request (HTTP 400)")) as llm:
             result = auto_annotate(self.conn)
 
-        assert llm.call_count == 3
-        assert result.llm_failed == 5
-        assert "3 requests in a row were rejected" in result.llm_error
+        assert llm.call_count == 5
+        assert result.llm_failed == 7
+        assert "5 requests in a row failed" in result.llm_error
 
-    def test_embedding_outage_is_paid_once_per_run(self):
+    def test_model_that_never_answers_in_json_trips_the_breaker(self):
+        """A chatty BYOM model that ignores the schema returns 200s that never
+        parse: that must not cost every row of a big import."""
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        self._unknown_rows(8)
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm", return_value=None) as llm:
+            result = auto_annotate(self.conn)
+
+        assert llm.call_count == 5
+        assert result.llm_failed == 8
+        assert "aren't valid JSON" in result.llm_error
+
+    def test_unexpected_llm_exception_does_not_fail_the_run(self):
+        from finance_copilot.pipeline.annotate import auto_annotate
+
+        self._unknown_rows(2)
+        bad_key = UnicodeEncodeError("ascii", "sk-​", 3, 4, "ordinal not in range")
+        with patch(f"{_ANNOTATE}.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch(f"{_ANNOTATE}.annotate_transaction_llm", side_effect=bad_key):
+            result = auto_annotate(self.conn)
+
+        assert result.llm_failed == 2
+        assert result.total_processed == 2
+
+    def test_embedding_outage_is_paid_twice_per_run_at_most(self):
         from finance_copilot.pipeline.annotate import auto_annotate
 
         self._unknown_rows(4)
@@ -335,10 +427,11 @@ class TestCircuitBreakerInPipeline:
                    return_value=AnnotationResponse(category="Shopping", confidence=0.7)) as llm:
             result = auto_annotate(self.conn)
 
-        assert emb.call_count == 1
+        assert emb.call_count == 2
         assert llm.call_count == 4  # plain LLM still serves every row
         assert result.llm_annotated == 4
         assert result.llm_error is None
+        assert "ReadTimeout" in result.embed_error
 
     def test_healthy_llm_run_reports_no_error(self):
         from finance_copilot.pipeline.annotate import auto_annotate

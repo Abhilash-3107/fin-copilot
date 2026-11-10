@@ -49,7 +49,9 @@ function CoverageBadge({ done, total }) {
 
 export default function Upload() {
   const toast = useToast()
-  const { startAnnotation } = useAnnotationJob()
+  // job is non-null while any run is tracked (here, another page, or
+  // re-attached after a reload): one run at a time, so every Categorize waits.
+  const { job, startAnnotation } = useAnnotationJob()
   const [statements, setStatements] = useState([])
   const [file, setFile] = useState(null)
   const [password, setPassword] = useState('')
@@ -384,7 +386,7 @@ export default function Upload() {
                       <Tooltip content="Use AI to automatically categorize transactions in this statement">
                         <button
                           onClick={() => autoAnnotate(s)}
-                          disabled={annotatingId === s.id}
+                          disabled={annotatingId === s.id || job != null}
                           className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
                         >
                           <Zap size={13} />

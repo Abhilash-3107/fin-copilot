@@ -24,6 +24,14 @@ describe('annotationSummary', () => {
     expect(summaryDuration(s)).toBe(9000)
   })
 
+  it('notes when matching from history dropped out mid-run', () => {
+    const s = annotationSummary({ ...base, embed_error: 'ReadTimeout: hung' })
+    expect(s.type).toBe('info')
+    expect(s.message).toBe(
+      'All done! 4 matched by rules, 3 from history, 4 by AI. Matching from history was unavailable (ReadTimeout: hung)'
+    )
+  })
+
   it('treats no-AI as the normal state, not an error', () => {
     const s = annotationSummary({ ...base, ai_active: false, llm_failed: 5 })
     expect(s.type).toBe('success')
