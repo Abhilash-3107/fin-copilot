@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.api.live_jobs import tracks_live_job
 from finance_copilot.db.queries.embeddings import (
     delete_embeddings,
     ensure_vec_dimension,
@@ -61,6 +62,7 @@ def clear_embeddings(
     return {"cleared": deleted}
 
 
+@tracks_live_job
 def _run_reembed_job(job_id: str) -> None:
     # Import here to avoid a routes-module import cycle; annotations owns the
     # shared job-connection/heartbeat helpers.

@@ -131,6 +131,18 @@ class Settings(BaseSettings):
     # truncates silently from the front (the system prompt) — prompt_eval_count is
     # logged per call so truncation is observable.
     ollama_num_ctx: int = 2048
+    # LLM call robustness (pipeline/llm.py). llm_timeout_s bounds how long one
+    # request may wait for the provider's answer; a cold model load on a slow
+    # CPU is the long case. A connection that can't even be opened fails in 5s.
+    # Transient failures (connection refused/reset, timeouts, 429, 5xx) are
+    # retried with jittered exponential backoff up to llm_max_attempts; anything
+    # else (bad key, unknown model) fails at once. One transaction's whole LLM
+    # call, retries and self-repair re-asks included, is capped at
+    # llm_max_attempts * llm_timeout_s (llm.call_budget_s). Raising
+    # llm_timeout_s for a slow machine is safe: the job reaper never touches a
+    # job whose worker is alive (api/live_jobs.py).
+    llm_timeout_s: float = 60.0
+    llm_max_attempts: int = 3
     # Replace verbalized LLM confidence with token-logprob mass on the category
     # value (requires an Ollama version that returns logprobs; falls back to the
     # verbalized number when logprobs are absent). Adopted 2026-07-02: -9.5%

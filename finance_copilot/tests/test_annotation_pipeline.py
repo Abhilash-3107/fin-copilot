@@ -274,33 +274,39 @@ class TestLLMClient:
 
         assert result is None
 
-    def test_http_error_returns_none(self):
+    def test_http_error_raises_unavailable(self):
+        """A provider error is about the provider, not this row: it raises so a
+        batch can stop calling it (see TestLLMTransportRetries)."""
         import httpx as _httpx
 
-        from finance_copilot.pipeline.llm import annotate_transaction_llm
+        from finance_copilot.pipeline.llm import LLMUnavailableError, annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "error case", "upi_meta": None,
                "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
 
         with patch("httpx.post", side_effect=_httpx.HTTPError("connection refused")), \
-             patch("time.sleep"):
-            result = annotate_transaction_llm(txn, ["Food & Dining"], max_retries=1)
+             patch("time.sleep"), pytest.raises(LLMUnavailableError):
+            annotate_transaction_llm(txn, ["Food & Dining"], max_retries=1)
 
-        assert result is None
-
-    def test_timeout_returns_none(self):
+    def test_read_timeout_fails_the_row_not_the_provider(self):
+        """Connected but slow can be this row alone, so it's a timeout for the
+        row (the run's guard stops after a couple in a row), not an outage."""
         import httpx as _httpx
 
-        from finance_copilot.pipeline.llm import annotate_transaction_llm
+        from finance_copilot.pipeline.llm import (
+            LLMTimeout,
+            LLMUnavailableError,
+            annotate_transaction_llm,
+        )
 
         txn = {"id": "t1", "raw_description": "slow response", "upi_meta": None,
                "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
 
-        with patch("httpx.post", side_effect=_httpx.TimeoutException("timeout")), \
-             patch("time.sleep"):
-            result = annotate_transaction_llm(txn, ["Food & Dining"], max_retries=0)
-
-        assert result is None
+        with patch("httpx.post", side_effect=_httpx.ReadTimeout("timeout")) as p, \
+             patch("time.sleep"), pytest.raises(LLMTimeout, match="no answer within the time limit") as exc:
+            annotate_transaction_llm(txn, ["Food & Dining"], max_retries=0)
+        assert not isinstance(exc.value, LLMUnavailableError)
+        assert p.call_count == 3  # still retried: a cold model load often answers on the next try
 
 
 # ---------------------------------------------------------------------------

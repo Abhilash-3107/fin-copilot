@@ -176,13 +176,16 @@ class TestProviderSeam:
         assert result["ok"] is False
         assert "local-llm" in result["detail"]
 
-    def test_call_llm_returns_none_when_unavailable(self):
-        from finance_copilot.pipeline.llm import annotate_transaction_llm
+    def test_call_llm_raises_unavailable_when_missing(self):
+        from finance_copilot.pipeline.llm import LLMUnavailableError, annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "UPI/ZOMATO/123", "amount": 100, "debit_credit": "debit"}
-        with patch.object(settings, "llm_provider", "local"):
-            # No extra installed in the test env → LocalLLMError → clean None.
-            assert annotate_transaction_llm(txn, ["Food"]) is None
+        # Missing extra/model → LocalLLMError → LLMUnavailableError, which trips
+        # the run's circuit breaker instead of failing every row one by one.
+        with patch.object(settings, "llm_provider", "local"), \
+             patch.object(local_llm, "chat_completion", side_effect=local_llm.LocalLLMError("extra missing")), \
+             pytest.raises(LLMUnavailableError, match="extra missing"):
+            annotate_transaction_llm(txn, ["Food"])
 
 
 def _model_available() -> bool:

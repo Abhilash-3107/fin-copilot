@@ -50,7 +50,7 @@ from finance_copilot.pipeline.annotate import (
 from finance_copilot.pipeline.calibration import get_calibrated_dampening
 from finance_copilot.pipeline.derived import reconcile_derived_data
 from finance_copilot.pipeline.embed import stale_embedding_rows
-from finance_copilot.pipeline.llm import annotate_transaction_llm
+from finance_copilot.pipeline.llm import LLMRequestRejected, annotate_transaction_llm
 
 
 def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
@@ -67,9 +67,15 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
             "latency_s": time.monotonic() - t0,
         }
 
-    rag_result, _trace = _try_rag_annotation(
-        conn, txn, category_list, before_txn_date=txn["txn_date"], as_of=txn["txn_date"]
-    )
+    # A request the provider rejects (e.g. a prompt over the context window)
+    # is a miss for this row; LLMUnavailableError still aborts, since scoring a
+    # dead provider would only measure the outage.
+    try:
+        rag_result, _trace = _try_rag_annotation(
+            conn, txn, category_list, before_txn_date=txn["txn_date"], as_of=txn["txn_date"]
+        )
+    except LLMRequestRejected:
+        rag_result = None
     if rag_result is not None:
         return {
             "stage": rag_result.source,
@@ -79,7 +85,10 @@ def _predict(conn, txn: dict, category_list: list[str], known_people) -> dict:
             "latency_s": time.monotonic() - t0,
         }
 
-    llm_result = annotate_transaction_llm(txn, category_list)
+    try:
+        llm_result = annotate_transaction_llm(txn, category_list)
+    except LLMRequestRejected:
+        llm_result = None
     if llm_result is not None:
         category = _normalize_category(llm_result.category, category_list)
         dampening = get_calibrated_dampening(conn, "llm", category)

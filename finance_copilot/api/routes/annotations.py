@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     count_snoozed,
@@ -68,15 +69,25 @@ def auto_annotate_endpoint(
     body: AutoAnnotateRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Synchronous annotation — fine for scripts/small batches. The UI uses the job flow."""
+    """Synchronous annotation, for scripts and the CLI. Every UI entry point uses
+    the job flow (POST /auto-annotate/jobs), which adds the single-job guard,
+    progress, and the stale-job reaper; this path has none of them."""
     return auto_annotate(conn, body.statement_id, body.transaction_ids)
+
+
+# Background work has no user waiting on each write, so it waits longer for
+# the lock than a request does: a burst of request-path writes (a Teach me
+# re-evaluation, say) must not fail a long annotation run.
+_JOB_BUSY_TIMEOUT_MS = 30_000
 
 
 def _open_job_connection() -> sqlite3.Connection:
     """Background tasks outlive the request's connection; open a fresh one."""
     from finance_copilot.db.connection import get_connection
 
-    return get_connection()
+    conn = get_connection()
+    conn.execute(f"PRAGMA busy_timeout={_JOB_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def _embed_in_background(transaction_ids: list[str]) -> None:
@@ -95,35 +106,41 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
         conn.close()
 
 
-# A live job heartbeats updated_at roughly once per second via its progress
-# callback; the longest silent stretch is a single slow LLM call. A job quiet
-# for this long has no worker behind it.
+# A job with a live worker in this process is never reaped (live_jobs), so
+# this window only has to catch orphans: a worker that died, or a task that
+# never got scheduled. Workers still heartbeat updated_at after every row, as
+# a backstop that keeps the time window meaningful on its own (e.g. if a worker
+# ever runs where this process's registry can't see it).
 STALE_JOB_MINUTES = 10
 
 
 def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
-    """Fail in-flight jobs whose heartbeat has gone quiet past STALE_JOB_MINUTES.
+    """Fail in-flight jobs with no live worker whose heartbeat has gone quiet
+    past STALE_JOB_MINUTES: the worker died, or the task never got scheduled.
 
-    A live job heartbeats updated_at ~once per second; a longer silence means the
-    worker died (or the task never got scheduled). Any observer — a status poll, a
-    new job request, a page mount — can flip these to failed so nothing polls a
-    zombie forever. Returns the number of jobs reaped. Caller commits.
+    Any observer (a status poll, a new job request, a page mount) can flip these
+    to failed so nothing polls a zombie forever. A job whose worker is running
+    in this process is skipped however long it has been quiet, so a slow call
+    can never get a live job reaped and a duplicate run started beside it.
+    Returns the number of jobs reaped. Caller commits.
 
-    Reads before writing: a live worker holds the write lock across a slow LLM
-    call (its progress UPDATE commits at most once a second), so an unconditional
-    UPDATE here made every status poll wait out busy_timeout and 500 with
-    "database is locked" mid-run. A WAL read never blocks, and when something
-    really is stale there is no live writer left to wait on.
+    Reads before writing: polls are frequent and almost never find anything
+    stale, so they shouldn't need the write lock at all. A WAL read never
+    blocks; an unconditional UPDATE here once made every poll 500 with
+    "database is locked" while the worker was mid-write.
     """
+    live = live_job_ids()
     stale_where = (
         "WHERE status IN ('queued','running') "
         f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
+        + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
     )
-    if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1").fetchone() is None:
+    if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1", live).fetchone() is None:
         return 0
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
-        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}"
+        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}",
+        live,
     )
     return cur.rowcount
 
@@ -143,6 +160,7 @@ def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+@tracks_live_job
 def _run_annotation_job(
     job_id: str,
     statement_id: str | None,
@@ -160,15 +178,18 @@ def _run_annotation_job(
 
         def progress(processed: int, total: int) -> None:
             nonlocal last_commit
+            # Write at most ~once per second, and commit every write it makes.
+            # A throttled UPDATE left uncommitted would hold the write lock into
+            # the next slow LLM call and block every other writer.
+            now = time.monotonic()
+            if now - last_commit < 1.0 and processed != total:
+                return
             conn.execute(
                 "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
                 (processed, total, job_id),
             )
-            # Commit at most ~once per second; the pipeline's batch commits flush the rest
-            now = time.monotonic()
-            if now - last_commit >= 1.0 or processed == total:
-                conn.commit()
-                last_commit = now
+            conn.commit()
+            last_commit = now
 
         result = auto_annotate(conn, statement_id, transaction_ids, progress_cb=progress)
         conn.execute(
@@ -219,12 +240,21 @@ def start_auto_annotate_job(
         _reap_stale_jobs(conn)
 
         inflight = conn.execute(
-            "SELECT id, status FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
+            "SELECT id, status, kind, statement_id FROM annotation_jobs "
+            "WHERE status IN ('queued','running') ORDER BY created_at LIMIT 1"
         ).fetchone()
         if inflight is not None:
             conn.commit()
-            return {"job_id": inflight["id"], "status": inflight["status"]}
+            # Say it's a re-attach and to what: the in-flight job may be a
+            # different kind (a re-embed) or another statement's run, and the
+            # caller must not present its result as the run it asked for.
+            return {
+                "job_id": inflight["id"],
+                "status": inflight["status"],
+                "kind": inflight["kind"],
+                "statement_id": inflight["statement_id"],
+                "attached": True,
+            }
 
         job_id = str(ulid.ULID())
         conn.execute(

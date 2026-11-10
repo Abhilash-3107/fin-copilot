@@ -110,7 +110,9 @@ def _ollama_embeddings_batch(texts: list[str], timeout: float) -> list[list[floa
         "model": settings.ollama_embedding_model,
         "input": texts,
     }
-    response = httpx.post(url, json=payload, timeout=timeout)
+    # Short connect: a stopped or unreachable Ollama should fail in seconds,
+    # not hold a run for the whole read timeout.
+    response = httpx.post(url, json=payload, timeout=httpx.Timeout(timeout, connect=min(5.0, timeout)))
     response.raise_for_status()
     return response.json()["embeddings"]
 

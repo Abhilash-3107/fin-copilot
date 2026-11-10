@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from finance_copilot import local_llm
 from finance_copilot.api.deps import get_db
+from finance_copilot.api.live_jobs import tracks_live_job
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class DownloadRequest(BaseModel):
     model_key: str | None = None
 
 
+@tracks_live_job
 def _run_download_job(job_id: str, model_key: str | None) -> None:
     from finance_copilot.api.routes.annotations import _open_job_connection
 

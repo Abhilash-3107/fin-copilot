@@ -8,6 +8,8 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 
+import httpx
+
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     demote_machine_annotation,
@@ -51,8 +53,15 @@ from finance_copilot.pipeline.counterparty import (
     CounterpartyPrior,
     counterparty_prior,
 )
-from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
+from finance_copilot.pipeline.embed import (
+    EmbeddingsUnavailable,
+    build_embed_text,
+    get_embedding_single,
+)
 from finance_copilot.pipeline.llm import (
+    LLMRequestRejected,
+    LLMTimeout,
+    LLMUnavailableError,
     annotate_transaction_llm,
     annotate_transaction_llm_with_examples,
     top_level_categories,
@@ -313,6 +322,177 @@ def rule_annotation(
     return result, trace
 
 
+# Provider-level failures in a row (rejected requests, exhausted rate limits,
+# unexpected errors) after which a prompt stage counts as broken rather than
+# unlucky: a misconfigured endpoint fails every request the same way.
+_MAX_CONSECUTIVE_LLM_FAILURES = 5
+# Timed-out rows in a row after which a stage counts as hung (or far too slow
+# for llm_timeout_s). Lower than the above because each one costs the whole
+# per-call budget; one slow row on its own is tolerated.
+_MAX_CONSECUTIVE_LLM_TIMEOUTS = 2
+# Embedding failures in a row (timeouts, 5xx) before retrieval is switched off
+# for the run. A refused connection or a configured-off provider switches it
+# off at once: those can't heal mid-run.
+_MAX_CONSECUTIVE_EMBED_FAILURES = 2
+# The plain-prompt LLM stage: the pipeline's last resort, so a streak there
+# switches the LLM off for the run.
+PLAIN_LLM_STAGE = "llm"
+
+
+@dataclass
+class _Streak:
+    failures: int = 0
+    timeouts: int = 0
+
+
+class RunGuard:
+    """Per-run circuit breakers for a run's two external dependencies.
+
+    Paying the full timeout and retry budget again for every remaining row
+    would turn a stopped, hung or misconfigured provider into an hours-long
+    run, so each dependency is switched off for the rest of the run once it
+    has shown it can't serve. Only provider-level signals count:
+
+    - LLM: off for the run at once on LLMUnavailableError (the client raises
+      it only after its own retries). Per prompt stage, after
+      _MAX_CONSECUTIVE_LLM_TIMEOUTS timeouts in a row or
+      _MAX_CONSECUTIVE_LLM_FAILURES provider failures in a row: that switches
+      off the rag_prompted stage alone (rows fall through to the plain
+      prompt), or the LLM for the run when it's the plain stage.
+      A bad answer (the model replied, but not usable JSON) fails only its
+      row and counts as a reply: it says the provider is up, and the per-call
+      budget already caps what it costs. That is the same as before the
+      breaker existed, never slower.
+    - Embeddings: at once when the provider is configured off or refuses the
+      connection, else after _MAX_CONSECUTIVE_EMBED_FAILURES failures in a row.
+      Rows then skip retrieval and go to the plain LLM.
+
+    llm_error / stage_error / embed_error say why, for the UI; a breaker that
+    tripped on the last rows and skipped nothing isn't reported (it changed
+    nothing, and an error over a labelled run would only mislead).
+    """
+
+    def __init__(self) -> None:
+        self.llm_error: str | None = None
+        self.embed_error: str | None = None
+        self.embeddings_off = False
+        self.stages_off: dict[str, str] = {}  # stage -> why it went off
+        self._streaks: dict[str, _Streak] = {}
+        self._embed_failures = 0
+        self._llm_unreachable = False  # tripped on LLMUnavailableError
+        self._skipped_after_trip = 0  # calls the LLM-wide breaker stopped
+        self._skipped_by_stage: dict[str, int] = {}  # calls a stage breaker stopped
+
+    @property
+    def reported_llm_error(self) -> str | None:
+        """llm_error, if the user needs it: the provider was unreachable, or a
+        streak switched the LLM off and that cost later rows their call."""
+        if self.llm_error is not None and (self._llm_unreachable or self._skipped_after_trip):
+            return self.llm_error
+        return None
+
+    def reported_stage_error(self, stage: str) -> str | None:
+        """Why a stage went off, if that cost later rows their call there."""
+        return self.stages_off.get(stage) if self._skipped_by_stage.get(stage) else None
+
+    def embed(self, text: str) -> list[float]:
+        """Embedding for text. Raises on failure, and once switched off without calling."""
+        if self.embeddings_off:
+            raise EmbeddingsUnavailable(f"off for this run: {self.embed_error or 'not configured'}")
+        try:
+            vec = get_embedding_single(text)
+        except EmbeddingsUnavailable:
+            self.embeddings_off = True  # configured off: not an error
+            raise
+        except Exception as e:
+            self._embed_failures += 1
+            permanent = isinstance(e, (httpx.ConnectError, httpx.InvalidURL, httpx.UnsupportedProtocol))
+            if permanent or self._embed_failures >= _MAX_CONSECUTIVE_EMBED_FAILURES:
+                self.embeddings_off = True
+                self.embed_error = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "embeddings unavailable, skipping retrieval for the rest of this run | %s",
+                    self.embed_error,
+                )
+            raise
+        self._embed_failures = 0
+        return vec
+
+    def skip_reason(self, stage: str = PLAIN_LLM_STAGE) -> str | None:
+        """Why a call at this stage won't be made (and record the skip), or None."""
+        if self.llm_error is not None:
+            self._skipped_after_trip += 1
+            return self.llm_error
+        if stage in self.stages_off:
+            self._skipped_by_stage[stage] = self._skipped_by_stage.get(stage, 0) + 1
+            return self.stages_off[stage]
+        return None
+
+    def llm(self, fn, *args, stage: str = PLAIN_LLM_STAGE, **kwargs):
+        """fn(*args, **kwargs), or None when it fails or the breaker is open.
+
+        stage names the prompt this call belongs to. Streaks are counted per
+        stage, so one row failing in both rag_prompted and then the plain
+        fallback counts once in each, and a prompt that only fails at one
+        stage (few-shot examples pushing it past a context window) switches
+        off only that stage: its rows still fall through to the plain prompt.
+        """
+        if settings.llm_provider == "none" or self.skip_reason(stage) is not None:
+            return None
+        streak = self._streaks.setdefault(stage, _Streak())
+        try:
+            result = fn(*args, **kwargs)
+        except LLMUnavailableError as e:
+            self._llm_unreachable = True
+            self._trip(str(e))
+            return None
+        except LLMTimeout as e:
+            streak.timeouts += 1
+            streak.failures += 1
+            if streak.timeouts >= _MAX_CONSECUTIVE_LLM_TIMEOUTS:
+                return self._stage_off(
+                    stage,
+                    f"the model timed out on {streak.timeouts} requests in a row ({e}); if this "
+                    "machine is just slow, start the app with LLM_TIMEOUT_S set higher (seconds)",
+                )
+            reason = str(e)
+        except Exception as e:
+            # A rejected request or rate limit (LLMRequestRejected), or anything
+            # unexpected (a bad character in the API key, a non-UTF-8 body):
+            # fails the row, never the job; a streak of them trips the stage.
+            if not isinstance(e, LLMRequestRejected):
+                logger.warning("llm call raised unexpectedly", exc_info=True)
+            streak.timeouts = 0
+            streak.failures += 1
+            reason = f"{e}" if isinstance(e, LLMRequestRejected) else f"{type(e).__name__}: {e}"
+        else:
+            # The provider replied. Even an unusable answer says it's up, so it
+            # ends both streaks; the row itself just fails.
+            streak.failures = streak.timeouts = 0
+            if result is None:
+                logger.warning("llm %s gave an unusable answer (this row only)", stage)
+            return result
+        logger.warning("llm %s call failed (%d in a row) | %s", stage, streak.failures, reason)
+        if streak.failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
+            return self._stage_off(stage, f"{streak.failures} requests in a row failed; last: {reason}")
+        return None
+
+    def _stage_off(self, stage: str, reason: str) -> None:
+        if stage == PLAIN_LLM_STAGE:  # the last resort: nothing left to fall back to
+            self._trip(reason)
+        else:
+            self.stages_off[stage] = reason
+            logger.warning(
+                "llm %s off for the rest of this run, rows fall through to the plain prompt | %s",
+                stage, reason,
+            )
+        return None
+
+    def _trip(self, error: str) -> None:
+        self.llm_error = error
+        logger.error("LLM provider unavailable, skipping the LLM for the rest of this run | %s", error)
+
+
 def auto_annotate(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
@@ -378,6 +558,18 @@ def auto_annotate(
             conn.commit()
             uncommitted = 0
 
+    def _release_write_lock() -> None:
+        # Call before anything slow and external (embedding, LLM). An open write
+        # transaction holds SQLite's single write lock, so every other writer
+        # (a manual label, the job's own status row, Teach me) would wait out
+        # busy_timeout and fail with "database is locked" behind a model call.
+        nonlocal uncommitted
+        if conn.in_transaction:
+            conn.commit()
+        uncommitted = 0
+
+    guard = RunGuard()
+
     stage = load_stage_context(conn)
     known_people = stage.known_people
 
@@ -389,6 +581,14 @@ def auto_annotate(
     def _tick() -> None:
         nonlocal processed
         processed += 1
+        if progress_cb is not None:
+            progress_cb(processed, total)
+
+    def _heartbeat() -> None:
+        # A row that falls through a slow stage (an embedding or LLM call that
+        # failed) isn't processed yet but still proves the worker is alive.
+        # The reaper already skips live workers (api/live_jobs.py); this keeps
+        # updated_at fresh as a backstop to that.
         if progress_cb is not None:
             progress_cb(processed, total)
 
@@ -435,8 +635,10 @@ def auto_annotate(
     if needs_rag:
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
         for txn in needs_rag:
+            _release_write_lock()
             rag_result, rag_trace = _try_rag_annotation(
-                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]], as_of=txn["txn_date"]
+                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]],
+                as_of=txn["txn_date"], guard=guard,
             )
             if rag_result is not None:
                 _persist(rag_result, rag_trace)
@@ -449,6 +651,7 @@ def auto_annotate(
                     low_confidence += 1
             else:
                 needs_llm.append(txn)
+                _heartbeat()
 
     # --- Stage 4: Plain LLM pass ---
     logger.info(
@@ -457,6 +660,12 @@ def auto_annotate(
     )
     if needs_llm:
         logger.info("stage 4 | llm | %d txns", len(needs_llm))
+        # Rows whose few-shot call already failed go last (a stable sort keeps
+        # the rest in order). This stage only sees rows earlier stages couldn't
+        # label, so slow rows that were far apart in the run would otherwise
+        # sit next to each other here and trip the timeout streak ahead of
+        # fresh rows that never got a try.
+        needs_llm.sort(key=lambda t: bool(rag_ctx_by_txn.get(t["id"], {}).get("rag_llm_failed")))
         # Recurring transactions share normalized descriptions — call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
@@ -468,10 +677,11 @@ def auto_annotate(
             )
             llm_result = llm_cache.get(cache_key)
             if llm_result is None:
-                llm_result = annotate_transaction_llm(txn, category_list)
+                _release_write_lock()
+                llm_result = guard.llm(annotate_transaction_llm, txn, category_list)
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
-            else:
+            elif llm_result is not None:
                 logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
                 category = _normalize_category(llm_result.category, category_list)
@@ -532,6 +742,9 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
         ai_active=settings.llm_provider != "none",
+        llm_error=guard.reported_llm_error,
+        embed_error=guard.embed_error,
+        rag_prompted_error=guard.reported_stage_error("rag_prompted"),
     )
 
 
@@ -707,6 +920,7 @@ def _try_rag_annotation(
     as_of: str | None,
     query_vec: list[float] | None = None,
     allow_llm: bool = True,
+    guard: RunGuard | None = None,
 ) -> tuple[AnnotationCreate | None, ReasoningTrace | None]:
     """Attempt RAG-based annotation.
 
@@ -714,6 +928,8 @@ def _try_rag_annotation(
     rule_annotation). query_vec, when given, is the transaction's stored vector
     and no embedding call is made. allow_llm=False stops after the rag_direct
     decision (no rag_prompted LLM call), for deterministic re-evaluation.
+    guard, when given (auto_annotate), routes the embedding and LLM calls
+    through the run's circuit breakers; without it they raise as usual.
 
     Returns (AnnotationCreate, ReasoningTrace) with source='rag_direct'
     or 'rag_prompted', or (None, None) if the embedding service is
@@ -733,9 +949,14 @@ def _try_rag_annotation(
     skips: list[str] = ctx["skips"]
 
     embed_text = build_embed_text(txn)
+    # guard.embed would raise anyway once off; skipping here just keeps the
+    # log to one "embeddings unavailable" line per run instead of one per row.
+    if query_vec is None and guard is not None and guard.embeddings_off:
+        skips.append(f"rag: embeddings off for the rest of this run ({guard.embed_error or 'not configured'})")
+        return None, None
     if query_vec is None:
         try:
-            query_vec = get_embedding_single(embed_text)
+            query_vec = guard.embed(embed_text) if guard is not None else get_embedding_single(embed_text)
         except Exception as e:
             logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
             skips.append(f"rag: embedding failed ({e})")
@@ -913,14 +1134,23 @@ def _try_rag_annotation(
     examples = _build_examples_from_similar(conn, [m for m in similar if _is_evidence(m)], ann_by_txn)
     logger.debug("rag_prompted | txn=%s  examples=%d", txn["id"], len(examples))
     if examples:
+        # Checked only once there is a call to skip, so a row with no examples
+        # never counts as one the switched-off stage cost.
+        off = guard.skip_reason("rag_prompted") if guard is not None else None
+        if off is not None:
+            skips.append(f"rag_prompted: off for the rest of this run ({off})")
+            return None, None
         # Pass the example-category majority as a hint so the LLM weighs the
         # retrieved neighbors over its pretraining prior. Use the categories the
         # LLM actually sees (the selected examples), so the off-example cap below
         # judges against the real prompt content.
         example_categories = [e["category"] for e in examples if e.get("category")]
         majority_category, majority_count = _majority_category(example_categories)
-        llm_result = annotate_transaction_llm_with_examples(
-            txn, category_list, examples, majority_category, majority_count
+        llm_args = (txn, category_list, examples, majority_category, majority_count)
+        llm_result = (
+            guard.llm(annotate_transaction_llm_with_examples, *llm_args, stage="rag_prompted")
+            if guard is not None
+            else annotate_transaction_llm_with_examples(*llm_args)
         )
         if llm_result is not None:
             category = _normalize_category(llm_result.category, category_list)
@@ -1039,6 +1269,7 @@ def _try_rag_annotation(
             return ann, trace
         logger.warning("rag_prompted | llm returned nothing | txn=%s", txn["id"])
         skips.append("rag_prompted: llm returned nothing")
+        ctx["rag_llm_failed"] = True  # the plain-prompt stage serves it last
         return None, None
 
     skips.append("rag_prompted: no annotated examples to prompt with")

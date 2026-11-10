@@ -261,6 +261,19 @@ describe('Dashboard', () => {
     expect(await screen.findByRole('button', { name: /Sort my transactions/ })).toBeEnabled()
   })
 
+  it('waits while another job holds the slot (e.g. re-attached after a reload)', async () => {
+    const { getActiveAnnotationJob, pollAnnotationJob } = await import('../lib/api.js')
+    getActiveAnnotationJob.mockResolvedValueOnce({ id: 're', status: 'running', kind: 'reembed' })
+    pollAnnotationJob.mockReturnValueOnce(new Promise(() => {}))
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(PENDING_SUMMARY)
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByRole('button', { name: /Sorting/ })).toBeDisabled()
+    expect(mockRunAnnotationJob).not.toHaveBeenCalled()
+  })
+
   it('requests the shared period month from the server', async () => {
     localStorage.setItem('fc_period_month', '2026-04')
     renderDashboard()

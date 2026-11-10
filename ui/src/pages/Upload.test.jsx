@@ -10,6 +10,15 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => noopToast,
 }))
+const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: null } }))
+vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
+  useAnnotationJob: () => jobCtx,
+}))
+
+const stmt = {
+  id: 's1', bank_name: 'kotak', statement_month: '2026-07', balance_check: null,
+  txn_count: 10, annotated_count: 2, embedded_count: 10, uploaded_at: '2026-07-01T10:00:00',
+}
 
 import Upload from './Upload.jsx'
 
@@ -18,6 +27,8 @@ const pdf = () => new File(['%PDF-1.4'], 'statement.pdf', { type: 'application/p
 describe('Upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    jobCtx.job = null
+    jobCtx.startAnnotation = vi.fn()
     mockApi.get.mockResolvedValue([])
     mockApi.upload.mockResolvedValue({ bank_name: 'kotak', statement_month: '2026-07', warnings: [] })
   })
@@ -46,5 +57,37 @@ describe('Upload', () => {
 
     fireEvent.change(input, { target: { files: [pdf()] } })
     expect(screen.getByText('statement.pdf')).toBeInTheDocument()
+  })
+
+  it("Categorize runs through the job flow and shows that run's result", async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    jobCtx.startAnnotation.mockResolvedValue({
+      total_processed: 8, rule_matched: 5, rag_direct_annotated: 1, llm_annotated: 2,
+      llm_failed: 0, low_confidence: 0, already_annotated: 2, ai_active: true, llm_error: null,
+    })
+    render(<Upload />)
+    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
+    await waitFor(() => expect(jobCtx.startAnnotation).toHaveBeenCalledWith({ statement_id: 's1' }))
+    expect(await screen.findByText('Figured out by AI: 2')).toBeInTheDocument()
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/auto-annotate', expect.anything())
+  })
+
+  it('every Categorize waits while another run is tracked', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    jobCtx.job = { status: 'running', kind: 'reembed' }
+    render(<Upload />)
+    expect(await screen.findByRole('button', { name: /categorize/i })).toBeDisabled()
+  })
+
+  it('shows the provider error in the results panel', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    jobCtx.startAnnotation.mockResolvedValue({
+      total_processed: 8, rule_matched: 5, llm_annotated: 0, llm_failed: 3,
+      ai_active: true, llm_error: 'provider refused the request (HTTP 404)',
+    })
+    render(<Upload />)
+    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
+    expect(await screen.findByText(/isn.t available \(provider refused the request \(HTTP 404\)\)/))
+      .toBeInTheDocument()
   })
 })

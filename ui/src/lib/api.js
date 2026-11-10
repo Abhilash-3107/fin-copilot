@@ -111,10 +111,33 @@ export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
   }
 }
 
+// Another background job holds the server's single job slot.
+export class JobBusyError extends Error {
+  constructor(kind) {
+    const what = {
+      annotate: 'Another categorization run is in progress',
+      reembed: "The AI's memory is being rebuilt",
+      model_download: 'A model download is in progress',
+    }[kind] ?? 'Another background job is running'
+    super(`${what} - try again when it finishes`)
+    this.name = 'JobBusyError'
+  }
+}
+
 // Start a background auto-annotate job and poll until it finishes.
+//
+// The server runs one job at a time and re-attaches a second request to the
+// one in flight. That's the same run only if it's an annotate job for the same
+// scope; anything else (a re-embed, another statement's run) would hand back
+// someone else's result as this run's, so it's reported as busy instead.
 export async function runAnnotationJob(body, onProgress, pollMs = 1000) {
-  const { job_id } = await api.post('/annotations/auto-annotate/jobs', body)
-  return pollAnnotationJob(job_id, onProgress, pollMs)
+  const started = await api.post('/annotations/auto-annotate/jobs', body)
+  const sameRun =
+    started.kind === 'annotate' &&
+    (started.statement_id ?? null) === (body.statement_id ?? null) &&
+    !body.transaction_ids
+  if (started.attached && !sameRun) throw new JobBusyError(started.kind)
+  return pollAnnotationJob(started.job_id, onProgress, pollMs)
 }
 
 // Return the currently in-flight annotation job, or null. Used to re-attach the

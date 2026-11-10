@@ -999,6 +999,152 @@ class TestAnnotationJobs:
             worker.rollback()
             worker.close()
 
+    def test_other_writers_are_not_blocked_while_worker_calls_llm(self, file_db_client):
+        """While the worker waits on the model, another connection (a manual
+        label, Teach me) must get the write lock at once. Two quick rule matches
+        leave a throttled progress write and a batched insert pending, the shape
+        that used to stay uncommitted into the LLM call."""
+        import sqlite3 as _sqlite3
+
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.pipeline.llm import AnnotationResponse
+
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        for tid, desc in [("r1", "Netflix subscription"), ("r2", "Swiggy food order"), ("u1", "zqx unknown vendor")]:
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-15', 199.0, 'debit', ?)",
+                (tid, desc),
+            )
+        conn.commit()
+
+        lock_errors = []
+
+        def llm(_txn, _cats):
+            other = dbc.get_connection(settings.db_path)
+            other.execute("PRAGMA busy_timeout=0")
+            try:
+                other.execute("BEGIN IMMEDIATE")  # take the write lock, fail at once if held
+                other.rollback()
+            except _sqlite3.OperationalError as e:
+                lock_errors.append(str(e))
+            finally:
+                other.close()
+            return AnnotationResponse(category="Shopping", confidence=0.7)
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm", side_effect=llm):
+            job_id = client.post("/api/annotations/auto-annotate/jobs", json={}).json()["job_id"]
+
+        job = client.get(f"/api/annotations/jobs/{job_id}").json()
+        assert lock_errors == []
+        assert job["status"] == "completed"
+        assert job["result"]["rule_matched"] == 2
+        assert job["result"]["llm_annotated"] == 1
+        assert job["result"]["llm_error"] is None
+
+    def test_job_completes_with_llm_error_when_provider_down(self, file_db_client):
+        """A dead provider doesn't fail the job: rules still apply, the rest is
+        left for the user, and the result says why."""
+        from finance_copilot.pipeline.llm import LLMUnavailableError
+
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        for tid, desc in [("r1", "Netflix subscription"), ("u1", "zqx vendor one"), ("u2", "zqx vendor two")]:
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's1', '2026-01-15', 199.0, 'debit', ?)",
+                (tid, desc),
+            )
+        conn.commit()
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("no embedder")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm",
+                   side_effect=LLMUnavailableError("can't reach the provider after 3 attempts")) as llm:
+            job_id = client.post("/api/annotations/auto-annotate/jobs", json={}).json()["job_id"]
+
+        job = client.get(f"/api/annotations/jobs/{job_id}").json()
+        assert llm.call_count == 1
+        assert job["status"] == "completed"
+        assert job["processed"] == job["total"] == 3
+        assert job["result"]["rule_matched"] == 1
+        assert job["result"]["llm_failed"] == 2
+        assert "can't reach the provider" in job["result"]["llm_error"]
+
+    def test_live_worker_is_never_reaped_however_quiet(self, file_db_client):
+        """A slow live worker (cold model load, long retry, big download) keeps
+        its job; only an in-flight row with no worker in this process is an orphan."""
+        from finance_copilot.api import live_jobs
+
+        client, conn = file_db_client
+        for job_id in ("slow", "orphan"):
+            conn.execute(
+                "INSERT INTO annotation_jobs (id, status, updated_at) "
+                "VALUES (?, 'running', datetime('now','-1 hour'))",
+                (job_id,),
+            )
+        conn.commit()
+
+        with patch.object(live_jobs, "_live", {"slow"}):
+            assert client.get("/api/annotations/jobs/slow").json()["status"] == "running"
+            orphan = client.get("/api/annotations/jobs/orphan").json()
+        assert orphan["status"] == "failed"
+        assert "stale" in orphan["error"]
+
+    def test_every_job_worker_registers_as_live(self):
+        from finance_copilot.api.routes.annotations import _run_annotation_job
+        from finance_copilot.api.routes.embeddings import _run_reembed_job
+        from finance_copilot.api.routes.local_llm import _run_download_job
+
+        for worker in (_run_annotation_job, _run_reembed_job, _run_download_job):
+            assert hasattr(worker, "__wrapped__"), worker.__name__
+
+    def test_live_registration_lasts_exactly_the_worker_run(self):
+        from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
+
+        seen = []
+
+        @tracks_live_job
+        def worker(job_id):
+            seen.append(live_job_ids())
+            raise RuntimeError("worker crashed")
+
+        with pytest.raises(RuntimeError):
+            worker("j1")
+        assert seen == [["j1"]]
+        assert live_job_ids() == []
+
+    def test_second_start_says_what_it_reattached_to(self, file_db_client):
+        """The single-job guard hands back the in-flight job; the response must
+        say so, and what kind and scope it is, so the UI never shows a re-embed's
+        or another statement's result as this run's."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, kind, status, updated_at) "
+            "VALUES ('re', 'reembed', 'running', datetime('now'))"
+        )
+        conn.commit()
+
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={"statement_id": "s9"})
+        assert resp.json() == {
+            "job_id": "re", "status": "running", "kind": "reembed", "statement_id": None, "attached": True,
+        }
+
+    def test_job_connection_waits_longer_for_the_lock(self, file_db_client):
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        c = _open_job_connection()
+        try:
+            assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+        finally:
+            c.close()
+
     def test_active_jobs_listing_for_reattach(self, file_db_client):
         """GET /jobs?active=1 returns the in-flight job so the UI can re-attach
         its progress card after a reload; a fresh live job is returned, a stale
