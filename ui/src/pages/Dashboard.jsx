@@ -15,6 +15,7 @@ import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
+import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
   GraduationCap, FilePlus2, TrendingUp, HelpCircle, Users,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
@@ -462,11 +463,8 @@ export default function Dashboard() {
     setAnnotating(true)
     try {
       const result = await startAnnotation({})
-      toast(
-        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
-        'success',
-        5000
-      )
+      const summary = annotationSummary(result)
+      toast(summary.message, summary.type, summaryDuration(summary))
       setReloadKey(k => k + 1)
     } catch (e) {
       toast(`Sorting failed - ${e.message}`, 'error')

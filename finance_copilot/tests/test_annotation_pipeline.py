@@ -274,33 +274,31 @@ class TestLLMClient:
 
         assert result is None
 
-    def test_http_error_returns_none(self):
+    def test_http_error_raises_unavailable(self):
+        """A provider error is about the provider, not this row: it raises so a
+        batch can stop calling it (see TestLLMTransportRetries)."""
         import httpx as _httpx
 
-        from finance_copilot.pipeline.llm import annotate_transaction_llm
+        from finance_copilot.pipeline.llm import LLMUnavailableError, annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "error case", "upi_meta": None,
                "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
 
         with patch("httpx.post", side_effect=_httpx.HTTPError("connection refused")), \
-             patch("time.sleep"):
-            result = annotate_transaction_llm(txn, ["Food & Dining"], max_retries=1)
+             patch("time.sleep"), pytest.raises(LLMUnavailableError):
+            annotate_transaction_llm(txn, ["Food & Dining"], max_retries=1)
 
-        assert result is None
-
-    def test_timeout_returns_none(self):
+    def test_timeout_raises_unavailable(self):
         import httpx as _httpx
 
-        from finance_copilot.pipeline.llm import annotate_transaction_llm
+        from finance_copilot.pipeline.llm import LLMUnavailableError, annotate_transaction_llm
 
         txn = {"id": "t1", "raw_description": "slow response", "upi_meta": None,
                "amount": 100, "debit_credit": "debit", "txn_date": "2026-01-15"}
 
-        with patch("httpx.post", side_effect=_httpx.TimeoutException("timeout")), \
-             patch("time.sleep"):
-            result = annotate_transaction_llm(txn, ["Food & Dining"], max_retries=0)
-
-        assert result is None
+        with patch("httpx.post", side_effect=_httpx.ReadTimeout("timeout")), \
+             patch("time.sleep"), pytest.raises(LLMUnavailableError, match="ReadTimeout"):
+            annotate_transaction_llm(txn, ["Food & Dining"], max_retries=0)
 
 
 # ---------------------------------------------------------------------------

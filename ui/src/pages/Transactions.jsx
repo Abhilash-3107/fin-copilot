@@ -14,6 +14,7 @@ import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
+import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 
 const PAGE_SIZE = 500
 
@@ -404,11 +405,8 @@ export default function Transactions() {
     setAutoAnnotating(true)
     try {
       const result = await startAnnotation({ statement_id: selectedStmt })
-      toast(
-        `All done! ${result.rule_matched ?? 0} matched by rules, ${result.rag_direct_annotated ?? 0} from history, ${result.llm_annotated ?? 0} by AI`,
-        'success',
-        4000
-      )
+      const summary = annotationSummary(result)
+      toast(summary.message, summary.type, summaryDuration(summary))
       loadTransactions()
       loadFacets()
     } catch (e) {

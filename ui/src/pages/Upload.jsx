@@ -6,6 +6,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
+import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 
 // Running-balance reconciliation badge (4.20): turns the parser's balance-chain
 // rigor into visible trust. Green check when every consecutive pair reconciles,
@@ -139,24 +140,8 @@ export default function Upload() {
     try {
       const result = await api.post('/annotations/auto-annotate', { statement_id: stmt.id })
       setLastResult(result)
-      const fromRules = (result.rule_matched ?? 0) + (result.learned_rule_annotated ?? 0)
-      const fromHistory = (result.rag_direct_annotated ?? 0) + (result.rag_prompted_annotated ?? 0)
-      if (result.ai_active === false) {
-        // No LLM configured: rules + history are the whole pipeline, and the
-        // remainder is simply waiting for the user - the normal state, not an error.
-        const waiting = (result.llm_failed ?? 0) + (result.low_confidence ?? 0)
-        toast(
-          `Done! ${fromRules + fromHistory} categorized by your rules and history, ${waiting} waiting for you`,
-          'success',
-          5000
-        )
-      } else {
-        toast(
-          `All done! ${result.rule_matched ?? 0} matched by rules, ${fromHistory} from history, ${result.llm_annotated ?? 0} by AI`,
-          'success',
-          5000
-        )
-      }
+      const summary = annotationSummary(result)
+      toast(summary.message, summary.type, summaryDuration(summary))
       loadStatements()
     } catch (e) {
       toast(`Categorization failed - ${e.message}`, 'error')
@@ -292,6 +277,14 @@ export default function Upload() {
               </span>
             ))}
           </div>
+          {lastResult.llm_error && (
+            <p className="text-xs text-[#fca5a5] mt-3">
+              The AI model stopped responding ({lastResult.llm_error}), so this run skipped it for the
+              rest. Check it in{' '}
+              <a href="/settings" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</a>{' '}
+              and run again to categorize what&apos;s left.
+            </p>
+          )}
           {lastResult.ai_active === false && (
             <p className="text-xs text-[#64748b] mt-3">
               AI is off - your rules and history did the work above. Add a provider in{' '}

@@ -136,3 +136,8 @@ class AutoAnnotateResult(BaseModel):
     # stage never fired, so "llm_failed" transactions are simply waiting for the
     # user - the UI presents that as the normal no-AI state, not an error.
     ai_active: bool = True
+    # Set when the LLM provider became unusable mid-run (unreachable after
+    # retries, or it rejected the request). The run stops calling it, so every
+    # transaction still waiting on the LLM from that point counts as llm_failed
+    # and stays unlabelled for the next run. The UI shows this message.
+    llm_error: str | None = None

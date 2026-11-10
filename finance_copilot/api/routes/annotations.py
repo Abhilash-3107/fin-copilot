@@ -72,11 +72,19 @@ def auto_annotate_endpoint(
     return auto_annotate(conn, body.statement_id, body.transaction_ids)
 
 
+# Background work has no user waiting on each write, so it waits longer for
+# the lock than a request does: a burst of request-path writes (a Teach me
+# re-evaluation, say) must not fail a long annotation run.
+_JOB_BUSY_TIMEOUT_MS = 30_000
+
+
 def _open_job_connection() -> sqlite3.Connection:
     """Background tasks outlive the request's connection; open a fresh one."""
     from finance_copilot.db.connection import get_connection
 
-    return get_connection()
+    conn = get_connection()
+    conn.execute(f"PRAGMA busy_timeout={_JOB_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def _embed_in_background(transaction_ids: list[str]) -> None:
@@ -96,8 +104,9 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
 
 
 # A live job heartbeats updated_at roughly once per second via its progress
-# callback; the longest silent stretch is a single slow LLM call. A job quiet
-# for this long has no worker behind it.
+# callback; the longest silent stretch is one LLM call with its retries, at
+# most about settings.llm_max_attempts * llm_timeout_s (3 min by default). A job
+# quiet for this long has no worker behind it.
 STALE_JOB_MINUTES = 10
 
 
@@ -160,15 +169,18 @@ def _run_annotation_job(
 
         def progress(processed: int, total: int) -> None:
             nonlocal last_commit
+            # Write at most ~once per second, and commit every write it makes.
+            # A throttled UPDATE left uncommitted would hold the write lock into
+            # the next slow LLM call and block every other writer.
+            now = time.monotonic()
+            if now - last_commit < 1.0 and processed != total:
+                return
             conn.execute(
                 "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
                 (processed, total, job_id),
             )
-            # Commit at most ~once per second; the pipeline's batch commits flush the rest
-            now = time.monotonic()
-            if now - last_commit >= 1.0 or processed == total:
-                conn.commit()
-                last_commit = now
+            conn.commit()
+            last_commit = now
 
         result = auto_annotate(conn, statement_id, transaction_ids, progress_cb=progress)
         conn.execute(

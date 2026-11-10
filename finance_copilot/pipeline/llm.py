@@ -10,6 +10,13 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from tenacity import (
+    RetryCallState,
+    Retrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from finance_copilot.config import settings
 from finance_copilot.models.transaction import TxnRow
@@ -19,6 +26,113 @@ from finance_copilot.pipeline.merchant_catalog import strip_payment_app
 logger = logging.getLogger(__name__)
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+class LLMUnavailableError(RuntimeError):
+    """The provider can't serve requests: unreachable after retries, or it
+    rejected the request outright (bad key, unknown model, misconfiguration).
+
+    This is about the provider, not the transaction, so the next call would
+    fail the same way. Callers running a batch should stop calling the LLM for
+    the rest of the run instead of paying the full retry budget per row. A bad
+    answer for one transaction is not this error: those calls return None.
+    """
+
+
+# Statuses worth another try: the provider is busy, restarting or loading a
+# model. Every other 4xx means the request itself is wrong and will stay wrong.
+_RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+_CONNECT_TIMEOUT_S = 5.0
+_MAX_RETRY_AFTER_S = 30.0
+_backoff = wait_exponential_jitter(initial=1, max=8)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS
+    # Connect/read/write errors and timeouts, but not a malformed URL scheme.
+    return isinstance(exc, httpx.TransportError) and not isinstance(exc, httpx.UnsupportedProtocol)
+
+
+def _retry_after_s(response: httpx.Response) -> float | None:
+    """Seconds from a numeric Retry-After header (429/503), capped; else None."""
+    try:
+        value = float(response.headers.get("retry-after", ""))
+    except ValueError:
+        return None
+    return min(max(value, 0.0), _MAX_RETRY_AFTER_S)
+
+
+def _wait(retry_state: RetryCallState) -> float:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, httpx.HTTPStatusError):
+        hinted = _retry_after_s(exc.response)
+        if hinted is not None:
+            return hinted
+    return _backoff(retry_state)
+
+
+def _http_timeout() -> httpx.Timeout:
+    """Short connect (a stopped Ollama refuses at once), long read (generation)."""
+    return httpx.Timeout(settings.llm_timeout_s, connect=_CONNECT_TIMEOUT_S)
+
+
+def _post_chat(url: str, payload: dict, headers: dict, *, txn_id: str, log_prefix: str) -> dict:
+    """POST one chat request, retrying transient failures. Returns the JSON body.
+
+    Raises LLMUnavailableError when retries run out or the provider rejects
+    the request; a body that isn't JSON surfaces as json.JSONDecodeError for
+    the caller's per-transaction handling.
+    """
+
+    def _log_retry(state: RetryCallState) -> None:
+        logger.warning(
+            "%s | txn=%s  attempt=%d/%d  transient=%s  retrying in %.1fs",
+            log_prefix, txn_id, state.attempt_number, settings.llm_max_attempts,
+            state.outcome.exception() if state.outcome else None,
+            state.next_action.sleep if state.next_action else 0.0,
+        )
+
+    def _send() -> httpx.Response:
+        response = httpx.post(url, json=payload, headers=headers, timeout=_http_timeout())
+        response.raise_for_status()
+        return response
+
+    retrying = Retrying(
+        retry=retry_if_exception(_is_transient),
+        stop=stop_after_attempt(max(1, settings.llm_max_attempts)),
+        wait=_wait,
+        before_sleep=_log_retry,
+        reraise=True,
+    )
+    try:
+        response = retrying(_send)
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        detail = _error_detail(e.response)
+        if status in _RETRYABLE_STATUS:
+            msg = f"provider still failing after {settings.llm_max_attempts} attempts (HTTP {status}{detail})"
+        else:
+            msg = f"provider rejected the request (HTTP {status}{detail})"
+        raise LLMUnavailableError(msg) from e
+    except httpx.HTTPError as e:
+        # Transport errors once retries run out, plus anything else httpx raises
+        # (bad URL scheme, redirect loop): none of it is about this transaction.
+        tries = f" after {settings.llm_max_attempts} attempts" if _is_transient(e) else ""
+        raise LLMUnavailableError(f"can't reach the provider{tries}: {type(e).__name__}: {e}") from e
+    return response.json()
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """': <message>' from an Ollama/OpenAI error body, for a readable error; '' if none."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    err = body.get("error") if isinstance(body, dict) else None
+    if isinstance(err, dict):
+        err = err.get("message")
+    return f": {str(err)[:200]}" if err else ""
 
 
 def insecure_key_transport() -> bool:
@@ -397,10 +511,16 @@ def _call_llm(
     category_list: list[str],
     txn_id: str,
     log_prefix: str,
-    timeout: float,
     max_retries: int,
 ) -> AnnotationResult | None:
-    """Shared provider chat call with retries and error taxonomy. Returns None on final failure."""
+    """Shared provider chat call. Returns None when this transaction's answer
+    stays unusable; raises LLMUnavailableError when the provider itself is.
+
+    Two separate retry budgets. Transport failures (connection refused, timeout,
+    429/5xx) are retried inside _post_chat with backoff, up to
+    settings.llm_max_attempts. An answer that arrives but isn't valid JSON for
+    the schema gets up to max_retries self-repair re-asks here.
+    """
     if settings.llm_provider == "none":
         logger.debug("%s | txn=%s  llm_provider=none — skipping", log_prefix, txn_id)
         return None
@@ -409,7 +529,10 @@ def _call_llm(
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
-    url, headers, payload = _build_provider_request(messages, category_list)
+    try:
+        url, headers, payload = _build_provider_request(messages, category_list)
+    except ValueError as e:  # refused config (e.g. API key over remote http)
+        raise LLMUnavailableError(str(e)) from e
 
     logger.debug(
         "%s | txn=%s  provider=%s  model=%s  prompt=\n%s",
@@ -420,7 +543,7 @@ def _call_llm(
     for attempt in range(max_retries + 1):
         t0 = time.monotonic()
         content = ""
-        response = None
+        data = None
         try:
             if settings.llm_provider == "local":
                 from finance_copilot import local_llm
@@ -428,15 +551,11 @@ def _call_llm(
                 try:
                     data = local_llm.chat_completion(payload)
                 except local_llm.LocalLLMError as e:
-                    # Missing extra/model can't heal mid-run; fail this txn cleanly.
-                    logger.warning("%s | txn=%s  local_llm_unavailable=%s", log_prefix, txn_id, e)
-                    return None
-                elapsed = time.monotonic() - t0
+                    # A missing extra or model can't heal mid-run.
+                    raise LLMUnavailableError(f"local model unavailable: {e}") from e
             else:
-                response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
-                elapsed = time.monotonic() - t0
-                response.raise_for_status()
-                data = response.json()
+                data = _post_chat(url, payload, headers, txn_id=txn_id, log_prefix=log_prefix)
+            elapsed = time.monotonic() - t0
             content = _strip_code_fence(_extract_content(data))
             try:
                 result = AnnotationResponse.model_validate_json(content)
@@ -483,21 +602,12 @@ def _call_llm(
                 verbalized_confidence=verbalized,
                 logprob_confidence=lp_conf,
             )
-        except (httpx.HTTPError, httpx.TimeoutException) as e:
-            elapsed = time.monotonic() - t0
-            logger.warning(
-                "%s | txn=%s  attempt=%d  latency=%.2fs  http_error=%s",
-                log_prefix, txn_id, attempt, elapsed, e,
-            )
-            if attempt < max_retries:
-                time.sleep(1.0)
-            continue
-        except KeyError as e:
-            raw = response.text if response is not None else content
-            logger.warning("%s | txn=%s  attempt=%d  missing_key=%s  raw=%s", log_prefix, txn_id, attempt, e, raw)
+        except (KeyError, IndexError) as e:
+            # The provider answered with an unexpected shape (no message/choices).
+            raw = content or (json.dumps(data)[:500] if data is not None else "")
+            logger.warning("%s | txn=%s  attempt=%d  bad_shape=%r  raw=%s", log_prefix, txn_id, attempt, e, raw)
         except json.JSONDecodeError as e:
-            raw = response.text if response is not None else content
-            logger.warning("%s | txn=%s  attempt=%d  json_error=%s  raw=%s", log_prefix, txn_id, attempt, e, raw)
+            logger.warning("%s | txn=%s  attempt=%d  json_error=%s  raw=%s", log_prefix, txn_id, attempt, e, content)
         except ValidationError as e:
             logger.warning("%s | txn=%s  attempt=%d  validation_error=%s  raw=%s", log_prefix, txn_id, attempt, e, content)
 
@@ -524,10 +634,13 @@ def annotate_transaction_llm_with_examples(
     similar_examples: list[dict],
     majority_category: str | None = None,
     majority_count: int = 0,
-    timeout: float = 60.0,
     max_retries: int = 2,
 ) -> AnnotationResult | None:
-    """Call the configured LLM provider with few-shot examples injected. Returns None on final failure."""
+    """Call the configured LLM provider with few-shot examples injected.
+
+    Returns None when the answer stays unusable after max_retries re-asks;
+    raises LLMUnavailableError when the provider can't be used at all.
+    """
     return _call_llm(
         _build_fewshot_user_prompt(
             txn, category_list, similar_examples, majority_category, majority_count
@@ -535,7 +648,6 @@ def annotate_transaction_llm_with_examples(
         category_list,
         txn_id=txn.get("id", "?"),
         log_prefix="llm_with_examples",
-        timeout=timeout,
         max_retries=max_retries,
     )
 
@@ -593,15 +705,17 @@ def test_connection(timeout: float = 10.0) -> dict:
 def annotate_transaction_llm(
     txn: TxnRow,
     category_list: list[str],
-    timeout: float = 60.0,
     max_retries: int = 2,
 ) -> AnnotationResult | None:
-    """Call the configured LLM provider to annotate a transaction. Returns None on final failure."""
+    """Call the configured LLM provider to annotate a transaction.
+
+    Returns None when the answer stays unusable after max_retries re-asks;
+    raises LLMUnavailableError when the provider can't be used at all.
+    """
     return _call_llm(
         _build_user_prompt(txn, category_list),
         category_list,
         txn_id=txn.get("id", "?"),
         log_prefix="llm",
-        timeout=timeout,
         max_retries=max_retries,
     )

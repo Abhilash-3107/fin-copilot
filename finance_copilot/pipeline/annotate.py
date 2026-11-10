@@ -53,6 +53,7 @@ from finance_copilot.pipeline.counterparty import (
 )
 from finance_copilot.pipeline.embed import build_embed_text, get_embedding_single
 from finance_copilot.pipeline.llm import (
+    LLMUnavailableError,
     annotate_transaction_llm,
     annotate_transaction_llm_with_examples,
     top_level_categories,
@@ -378,6 +379,27 @@ def auto_annotate(
             conn.commit()
             uncommitted = 0
 
+    def _release_write_lock() -> None:
+        # Call before anything slow and external (embedding, LLM). An open write
+        # transaction holds SQLite's single write lock, so every other writer
+        # (a manual label, the job's own status row, Teach me) would wait out
+        # busy_timeout and fail with "database is locked" behind a model call.
+        nonlocal uncommitted
+        if conn.in_transaction:
+            conn.commit()
+        uncommitted = 0
+
+    # Circuit breaker: the first LLMUnavailableError (raised only after the
+    # client's own retries) means the provider is down or misconfigured. Paying
+    # the full retry budget again for every remaining transaction would turn a
+    # stopped Ollama into an hours-long run, so stop calling it instead.
+    llm_error: str | None = None
+
+    def _trip_breaker(e: LLMUnavailableError) -> None:
+        nonlocal llm_error
+        llm_error = str(e)
+        logger.error("LLM provider unavailable, skipping the LLM for the rest of this run | %s", e)
+
     stage = load_stage_context(conn)
     known_people = stage.known_people
 
@@ -435,9 +457,15 @@ def auto_annotate(
     if needs_rag:
         logger.info("stage 2+3 | rag | %d txns", len(needs_rag))
         for txn in needs_rag:
-            rag_result, rag_trace = _try_rag_annotation(
-                conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]], as_of=txn["txn_date"]
-            )
+            _release_write_lock()
+            try:
+                rag_result, rag_trace = _try_rag_annotation(
+                    conn, txn, category_list, ctx=rag_ctx_by_txn[txn["id"]],
+                    as_of=txn["txn_date"], allow_llm=llm_error is None,
+                )
+            except LLMUnavailableError as e:
+                _trip_breaker(e)
+                rag_result, rag_trace = None, None
             if rag_result is not None:
                 _persist(rag_result, rag_trace)
                 _tick()
@@ -467,11 +495,15 @@ def auto_annotate(
                 txn.get("debit_credit") or "",
             )
             llm_result = llm_cache.get(cache_key)
-            if llm_result is None:
-                llm_result = annotate_transaction_llm(txn, category_list)
+            if llm_result is None and llm_error is None:
+                _release_write_lock()
+                try:
+                    llm_result = annotate_transaction_llm(txn, category_list)
+                except LLMUnavailableError as e:
+                    _trip_breaker(e)
                 if llm_result is not None and cache_key[0]:
                     llm_cache[cache_key] = llm_result
-            else:
+            elif llm_result is not None:
                 logger.debug("llm cache hit | txn=%s", txn["id"])
             if llm_result is not None:
                 category = _normalize_category(llm_result.category, category_list)
@@ -532,6 +564,7 @@ def auto_annotate(
         low_confidence=low_confidence,
         already_annotated=already_annotated_count,
         ai_active=settings.llm_provider != "none",
+        llm_error=llm_error,
     )
 
 
