@@ -333,34 +333,34 @@ class TestReviewSnooze:
 
         assert any(i["annotation_id"] == "a1" for i in client.get("/api/annotations/review-queue").json())
 
-        resp = client.post("/api/annotations/a1/skip")
+        resp = client.post("/api/annotations/review-queue/skip", json={"transaction_id": "t1"})
         assert resp.status_code == 200
 
         # Gone from the queue, counted as snoozed.
         assert all(i["annotation_id"] != "a1" for i in client.get("/api/annotations/review-queue").json())
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 1
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 1
 
     def test_unsnooze_restores(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", confidence=0.6)
-        client.post("/api/annotations/a1/skip")
+        client.post("/api/annotations/review-queue/skip", json={"transaction_id": "t1"})
 
         resp = client.post("/api/annotations/review-queue/unsnooze")
         assert resp.json()["restored"] == 1
         assert any(i["annotation_id"] == "a1" for i in client.get("/api/annotations/review-queue").json())
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 0
 
-    def test_skip_unknown_annotation_404s(self, client_conn):
+    def test_skip_unknown_transaction_404s(self, client_conn):
         client, _, _ = client_conn
-        assert client.post("/api/annotations/nope/skip").status_code == 404
+        assert client.post("/api/annotations/review-queue/skip", json={"transaction_id": "nope"}).status_code == 404
 
     def test_correction_clears_snooze(self, client_conn):
         client, conn, _ = client_conn
         _seed_annotated_txn(conn, txn_id="t1", ann_id="a1", source="llm", confidence=0.6)
-        client.post("/api/annotations/a1/skip")
+        client.post("/api/annotations/review-queue/skip", json={"transaction_id": "t1"})
         # Correcting the annotation should drop the lingering snooze flag.
         client.patch("/api/annotations/a1", json={"category": "Food & Dining"})
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 0
 
 
 class TestTransactionsList:
@@ -622,8 +622,63 @@ class TestTransactionsFilters:
         client, conn, _ = client_conn
         self._seed(conn)
         facets = client.get("/api/transactions/facets").json()
-        assert facets["categories"] == ["Food & Dining", "Shopping"]
+        # t_bare has no annotation, so Uncategorized is offered as a filter.
+        assert facets["categories"] == ["Food & Dining", "Shopping", "Uncategorized"]
         assert facets["sources"] == ["llm", "rule"]
+
+    def test_facets_omit_uncategorized_when_everything_is_sorted(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute("DELETE FROM transactions WHERE id = 't_bare'")
+        conn.commit()
+        facets = client.get("/api/transactions/facets").json()
+        assert facets["categories"] == ["Food & Dining", "Shopping"]
+
+    def test_uncategorized_filter_includes_unannotated_rows(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        # A row annotated Uncategorized and one with no annotation at all are
+        # the same bucket; a real label (Miscellaneous) is not.
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_unc', 's1', '2026-01-16', 50.0, 'debit', 'MYSTERY')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_misc', 's1', '2026-01-17', 60.0, 'debit', 'ODD')"""
+        )
+        insert_annotation(conn, Annotation(
+            id="a_unc", transaction_id="t_unc", category="Uncategorized",
+            confidence=0.1, source="llm",
+        ))
+        insert_annotation(conn, Annotation(
+            id="a_misc", transaction_id="t_misc", category="Miscellaneous",
+            confidence=0.5, source="manual",
+        ))
+        conn.commit()
+        assert self._ids(client, "category=Uncategorized") == {"t_bare", "t_unc"}
+        assert self._ids(client, "category=Uncategorized,Shopping") == {"t_bare", "t_unc", "t_shop"}
+        assert self._ids(client, "category=Miscellaneous") == {"t_misc"}
+
+    def test_summary_describes_exactly_the_filtered_rows(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_in', 's1', '2026-01-20', 250.5, 'credit', 'REFUND')"""
+        )
+        conn.commit()
+        for query in ("", "category=Uncategorized", "category=Shopping", "q=swiggy",
+                      "month=2026-01&min_amount=200", "month=2025-12"):
+            rows = client.get(f"/api/transactions?{query}").json()
+            summary = client.get(f"/api/transactions/summary?{query}").json()
+            assert summary == {
+                "count": len(rows),
+                "money_out": round(sum(r["amount"] for r in rows if r["debit_credit"] == "debit"), 2),
+                "money_in": round(sum(r["amount"] for r in rows if r["debit_credit"] == "credit"), 2),
+            }, query
+        everything = client.get("/api/transactions/summary").json()
+        assert everything == {"count": 4, "money_out": 300.0, "money_in": 250.5}
 
     def test_facets_respect_month_scope(self, client_conn):
         client, conn, _ = client_conn
@@ -1419,3 +1474,44 @@ class TestPeopleRelationship:
         # Clearing the relationship.
         cleared = client.patch(f"/api/people/{pid}", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": None})
         assert cleared.json()["relationship"] is None
+
+
+class TestGroupHeaderRefresh:
+    """B8: an open group's header must follow its members, from the server."""
+
+    def test_group_detail_carries_the_header_summary(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        for txn_id, amount in (("t1", 440.0), ("t2", 440.0)):
+            conn.execute(
+                """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+                   VALUES (?, 's1', '2026-01-10', ?, 'debit', 'STAY')""",
+                (txn_id, amount),
+            )
+        conn.commit()
+        neha = client.post("/api/people", json={"name": "Neha"}).json()["id"]
+        gid = client.post("/api/groups", json={"name": "Coorg weekend"}).json()["id"]
+
+        empty = client.get(f"/api/groups/{gid}").json()
+        assert empty["summary"]["member_count"] == 0
+        assert "settle_up" not in empty
+        assert empty["summary"]["settle_up"] == []
+
+        for txn_id in ("t1", "t2"):
+            client.post(f"/api/groups/{gid}/members", json={"transaction_id": txn_id, "people": [neha]})
+        detail = client.get(f"/api/groups/{gid}").json()
+        assert detail["summary"]["member_count"] == 2
+        assert detail["summary"]["your_share"] == 440.0
+        assert "settle_up" not in detail
+        assert detail["summary"]["settle_up"][0]["net"] == 440.0
+        assert detail["summary"]["owed_to_you"] == {"count": 1, "total": 440.0, "name": "Neha"}
+        # The list serves the identical rollup.
+        listed = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
+        assert listed["summary"] == detail["summary"]
+
+        client.delete(f"/api/groups/{gid}/members/t2")
+        after = client.get(f"/api/groups/{gid}").json()
+        assert after["summary"]["member_count"] == 1
+        assert after["summary"]["your_share"] == 220.0

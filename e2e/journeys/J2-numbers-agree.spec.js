@@ -1,7 +1,7 @@
 // J2 - Numbers agree. The same fact must read the same on every screen, every
 // total must equal its parts, and a drill-through must total what was clicked.
 // Expected values come from the screen or the API, never from fixed rupees.
-import { test, expect, expectedFailure } from '../fixtures.js'
+import { test, expect } from '../fixtures.js'
 import {
   PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, visibleSpend, waitForRows,
 } from '../lib/ui.js'
@@ -55,7 +55,6 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('Kept is one figure on the Dashboard headline, the Dashboard tile and Money Map', async ({ page }) => {
-    expectedFailure('R1 item 2: the headline is In - Out, the tile and Money Map also subtract Invested')
     await open(page, '/dashboard')
     const sentence = await page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in/).first().innerText()
     // The headline words a shortfall as a positive amount; the tiles show it as a negative.
@@ -68,7 +67,6 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('the Money Map category breakdown sums to Out', async ({ page }) => {
-    expectedFailure('R1 item 4: cash withdrawals and transfers to people are in Out but have no row in the breakdown')
     await open(page, '/insights')
     const out = await figureNear(page, 'Out')
 
@@ -84,7 +82,6 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('the recurring header total equals the sum of its rows', async ({ page }) => {
-    expectedFailure('R1 item 6: the header counts monthly items only, the rows include one that is not monthly')
     await open(page, '/insights')
     const { header, monthlyRows } = await recurringPanel(page)
     expect(monthlyRows.length, 'monthly recurring rows found').toBeGreaterThan(3)
@@ -93,7 +90,6 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('the recurring header total equals what the Dashboard says is committed each month', async ({ page }) => {
-    expectedFailure('R1 item 6: Money Map and the Dashboard disagree on the monthly commitment')
     await open(page, '/insights')
     const { header, monthlyRows } = await recurringPanel(page)
     await open(page, '/dashboard')
@@ -104,10 +100,9 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('the Dashboard uncategorised figure equals the Money Map row and the transactions behind it', async ({ page }) => {
-    expectedFailure('R1 item 5: the Dashboard shows two different uncategorised totals and neither matches the list')
     await open(page, '/dashboard')
     // Where this link goes is not judged here, only the figure it states.
-    const item = page.getByRole('link', { name: /no category/i })
+    const item = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
     await expect(item).toBeVisible()
     const dashboard = firstRupees(await item.innerText())
 
@@ -140,7 +135,6 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('Money Map says what each per-person figure counts and over what period', async ({ page }) => {
-    expectedFailure('R1 item 9: the people panel shows sent, received and a net with no period')
     await open(page, '/insights')
     // Found by what it holds, so a retitled panel is still the panel.
     const person = page.getByRole('main').getByRole('listitem').filter({ hasText: /sent\s+₹[\d,]+\s*·\s*received\s+₹/ }).first()
@@ -152,14 +146,12 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('People says what each per-person figure counts and over what period', async ({ page }) => {
-    expectedFailure('R1 item 9: Net is all transfers ever, and the page never says so')
     await open(page, '/people')
     await expect(page.getByRole('row').nth(1)).toBeVisible()
     await expect(page.getByRole('main')).toContainText(PERIOD_WORDS, { useInnerText: true })
   })
 
   test('a group says what its figure is, and does not call gross outflow "net"', async ({ page, app }) => {
-    expectedFailure('R1 item 9: the group header labels the money it paid out as "net"')
     const [group] = await app.api.get('/groups')
     await open(page, '/groups')
     const header = page.getByRole('button', { name: `Expand ${group.name}` }).locator('..')

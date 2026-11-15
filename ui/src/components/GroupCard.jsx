@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X } from '
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { formatDateRange } from '../lib/dates.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import PeoplePicker from './PeoplePicker.jsx'
@@ -89,7 +90,7 @@ function TypeSelect({ member, onChange }) {
       aria-label={`Type for ${member.raw_description}`}
       className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
     >
-      <option value="">—</option>
+      <option value="">-</option>
       {TXN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
     </select>
   )
@@ -105,6 +106,38 @@ function RemoveMemberButton({ member, onRemove }) {
     >
       <Trash2 size={12} />
     </button>
+  )
+}
+
+function Money({ value }) {
+  return <Amount value={value} decimals={Number.isInteger(value) ? 0 : 2} />
+}
+
+// What is still owed, as the header's second line. Balances with opposite signs
+// belong to different people, so the two sides are totalled separately and never
+// cancel against each other.
+function OwedLine({ summary }) {
+  const owedToYou = summary.owed_to_you ?? { count: 0 }
+  const youOwe = summary.you_owe ?? { count: 0 }
+  if (owedToYou.count === 0 && youOwe.count === 0) {
+    // Nobody tagged means there is nothing to settle, which is not the same as settled.
+    return summary.has_people ? <span className="text-green-400">Settled</span> : null
+  }
+  const mixed = owedToYou.count > 0 && youOwe.count > 0
+  return (
+    <>
+      {owedToYou.count > 0 && (
+        <span className="text-green-400">
+          {owedToYou.name ?? `${owedToYou.count} people`} {owedToYou.count === 1 ? 'owes' : 'owe'} you <Money value={owedToYou.total} />
+        </span>
+      )}
+      {mixed && <span className="text-[#475569]"> · </span>}
+      {youOwe.count > 0 && (
+        <span className="text-red-400">
+          {mixed ? 'you' : 'You'} owe {youOwe.name ?? `${youOwe.count} people`} <Money value={youOwe.total} />
+        </span>
+      )}
+    </>
   )
 }
 
@@ -135,7 +168,7 @@ function SettleUp({ settleUp, hasPeople }) {
             <div key={s.person} className="flex items-center gap-2 bg-[#13151f] border border-[#2d3148] rounded-md px-2.5 py-1">
               <span className="text-xs text-[#cbd5e1]">{s.name ?? s.person}</span>
               <span className={`text-xs tabular-nums ${owesYou ? 'text-green-400' : 'text-red-400'}`}>
-                {owesYou ? 'owes you ' : 'you owe '}<Amount value={Math.abs(s.net)} decimals={Number.isInteger(s.net) ? 0 : 2} />
+                {owesYou ? 'owes you ' : 'you owe '}<Money value={Math.abs(s.net)} />
               </span>
             </div>
           )
@@ -152,7 +185,9 @@ export default function GroupCard({ group, onDelete }) {
   const [loading, setLoading] = useState(false)
   const [people, setPeople] = useState([])
 
-  const summary = group.summary ?? {}
+  // The open card's detail carries a fresh rollup from the server; the list's
+  // copy (group.summary) only describes the group as it was when the page loaded.
+  const summary = detail?.summary ?? group.summary ?? {}
 
   async function reload() {
     const [data, allPeople] = await Promise.all([
@@ -247,17 +282,18 @@ export default function GroupCard({ group, onDelete }) {
           <div className="flex items-center gap-2 mt-0.5 text-xs text-[#64748b] flex-wrap">
             {dateRange && <span>{dateRange}</span>}
             {dateRange && <span className="text-[#2d3148]">·</span>}
-            <span>{summary.member_count ?? 0} {summary.member_count === 1 ? 'txn' : 'txns'}</span>
+            <span>{count(summary.member_count ?? 0, 'payment')}</span>
             {group.note && <><span className="text-[#2d3148]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
           </div>
         </div>
-        {/* Net position */}
+        {/* Your share and what is still owed */}
         {summary.member_count > 0 && (
           <div className="text-right shrink-0">
-            <div className={`text-sm font-medium tabular-nums ${summary.net > 0 ? 'text-green-400' : summary.net < 0 ? 'text-red-400' : 'text-[#94a3b8]'}`}>
-              {summary.net > 0 ? '+' : ''}<Amount value={summary.net} decimals={0} />
+            <div className="text-sm tabular-nums text-[#e2e8f0]">
+              <span className="text-xs text-[#64748b]">Your share</span>{' '}
+              <span className="font-medium tabular-nums"><Money value={summary.your_share} /></span>
             </div>
-            <div className="text-[10px] text-[#475569]">net</div>
+            <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
           </div>
         )}
         <button
@@ -359,8 +395,8 @@ export default function GroupCard({ group, onDelete }) {
 
               <AddTransactionSearch existingIds={existingIds} onAdd={addMember} />
               <SettleUp
-                settleUp={detail?.settle_up}
-                hasPeople={detail?.members?.some(m => m.people?.length) ?? false}
+                settleUp={summary.settle_up}
+                hasPeople={summary.has_people}
               />
             </>
           )}

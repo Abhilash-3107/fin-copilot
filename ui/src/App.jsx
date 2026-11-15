@@ -5,6 +5,7 @@ import { StatementProvider } from './contexts/StatementContext.jsx'
 import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
+import { DemoDataProvider } from './contexts/DemoDataContext.jsx'
 import Layout from './components/Layout.jsx'
 import TokenGate from './components/TokenGate.jsx'
 
@@ -27,11 +28,12 @@ function PageFallback() {
 export default function App() {
   return (
     <TokenGate>
+    <PrivacyProvider>
     <ToastProvider>
       <StatementProvider>
-      <PrivacyProvider>
       <PeriodProvider>
       <AnnotationJobProvider>
+      <DemoDataProvider>
       <HashRouter>
         <Routes>
           <Route path="/" element={<Layout />}>
@@ -47,11 +49,12 @@ export default function App() {
           </Route>
         </Routes>
       </HashRouter>
+      </DemoDataProvider>
       </AnnotationJobProvider>
       </PeriodProvider>
-      </PrivacyProvider>
       </StatementProvider>
     </ToastProvider>
+    </PrivacyProvider>
     </TokenGate>
   )
 }

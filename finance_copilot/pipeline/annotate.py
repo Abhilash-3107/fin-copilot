@@ -984,7 +984,7 @@ def _try_rag_annotation(
             txn["id"], best_similarity, settings.rag_similarity_floor,
         )
         skips.append(
-            f"rag: novelty gate — best similarity {best_similarity:.4f} < "
+            f"rag: novelty gate - best similarity {best_similarity:.4f} < "
             f"rag_similarity_floor {settings.rag_similarity_floor}"
         )
         return None, None
@@ -1429,6 +1429,18 @@ def _machine_labeled(conn: sqlite3.Connection, where: str, params: tuple) -> lis
     ]
 
 
+def _unannotated(conn: sqlite3.Connection) -> list[str]:
+    """Payments no annotation covers: with AI off or a failed run they wait in
+    the review queue like a low-confidence label does, so a new rule, policy or
+    donor can settle them too."""
+    return [
+        r[0] for r in conn.execute(
+            "SELECT t.id FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id "
+            "WHERE a.id IS NULL ORDER BY t.id"
+        )
+    ]
+
+
 def reevaluation_candidates(conn: sqlite3.Connection, taught_ids: list[str]) -> list[str]:
     """Machine labels that new human labels on taught_ids could change, least
     confident first: every label to the same payees, plus (for a single label,
@@ -1469,7 +1481,9 @@ def reevaluate_machine_labels(
 
     Each transaction runs user rules, the person rule, merchant rules, learned
     rules, then rag_direct on its stored vector (never the LLM, never a network
-    call), against every label known now.
+    call), against every label known now. A payment with no annotation yet is a
+    candidate too: a decision gives it its first label (any confidence, as the
+    alternative is no label at all), and no decision leaves it as it was.
       - An old learned_rule/rag_direct label was itself deterministic, so a fresh
         decision supersedes it, downwards too. With no decision it is demoted
         into review, but only when retrieval actually ran and declined; a row
@@ -1490,11 +1504,11 @@ def reevaluate_machine_labels(
     for txn_id in transaction_ids:
         txn = dict(conn.execute(
             "SELECT t.*, a.id AS annotation_id, a.category AS old_category, a.subcategory AS old_subcategory, "
-            "a.merchant AS old_merchant, a.confidence AS old_confidence, a.source AS old_source "
-            "FROM transactions t JOIN annotations a ON a.transaction_id = t.id WHERE t.id = ?",
+            "a.merchant AS old_merchant, COALESCE(a.confidence, 0.0) AS old_confidence, a.source AS old_source "
+            "FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id WHERE t.id = ?",
             (txn_id,),
         ).fetchone())
-        if txn["old_source"] not in MACHINE_SOURCES:
+        if txn["annotation_id"] is not None and txn["old_source"] not in MACHINE_SOURCES:
             continue
         result, trace = rule_annotation(
             conn, txn, stage.known_people, stage.user_rules, stage.policies, as_of=None
@@ -1525,7 +1539,18 @@ def reevaluate_machine_labels(
 
     changed: list[dict] = []
     for txn, result, trace in decisions:
-        if result is None:
+        if txn["annotation_id"] is None:
+            if insert_annotation(conn, Annotation(
+                transaction_id=txn["id"], merchant=result.merchant, category=result.category,
+                subcategory=result.subcategory, tags=dump_string_list(result.tags),
+                confidence=result.confidence, source=result.source, reasoning=trace.model_dump_json(),
+            )):
+                changed.append({
+                    "transaction_id": txn["id"], "category": result.category, "subcategory": result.subcategory,
+                    "merchant": result.merchant, "confidence": result.confidence, "source": result.source,
+                    "resolved": result.confidence >= threshold,
+                })
+        elif result is None:
             if demote_machine_annotation(conn, txn["annotation_id"], settings.rag_defer_confidence_cap):
                 changed.append({
                     "transaction_id": txn["id"], "category": txn["old_category"],
@@ -1555,14 +1580,18 @@ def reevaluate_after_teaching(conn: sqlite3.Connection, taught_ids: list[str]) -
 
 
 def rescore_review_queue(conn: sqlite3.Connection) -> list[dict]:
-    """Re-decide every machine label below the review bar, skipped ones
-    included: knowledge gained since they were annotated may now settle them."""
-    queued = _machine_labeled(conn, "a.confidence < ?", (get_confidence_threshold(conn),))
+    """Re-decide every machine label below the review bar, and every payment
+    with no label yet, skipped ones included: knowledge gained since they were
+    annotated may now settle them."""
+    queued = _machine_labeled(conn, "a.confidence < ?", (get_confidence_threshold(conn),)) + _unannotated(conn)
     return reevaluate_machine_labels(conn, queued, reason="rescore")
 
 
 def reevaluate_after_policy_change(conn: sqlite3.Connection) -> list[dict]:
     """Re-decide what a policy change can affect: every machine label waiting
-    for review, and every label a policy made. Rule stages only, no retrieval."""
-    candidates = _machine_labeled(conn, "(a.confidence < ? OR a.source = 'policy')", (get_confidence_threshold(conn),))
+    for review, every payment with no label yet, and every label a policy made.
+    Rule stages only, no retrieval."""
+    candidates = _machine_labeled(
+        conn, "(a.confidence < ? OR a.source = 'policy')", (get_confidence_threshold(conn),)
+    ) + _unannotated(conn)
     return reevaluate_machine_labels(conn, candidates, reason="policy", retrieval=False)

@@ -55,6 +55,15 @@ class TestThreshold:
         assert client.get("/api/config").json()["dev_mode"] is True
 
 
+class TestAiActive:
+    @pytest.mark.parametrize(("provider", "active"), [("none", False), ("ollama", True), ("openai", True)])
+    def test_config_says_whether_a_model_is_configured(self, client_conn, monkeypatch, provider, active):
+        client, _ = client_conn
+        monkeypatch.setattr(settings, "llm_provider", provider)
+        assert client.get("/api/config").json()["ai_active"] is active
+        assert client.put("/api/config", json={"dev_mode": False}).json()["ai_active"] is active
+
+
 class TestLlmConfig:
     def test_get_redacts_api_key(self, client_conn):
         client, _ = client_conn

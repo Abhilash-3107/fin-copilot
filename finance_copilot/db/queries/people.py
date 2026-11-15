@@ -19,13 +19,6 @@ _FAMILY_RELATIONSHIPS = frozenset(
     }
 )
 
-# Ordered choices for the People UI dropdown. Free-text is still accepted at the
-# DB layer; this is just the curated set the picker offers.
-RELATIONSHIP_CHOICES = (
-    "self", "dad", "mom", "sister", "brother", "wife", "husband",
-    "son", "daughter", "family", "friend", "roommate", "colleague", "other",
-)
-
 # The user's own other accounts: money moved to them is a Self Transfer, which
 # insights exclude from spending. Only a fact the user states can make a payee
 # "self"; see annotate._gate_fact_categories.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
 
 
@@ -125,49 +126,25 @@ def _parse_amount_query(q: str) -> float | None:
         return None
 
 
-def list_transactions(
+def _filter_conditions(
     conn: sqlite3.Connection,
-    statement_id: str | None = None,
-    month: str | None = None,
-    unannotated: bool = False,
-    include_annotation: bool = False,
-    q: str | None = None,
-    categories: list[str] | None = None,
-    sources: list[str] | None = None,
-    merchant: str | None = None,
-    person_token: str | None = None,
-    min_amount: float | None = None,
-    max_amount: float | None = None,
-    sort: str = "date",
-    order: str = "desc",
-    after: str | None = None,
-    limit: int | None = None,
-) -> list[TxnRow]:
-    """Return transactions as a list of dicts, with optional filters.
-
-    include_annotation joins each row's annotation (same shape as the per-id
-    endpoint: annotation_id, category, ...) so list pages need one round-trip.
-    q is a case-insensitive substring match over the raw description, the
-    annotated merchant, and the UPI note. categories/sources/merchant filter
-    on annotation fields, so they only ever match annotated rows.
-    after/limit give keyset pagination: pass the last row's id to get the next
-    page in (txn_date, id) order.
-    """
-    if include_annotation:
-        query = """
-            SELECT t.*, a.id AS annotation_id, a.merchant, a.category, a.subcategory,
-                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at
-            FROM transactions t
-            LEFT JOIN annotations a ON a.transaction_id = t.id
-        """
-    else:
-        query = "SELECT t.* FROM transactions t"
+    *,
+    statement_id: str | None,
+    month: str | None,
+    unannotated: bool,
+    q: str | None,
+    categories: list[str] | None,
+    sources: list[str] | None,
+    merchant: str | None,
+    person_token: str | None,
+    min_amount: float | None,
+    max_amount: float | None,
+) -> tuple[list[str], list]:
+    """WHERE conditions and params shared by the list and its summary, over
+    transactions `t` LEFT JOINed to annotations `a`, so the summary can never
+    count different rows from the list it describes."""
     params: list = []
     conditions: list[str] = []
-
-    needs_annotation_join = unannotated or q or categories or sources or merchant
-    if needs_annotation_join and not include_annotation:
-        query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
 
     if unannotated:
         conditions.append("a.id IS NULL")
@@ -193,9 +170,16 @@ def list_transactions(
         conditions.append("(" + " OR ".join(clauses) + ")")
 
     if categories:
-        placeholders = ",".join("?" * len(categories))
-        conditions.append(f"a.category IN ({placeholders})")
-        params += categories
+        # Uncategorized is "not sorted" (common.unsorted_sql), which includes
+        # rows with no annotation at all, so it matches what Insights counts.
+        named = [c for c in categories if c != UNCATEGORIZED]
+        clauses = []
+        if named:
+            clauses.append(f"a.category IN ({','.join('?' * len(named))})")
+            params += named
+        if len(named) != len(categories):
+            clauses.append(unsorted_sql("a"))
+        conditions.append("(" + " OR ".join(clauses) + ")")
 
     if sources:
         placeholders = ",".join("?" * len(sources))
@@ -236,6 +220,57 @@ def list_transactions(
         conditions.append("t.amount <= ?")
         params.append(max_amount)
 
+    return conditions, params
+
+
+def list_transactions(
+    conn: sqlite3.Connection,
+    statement_id: str | None = None,
+    month: str | None = None,
+    unannotated: bool = False,
+    include_annotation: bool = False,
+    q: str | None = None,
+    categories: list[str] | None = None,
+    sources: list[str] | None = None,
+    merchant: str | None = None,
+    person_token: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
+    sort: str = "date",
+    order: str = "desc",
+    after: str | None = None,
+    limit: int | None = None,
+) -> list[TxnRow]:
+    """Return transactions as a list of dicts, with optional filters.
+
+    include_annotation joins each row's annotation (same shape as the per-id
+    endpoint: annotation_id, category, ...) so list pages need one round-trip.
+    q is a case-insensitive substring match over the raw description, the
+    annotated merchant, and the UPI note. sources/merchant filter on annotation
+    fields, so they only ever match annotated rows; the category filter does
+    too, except that Uncategorized also matches rows with no annotation.
+    after/limit give keyset pagination: pass the last row's id to get the next
+    page in (txn_date, id) order.
+    """
+    if include_annotation:
+        query = """
+            SELECT t.*, a.id AS annotation_id, a.merchant, a.category, a.subcategory,
+                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at
+            FROM transactions t
+            LEFT JOIN annotations a ON a.transaction_id = t.id
+        """
+    else:
+        query = "SELECT t.* FROM transactions t"
+
+    conditions, params = _filter_conditions(
+        conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
+        categories=categories, sources=sources, merchant=merchant,
+        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+    )
+    needs_annotation_join = unannotated or q or categories or sources or merchant
+    if needs_annotation_join and not include_annotation:
+        query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
+
     # Sort key + direction, always tie-broken by id for a stable keyset order.
     sort_col = "t.amount" if sort == "amount" else "t.txn_date"
     direction = "ASC" if order == "asc" else "DESC"
@@ -262,6 +297,44 @@ def list_transactions(
 
     rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def summarize_transactions(
+    conn: sqlite3.Connection,
+    statement_id: str | None = None,
+    month: str | None = None,
+    unannotated: bool = False,
+    q: str | None = None,
+    categories: list[str] | None = None,
+    sources: list[str] | None = None,
+    merchant: str | None = None,
+    person_token: str | None = None,
+    min_amount: float | None = None,
+    max_amount: float | None = None,
+) -> dict:
+    """Count and debit/credit totals of exactly the rows list_transactions
+    would return for the same filters (all pages, not just the first)."""
+    conditions, params = _filter_conditions(
+        conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
+        categories=categories, sources=sources, merchant=merchant,
+        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+    )
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n,
+               COALESCE(SUM(CASE WHEN t.debit_credit = 'debit' THEN t.amount END), 0) AS money_out,
+               COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' THEN t.amount END), 0) AS money_in
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id{where}
+        """,
+        params,
+    ).fetchone()
+    return {
+        "count": row["n"],
+        "money_out": round(row["money_out"], 2),
+        "money_in": round(row["money_in"], 2),
+    }
 
 
 def list_transaction_facets(
@@ -295,4 +368,18 @@ def list_transaction_facets(
         ).fetchall()
         return [row["v"] for row in rows]
 
-    return {"categories": distinct("category"), "sources": distinct("source")}
+    categories = distinct("category")
+    # Rows with no annotation are filterable as Uncategorized, so offer it
+    # whenever any row in scope is unsorted.
+    has_unsorted = conn.execute(
+        f"""
+        SELECT 1 FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        WHERE {unsorted_sql("a")}{where}
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    if has_unsorted and UNCATEGORIZED not in categories:
+        categories = sorted([*categories, UNCATEGORIZED])
+    return {"categories": categories, "sources": distinct("source")}

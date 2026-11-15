@@ -124,6 +124,11 @@ def _split_balance_artifacts(
     return transactions, opening, closing
 
 
+def _rupees(amount: float) -> str:
+    """A rupee figure with the sign in front of the rupee sign, like the UI writes it."""
+    return f"{'-' if amount < 0 else ''}₹{abs(amount):,.2f}"
+
+
 def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str]:
     """Cross-statement balance continuity warnings for a newly ingested statement.
 
@@ -153,8 +158,8 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     ).fetchone()
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
-            f"Opening balance ₹{statement.opening_balance:,.2f} doesn't match the "
-            f"{prev['statement_month']} closing balance ₹{prev['closing_balance']:,.2f} — "
+            f"Opening balance {_rupees(statement.opening_balance)} doesn't match the "
+            f"{prev['statement_month']} closing balance {_rupees(prev['closing_balance'])} - "
             "a statement in between may be missing."
         )
 
@@ -167,8 +172,8 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     ).fetchone()
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
-            f"Closing balance ₹{statement.closing_balance:,.2f} doesn't match the "
-            f"{nxt['statement_month']} opening balance ₹{nxt['opening_balance']:,.2f} — "
+            f"Closing balance {_rupees(statement.closing_balance)} doesn't match the "
+            f"{nxt['statement_month']} opening balance {_rupees(nxt['opening_balance'])} - "
             "a statement in between may be missing."
         )
 

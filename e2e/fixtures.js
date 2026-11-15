@@ -1,200 +1,18 @@
 // Test fixtures: an isolated app instance per test, a model stub, a pinned
 // clock, and console/network hygiene applied to every page.
-import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test as base, expect } from '@playwright/test'
-import { TEMP_PREFIX, serverMode, wheelBin } from './global-setup.js'
-import { CHAT_MODEL, EMBED_MODEL, startStubModel } from './stub-model.js'
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+import { TEMP_PREFIX } from './global-setup.js'
+import { makeApi, killTree, startServer } from './lib/server.js'
+import { startStubModel } from './stub-model.js'
 
 /** The day every journey runs on. The server reads it from FC_TODAY. */
 export const TODAY = '2026-11-15'
 
 /** Name of the attachment that carries console and network problems to the reporter. */
 export const HYGIENE_ATTACHMENT = 'hygiene-violations'
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer()
-    probe.once('error', reject)
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address()
-      probe.close(() => resolve(port))
-    })
-  })
-}
-
-function serverCommand(dataDir, port) {
-  if (serverMode() === 'wheel') {
-    return {
-      cmd: wheelBin(),
-      args: ['--data-dir', dataDir, '--port', String(port), '--no-browser'],
-      cwd: os.tmpdir(),
-    }
-  }
-  return { cmd: 'uv', args: ['run', 'python', '-m', 'finance_copilot'], cwd: repoRoot }
-}
-
-// What uv and node need to run, and nothing else. A developer's shell can set
-// any setting the app reads, so the app's environment is built from this list
-// and not copied from the shell.
-const INHERITED = /^(PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TEMP|TMP|TERM|LANG|LC_\w+|UV_\w+|XDG_\w+|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|(?:https?|all)_proxy)$/i
-
-function serverEnv(dataDir, port, modelUrl) {
-  const env = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (INHERITED.test(key) && value !== undefined) env[key] = value
-  }
-  // Every setting that changes what the app does is set here, not left to a default.
-  Object.assign(env, {
-    FC_DATA_DIR: dataDir,
-    PORT: String(port),
-    HOST: '127.0.0.1',
-    RELOAD: '0',
-    FC_TODAY: TODAY,
-    // A checkout reads its own .env, which would override the settings below.
-    FC_IGNORE_DOTENV: '1',
-    FC_DEMO_MODE: '0',
-    DEMO_MODE: '0',
-    API_TOKEN: '',
-    DEV_MODE: 'false',
-    // The model stub and the app both live on loopback, so a proxy must not sit between them.
-    NO_PROXY: '127.0.0.1,localhost',
-    no_proxy: '127.0.0.1,localhost',
-  })
-  if (modelUrl) {
-    Object.assign(env, {
-      LLM_PROVIDER: 'ollama',
-      EMBEDDING_PROVIDER: 'ollama',
-      OLLAMA_URL: modelUrl,
-      OLLAMA_MODEL: CHAT_MODEL,
-      OLLAMA_EMBEDDING_MODEL: EMBED_MODEL,
-    })
-  } else {
-    // Both providers off. The Ollama URL points at a closed port so a model
-    // running on the developer's machine is never reached.
-    Object.assign(env, { LLM_PROVIDER: 'none', EMBEDDING_PROVIDER: 'none', OLLAMA_URL: 'http://127.0.0.1:1' })
-  }
-  return env
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-/**
- * Wait until this child, and not some other process that took the port first,
- * is serving. The child announces its own address once it is listening, so the
- * wait needs that line as well as a healthy /api/health, and it stops at once
- * if the child exits.
- */
-async function waitUntilServing(child, url, port, log) {
-  const announced = new RegExp(`(?:Uvicorn running on|Finance Copilot is running at) ${url.replace(/[.]/g, '\\.')}(?!\\d)`)
-  const deadline = Date.now() + 90_000
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new ServerExited(child.exitCode, log.text())
-    if (announced.test(log.all())) {
-      try {
-        const res = await fetch(`${url}/api/health`)
-        if (res.ok && child.exitCode === null) return
-      } catch {
-        // announced but not answering yet
-      }
-    }
-    await sleep(100)
-  }
-  throw new Error(`Server did not announce ${url} and become healthy within 90s (port ${port}).\n${log.text()}`)
-}
-
-class ServerExited extends Error {
-  constructor(code, text) {
-    super(`Server exited with code ${code} before it was serving.\n${text}`)
-    this.exited = true
-  }
-}
-
-function killTree(child) {
-  if (child.exitCode !== null) return Promise.resolve()
-  return new Promise((resolve) => {
-    child.once('exit', resolve)
-    try {
-      process.kill(-child.pid, 'SIGTERM')
-    } catch {
-      resolve()
-      return
-    }
-    setTimeout(() => {
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        // already gone
-      }
-    }, 3000).unref()
-  })
-}
-
-/**
- * Start the app on a free port. The port is chosen before the server binds it,
- * so another process can take it in between: that shows up as the child
- * exiting, and the start is tried again on a new port.
- */
-async function startServer(dataDir, modelUrl) {
-  const chunks = []
-  const log = { all: () => chunks.join(''), text: () => chunks.join('').slice(-4000) }
-  for (let attempt = 1; ; attempt++) {
-    const port = await freePort()
-    const url = `http://127.0.0.1:${port}`
-    const { cmd, args, cwd } = serverCommand(dataDir, port)
-    const child = spawn(cmd, args, {
-      cwd,
-      env: serverEnv(dataDir, port, modelUrl),
-      detached: true, // its own process group, so the whole tree can be killed
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    child.stdout.on('data', (d) => chunks.push(String(d)))
-    child.stderr.on('data', (d) => chunks.push(String(d)))
-    try {
-      await waitUntilServing(child, url, port, log)
-      return { child, url, log, chunks }
-    } catch (error) {
-      await killTree(child)
-      if (!error.exited || attempt === 3) throw error
-      chunks.push(`\n--- start attempt ${attempt} failed, trying another port ---\n`)
-    }
-  }
-}
-
-function makeApi(url) {
-  async function call(method, route, body) {
-    const res = await fetch(`${url}/api${route}`, {
-      method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const text = await res.text()
-    if (!res.ok) throw new Error(`${method} /api${route} -> ${res.status}: ${text}`)
-    return text ? JSON.parse(text) : null
-  }
-  return {
-    get: (route) => call('GET', route),
-    post: (route, body = {}) => call('POST', route, body),
-    put: (route, body) => call('PUT', route, body),
-    patch: (route, body) => call('PATCH', route, body),
-    delete: (route) => call('DELETE', route),
-    /** Multipart upload of one file field, as the Add Statement page sends it. */
-    async upload(route, fileName, bytes, type) {
-      const form = new FormData()
-      form.append('file', new Blob([bytes], { type }), fileName)
-      const res = await fetch(`${url}/api${route}`, { method: 'POST', body: form })
-      const text = await res.text()
-      if (!res.ok) throw new Error(`POST /api${route} -> ${res.status}: ${text}`)
-      return JSON.parse(text)
-    },
-  }
-}
 
 /** Let a page finish what it is loading. A page that never goes quiet (polling) is not an error. */
 async function settle(page) {
@@ -218,7 +36,7 @@ export const test = base.extend({
       let server
       try {
         const started = Date.now()
-        server = await startServer(dataDir, stub?.url)
+        server = await startServer(dataDir, stub?.url, { today: TODAY })
         testInfo.annotations.push({ type: 'server-start-ms', description: String(Date.now() - started) })
         const api = makeApi(server.url)
         await use({

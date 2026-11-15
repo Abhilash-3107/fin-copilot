@@ -19,7 +19,7 @@ export default function AnnotationProgress({ job }) {
 
   const total = job.total ?? 0
   const processed = job.processed ?? 0
-  // total is 0 until the pipeline counts the batch — show an indeterminate bar.
+  // total is 0 until the pipeline counts the batch - show an indeterminate bar.
   const indeterminate = total === 0 || job.status === 'queued'
   const pct = indeterminate ? 0 : Math.min(100, Math.round((processed / total) * 100))
 

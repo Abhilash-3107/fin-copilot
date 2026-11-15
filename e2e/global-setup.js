@@ -33,8 +33,7 @@ export function serverMode() {
 }
 
 /** FC_E2E_WHEEL may be the wheel itself or a folder holding exactly one. */
-export function wheelPath() {
-  const given = process.env.FC_E2E_WHEEL
+export function wheelPath(given = process.env.FC_E2E_WHEEL) {
   if (!given) throw new Error('FC_E2E_SERVER=wheel needs FC_E2E_WHEEL=<path to the built .whl>')
   const resolved = path.resolve(given)
   if (!existsSync(resolved)) throw new Error(`FC_E2E_WHEEL does not exist: ${resolved}`)
@@ -42,6 +41,19 @@ export function wheelPath() {
   const wheels = readdirSync(resolved).filter((f) => f.endsWith('.whl'))
   if (wheels.length !== 1) throw new Error(`Expected one .whl in ${resolved}, found ${wheels.length}`)
   return path.join(resolved, wheels[0])
+}
+
+/**
+ * Install the wheel into a fresh environment and return its path.
+ * `uvx --from <wheel>` caches its environment by version, so a rebuilt wheel
+ * with the same version number can silently run the previous build's code.
+ */
+export function installWheel(wheel = wheelPath()) {
+  const venv = mkdtempSync(path.join(os.tmpdir(), `${TEMP_PREFIX}venv-`))
+  const stdio = ['ignore', 'ignore', 'inherit']
+  execFileSync('uv', ['venv', '--quiet', venv], { stdio })
+  execFileSync('uv', ['pip', 'install', '--quiet', '--python', path.join(venv, 'bin', 'python'), wheel], { stdio })
+  return venv
 }
 
 export default async function globalSetup() {
@@ -52,14 +64,7 @@ export default async function globalSetup() {
     }
     return
   }
-  // Install the wheel once into a fresh environment that every test shares.
-  // `uvx --from <wheel>` caches its environment by version, so a rebuilt wheel
-  // with the same version number can silently run the previous build's code.
-  const venv = mkdtempSync(path.join(os.tmpdir(), `${TEMP_PREFIX}venv-`))
-  const stdio = ['ignore', 'ignore', 'inherit']
-  execFileSync('uv', ['venv', '--quiet', venv], { stdio })
-  execFileSync('uv', ['pip', 'install', '--quiet', '--python', path.join(venv, 'bin', 'python'), wheelPath()], { stdio })
-  process.env.FC_E2E_WHEEL_VENV = venv
+  process.env.FC_E2E_WHEEL_VENV = installWheel()
 }
 
 /** The environment globalSetup installed the wheel into, in wheel mode. */

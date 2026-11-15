@@ -47,11 +47,11 @@ beforeEach(() => {
 
 function renderPanel(props) {
   return render(
-    <ToastProvider>
-      <PrivacyProvider>
+    <PrivacyProvider>
+      <ToastProvider>
         <AnnotationPanel txn={TXN} onClose={() => {}} onSaved={() => {}} {...props} />
-      </PrivacyProvider>
-    </ToastProvider>
+      </ToastProvider>
+    </PrivacyProvider>
   )
 }
 

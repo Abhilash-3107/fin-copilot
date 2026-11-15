@@ -15,7 +15,18 @@ export const VOLATILE = [
   'embedded_count', // the vector store is rebuilt on demand
   'stats', // per-person totals are computed from transactions
   'summary', // per-group totals are computed from members
+  'settle_up', // who owes whom is computed from members; derivedFigures() reads it
 ]
+
+/**
+ * The release whose API shape differs from the current one, for the upgrade
+ * journey. A version not listed here is read through the current shape, so a
+ * new release needs no entry until its API changes again.
+ *
+ * 0.1.2 has no /policies, no /categories/tidy-up and no
+ * /annotations/review-queue/counts (the set-aside figure is /snoozed-count).
+ */
+const LEGACY_0_1_2 = '0.1.2'
 
 const PAGE = 1000
 
@@ -40,29 +51,44 @@ function without(value, drop) {
   return value
 }
 
+/** The three reads whose route or shape depends on the release. */
+async function releaseSpecificReads(api, version) {
+  if (version === LEGACY_0_1_2) {
+    const { count } = await api.get('/annotations/review-queue/snoozed-count')
+    // What the release cannot report is null, so a later release that can shows as a change.
+    return { policies: null, tidyUp: null, queueCounts: { set_aside: count } }
+  }
+  const [policies, tidyUp, queueCounts] = await Promise.all([
+    api.get('/policies'),
+    api.get('/categories/tidy-up'),
+    api.get('/annotations/review-queue/counts'),
+  ])
+  return { policies, tidyUp, queueCounts }
+}
+
 /**
  * @param {object} api the app fixture's api helper
- * @param {{ ignore?: string[] }} [options] extra field names to leave out, for a
- *   journey where one more field legitimately changes (an upgrade that re-derives it)
+ * @param {{ ignore?: string[], version?: string }} [options] `ignore`: extra field
+ *   names to leave out, for a journey where one more field legitimately changes.
+ *   `version`: the release being read, when it is not the current one.
  */
-export async function storedFacts(api, { ignore = [] } = {}) {
+export async function storedFacts(api, { ignore = [], version } = {}) {
   const drop = new Set([...VOLATILE, ...ignore])
-  const [statements, transactions, people, groupList, rules, policies, categories, config, llm, learnedRules, tidyUp, queue, snoozed] =
+  const [statements, transactions, people, groupList, rules, categories, config, llm, learnedRules, queue, specific] =
     await Promise.all([
       api.get('/statements'),
       allTransactions(api),
       api.get('/people'),
       api.get('/groups'),
       api.get('/rules'),
-      api.get('/policies'),
       api.get('/categories'),
       api.get('/config'),
       api.get('/config/llm'),
       api.get('/annotations/learned-rules'),
-      api.get('/categories/tidy-up'),
       api.get('/annotations/review-queue'),
-      api.get('/annotations/review-queue/snoozed-count'),
+      releaseSpecificReads(api, version),
     ])
+  const { policies, tidyUp, queueCounts } = specific
   const groups = await Promise.all(groupList.map(({ id }) => api.get(`/groups/${id}`)))
 
   const facts = {
@@ -71,45 +97,109 @@ export async function storedFacts(api, { ignore = [] } = {}) {
     people: people.sort(byId),
     groups: groups.map((g) => ({ ...g, members: [...g.members].sort((a, b) => (a.transaction_id < b.transaction_id ? -1 : 1)) })).sort(byId),
     rules: rules.sort(byId),
-    policies: policies.sort(byId),
+    policies: policies === null ? null : policies.sort(byId),
     categories: categories.sort(byId),
     // What the app learned and what the user dismissed. A dismissed learned
     // rule or tidy-up suggestion shows up as an absence, so both lists are kept.
     learnedRules: learnedRules.sort((a, b) => (a.counterparty_key + a.direction < b.counterparty_key + b.direction ? -1 : 1)),
     tidyUp,
-    // Skipped items drop out of the queue and are counted separately.
-    reviewQueue: queue.map((q) => q.id).sort(),
-    snoozedCount: snoozed.count,
+    // Skipped items drop out of the queue and are counted separately. The
+    // queue is keyed by transaction: a row with no annotation has no annotation id.
+    reviewQueue: queue.map((q) => q.transaction_id).sort(),
+    reviewCounts: queueCounts,
     settings: { config, llm },
   }
   return without(facts, drop)
 }
 
+const sumOf = (rows) => Math.round(rows.reduce((total, r) => total + r.amount, 0) * 100) / 100
+// No comparison is null: the first month has no month before it.
+const pickTotals = (prev) => (prev ? { in: prev.money_in, out: prev.money_out, invested: prev.invested, kept: prev.kept } : null)
+const pickPeople = (items) => items.map(({ id, sent, received, net, count }) => ({ id, sent, received, net, count }))
+const pickRecurring = (rows) => rows.map(({ name, category, amount, cadence, active }) => ({ name, category, amount, cadence, active }))
+
 /**
- * The figures the app computes from the stored facts, per month: In, Out,
- * Invested, Kept, the category breakdown, the recurring total and the people
- * panel. A later upgrade journey compares these before and after, so a change
- * in how they are computed shows up as a change here. Fields a build does not
- * have yet come back as null, so the shape is the same before and after.
+ * One month of /insights as the neutral shape, per release. The mapping is
+ * explicit so a payload that changes shape shows up here, and so each release's
+ * figures mean what that release's screens showed.
  */
-export async function derivedFigures(api) {
+const FIGURES_FROM_INSIGHTS = {
+  // 0.1.2: no recurring_summary or breakdown. The Dashboard headline said
+  // "kept" for invested + kept, while its tile and Money Map said kept. The
+  // Money Map header summed the active monthly rows; the Dashboard's "Spoken
+  // for each month" summed every active row whatever its cadence. People were
+  // not scoped to the month, and the previous month was always the whole month.
+  [LEGACY_0_1_2]: (i) => ({
+    in: i.verdict.money_in,
+    out: i.verdict.money_out,
+    invested: i.verdict.invested,
+    kept: i.verdict.kept,
+    keptHeadline: i.verdict.invested + i.verdict.kept,
+    comparison: pickTotals(i.verdict.prev),
+    whatChanged: i.what_changed,
+    breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
+    breakdownExtras: null,
+    recurringHeader: sumOf(i.recurring.filter((r) => r.active && r.cadence === 'monthly')),
+    committedEachMonth: sumOf(i.recurring.filter((r) => r.active)),
+    recurring: pickRecurring(i.recurring),
+    people: pickPeople(i.people.items),
+    unexplained: i.unexplained,
+  }),
+  // Current: one recurring total, which both screens show.
+  current: (i) => ({
+    in: i.verdict.money_in,
+    out: i.verdict.money_out,
+    invested: i.verdict.invested,
+    kept: i.verdict.kept,
+    keptHeadline: i.verdict.kept,
+    comparison: pickTotals(i.verdict.prev),
+    whatChanged: i.what_changed,
+    breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
+    breakdownExtras: i.breakdown.extras,
+    recurringHeader: i.recurring_summary.monthly_total,
+    committedEachMonth: i.recurring_summary.monthly_total,
+    recurring: pickRecurring(i.recurring),
+    people: pickPeople(i.people.items),
+    unexplained: i.unexplained,
+  }),
+}
+
+/**
+ * The figures the app computes from the stored facts, in one neutral shape
+ * whatever the release: per month, In, Out, Invested, Kept, the category
+ * breakdown, the recurring totals, the people panel and the uncategorised
+ * figure; and over all time, each person's totals and each group's summary.
+ * The upgrade journey compares these before and after, so a change in how they
+ * are computed shows up as a change here.
+ *
+ * @param {object} api the app fixture's api helper
+ * @param {{ version?: string }} [options] the release being read, when it is not the current one
+ */
+export async function derivedFigures(api, { version } = {}) {
+  const fromInsights = FIGURES_FROM_INSIGHTS[version] ?? FIGURES_FROM_INSIGHTS.current
   const { months } = await api.get('/insights')
-  const figures = {}
-  for (const month of months) {
-    const i = await api.get(`/insights?month=${month}`)
-    const monthly = i.recurring.filter((r) => r.active && r.cadence === 'monthly')
-    figures[month] = {
-      in: i.verdict.money_in,
-      out: i.verdict.money_out,
-      invested: i.verdict.invested,
-      kept: i.verdict.kept,
-      breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
-      breakdownExtras: i.breakdown?.extras ?? null,
-      recurringTotal: i.recurring_summary?.monthly_total ?? monthly.reduce((s, r) => s + r.amount, 0),
-      recurring: i.recurring,
-      people: i.people.items.map(({ id, sent, received, net, count }) => ({ id, sent, received, net, count })),
-      unexplained: i.unexplained,
-    }
-  }
-  return figures
+  const perMonth = {}
+  for (const month of months) perMonth[month] = fromInsights(await api.get(`/insights?month=${month}`))
+
+  // The same fields in every release: what a person's stats and a group's
+  // summary have in common. Newer fields (your share, who owes) are not
+  // compared, because the old release had no such figure. Who owes whom is
+  // top-level on a group in 0.1.2 and inside its summary since.
+  const people = (await api.get('/people')).map(({ id, stats }) => ({ id, ...stats }))
+  const groups = await Promise.all(
+    (await api.get('/groups')).map(async ({ id, summary }) => {
+      const group = await api.get(`/groups/${id}`)
+      return {
+        id,
+        memberCount: summary.member_count,
+        firstDate: summary.first_date,
+        lastDate: summary.last_date,
+        spend: summary.spend,
+        received: summary.received,
+        settleUp: version === LEGACY_0_1_2 ? group.settle_up : summary.settle_up,
+      }
+    }),
+  )
+  const byId = (a, b) => (a.id < b.id ? -1 : 1)
+  return { months: perMonth, people: people.sort(byId), groups: groups.sort(byId) }
 }

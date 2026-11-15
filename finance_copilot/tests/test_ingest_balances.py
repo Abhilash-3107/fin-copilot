@@ -210,6 +210,19 @@ class TestContinuityCheck:
         assert "missing" in warnings[0]
         conn.close()
 
+    def test_a_negative_balance_puts_the_sign_before_the_rupee_sign(self):
+        # An overdrawn account closes below zero. "₹-1,234.00" would slip past
+        # the privacy mask, which looks for a sign before the rupee sign.
+        conn = _make_conn()
+        self._seed_statement(conn, "2026-03", "2026-03-01", "2026-03-31", 50000.0, -1234.0)
+        stmt = _ingest(conn, [
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
+        ], b"%PDF may after overdraft")
+        (warning,) = check_continuity(conn, stmt)
+        assert "-₹1,234.00" in warning
+        assert "₹-" not in warning
+        conn.close()
+
     def test_gap_against_next_statement_warns_on_out_of_order_upload(self):
         conn = _make_conn()
         self._seed_statement(conn, "2026-05", "2026-05-01", "2026-05-31", 90349.69, 90770.41)

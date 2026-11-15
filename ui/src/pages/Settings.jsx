@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database, FolderTree } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -230,7 +230,7 @@ function InsightsSettings({ devMode, threshold, onSave }) {
 
 const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
-  { id: 'model', label: 'AI & Model', icon: Cpu },
+  { id: 'ai', label: 'AI & Model', icon: Cpu },
   { id: 'insights', label: 'Insights', icon: BarChart3 },
   { id: 'categories', label: 'Categories', icon: FolderTree },
   { id: 'rules', label: 'Rules', icon: BookOpen },
@@ -239,7 +239,12 @@ const TABS = [
 
 export default function Settings() {
   const toast = useToast()
-  const [tab, setTab] = useState('general')
+  // The tab lives in the URL (#/settings?tab=ai) so a link can open it and a
+  // reload keeps it. General is the default and leaves the URL bare.
+  const [params, setParams] = useSearchParams()
+  const requested = params.get('tab')
+  const tab = TABS.some(t => t.id === requested) ? requested : 'general'
+  const setTab = id => setParams(id === 'general' ? {} : { tab: id }, { replace: true })
   const [devMode, setDevMode] = useState(false)
   const [threshold, setThreshold] = useState(0.85)
   const [loading, setLoading] = useState(true)
@@ -326,7 +331,7 @@ export default function Settings() {
             </div>
           )}
 
-          {tab === 'model' && <ModelSettings />}
+          {tab === 'ai' && <ModelSettings />}
 
           {tab === 'insights' && (
             <InsightsSettings devMode={devMode} threshold={threshold} onSave={saveThreshold} />
