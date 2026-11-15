@@ -106,3 +106,38 @@ export async function openSettingsTab(page, name) {
   await open(page, '/settings')
   await page.getByRole('button', { name, exact: true }).click()
 }
+
+/**
+ * What privacy mode must hide, found on the screen as it is now. Hidden figures
+ * stay in the page, blurred and labelled "... hidden", so the walk skips
+ * anything inside such a label. What is left must hold no rupee amount and no
+ * percentage of money. Text, tooltips, and the title, aria-label, placeholder
+ * and alt of every element are read. Confidence and accuracy percentages are
+ * not money and are left alone. Returns the offending snippets.
+ */
+export async function moneyLeaks(page) {
+  return page.evaluate(() => {
+    const clone = document.body.cloneNode(true)
+    for (const el of clone.querySelectorAll('[aria-label*="hidden" i]')) el.remove()
+    for (const el of clone.querySelectorAll('script, style')) el.remove()
+    const seen = []
+    // A space between elements keeps "39%" and "of what came in" in one sentence
+    // while stopping neighbouring cells from running together.
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT)
+    let text = ''
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) text += ` ${node.nodeValue}`
+    seen.push(text.replace(/\s+/g, ' '))
+    for (const el of clone.querySelectorAll('*')) {
+      for (const name of ['title', 'aria-label', 'placeholder', 'alt']) {
+        const value = el.getAttribute(name)
+        if (value) seen.push(value)
+      }
+    }
+    const patterns = [
+      /.{0,30}[\u20B9]\s*\d.{0,20}/g,
+      /.{0,30}\d+\s*%\s*(of\s+)?(what came in|money in|money out).{0,10}/gi,
+      /.{0,10}\b(kept|saved|spent)\b.{0,24}\d+\s*%.{0,10}/gi,
+    ]
+    return seen.flatMap((line) => patterns.flatMap((re) => line.match(re) ?? []))
+  })
+}
