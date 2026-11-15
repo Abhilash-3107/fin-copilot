@@ -37,6 +37,7 @@ _WIPE_ORDER = (
     "transaction_group_members",
     "transaction_groups",
     "annotation_jobs",
+    "review_undo",
     "embedding_meta",
     "annotations",
     "feedback_stats",

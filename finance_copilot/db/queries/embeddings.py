@@ -32,6 +32,31 @@ def stored_embedding(conn: sqlite3.Connection, transaction_id: str) -> list[floa
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
+def stored_embeddings(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, list[float]]:
+    """stored_embedding for many payments at once: {transaction_id: vector} for
+    those the active model has embedded. Raises sqlite3.OperationalError where
+    sqlite-vec is not loaded."""
+    out: dict[str, list[float]] = {}
+    model = current_embedding_model()
+    for i in range(0, len(transaction_ids), 500):
+        chunk = transaction_ids[i : i + 500]
+        marks = ",".join("?" * len(chunk))
+        have = [
+            r[0] for r in conn.execute(
+                f"SELECT transaction_id FROM embedding_meta WHERE transaction_id IN ({marks}) AND model_version = ?",
+                (*chunk, model),
+            )
+        ]
+        if not have:
+            continue
+        for r in conn.execute(
+            f"SELECT transaction_id, embedding FROM vec_items WHERE transaction_id IN ({','.join('?' * len(have))})",
+            have,
+        ):
+            out[r[0]] = list(struct.unpack(f"{len(r[1]) // 4}f", r[1]))
+    return out
+
+
 def ensure_vec_dimension(conn: sqlite3.Connection) -> bool:
     """Rebuild vec_items when the active embedding model's dimension differs.
 

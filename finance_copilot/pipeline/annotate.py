@@ -1574,9 +1574,17 @@ def reevaluate_machine_labels(
     return changed
 
 
-def reevaluate_after_teaching(conn: sqlite3.Connection, taught_ids: list[str]) -> list[dict]:
-    """Propagate fresh human labels: re-decide the machine labels they could change."""
-    return reevaluate_machine_labels(conn, reevaluation_candidates(conn, taught_ids), reason="teaching")
+def reevaluate_after_teaching(
+    conn: sqlite3.Connection, taught_ids: list[str], candidates: list[str] | None = None
+) -> list[dict]:
+    """Propagate fresh human labels: re-decide the machine labels they could change.
+
+    `candidates` is what reevaluation_candidates returned earlier for the same
+    taught payments: a caller that must see the rows before they change (undo)
+    asks first and passes them back, so the search is not run twice."""
+    if candidates is None:
+        candidates = reevaluation_candidates(conn, taught_ids)
+    return reevaluate_machine_labels(conn, candidates, reason="teaching")
 
 
 def rescore_review_queue(conn: sqlite3.Connection) -> list[dict]:

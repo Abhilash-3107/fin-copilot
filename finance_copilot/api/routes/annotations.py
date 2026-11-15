@@ -34,6 +34,7 @@ from finance_copilot.db.queries.common import dump_string_list, parse_string_lis
 from finance_copilot.db.queries.embeddings import find_similar
 from finance_copilot.db.queries.feedback_stats import category_accuracy, record_feedback
 from finance_copilot.db.queries.payee import with_payee
+from finance_copilot.db.queries.review_undo import UndoCapture, UndoError, undo
 from finance_copilot.models.annotation import (
     Annotation,
     AnnotationCreate,
@@ -43,6 +44,7 @@ from finance_copilot.models.annotation import (
 from finance_copilot.pipeline.annotate import (
     auto_annotate,
     reevaluate_after_teaching,
+    reevaluation_candidates,
     rescore_review_queue,
 )
 from finance_copilot.pipeline.embed import (
@@ -54,6 +56,7 @@ from finance_copilot.pipeline.embed import (
 from finance_copilot.pipeline.review_queue import group_review_queue, take_whole_groups
 from finance_copilot.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
 from finance_copilot.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
+from finance_copilot.pipeline.suggestions import attach_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -448,12 +451,16 @@ def confirm_annotation(
     if existing["category"] != body.category:
         raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
 
+    taught = [existing["transaction_id"]]
+    candidates = reevaluation_candidates(conn, taught)
+    capture = UndoCapture(conn, taught, candidates)
     _apply_confirmation(conn, existing)
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
-    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]])
+    updated["reevaluated"] = reevaluate_after_teaching(conn, taught, candidates)
+    updated["undo_token"] = capture.finish(conn)
     return updated
 
 
@@ -498,7 +505,8 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     as no model guess was involved; if a sorting run annotated it a moment ago,
     it is corrected like any other member. So the review queue answers every
     card through here, one payment or many. Then the new labels re-decide the
-    machine labels they could change."""
+    machine labels they could change. The response carries an undo_token for
+    POST /review-queue/undo."""
     try:
         category_id, subcategory_id = require_category_ids(conn, body.label.category, body.label.subcategory)
     except CategoryError as e:
@@ -511,8 +519,11 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
         patch["merchant"] = body.label.merchant
     if "tags" in body.label.model_fields_set:
         patch["tags"] = dump_string_list(body.label.tags)
+    answered = list(dict.fromkeys(body.transaction_ids))
+    candidates = reevaluation_candidates(conn, answered)
+    capture = UndoCapture(conn, answered, candidates)
     taught = []
-    for transaction_id in dict.fromkeys(body.transaction_ids):
+    for transaction_id in answered:
         existing = get_annotation_by_transaction(conn, transaction_id)
         if existing is None and _label_by_hand(conn, transaction_id, patch):
             taught.append(transaction_id)
@@ -524,7 +535,8 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
         taught.append(transaction_id)
     conn.commit()
     embed_transactions(conn, taught)
-    return {"updated": len(taught), "reevaluated": reevaluate_after_teaching(conn, taught)}
+    reevaluated = reevaluate_after_teaching(conn, taught, candidates)
+    return {"updated": len(taught), "reevaluated": reevaluated, "undo_token": capture.finish(conn)}
 
 
 class BulkCategoryRequest(BaseModel):
@@ -801,7 +813,9 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     items = take_whole_groups(
         group_review_queue(list_review_queue(conn, get_confidence_threshold(conn))), REVIEW_QUEUE_PAGE
     )
-    for item in with_payee(conn, items):
+    with_payee(conn, items)
+    attach_suggestions(conn, items)
+    for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw
         # column so the UI never sees it. Older rows have reasoning=NULL → None.
@@ -849,11 +863,29 @@ class SkipRequest(BaseModel):
 def skip_review_item(body: SkipRequest, conn: sqlite3.Connection = Depends(get_db)):
     """Snooze one payment out of the review queue - a skip that persists across
     sessions instead of silently reappearing (4.15). Keyed by transaction so a
-    payment with no annotation can be set aside too."""
+    payment with no annotation can be set aside too. Returns an undo_token."""
+    capture = UndoCapture(conn, [body.transaction_id])
     if not snooze_transaction(conn, body.transaction_id):
         raise HTTPException(status_code=404, detail=f"Transaction {body.transaction_id} not found")
     conn.commit()
-    return {"snoozed": True}
+    return {"snoozed": True, "undo_token": capture.finish(conn)}
+
+
+class UndoRequest(BaseModel):
+    token: str
+
+
+@router.post("/review-queue/undo", status_code=200)
+def undo_review_answer(body: UndoRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """Take back one Teach Me answer: every payment it touched goes back to
+    exactly what it was (annotation, set-aside state, review counters). 409 with
+    a plain message when the answer is too old, was already undone, or one of
+    its payments has changed since."""
+    try:
+        restored = undo(conn, body.token)
+    except UndoError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"restored": restored}
 
 
 def _classify_feedback(existing: dict, patch: dict) -> str:
