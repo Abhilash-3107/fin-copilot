@@ -13,6 +13,7 @@ import { formatMonth } from '../lib/dates.js'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+import Amount from '../components/Amount.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 
@@ -127,6 +128,9 @@ export default function Transactions() {
   const [facets, setFacets] = useState({ categories: [], sources: [] })
   const [categoryTree, setCategoryTree] = useState([])
   const [transactions, setTransactions] = useState([])
+  // Count and debit/credit totals of every row the current filters match (all
+  // pages), so a drill-through visibly adds up to the figure that was clicked.
+  const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
   const [hasMore, setHasMore] = useState(false)
@@ -147,10 +151,10 @@ export default function Transactions() {
     return () => clearTimeout(t)
   }, [search])
 
-  const buildFilterParams = useCallback(() => {
+  // The filters alone: shared by the list and its one-line summary so the two
+  // always describe the same rows.
+  const buildScopeParams = useCallback(() => {
     const params = new URLSearchParams()
-    params.set('include', 'annotation')
-    params.set('limit', PAGE_SIZE)
     if (selectedStmt) params.set('statement_id', selectedStmt)
     if (month) params.set('month', month)
     if (debouncedSearch) params.set('q', debouncedSearch)
@@ -160,17 +164,28 @@ export default function Transactions() {
     if (personFilter?.token) params.set('person', personFilter.token)
     if (minAmount !== '' && !Number.isNaN(Number(minAmount))) params.set('min_amount', minAmount)
     if (maxAmount !== '' && !Number.isNaN(Number(maxAmount))) params.set('max_amount', maxAmount)
+    return params
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter, minAmount, maxAmount])
+
+  const buildFilterParams = useCallback(() => {
+    const params = buildScopeParams()
+    params.set('include', 'annotation')
+    params.set('limit', PAGE_SIZE)
     params.set('sort', sort)
     params.set('order', order)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter, minAmount, maxAmount, sort, order])
+  }, [buildScopeParams, sort, order])
 
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
     setLoading(true)
     try {
-      const txns = await api.get(`/transactions?${buildFilterParams()}`)
+      const [txns, totals] = await Promise.all([
+        api.get(`/transactions?${buildFilterParams()}`),
+        api.get(`/transactions/summary?${buildScopeParams()}`).catch(() => null),
+      ])
       if (id !== loadRef.current) return
+      setSummary(totals)
       setTransactions(txns)
       setAnnotationMap(buildAnnotationMap(txns))
       setHasMore(txns.length === PAGE_SIZE)
@@ -180,7 +195,7 @@ export default function Transactions() {
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
-  }, [buildFilterParams, toast])
+  }, [buildFilterParams, buildScopeParams, toast])
 
   async function loadMore() {
     const last = transactions.at(-1)
@@ -363,6 +378,15 @@ export default function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, activeStatement])
 
+  // "All time" means every transaction. A lingering statement selection would
+  // keep the list on one month while the period says otherwise, so the two
+  // controls are made to agree: All time clears the statement scope and the
+  // select reads "All statements".
+  useEffect(() => {
+    if (periodMonth === ALL_TIME && activeStatement) setActiveStatement(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodMonth, activeStatement])
+
   // Keyboard navigation
   useEffect(() => {
     function handler(e) {
@@ -532,7 +556,15 @@ export default function Transactions() {
         )}
 
         <span className="text-xs text-[#64748b] ml-auto">
-          {loading ? 'Loading…' : `${transactions.length}${hasMore ? '+' : ''} transaction${transactions.length === 1 ? '' : 's'}`}
+          {loading ? 'Loading…' : summary ? (
+            <>
+              {summary.count} transaction{summary.count === 1 ? '' : 's'}
+              {' · '}<Amount value={summary.money_out} decimals={0} /> out
+              {' · '}<Amount value={summary.money_in} decimals={0} /> in
+            </>
+          ) : (
+            `${transactions.length}${hasMore ? '+' : ''} transaction${transactions.length === 1 ? '' : 's'}`
+          )}
         </span>
 
         <button

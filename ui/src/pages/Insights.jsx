@@ -12,26 +12,18 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
+import OtherInNote from '../components/OtherInNote.jsx'
 import RecurringPanel from '../components/RecurringPanel.jsx'
+import Delta, { tileDelta } from '../components/Delta.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
+import { coverageLabel, comparisonLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
 const card = 'bg-[#13151f] border border-[#2d3148] rounded-xl'
 const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#64748b]'
 
-function DeltaBadge({ delta, goodWhenDown = false, suffix = ' vs last month' }) {
-  if (!delta) return <span className="text-xs text-[#475569]">—{suffix}</span>
-  const up = delta > 0
-  const good = goodWhenDown ? !up : up
-  return (
-    <span className={`text-xs tabular-nums ${good ? 'text-emerald-400' : 'text-red-400'}`}>
-      {up ? '▲' : '▼'} <Amount value={Math.abs(delta)} decimals={0} />{suffix}
-    </span>
-  )
-}
-
-function StatTile({ label, value, delta, goodWhenDown, sub }) {
+function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
   return (
     <div className={`${card} p-4`}>
       <p className={cardTitle}>{label}</p>
@@ -39,8 +31,10 @@ function StatTile({ label, value, delta, goodWhenDown, sub }) {
         <Amount value={value} decimals={0} />
       </p>
       <div className="mt-1 flex flex-wrap items-center gap-x-2">
-        <DeltaBadge delta={delta} goodWhenDown={goodWhenDown} />
-        {sub && <span className="text-xs text-[#64748b]">{sub}</span>}
+        <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
+        {sub && (typeof sub === 'string'
+          ? <span className="text-xs text-[#64748b]">{sub}</span>
+          : sub)}
       </div>
     </div>
   )
@@ -49,19 +43,26 @@ function StatTile({ label, value, delta, goodWhenDown, sub }) {
 // Row 1: the page's answer to "am I OK this month?". A cash view, so the
 // four tiles always reconcile: In = Out + Invested + Kept by construction.
 // A friend's payback the pipeline never matched simply lands inside In
-// (disclosed via other_in) instead of silently distorting a tile.
-function VerdictStrip({ verdict }) {
-  const { money_in, money_out, invested, kept, kept_rate, other_in, prev } = verdict
+// (disclosed via other_in) instead of silently distorting a tile. Deltas are
+// measured against `vs` (the server's like-for-like comparison window) and are
+// absent altogether when there is none.
+function VerdictStrip({ verdict, vs }) {
+  const { money_in, money_out, invested, kept, kept_rate, other_in } = verdict
   return (
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
       <StatTile
-        label="In" value={money_in} delta={money_in - prev.money_in}
-        sub={other_in > 0 ? `incl ${formatRupees(other_in, { decimals: 0 })} paid back or from people` : null}
+        label="In" value={money_in} delta={tileDelta(verdict, 'money_in')} vs={vs}
+        sub={<OtherInNote amount={other_in} />}
       />
-      <StatTile label="Out" value={money_out} delta={money_out - prev.money_out} goodWhenDown />
-      <StatTile label="Invested" value={invested} delta={invested - prev.invested} sub="not part of Out" />
       <StatTile
-        label="Kept" value={kept} delta={kept - prev.kept}
+        label="Out" value={money_out} delta={tileDelta(verdict, 'money_out')} vs={vs} goodWhenDown
+      />
+      <StatTile
+        label="Invested" value={invested} delta={tileDelta(verdict, 'invested')} vs={vs}
+        sub="not part of Out"
+      />
+      <StatTile
+        label="Kept" value={kept} delta={tileDelta(verdict, 'kept')} vs={vs}
         sub={kept_rate != null ? `${Math.round(kept_rate * 100)}% of money in` : null}
       />
     </div>
@@ -141,15 +142,18 @@ function BalanceChart({ balance }) {
   )
 }
 
-// Row 2b: the top category shifts vs the prior month, as sentences with
-// click-through — the "what changed" a person actually opens the page for.
-function WhatChanged({ changes, month, prevMonth }) {
-  const prevLabel = dayjs(prevMonth).format('MMM')
+// Row 2b: the top category shifts against the comparison window, as sentences
+// with click-through - the "what changed" a person actually opens the page for.
+function WhatChanged({ changes, month, vs }) {
   return (
     <div className={`${card} p-4`}>
-      <p className={`${cardTitle} mb-3`}>What changed vs {prevLabel}</p>
-      {changes.length === 0 ? (
-        <p className="text-sm text-[#475569]">No meaningful shifts from last month.</p>
+      <p className={`${cardTitle} mb-3`}>{vs ? `What changed vs ${vs}` : 'What changed'}</p>
+      {!vs ? (
+        <p className="text-sm text-[#475569]">
+          There is no earlier period to compare with yet.
+        </p>
+      ) : changes.length === 0 ? (
+        <p className="text-sm text-[#475569]">No meaningful shifts from {vs}.</p>
       ) : (
         <ul className="space-y-3">
           {changes.map(c => (
@@ -175,7 +179,8 @@ function WhatChanged({ changes, month, prevMonth }) {
 }
 
 function DeltaShort({ delta }) {
-  if (!delta) return <span className="text-xs text-[#475569]">—</span>
+  if (delta == null) return null
+  if (!delta) return <span className="text-xs text-[#475569]">-</span>
   const up = delta > 0
   return (
     <span className={`text-xs tabular-nums ${up ? 'text-red-400' : 'text-emerald-400'}`}>
@@ -185,18 +190,22 @@ function DeltaShort({ delta }) {
 }
 
 // Row 3: one component instead of the old chart + table pair. Each category
-// row carries the bar, the net amount, the month-over-month delta, and an
-// expandable subcategory drill-down. Amounts are net of refunds and shares
-// friends paid back; where that netting applied, the gross is disclosed.
-function CategoryBreakdown({ categories, unexplained, month }) {
+// row carries the bar, the net amount, the delta against the comparison window,
+// and an expandable subcategory drill-down. Amounts are net of refunds and
+// shares friends paid back; where that netting applied, the gross is disclosed.
+// The reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other money out)
+// and the total follow, so the list always closes on Out.
+function CategoryBreakdown({ categories, breakdown, unexplained, month, heading, vs }) {
   const [expanded, setExpanded] = useState(null)
   const maxNet = Math.max(1, ...categories.map(c => Math.abs(c.net)))
+  const hasDeltas = categories.some(c => c.delta != null)
   return (
     <div className={`${card} overflow-hidden`}>
-      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
-        Where it went — {dayjs(month).format('MMMM YYYY')}
-      </p>
-      {categories.length === 0 ? (
+      <div className="flex items-baseline justify-between gap-3 px-4 py-3 border-b border-[#2d3148]">
+        <p className={cardTitle}>Where it went - {heading}</p>
+        {hasDeltas && vs && <p className="text-xs text-[#64748b]">vs {vs}</p>}
+      </div>
+      {categories.length === 0 && breakdown.extras.length === 0 ? (
         <p className="px-4 py-3 text-sm text-[#475569]">No spending recorded this month.</p>
       ) : (
         <ul>
@@ -252,6 +261,38 @@ function CategoryBreakdown({ categories, unexplained, month }) {
               )}
             </li>
           ))}
+          {breakdown.extras.map(e => (
+            <li key={e.key} className="border-t border-[#1a1d27]">
+              <div className="px-4 py-2.5 grid grid-cols-[minmax(10rem,1fr)_2fr_7rem_7rem] items-center gap-3 text-sm">
+                {e.key === 'transfers' ? (
+                  <Link
+                    to={txnFilterPath({ category: 'Transfers', month })}
+                    className="truncate text-[#94a3b8] hover:text-[#a5b4fc]"
+                  >
+                    {e.label}
+                    <span className="ml-1.5 text-xs text-[#475569]">× {e.count}</span>
+                  </Link>
+                ) : (
+                  <span className="truncate text-[#94a3b8]">{e.label}</span>
+                )}
+                <span />
+                <span className="text-right tabular-nums text-[#94a3b8]">
+                  <Amount value={e.total} decimals={0} />
+                </span>
+                <span />
+              </div>
+            </li>
+          ))}
+          <li className="border-t border-[#2d3148]">
+            <div className="px-4 py-2.5 grid grid-cols-[minmax(10rem,1fr)_2fr_7rem_7rem] items-center gap-3 text-sm font-semibold">
+              <span className="text-[#e2e8f0]">Total out</span>
+              <span />
+              <span className="text-right tabular-nums text-[#e2e8f0]">
+                <Amount value={breakdown.total} decimals={0} />
+              </span>
+              <span />
+            </div>
+          </li>
         </ul>
       )}
       {unexplained.count > 0 && (
@@ -260,25 +301,28 @@ function CategoryBreakdown({ categories, unexplained, month }) {
           className="block px-4 py-2.5 border-t border-[#2d3148] text-xs text-[#f59e0b] hover:text-[#fbbf24]"
         >
           <Amount value={unexplained.total} decimals={0} /> across {unexplained.count} transaction
-          {unexplained.count === 1 ? '' : 's'} is unexplained — review them →
+          {unexplained.count === 1 ? '' : 's'} is unexplained - review them →
         </Link>
       )}
     </div>
   )
 }
 
-// Row 5: net position per named person. Intent is unknowable without links,
-// so the framing stays "between you and X", never "X owes you". Shares paid
-// back inside expense groups are already netted out server-side.
-function PeoplePanel({ people }) {
+// Row 5: net position per named person, for the month the page is showing.
+// Intent is unknowable without links, so the framing stays "between you and
+// X", never "X owes you". Shares paid back inside expense groups are already
+// netted out server-side. The People page has the all-time view.
+function PeoplePanel({ people, monthName }) {
   return (
     <div className={`${card} overflow-hidden`}>
-      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>Between you and your people</p>
+      <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
+        Sent and received in {monthName}
+      </p>
       {people.items.length === 0 ? (
         <p className="px-4 py-3 text-sm text-[#475569]">
-          No transfers matched to people yet —{' '}
+          No transfers to or from people in {monthName}. To match transfers to names,{' '}
           <Link to="/people" className="text-[#6366f1] hover:text-[#a5b4fc]">add people</Link>{' '}
-          and their UPI handles to unlock this.
+          and their UPI handles.
         </p>
       ) : (
         <ul>
@@ -293,7 +337,7 @@ function PeoplePanel({ people }) {
                   {p.relationship && <span className="ml-2 text-xs text-[#64748b]">{p.relationship}</span>}
                 </p>
                 <p className="text-xs text-[#64748b] tabular-nums">
-                  sent <Amount value={p.sent} decimals={0} /> · received <Amount value={p.received} decimals={0} /> · {p.count} transfers
+                  sent <Amount value={p.sent} decimals={0} /> · received <Amount value={p.received} decimals={0} /> · {p.count} {p.count === 1 ? 'transfer' : 'transfers'}
                 </p>
               </div>
               <span
@@ -312,11 +356,11 @@ function PeoplePanel({ people }) {
 
 // Row 6: merchants with order counts and average ticket, on canonical
 // counterparty keys so ZOMATO and ZOMATO LIMITED are one merchant.
-function MerchantsPanel({ merchants, month }) {
+function MerchantsPanel({ merchants, heading, month }) {
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
-        Top merchants — {dayjs(month).format('MMMM YYYY')}
+        Top merchants - {heading}
       </p>
       {merchants.length === 0 ? (
         <p className="px-4 py-3 text-sm text-[#475569]">No merchant spending this month.</p>
@@ -364,7 +408,8 @@ export default function Insights() {
   const [loading, setLoading] = useState(true)
 
   // The page is month-anchored: every number answers "how was this month".
-  // "All time" falls back to the latest month with data (the server's default).
+  // "All time" falls back to the latest month with data (the server's default),
+  // and the picker (allowAll={false}) shows that month.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
 
   useEffect(() => {
@@ -375,7 +420,7 @@ export default function Insights() {
         const summary = await api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`)
         if (!cancelled) setData(summary)
       } catch (e) {
-        if (!cancelled) toast(`Couldn't load your insights — ${e.message}`, 'error')
+        if (!cancelled) toast(`Couldn't load your insights - ${e.message}`, 'error')
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -384,39 +429,51 @@ export default function Insights() {
     return () => { cancelled = true }
   }, [requestMonth, toast])
 
+  const vs = comparisonLabel(data?.comparison)
+  const coverage = coverageLabel(data?.period)
+  const heading = data?.month ? dayjs(data.month).format('MMMM YYYY') : ''
+
   return (
     <div className="px-6 py-5 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Money Map
           {data?.month && (
-            <span className="text-sm font-normal text-[#64748b]"> — {dayjs(data.month).format('MMMM YYYY')}</span>
+            <span className="text-sm font-normal text-[#64748b]"> - {dayjs(data.month).format('MMMM YYYY')}</span>
+          )}
+          {coverage && (
+            <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
+              {coverage}
+            </span>
           )}
         </h1>
-        <PeriodPicker />
+        <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
       </div>
 
       {loading ? (
         <p className="text-sm text-[#475569]">Crunching your numbers…</p>
       ) : !data?.month ? (
-        <p className="text-sm text-[#475569]">Nothing here yet — upload a statement to get started.</p>
+        <p className="text-sm text-[#475569]">Nothing here yet - upload a statement to get started.</p>
       ) : (
         <>
-          <VerdictStrip verdict={data.verdict} />
+          <VerdictStrip verdict={data.verdict} vs={vs} />
 
           <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
             <BalanceChart balance={data.balance} />
-            <WhatChanged changes={data.what_changed} month={data.month} prevMonth={data.prev_month} />
+            <WhatChanged changes={data.what_changed} month={data.month} vs={vs} />
           </div>
 
-          <CategoryBreakdown categories={data.categories} unexplained={data.unexplained} month={data.month} />
+          <CategoryBreakdown
+            categories={data.categories} breakdown={data.breakdown}
+            unexplained={data.unexplained} month={data.month} heading={heading} vs={vs}
+          />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-            <RecurringPanel items={data.recurring} />
-            <PeoplePanel people={data.people} />
+            <RecurringPanel items={data.recurring} summary={data.recurring_summary} />
+            <PeoplePanel people={data.people} monthName={dayjs(data.month).format('MMMM')} />
           </div>
 
-          <MerchantsPanel merchants={data.merchants} month={data.month} />
+          <MerchantsPanel merchants={data.merchants} heading={heading} month={data.month} />
         </>
       )}
     </div>

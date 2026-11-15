@@ -209,6 +209,10 @@ class TestOffsets:
 
 class TestWhatChanged:
     def test_top_deltas_vs_prior_month(self, conn):
+        # Salary on the first and last day of the span makes both months fully
+        # covered, so February is compared with all of January.
+        seed_txn(conn, "2026-01-01", 5000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-03-01", 5000, "credit", category="Income", subcategory="Salary")
         seed_txn(conn, "2026-01-05", 1000, "debit", category="Food & Dining")
         seed_txn(conn, "2026-02-05", 6000, "debit", category="Food & Dining")
         seed_txn(conn, "2026-01-06", 4000, "debit", category="Travel")

@@ -12,7 +12,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.app_settings import get_dev_mode
 from finance_copilot.db.queries.common import parse_string_list
-from finance_copilot.db.queries.transactions import list_transaction_facets, list_transactions
+from finance_copilot.db.queries.transactions import (
+    list_transaction_facets,
+    list_transactions,
+    summarize_transactions,
+)
 
 router = APIRouter()
 
@@ -24,18 +28,36 @@ def _split_csv(value: str | None) -> list[str] | None:
     return parts or None
 
 
-@router.get("")
-def get_transactions(
+def _filters(
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
     q: str | None = Query(None, description="substring match on description, merchant, UPI note"),
-    category: str | None = Query(None, description="comma-separated annotation categories"),
+    category: str | None = Query(None, description="comma-separated annotation categories; Uncategorized also matches unannotated rows"),
     source: str | None = Query(None, description="comma-separated annotation sources"),
     merchant: str | None = Query(None, description="exact annotated merchant"),
     person: str | None = Query(None, description="match-token of a person; filters to their matched transactions"),
     min_amount: float | None = Query(None, description="minimum transaction amount"),
     max_amount: float | None = Query(None, description="maximum transaction amount"),
+) -> dict:
+    """The filter set shared by the list and its summary."""
+    return {
+        "statement_id": statement_id,
+        "month": month,
+        "unannotated": unannotated,
+        "q": q,
+        "categories": _split_csv(category),
+        "sources": _split_csv(source),
+        "merchant": merchant,
+        "person_token": person,
+        "min_amount": min_amount,
+        "max_amount": max_amount,
+    }
+
+
+@router.get("")
+def get_transactions(
+    filters: dict = Depends(_filters),
     sort: str = Query("date", pattern="^(date|amount)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     include: str | None = Query(None, description="'annotation' joins each row's annotation"),
@@ -45,17 +67,8 @@ def get_transactions(
 ):
     rows = list_transactions(
         conn,
-        statement_id=statement_id,
-        month=month,
-        unannotated=unannotated,
+        **filters,
         include_annotation=include == "annotation",
-        q=q,
-        categories=_split_csv(category),
-        sources=_split_csv(source),
-        merchant=merchant,
-        person_token=person,
-        min_amount=min_amount,
-        max_amount=max_amount,
         sort=sort,
         order=order,
         after=after,
@@ -65,6 +78,16 @@ def get_transactions(
         for row in rows:
             row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
     return rows
+
+
+@router.get("/summary")
+def get_transactions_summary(
+    filters: dict = Depends(_filters),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Count and totals of every row the same filters match on the list, so a
+    filtered view can say what it adds up to."""
+    return summarize_transactions(conn, **filters)
 
 
 @router.get("/facets")

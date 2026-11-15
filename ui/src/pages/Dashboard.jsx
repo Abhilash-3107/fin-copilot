@@ -13,7 +13,10 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
+import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
+import Delta, { tileDelta } from '../components/Delta.jsx'
+import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
@@ -34,12 +37,12 @@ function ordinal(n) {
 
 // The one sentence the page exists for: how the month went, in plain words.
 // Tone (color + verb) carries the judgment so no chart-reading is needed.
-// "Kept" here is everything that didn't leave (invested + kept in the bank),
-// as a share of all money in - the cash-view analogue of a savings rate.
-function VerdictHero({ verdict, month }) {
-  const held = verdict.invested + verdict.kept
-  const rate = verdict.money_in > 0 ? held / verdict.money_in : null
-  const monthName = dayjs(month).format('MMMM')
+// "Kept" is the server's verdict.kept (In - Out - Invested), the same figure
+// as the Kept tile and Money Map; what was invested is said next to it.
+function VerdictHero({ verdict, period }) {
+  const { kept, kept_rate: rate, invested } = verdict
+  const monthName = dayjs(period.month).format('MMMM')
+  const when = isInProgress(period) ? `${monthName} so far` : monthName
   const tone = rate == null
     ? { color: '#94a3b8' }
     : rate >= 0.2
@@ -47,6 +50,12 @@ function VerdictHero({ verdict, month }) {
       : rate >= 0
         ? { color: '#fbbf24' }
         : { color: '#f87171' }
+  const investedNote = invested > 0 && (
+    <>
+      {', and invested '}
+      <Amount value={invested} decimals={0} className="font-semibold tabular-nums" />
+    </>
+  )
   return (
     <div className={`${card} relative overflow-hidden p-6`}>
       <div
@@ -55,21 +64,29 @@ function VerdictHero({ verdict, month }) {
       />
       {verdict.money_in <= 0 ? (
         <p className="text-xl text-[#e2e8f0]">
-          No money came in during {monthName} - here is where it went.
+          No money came in during {when} - here is where it went.
         </p>
-      ) : (
+      ) : kept >= 0 ? (
         <p className="text-xl leading-relaxed text-[#e2e8f0]">
-          In {monthName}, you {held >= 0 ? 'kept' : 'went over by'}{' '}
-          <Amount value={Math.abs(held)} decimals={0} className="font-semibold tabular-nums" />
+          In {when}, you kept{' '}
+          <Amount value={kept} decimals={0} className="font-semibold tabular-nums" />
           {rate != null && (
             <>
               {' '}-{' '}
               <span className="font-semibold" style={{ color: tone.color }}>
-                {Math.round(Math.abs(rate) * 100)}%
+                {Math.round(rate * 100)}%
               </span>
-              {held >= 0 ? ' of what came in stayed with you.' : ' more than came in.'}
+              {' of what came in'}
             </>
           )}
+          {investedNote}.
+        </p>
+      ) : (
+        <p className="text-xl leading-relaxed text-[#e2e8f0]">
+          In {when}, you spent{' '}
+          <Amount value={Math.abs(kept)} decimals={0} className="font-semibold tabular-nums" />
+          {' more than came in'}
+          {investedNote}.
         </p>
       )}
     </div>
@@ -118,24 +135,18 @@ function SetupStage({ annotation, verdict, month, annotating, onSort }) {
   )
 }
 
-function StatTile({ label, value, delta, goodWhenDown, sub, hint }) {
-  const up = delta > 0
-  const good = goodWhenDown ? !up : up
+function StatTile({ label, value, delta, vs, goodWhenDown, sub, hint }) {
   const body = (
     <Link to="/insights" className={`${card} group block h-full p-4 transition-colors hover:border-[#6366f1]`}>
       <p className={cardTitle}>{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums text-[#e2e8f0]">
         <Amount value={value} decimals={0} />
       </p>
-      <p className="mt-1 text-xs">
-        {delta ? (
-          <span className={`tabular-nums ${good ? 'text-emerald-400' : 'text-red-400'}`}>
-            {up ? '▲' : '▼'} <Amount value={Math.abs(delta)} decimals={0} /> vs last month
-          </span>
-        ) : (
-          <span className="text-[#475569]">same as last month</span>
-        )}
-      </p>
+      {delta != null && (
+        <p className="mt-1 text-xs">
+          <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
+        </p>
+      )}
       {sub && <p className="mt-0.5 text-xs text-[#475569]">{sub}</p>}
     </Link>
   )
@@ -258,13 +269,14 @@ function BalanceCard({ balance, month }) {
 }
 
 // Committed money: the charges that will show up again next month whether or
-// not the user does anything. Data arrives as whole monthly statements, so
-// this projects the known commitments, never a partial-month pace.
-function CommittedCard({ recurring }) {
+// not the user does anything. The header is the server's recurring_summary
+// (active monthly items) and the rows are those same items, so they always add
+// up; irregular and stopped charges are on Money Map, not in this total.
+function CommittedCard({ recurring, summary }) {
   // One row per counterparty: the four SIP legs of one platform read as a
   // single commitment to a person, not four look-alike rows.
   const byName = new Map()
-  for (const r of recurring.filter(r => r.active)) {
+  for (const r of recurring.filter(r => r.active && r.cadence === 'monthly')) {
     const g = byName.get(r.name) ?? { ...r, amount: 0, units: 0 }
     g.amount += r.amount
     g.units += 1
@@ -272,14 +284,15 @@ function CommittedCard({ recurring }) {
     byName.set(r.name, g)
   }
   const committed = [...byName.values()].sort((a, b) => b.amount - a.amount)
-  const total = committed.reduce((s, r) => s + r.amount, 0)
+  const shown = committed.slice(0, 5)
+  const rest = committed.slice(5)
   return (
     <div className={`${card} overflow-hidden`}>
       <div className="flex items-baseline justify-between px-4 py-3 border-b border-[#2d3148]">
         <p className={cardTitle}>Spoken for each month</p>
         {committed.length > 0 && (
           <p className="text-sm font-semibold tabular-nums text-[#e2e8f0]">
-            <Amount value={total} decimals={0} />
+            <Amount value={summary.monthly_total} decimals={0} />
           </p>
         )}
       </div>
@@ -289,7 +302,7 @@ function CommittedCard({ recurring }) {
         </p>
       ) : (
         <ul>
-          {committed.slice(0, 5).map(r => (
+          {shown.map(r => (
             <li
               key={`${r.name}-${r.amount}`}
               className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm border-b border-[#1a1d27] last:border-0"
@@ -300,9 +313,7 @@ function CommittedCard({ recurring }) {
                 <span className="hidden text-xs text-[#64748b] sm:inline">
                   {r.units > 1
                     ? `${r.units} ${r.category === 'Investments' ? 'SIPs' : 'charges'}`
-                    : r.cadence === 'monthly'
-                      ? `around the ${ordinal(dayjs(r.last_date).date())}`
-                      : 'most months'}
+                    : `around the ${ordinal(dayjs(r.last_date).date())}`}
                 </span>
               </div>
               <span className="tabular-nums text-[#94a3b8]">
@@ -310,6 +321,14 @@ function CommittedCard({ recurring }) {
               </span>
             </li>
           ))}
+          {rest.length > 0 && (
+            <li className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span className="tabular-nums text-[#94a3b8]">
+                <Amount value={rest.reduce((sum, r) => sum + r.amount, 0)} decimals={0} />
+              </span>
+            </li>
+          )}
         </ul>
       )}
       <Link
@@ -323,9 +342,12 @@ function CommittedCard({ recurring }) {
 }
 
 // One glance backward - the top three spending categories, net of refunds and
-// paid-back shares - then a hand-off to Money Map for the full picture.
-function TopSpendingCard({ categories, month }) {
+// paid-back shares - then a line that accounts for everything else on the way
+// to Out (the rest of the categories plus the reconciling rows), then a
+// hand-off to Money Map for the full picture.
+function TopSpendingCard({ categories, breakdown, month }) {
   const top = categories.slice(0, 3)
+  const rest = [...categories.slice(3).map(c => c.net), ...breakdown.extras.map(e => e.total)]
   const maxNet = Math.max(1, ...top.map(c => c.net))
   return (
     <div className={`${card} overflow-hidden`}>
@@ -355,6 +377,15 @@ function TopSpendingCard({ categories, month }) {
               </Link>
             </li>
           ))}
+          {rest.length > 0 && (
+            <li className="-mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_5rem] items-center gap-3 px-1 py-2 text-sm">
+              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span />
+              <span className="text-right tabular-nums text-[#94a3b8]">
+                <Amount value={rest.reduce((sum, v) => sum + v, 0)} decimals={0} />
+              </span>
+            </li>
+          )}
         </ul>
       )}
       <Link
@@ -430,8 +461,8 @@ export default function Dashboard() {
   const [reloadKey, setReloadKey] = useState(0)
 
   // Month-anchored like Money Map: "All time" falls back to the latest month
-  // with data (the server's default), because statements arrive as whole
-  // months and the latest complete month is the freshest truth we have.
+  // with data (the server's default), and the picker (allowAll={false}) shows
+  // that month rather than a value the figures do not honour.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
 
   useEffect(() => {
@@ -488,6 +519,8 @@ export default function Dashboard() {
     }
   }
 
+  const vs = comparisonLabel(data?.comparison)
+  const coverage = coverageLabel(data?.period)
   const attention = []
   if (data?.month) {
     if (reviewCount > 0) {
@@ -509,7 +542,10 @@ export default function Dashboard() {
         cta: 'Add statement',
       })
     }
-    const spike = data.what_changed.find(c => c.delta >= 2000 && c.current > 1.75 * Math.max(c.previous, 1))
+    // The server leaves Uncategorized out of what_changed: the unsorted item below covers it.
+    const spike = data.what_changed.find(
+      c => c.delta >= 2000 && c.current > 1.75 * Math.max(c.previous, 1)
+    )
     if (spike) {
       attention.push({
         key: 'spike', icon: TrendingUp, color: '#fb7185',
@@ -517,7 +553,7 @@ export default function Dashboard() {
         text: (
           <>
             {spike.category} ran <Amount value={spike.delta} decimals={0} /> above{' '}
-            {dayjs(data.prev_month).format('MMMM')} - see what drove it
+            {comparisonLabel(data.comparison)} - see what drove it
           </>
         ),
         cta: 'Look closer',
@@ -541,7 +577,8 @@ export default function Dashboard() {
         key: 'people', icon: Users, color: '#34d399', to: '/people',
         text: (
           <>
-            Between you and {person.name}: <Amount value={Math.abs(person.net)} decimals={0} />{' '}
+            Between you and {person.name} in {dayjs(data.month).format('MMMM')}:{' '}
+            <Amount value={Math.abs(person.net)} decimals={0} />{' '}
             {person.net >= 0 ? 'more received than sent' : 'more sent than received'}
           </>
         ),
@@ -558,9 +595,14 @@ export default function Dashboard() {
           {data?.month && (
             <span className="text-sm font-normal text-[#64748b]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
+          {coverage && (
+            <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
+              {coverage}
+            </span>
+          )}
         </h1>
         <div className="flex items-center gap-3">
-          <PeriodPicker />
+          <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
           <Link
             to="/upload"
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#7c3aed] px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
@@ -608,25 +650,25 @@ export default function Dashboard() {
         />
       ) : (
         <>
-          <VerdictHero verdict={data.verdict} month={data.month} />
+          <VerdictHero verdict={data.verdict} period={data.period} />
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatTile
               label="In" value={data.verdict.money_in}
-              delta={data.verdict.money_in - data.verdict.prev.money_in}
-              sub={data.verdict.other_in > 0 ? `incl ${formatRupees(data.verdict.other_in, { decimals: 0 })} in reimbursements` : null}
+              delta={tileDelta(data.verdict, 'money_in')} vs={vs}
+              sub={data.verdict.other_in > 0 ? <OtherInNote amount={data.verdict.other_in} className="" /> : null}
             />
             <StatTile
               label="Out" value={data.verdict.money_out} goodWhenDown
-              delta={data.verdict.money_out - data.verdict.prev.money_out}
+              delta={tileDelta(data.verdict, 'money_out')} vs={vs}
             />
             <StatTile
               label="Invested" value={data.verdict.invested}
-              delta={data.verdict.invested - data.verdict.prev.invested}
+              delta={tileDelta(data.verdict, 'invested')} vs={vs}
             />
             <StatTile
               label="Kept" value={data.verdict.kept}
-              delta={data.verdict.kept - data.verdict.prev.kept}
+              delta={tileDelta(data.verdict, 'kept')} vs={vs}
               hint="In - Out - Invested"
             />
           </div>
@@ -641,8 +683,8 @@ export default function Dashboard() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <CommittedCard recurring={data.recurring} />
-            <TopSpendingCard categories={data.categories} month={data.month} />
+            <CommittedCard recurring={data.recurring} summary={data.recurring_summary} />
+            <TopSpendingCard categories={data.categories} breakdown={data.breakdown} month={data.month} />
           </div>
 
           <AccuracyCard rows={accuracy} />
