@@ -1,0 +1,45 @@
+import { useState } from 'react'
+import { api } from '../lib/api.js'
+import { useToast } from '../contexts/ToastContext.jsx'
+import ConfirmDialog from './ConfirmDialog.jsx'
+
+// The one way out of the sample ledger, used by the banner, the upload page and
+// Settings > Data. Asks first, removes only the sample rows, then reloads onto
+// the dashboard so no page keeps figures from the data that just went.
+export default function RemoveSampleData({ className }) {
+  const toast = useToast()
+  const [asking, setAsking] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  async function remove() {
+    setAsking(false)
+    setBusy(true)
+    try {
+      await api.delete('/data/demo')
+      toast('Sample data removed.', 'info')
+      setTimeout(() => {
+        window.location.hash = '#/dashboard'
+        window.location.reload()
+      }, 600)
+    } catch (e) {
+      toast(`Couldn't remove the sample data - ${e.message}`, 'error', 5000)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className={className} disabled={busy} onClick={() => setAsking(true)}>
+        {busy ? 'Removing…' : 'Remove sample data'}
+      </button>
+      <ConfirmDialog
+        open={asking}
+        title="Remove the sample data?"
+        description="The sample transactions, people, groups and rule go away. Anything you added yourself stays."
+        confirmLabel="Remove sample data"
+        onConfirm={remove}
+        onCancel={() => setAsking(false)}
+      />
+    </>
+  )
+}

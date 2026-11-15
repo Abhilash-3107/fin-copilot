@@ -11,6 +11,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
+import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
@@ -448,6 +449,7 @@ function AccuracyCard({ rows }) {
 
 export default function Dashboard() {
   const toast = useToast()
+  const { refresh: refreshDemoData } = useDemoData()
   const { month: periodMonth } = usePeriod()
   const [data, setData] = useState(null)
   // Low-confidence guesses waiting in Teach Me (every month, not just this one).
@@ -513,6 +515,7 @@ export default function Dashboard() {
     try {
       const s = await api.post('/data/demo')
       toast(`Demo loaded: ${s.transactions} transactions across ${s.months} months`, 'success', 5000)
+      refreshDemoData()
       setReloadKey(k => k + 1)
     } catch (e) {
       toast(`Couldn't load demo data - ${e.message}`, 'error')
@@ -628,8 +631,8 @@ export default function Dashboard() {
             </button>
           </div>
           <p className="mt-3 text-xs text-[#475569]">
-            No statement handy? The demo fills four months of realistic sample data - clear it
-            anytime from Settings › Data.
+            No statement handy? The demo fills four months of realistic sample data - remove it
+            anytime from the banner or Settings › Data.
           </p>
         </div>
       ) : data.annotation?.total > 0 && data.annotation.annotated === 0 ? (

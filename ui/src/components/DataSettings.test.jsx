@@ -13,6 +13,11 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
   reloadWithToast: (...args) => reloadWithToast(...args),
 }))
 
+const { demoCtx } = vi.hoisted(() => ({ demoCtx: { sample: false, mixed: false, hosted: false, refresh: () => {} } }))
+vi.mock('../contexts/DemoDataContext.jsx', () => ({
+  useDemoData: () => demoCtx,
+}))
+
 import DataSettings from './DataSettings.jsx'
 
 function pick(name = 'finance-copilot-backup.db') {
@@ -50,5 +55,32 @@ describe('DataSettings restore', () => {
     fireEvent.click(screen.getByText('Cancel'))
     expect(screen.queryByText('Restore from this backup?')).not.toBeInTheDocument()
     expect(mockApi.upload).not.toHaveBeenCalled()
+  })
+})
+
+describe('DataSettings sample data', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    Object.assign(demoCtx, { sample: false, mixed: false })
+  })
+
+  it('offers to remove sample data while the ledger has it', () => {
+    demoCtx.sample = true
+    render(<DataSettings />)
+    expect(screen.getByText('Sample data')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove sample data' })).toBeInTheDocument()
+  })
+
+  it('says so when real statements sit next to the sample data', () => {
+    demoCtx.sample = true
+    demoCtx.mixed = true
+    render(<DataSettings />)
+    expect(screen.getByText(/next to your own statements/)).toBeInTheDocument()
+  })
+
+  it('has no sample-data section on a ledger without it', () => {
+    render(<DataSettings />)
+    expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
   })
 })

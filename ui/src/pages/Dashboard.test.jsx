@@ -3,9 +3,13 @@ import { render, screen, fireEvent, within, waitFor } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
-const { mockApi, mockRunAnnotationJob } = vi.hoisted(() => ({
-  mockApi: { get: vi.fn() },
+const { mockApi, mockRunAnnotationJob, refreshDemoData } = vi.hoisted(() => ({
+  mockApi: { get: vi.fn(), post: vi.fn() },
   mockRunAnnotationJob: vi.fn(),
+  refreshDemoData: vi.fn(),
+}))
+vi.mock('../contexts/DemoDataContext.jsx', () => ({
+  useDemoData: () => ({ sample: false, mixed: false, hosted: false, refresh: refreshDemoData }),
 }))
 vi.mock('../lib/api.js', () => ({
   api: mockApi,
@@ -248,6 +252,19 @@ describe('Dashboard', () => {
     })
     renderDashboard()
     expect(await screen.findByRole('link', { name: /Add your first statement/ })).toHaveAttribute('href', '/upload')
+  })
+
+  it('tells the banner when it loads the demo, and says how to remove it', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve({ months: [], month: null })
+      return Promise.resolve([])
+    })
+    mockApi.post.mockResolvedValue({ transactions: 195, months: 4 })
+    renderDashboard()
+    expect(await screen.findByText(/remove it\s+anytime from the banner or Settings/)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load demo data' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/data/demo'))
+    await waitFor(() => expect(refreshDemoData).toHaveBeenCalled())
   })
 
   it('holds back insights until the month has been annotated', async () => {
