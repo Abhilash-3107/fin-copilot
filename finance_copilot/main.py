@@ -91,6 +91,7 @@ _DEMO_BLOCKED = (
     ("GET", "/api/data/backup"),          # nothing to exfiltrate, keep it that way
     ("POST", "/api/data/restore"),        # the shared dataset is not replaceable
     ("POST", "/api/data/delete-all"),
+    ("DELETE", "/api/data/demo"),         # the shared sample data is the whole point
     ("PUT", "/api/config/llm"),           # no provider/API-key writes on a shared box
     ("POST", "/api/config/llm/test"),
     ("POST", "/api/local-llm"),           # no multi-GB downloads onto the demo box

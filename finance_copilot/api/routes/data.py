@@ -184,21 +184,32 @@ def restore_database(file: UploadFile, conn: sqlite3.Connection = Depends(get_db
     return {**counts, "safety_copy": safety_name}
 
 
+@router.get("/demo")
+def demo_status(conn: sqlite3.Connection = Depends(get_db)):
+    """Whether the ledger holds the bundled sample data, and whether real
+    statements sit next to it (a 0.1.2 ledger could end up with both)."""
+    from finance_copilot.demo_seed import DEMO_STATEMENTS, has_demo_data
+
+    loaded = has_demo_data(conn)
+    mixed = loaded and conn.execute(
+        f"SELECT EXISTS (SELECT 1 FROM statements WHERE id NOT IN ({DEMO_STATEMENTS}))"
+    ).fetchone()[0] == 1
+    return {"loaded": loaded, "mixed": mixed}
+
+
 @router.post("/demo")
 def load_demo_data(conn: sqlite3.Connection = Depends(get_db)):
     """Seed the bundled demo ledger so a fresh install has something to explore.
 
     Refused once real statements exist - demo rows must never mix into a real
     ledger. Re-running on an already-demo DB is a no-op top-up (idempotent
-    inserts); delete-everything is the way back.
+    inserts); DELETE /demo is the way back.
     """
-    from fastapi import HTTPException
-
     from finance_copilot.clock import today
-    from finance_copilot.demo_seed import seed
+    from finance_copilot.demo_seed import DEMO_STATEMENTS, seed
 
     non_demo = conn.execute(
-        "SELECT COUNT(*) FROM statements WHERE id NOT LIKE 'demo_stmt%'"
+        f"SELECT COUNT(*) FROM statements WHERE id NOT IN ({DEMO_STATEMENTS})"
     ).fetchone()[0]
     if non_demo:
         raise HTTPException(
@@ -206,6 +217,22 @@ def load_demo_data(conn: sqlite3.Connection = Depends(get_db)):
             detail="You already have real statements - demo data won't be mixed into them.",
         )
     return seed(conn, today())
+
+
+@router.delete("/demo")
+def remove_demo_data(conn: sqlite3.Connection = Depends(get_db)):
+    """Remove the sample data and nothing else; anything the user added stays."""
+    from finance_copilot.demo_seed import wipe
+
+    inflight = conn.execute(
+        "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued','running')"
+    ).fetchone()[0]
+    if inflight:
+        raise HTTPException(
+            status_code=409,
+            detail="A categorization or memory rebuild is running. Remove the sample data once it finishes.",
+        )
+    return {"transactions": wipe(conn)}
 
 
 @router.post("/delete-all")

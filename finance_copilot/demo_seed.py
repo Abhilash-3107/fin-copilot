@@ -34,12 +34,14 @@ import calendar
 import hashlib
 import json
 import random
+import sqlite3
 from datetime import date
 from pathlib import Path
 
 from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import dump_string_list
 from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
@@ -417,27 +419,41 @@ def build_ledger(today: date) -> Ledger:
     return led
 
 
-def wipe(conn) -> None:
+# Everything the seeder writes carries a "demo_" id, and every demo transaction
+# belongs to a "demo_stmt" statement. GLOB, unlike LIKE, reads "_" literally.
+DEMO_STATEMENTS = "SELECT id FROM statements WHERE id GLOB 'demo_stmt*'"
+DEMO_TRANSACTIONS = f"SELECT id FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})"
+
+
+def has_demo_data(conn) -> bool:
+    return conn.execute(f"SELECT EXISTS ({DEMO_STATEMENTS})").fetchone()[0] == 1
+
+
+def wipe(conn) -> int:
+    """Remove the demo ledger and what using it produced; returns how many
+    transactions went. Rows the user added themselves, even on a ledger that
+    mixes the two, are left alone."""
+    removed = conn.execute(f"SELECT COUNT(*) FROM ({DEMO_TRANSACTIONS})").fetchone()[0]
     conn.execute(
-        "DELETE FROM transaction_links WHERE txn_a LIKE 'demo_%' OR txn_b LIKE 'demo_%'")
+        f"DELETE FROM transaction_links WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
+        f"OR txn_b IN ({DEMO_TRANSACTIONS})")
     conn.execute(
-        "DELETE FROM transaction_group_members WHERE group_id LIKE 'demo_grp%'")
-    conn.execute("DELETE FROM transaction_groups WHERE id LIKE 'demo_grp%'")
-    conn.execute(
-        "DELETE FROM annotations WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute(
-        "DELETE FROM embedding_meta WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute(
-        "DELETE FROM vec_items WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute("DELETE FROM transactions WHERE statement_id LIKE 'demo_stmt%'")
-    conn.execute("DELETE FROM statements WHERE id LIKE 'demo_stmt%'")
-    conn.execute("DELETE FROM people WHERE id LIKE 'demo_p%'")
-    conn.execute("DELETE FROM user_rules WHERE id LIKE 'demo_rule%'")
+        f"DELETE FROM transaction_group_members WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    conn.execute("DELETE FROM transaction_group_members WHERE group_id GLOB 'demo_grp*'")
+    conn.execute("DELETE FROM transaction_groups WHERE id GLOB 'demo_grp*'")
+    conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    try:
+        conn.execute(f"DELETE FROM vec_items WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    except sqlite3.OperationalError:
+        pass  # the vector table only exists where sqlite-vec loaded
+    conn.execute("DELETE FROM annotation_jobs WHERE statement_id GLOB 'demo_stmt*'")
+    conn.execute(f"DELETE FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})")
+    conn.execute("DELETE FROM statements WHERE id GLOB 'demo_stmt*'")
+    conn.execute("DELETE FROM people WHERE id GLOB 'demo_p[0-9]*'")
+    conn.execute("DELETE FROM user_rules WHERE id GLOB 'demo_rule*'")
     conn.commit()
-    print("Wiped existing demo data.")
+    return removed
 
 
 def seed(conn, today: date) -> dict:
@@ -477,11 +493,16 @@ def seed(conn, today: date) -> dict:
             continue
         merchant, category, sub, tags, source, confidence = t["ann"]
         tags_json = json.dumps([tag for tag in tags.split(",") if tag]) if tags else "[]"
+        # Names are for display, ids are what Settings > Categories checks, so
+        # write both the way every other annotation writer does.
+        category_id, subcategory_id = resolve_category_ids(conn, category, sub)
         conn.execute(
             """INSERT INTO annotations
-               (id, transaction_id, merchant, category, subcategory, tags, confidence, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f"ann_{t['id']}", t["id"], merchant, category, sub, tags_json, confidence, source))
+               (id, transaction_id, merchant, category, category_id, subcategory,
+                subcategory_id, tags, confidence, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"ann_{t['id']}", t["id"], merchant, category, category_id, sub, subcategory_id,
+             tags_json, confidence, source))
         ann_inserted += 1
 
     for pid, name, upi, relationship in PEOPLE:
@@ -491,8 +512,6 @@ def seed(conn, today: date) -> dict:
 
     # One user-authored rule, matching a merchant in the unannotated batch, so a
     # live auto-annotate shows the "Your rule" stage deciding before anything else.
-    from finance_copilot.db.queries.categories import resolve_category_ids
-
     category_id, subcategory_id = resolve_category_ids(conn, *DEMO_RULE[1:3])
     conn.execute(
         "INSERT OR IGNORE INTO user_rules (id, pattern, category_id, subcategory_id, merchant) "
