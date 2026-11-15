@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { X, ChevronDown, ChevronRight, Plus, Trash2, Pencil } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -155,6 +155,81 @@ function GroupsSection({ txnId }) {
   )
 }
 
+// ─── RenameForm ───────────────────────────────────────────────────────────────
+
+// Give the payee a name for every payment to it, or this one payment a name of
+// its own. A name is only a label: the printed line, category and learned
+// rules are untouched. Clearing a name falls back to the next one down
+// (payment, payee, merchant, the payee as printed).
+function RenameForm({ txn, onRenamed, onCancel }) {
+  const toast = useToast()
+  const canRenamePayee = Boolean(txn.counterparty_key)
+  const [scope, setScope] = useState(canRenamePayee && !txn.display_name ? 'payee' : 'payment')
+  const [name, setName] = useState(txn.payee ?? '')
+  const [saving, setSaving] = useState(false)
+  const hasName = scope === 'payee' ? Boolean(txn.payee_name) : Boolean(txn.display_name)
+
+  async function save(value) {
+    setSaving(true)
+    try {
+      const path = scope === 'payee' ? 'payee-name' : 'name'
+      const updated = await api.put(`/transactions/${txn.id}/${path}`, { name: value })
+      onRenamed(updated)
+    } catch (e) {
+      toast(`Rename failed: ${e.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="mt-3 flex flex-col gap-2.5 bg-[#1a1d27] border border-[#2d3148] rounded-md p-3"
+      onSubmit={e => { e.preventDefault(); if (name.trim()) save(name.trim()) }}
+    >
+      <label className="text-xs text-[#94a3b8]" htmlFor="rename-input">Name</label>
+      <input
+        id="rename-input"
+        autoFocus
+        value={name}
+        maxLength={80}
+        onChange={e => setName(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
+        className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+      />
+      <div className="flex flex-col gap-1.5 text-sm text-[#cbd5e1]">
+        {canRenamePayee && (
+          <label className="flex items-center gap-2">
+            <input type="radio" name="rename-scope" checked={scope === 'payee'} onChange={() => setScope('payee')} className="accent-[#6366f1]" />
+            Every payment to {txn.payee_all}
+          </label>
+        )}
+        <label className="flex items-center gap-2">
+          <input type="radio" name="rename-scope" checked={scope === 'payment'} onChange={() => setScope('payment')} className="accent-[#6366f1]" />
+          Just this payment
+        </label>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={saving || !name.trim()}
+          className="px-3 py-1.5 rounded-md bg-[#6366f1] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          Save name
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0]">
+          Cancel
+        </button>
+        {hasName && (
+          <button type="button" disabled={saving} onClick={() => save(null)} className="ml-auto text-xs text-[#94a3b8] hover:text-[#e2e8f0] underline">
+            Clear name
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}
+
 // ─── Confidence bar ───────────────────────────────────────────────────────────
 
 function ConfidenceBar({ confidence }) {
@@ -172,8 +247,9 @@ function ConfidenceBar({ confidence }) {
 
 // ─── AnnotationPanel ──────────────────────────────────────────────────────────
 
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
+export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed }) {
   const toast = useToast()
+  const [renaming, setRenaming] = useState(false)
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
@@ -233,11 +309,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
 
   if (!txn) return null
 
-  const isDebit = txn.debit_credit === 'debit'
-  let upiMeta = null
-  try {
-    upiMeta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-  } catch (_) {}
   const src = annotation?.source
 
   return (
@@ -260,14 +331,34 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         <div className="px-5 py-4 bg-[#13151f] border-b border-[#2d3148] shrink-0">
           <div className="flex items-start justify-between gap-4 mb-2">
             <span className="text-xs text-[#64748b]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
-            <Amount value={txn.amount} debitCredit={txn.debit_credit} className={`text-lg font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
+            <Amount value={txn.amount} debitCredit={txn.debit_credit} className="text-lg font-bold tabular-nums" />
           </div>
-          <p className="text-sm text-[#cbd5e1] break-words leading-relaxed">{txn.raw_description}</p>
-          {upiMeta?.note && (
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-base font-semibold text-[#e2e8f0] break-words min-w-0">{txn.payee || txn.raw_description}</h3>
+            {!renaming && (
+              <button
+                type="button"
+                onClick={() => setRenaming(true)}
+                className="shrink-0 inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
+              >
+                <Pencil size={12} />Rename
+              </button>
+            )}
+          </div>
+          {renaming && (
+            <RenameForm
+              txn={txn}
+              onRenamed={updated => { setRenaming(false); onRenamed?.(updated) }}
+              onCancel={() => setRenaming(false)}
+            />
+          )}
+          {txn.note && (
             <div className="mt-2 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc]">
-              <span className="text-[#475569] mr-1.5">note</span>{upiMeta.note}
+              <span className="text-[#94a3b8] mr-1.5">Your note</span>{txn.note}
             </div>
           )}
+          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">As printed on the statement</p>
+          <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
           {annotation && (
             <div className="mt-3 flex items-center gap-2">
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>

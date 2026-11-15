@@ -29,7 +29,7 @@ describe('CommandPalette', () => {
     vi.clearAllMocks()
     mockApi.get.mockImplementation(path => {
       if (path.startsWith('/transactions')) return Promise.resolve([
-        { id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'SWIGGY', merchant: 'Swiggy' },
+        { id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'UPI/SWIGGY/5015/order', merchant: 'Swiggy', payee: 'Swiggy' },
       ])
       if (path.startsWith('/people')) return Promise.resolve([{ id: 'p1', name: 'Karabi', upi: 'karabi' }])
       if (path.startsWith('/groups')) return Promise.resolve([{ id: 'g1', name: 'Goa Trip' }])
@@ -78,7 +78,7 @@ describe('CommandPalette and privacy mode', () => {
   beforeEach(() => {
     localStorage.clear()
     mockApi.get.mockImplementation(path => Promise.resolve(path.startsWith('/transactions')
-      ? [{ id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'SWIGGY', merchant: 'Swiggy' }]
+      ? [{ id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'UPI/SWIGGY/5015/order', merchant: 'Swiggy', payee: 'Swiggy' }]
       : []))
   })
 

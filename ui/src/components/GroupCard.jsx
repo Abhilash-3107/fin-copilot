@@ -71,8 +71,8 @@ function AddTransactionSearch({ existingIds, onAdd }) {
               className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#1e2440] transition-colors border-b border-[#1e2235] last:border-b-0"
             >
               <span className="text-[10px] text-[#64748b] whitespace-nowrap tabular-nums">{dayjs(r.txn_date).format('DD MMM YY')}</span>
-              <span className="text-xs text-[#cbd5e1] flex-1 truncate">{r.raw_description}</span>
-              <Amount value={r.amount} debitCredit={r.debit_credit} className={`text-xs tabular-nums shrink-0 ${r.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`} />
+              <span className="text-xs text-[#cbd5e1] flex-1 truncate">{r.payee}</span>
+              <Amount value={r.amount} debitCredit={r.debit_credit} className="text-xs tabular-nums shrink-0" />
               <Plus size={12} className="text-[#6366f1] shrink-0" />
             </button>
           ))}
@@ -87,7 +87,7 @@ function TypeSelect({ member, onChange }) {
     <select
       value={member.txn_type ?? ''}
       onChange={e => onChange({ txn_type: e.target.value })}
-      aria-label={`Type for ${member.raw_description}`}
+      aria-label={`Type for ${member.payee}`}
       className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
     >
       <option value="">-</option>
@@ -101,7 +101,7 @@ function RemoveMemberButton({ member, onRemove }) {
     <button
       type="button"
       onClick={onRemove}
-      aria-label={`Remove ${member.raw_description} from group`}
+      aria-label={`Remove ${member.payee} from group`}
       className="text-[#475569] hover:text-red-400 transition-colors"
     >
       <Trash2 size={12} />
@@ -318,7 +318,7 @@ export default function GroupCard({ group, onDelete }) {
                 <table className="w-full text-xs hidden md:table">
                   <thead>
                     <tr>
-                      {['Date', 'Description', 'Amount', 'People'].map(h => (
+                      {['Date', 'Payee', 'Amount', 'People'].map(h => (
                         <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                       ))}
                       <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
@@ -336,8 +336,8 @@ export default function GroupCard({ group, onDelete }) {
                     {detail.members.map(m => (
                       <tr key={m.transaction_id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27]">
                         <td className="px-3 py-2 text-[#94a3b8] whitespace-nowrap">{dayjs(m.txn_date).format('DD MMM YY')}</td>
-                        <td className="px-3 py-2 text-[#cbd5e1] max-w-[160px] truncate">{m.raw_description}</td>
-                        <td className={`px-3 py-2 tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
+                        <td className="px-3 py-2 text-[#cbd5e1] max-w-[160px] truncate">{m.payee}</td>
+                        <td className="px-3 py-2 tabular-nums whitespace-nowrap">
                           <Amount value={m.amount} debitCredit={m.debit_credit} />
                         </td>
                         <td className="px-3 py-1.5 min-w-[180px] w-[280px]">
@@ -365,10 +365,10 @@ export default function GroupCard({ group, onDelete }) {
                     <li key={m.transaction_id} className="px-4 py-3 space-y-2 text-xs">
                       <div className="flex items-start gap-3">
                         <div className="flex-1 min-w-0">
-                          <p className="text-[#cbd5e1] truncate">{m.raw_description}</p>
+                          <p className="text-[#cbd5e1] truncate">{m.payee}</p>
                           <p className="text-[#64748b]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
                         </div>
-                        <span className={`tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
+                        <span className="tabular-nums whitespace-nowrap">
                           <Amount value={m.amount} debitCredit={m.debit_credit} />
                         </span>
                         <RemoveMemberButton member={m} onRemove={() => removeMember(m.transaction_id)} />

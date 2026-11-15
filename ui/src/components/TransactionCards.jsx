@@ -1,5 +1,6 @@
 import dayjs from 'dayjs'
 import Amount from './Amount.jsx'
+import PaymentLabel from './PaymentLabel.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Card-per-row rendering of transactions for narrow screens (4.1). The wide
@@ -15,7 +16,6 @@ export default function TransactionCards({
     <ul className="divide-y divide-[#1a1d27]">
       {transactions.map(txn => {
         const ann = annotationMap[txn.id]
-        const isDebit = txn.debit_credit === 'debit'
         const src = ann?.source ?? 'pending'
         const isActive = txn.id === activeId
         const isSelected = selectable && selected?.has(txn.id)
@@ -40,8 +40,8 @@ export default function TransactionCards({
             )}
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-3">
-                <span className="text-sm text-[#cbd5e1] truncate">{txn.raw_description}</span>
-                <span className={`text-sm font-medium tabular-nums whitespace-nowrap ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
+                <PaymentLabel txn={txn} className="text-sm" />
+                <span className="text-sm font-medium tabular-nums whitespace-nowrap">
                   <Amount value={txn.amount} debitCredit={txn.debit_credit} />
                 </span>
               </div>

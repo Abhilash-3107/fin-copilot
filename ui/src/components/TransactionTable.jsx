@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import Amount from './Amount.jsx'
+import PaymentLabel from './PaymentLabel.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Sortable header for the Date/Amount columns (4.12). Clicking toggles the
@@ -45,7 +46,7 @@ export default function TransactionTable({
           <th className={`${th} text-left`}>
             {onSort ? <SortHeader label="Date" col="date" sort={sort} order={order} onSort={onSort} /> : 'Date'}
           </th>
-          <th className={`${th} text-left`}>Description</th>
+          <th className={`${th} text-left`}>Payee</th>
           <th className={`${th} text-right`}>
             {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
           </th>
@@ -57,23 +58,9 @@ export default function TransactionTable({
       <tbody>
         {transactions.map(txn => {
           const ann = annotationMap[txn.id]
-          const isDebit = txn.debit_credit === 'debit'
           const src = ann?.source ?? 'pending'
           const isActive = txn.id === activeId
           const isSelected = selectable && selected?.has(txn.id)
-          let upiNote = null
-          try {
-            const meta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-            // Only show a note that adds information - bank descriptions often
-            // already embed it ("UPI/Blinkit/…/Blinkit Payment"), and repeating
-            // it as a second line is pure noise.
-            if (
-              meta?.note &&
-              meta.note.length < 60 &&
-              !txn.raw_description.toLowerCase().includes(meta.note.toLowerCase())
-            ) upiNote = meta.note
-          } catch (_) {}
-
           return (
             <tr
               key={txn.id}
@@ -100,15 +87,10 @@ export default function TransactionTable({
               <td className="px-3 py-2.5 whitespace-nowrap text-[#94a3b8]">
                 {dayjs(txn.txn_date).format('DD MMM YY')}
               </td>
-              <td className="px-3 py-2.5 text-[#cbd5e1] max-w-[480px]">
-                <div className="truncate max-w-[460px]" title={txn.raw_description}>
-                  {txn.raw_description}
-                </div>
-                {upiNote && (
-                  <div className="text-xs text-[#818cf8] truncate max-w-[460px]">{upiNote}</div>
-                )}
+              <td className="px-3 py-2.5 max-w-[480px]">
+                <PaymentLabel txn={txn} className="max-w-[460px]" />
               </td>
-              <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
+              <td className="px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right">
                 <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
               <td className="px-3 py-2.5">

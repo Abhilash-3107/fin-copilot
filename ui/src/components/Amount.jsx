@@ -37,13 +37,20 @@ function Masked({ text, label, className, style }) {
   )
 }
 
+// Polarity belongs here so no screen can drift: money out is plain ink with a
+// minus (the colour of whatever it sits in), money in is green with a plus.
+// Red is for a change in the bad direction (Delta), never for a plain debit,
+// so callers do not pass a colour for a payment.
+const CREDIT_COLOUR = 'text-green-400'
+
 // Renders a rupee amount, honoring the global privacy mode.
 export default function Amount({ value, debitCredit, decimals = 2, className = '', style }) {
   const { hidden } = usePrivacy()
   const text = formatRupees(value, { decimals, debitCredit })
+  const classes = debitCredit === 'credit' ? `${CREDIT_COLOUR} ${className}`.trim() : className
 
-  if (hidden) return <Masked text={text} label="Amount hidden" className={className} style={style} />
-  return <span className={className} style={style}>{text}</span>
+  if (hidden) return <Masked text={text} label="Amount hidden" className={classes} style={style} />
+  return <span className={classes} style={style}>{text}</span>
 }
 
 // A share of money, such as the kept rate: as private as the amounts it is

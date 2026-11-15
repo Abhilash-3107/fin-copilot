@@ -150,13 +150,13 @@ describe('GroupCard', () => {
     const empty = { ...GROUP, summary: { ...NO_BALANCES, member_count: 0, first_date: null, last_date: null, spend: 0, received: 0, your_share: 0, has_people: false, settle_up: [] } }
     const afterAdd = {
       ...GROUP,
-      members: [{ transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null }],
+      members: [{ transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: [], txn_type: null }],
       summary: { member_count: 1, first_date: '2026-01-05', last_date: '2026-01-05', spend: 300, received: 0, your_share: 300, has_people: false, settle_up: [] },
     }
     let added = false
     mockApi.get.mockImplementation(url => {
       if (url === '/people') return Promise.resolve([])
-      if (url.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER' }])
+      if (url.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER' }])
       return Promise.resolve(added ? afterAdd : { ...empty, members: [] })
     })
     mockApi.post.mockImplementation(() => { added = true; return Promise.resolve({}) })
@@ -175,7 +175,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'Alice', net: 150 }] },
     })
@@ -195,7 +195,7 @@ describe('GroupCard', () => {
       : {
           ...GROUP,
           members: [
-            { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['p1'], txn_type: null },
+            { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['p1'], txn_type: null },
           ],
           summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'p1', name: 'Alice', net: 150 }] },
         }))
@@ -218,8 +218,8 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: null },
-        { transaction_id: 't2', txn_date: '2026-01-06', amount: 150, debit_credit: 'credit', raw_description: 'REPAY', people: ['Alice'], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: null },
+        { transaction_id: 't2', txn_date: '2026-01-06', amount: 150, debit_credit: 'credit', raw_description: 'REPAY', payee: 'REPAY', people: ['Alice'], txn_type: null },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [] },
     })
@@ -232,7 +232,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: [], txn_type: null },
       ],
     })
     renderCard(GROUP)
@@ -246,7 +246,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'Alice', net: 150 }] },
     })
@@ -261,7 +261,7 @@ describe('GroupCard', () => {
     const withBalance = {
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['p1'], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['p1'], txn_type: null },
       ],
       // A stray top-level field must not drive the body.
       settle_up: [{ person: 'p9', name: 'Stale', net: 1 }],

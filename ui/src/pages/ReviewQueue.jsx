@@ -177,7 +177,7 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
                 className="mt-0.5 accent-[#6366f1]"
               />
               <span className="flex-1 min-w-0">
-                <span className="block text-[#cbd5e1] truncate">{it.raw_description}</span>
+                <span className="block text-[#cbd5e1] truncate">{it.payee}</span>
                 <span className="text-[#64748b]">
                   {dayjs(it.txn_date).format('DD MMM')} · <Amount value={it.amount} debitCredit={it.debit_credit} /> · currently {it.category}
                   {it.similarity != null && ` · ${Math.round(it.similarity * 100)}% similar`}
@@ -840,7 +840,6 @@ export default function ReviewQueue() {
   }
 
   const item = current
-  const isDebit = item.debit_credit === 'debit'
   const src = item.source
   const groupSize = groupFromHere().length
   const payeesLeft = new Set(queue.slice(idx).map(it => it.group_key)).size
@@ -932,9 +931,12 @@ export default function ReviewQueue() {
         <div className="px-6 py-5 border-b border-[#2d3148]">
           <div className="flex items-start justify-between gap-4 mb-2">
             <span className="text-sm text-[#64748b]">{dayjs(item.txn_date).format('DD MMM YYYY')}</span>
-            <Amount value={item.amount} debitCredit={item.debit_credit} className={`text-xl font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
+            <Amount value={item.amount} debitCredit={item.debit_credit} className="text-xl font-bold tabular-nums" />
           </div>
-          <p className="text-sm text-[#cbd5e1] leading-relaxed">{item.raw_description}</p>
+          <p className="text-sm font-medium text-[#e2e8f0] leading-relaxed">{item.payee}</p>
+          {item.payee !== item.raw_description && (
+            <p className="text-xs text-[#94a3b8] leading-relaxed">{item.raw_description}</p>
+          )}
           {groupSize > 1 && (
             <label className="mt-3 flex items-center gap-2 text-xs text-[#94a3b8] cursor-pointer select-none">
               <input

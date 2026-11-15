@@ -85,6 +85,14 @@ function MultiFilter({ label, options, selected, onChange }) {
   )
 }
 
+// What the server resolves for a payment's name; a row is refreshed from the
+// payment's own read after an edit instead of working the name out here.
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'channel']
+
+function nameFields(txn) {
+  return Object.fromEntries(NAME_FIELDS.map(f => [f, txn[f]]))
+}
+
 function buildAnnotationMap(txns) {
   const map = {}
   for (const t of txns) {
@@ -402,6 +410,7 @@ export default function Transactions() {
     // Fetch full transaction to get annotation fields
     try {
       const full = await api.get(`/transactions/${txn.id}`)
+      setActiveTxn(prev => (prev?.id === txn.id ? { ...prev, ...nameFields(full) } : prev))
       if (full.annotation_id) {
         setActiveAnnotation({
           id: full.annotation_id,
@@ -462,6 +471,24 @@ export default function Transactions() {
       t.id === txnId ? { ...t, ...ann, id: t.id, annotation_id: saved.id } : t
     ))
     loadFacets() // a manual save can introduce a category new to this scope
+    refreshName(txnId) // and a new merchant can change what the row is called
+  }
+
+  async function refreshName(txnId) {
+    try {
+      const fields = nameFields(await api.get(`/transactions/${txnId}`))
+      setTransactions(prev => prev.map(t => (t.id === txnId ? { ...t, ...fields } : t)))
+    } catch (_) {
+      // The row keeps its old name until the next load.
+    }
+  }
+
+  // A payee name reaches every payment to it, so reload the rows (they stay on
+  // screen while it loads); a payment's own name changes only its row.
+  function applyRename(updated) {
+    setActiveTxn(prev => ({ ...prev, ...nameFields(updated) }))
+    setTransactions(prev => prev.map(t => (t.id === updated.id ? { ...t, ...nameFields(updated) } : t)))
+    loadTransactions()
   }
 
   const sourceOptions = sourceFilterOptions(facets.sources)
@@ -499,7 +526,7 @@ export default function Transactions() {
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search description…"
+          placeholder="Search payee, note or amount…"
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
         />
 
@@ -678,6 +705,7 @@ export default function Transactions() {
           annotation={activeAnnotation}
           onClose={() => { setActiveTxn(null); setActiveAnnotation(null) }}
           onSaved={applySavedAnnotation}
+          onRenamed={applyRename}
         />
       )}
     </div>

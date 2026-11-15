@@ -88,9 +88,9 @@ export default function CommandPalette() {
       kind: 'txn',
       key: `txn:${t.id}`,
       icon: Receipt,
-      label: t.merchant || t.raw_description,
+      label: t.payee,
       meta: <>{dayjs(t.txn_date).format('DD MMM')} · <Amount value={t.amount} decimals={0} debitCredit={t.debit_credit} /></>,
-      run: () => navigate(`/transactions?q=${encodeURIComponent(t.merchant || t.raw_description)}`),
+      run: () => navigate(`/transactions?q=${encodeURIComponent(t.payee)}`),
     }))
 
     const peopleMatches = people.map(p => ({
