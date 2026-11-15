@@ -90,7 +90,9 @@ CATEGORIES = [
 ]
 
 
-def random_ledger(conn, seed):
+def random_ledger(conn, seed, offsets=True):
+    """80 random rows. With offsets=False there are no links, groups or Income >
+    Refund credits, so nothing can be attributed to an unsorted debit."""
     rng = random.Random(seed)
     ids = {"debit": [], "credit": []}
     for _ in range(80):
@@ -98,7 +100,10 @@ def random_ledger(conn, seed):
         category = rng.choice(CATEGORIES)
         subcategory = None
         if category == "Income":
-            subcategory = rng.choice(["Salary", "Refund", "Opening Balance", None])
+            subcategories = ["Salary", "Refund", "Opening Balance", None]
+            if not offsets:
+                subcategories.remove("Refund")
+            subcategory = rng.choice(subcategories)
         elif category == "Transfers":
             subcategory = rng.choice(["ATM Withdrawal", None])
         day = rng.randint(0, 79)
@@ -109,6 +114,8 @@ def random_ledger(conn, seed):
             counterparty=rng.choice([None, "ALPHA", "BETA", "GAMMA"]),
         )
         ids[dc].append(txn_id)
+    if not offsets:
+        return
     for _ in range(8):
         link(conn, rng.choice(ids["credit"]), rng.choice(ids["debit"]),
              rng.choice(["refund", "reimbursement", "split"]))
@@ -191,6 +198,21 @@ class TestIdentities:
                 assert s["what_changed"] == []
 
 
+@pytest.mark.parametrize("seed", range(25))
+def test_unexplained_equals_uncategorized_net_when_nothing_offsets_it(conn, seed):
+    # Credits labelled Uncategorized (or unannotated) are not known refunds, so
+    # without a link, group or refund credit the unsorted row is exactly the
+    # unexplained figure, net as well as gross.
+    random_ledger(conn, seed, offsets=False)
+    months = [r[0] for r in conn.execute(
+        "SELECT DISTINCT strftime('%Y-%m', txn_date) FROM transactions ORDER BY 1")]
+    for m in months:
+        s = summarize_insights(conn, m)
+        row = next((c for c in s["categories"] if c["category"] == "Uncategorized"), None)
+        expected = row["net"] if row else 0
+        assert s["unexplained"]["total"] == expected, m
+
+
 class TestBreakdownRows:
     def test_extras_named_on_the_rich_ledger(self, conn):
         rich_ledger(conn)
@@ -204,7 +226,7 @@ class TestBreakdownRows:
         assert extras["other"]["label"] == "Other money out"
         # Offsets landing in January: the friend's share on the 21st only; the
         # refund and second share arrive in February.
-        assert extras["paid_back"]["label"] == "Paid back to you"
+        assert extras["paid_back"]["label"] == "Refunds and paybacks taken off the rows above"
         assert extras["paid_back"]["total"] == pytest.approx(3333.33)
 
     def test_no_extras_for_a_plain_month(self, conn):
@@ -223,11 +245,28 @@ class TestBreakdownRows:
         shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
         assert shopping["net"] == -3000
         assert s["breakdown"]["extras"] == [
-            {"key": "paid_back", "label": "Paid back to you", "total": 3000, "count": None},
+            {"key": "paid_back", "label": "Refunds and paybacks taken off the rows above", "total": 3000, "count": None},
         ]
 
 
 class TestUnsortedDefinition:
+    def test_an_unsorted_credit_is_not_a_refund(self, conn):
+        seed_txn(conn, "2026-01-05", 700, "debit", category="Uncategorized")
+        seed_txn(conn, "2026-01-06", 500, "credit", category="Uncategorized")
+        seed_txn(conn, "2026-01-07", 300, "credit")  # unannotated
+        s = summarize_insights(conn, "2026-01")
+        uncategorized = next(c for c in s["categories"] if c["category"] == "Uncategorized")
+        assert (uncategorized["gross"], uncategorized["offsets"], uncategorized["net"]) == (700, 0, 700)
+        assert s["unexplained"]["total"] == 700
+        assert s["verdict"]["money_in"] == 800  # still money in, just not spend coming back
+
+    def test_a_spend_labelled_credit_still_nets_its_category(self, conn):
+        seed_txn(conn, "2026-01-05", 700, "debit", category="Shopping")
+        seed_txn(conn, "2026-01-06", 200, "credit", category="Shopping")
+        s = summarize_insights(conn, "2026-01")
+        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
+        assert shopping["net"] == 500
+
     def test_miscellaneous_is_a_real_label_not_unsorted(self, conn):
         seed_txn(conn, "2026-01-05", 450, "debit", category="Miscellaneous")
         s = summarize_insights(conn, "2026-01")
@@ -335,7 +374,39 @@ class TestPeriodWindows:
         assert s["comparison"] is None
         assert s["verdict"]["prev"] is None
 
-    def test_statement_period_end_extends_coverage_past_the_last_transaction(self, conn):
+    def test_a_gap_month_has_no_comparison(self, conn):
+        # September and November have data, October has none: November must not
+        # be scored against an empty October.
+        seed_txn(conn, "2026-09-01", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-09-30", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-11-01", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-11-30", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["comparison"] is None
+        assert s["verdict"]["prev"] is None
+        assert s["what_changed"] == []
+        assert all(c["delta"] is None for c in s["categories"])
+
+    def test_what_changed_never_names_uncategorized(self, conn):
+        seed_txn(conn, "2026-09-01", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-10-05", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-10-06", 9000, "debit")  # unsorted jump
+        seed_txn(conn, "2026-10-07", 4000, "debit", category="Travel")
+        s = summarize_insights(conn, "2026-10")
+        assert [c["category"] for c in s["what_changed"]] == ["Travel"]
+        # The breakdown row still carries it, with its delta.
+        assert any(c["category"] == "Uncategorized" for c in s["categories"])
+
+    def test_a_month_with_data_on_both_sides_is_covered(self, conn):
+        seed_txn(conn, "2026-08-10", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-09-10", 100, "debit", category="Shopping")
+        seed_txn(conn, "2026-10-10", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-10")
+        assert s["comparison"]["month"] == "2026-09"
+
+    def test_hand_set_statement_period_end_extends_coverage(self, conn):
+        # Statement periods normally equal the first and last transaction date,
+        # but a period set past the last transaction is honoured as coverage.
         seed_txn(conn, "2026-10-01", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-10-31", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 10, "debit", category="Shopping")

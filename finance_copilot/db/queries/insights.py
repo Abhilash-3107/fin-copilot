@@ -15,7 +15,7 @@ small summary payload instead of the whole transaction table. Definitions:
   Transfers, Investments, Transfers (money to people, covered by the people
   ledger) and Income. Unannotated debits count as spend (Uncategorized).
   Because Out is gross and the rows are net, the payload also carries the
-  reconciling rows (Transfers and cash, Paid back to you, other debits), so
+  reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other debits), so
   rows + extras always sum to Out exactly (breakdown.total == verdict.money_out).
 - "Not sorted" has one definition (common.unsorted_sql): a debit with no
   annotation or whose category is NULL or Uncategorized. The unexplained
@@ -50,7 +50,7 @@ from collections import Counter, defaultdict
 from datetime import date
 from statistics import median
 
-from finance_copilot.db.queries.common import unsorted_sql
+from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 
 NON_SPEND_CATEGORIES = ("Self Transfers", "Investments", "Transfers", "Income")
 
@@ -92,8 +92,16 @@ def _period_windows(conn: sqlite3.Connection, month: str) -> tuple[dict, dict | 
     comparison = {month, start, end} is the previous month when `month` is
     complete, or only its first N days when `month` is covered to day N, so a
     half month is never scored against a whole one. It is None when the
-    ledger's coverage does not reach back to the start of that window (the
-    first month of a ledger has nothing to compare with).
+    previous month has no transactions at all (a gap is not a month of zero
+    spend), or when the ledger's coverage does not reach back to the start of
+    that window (the first month of a ledger has nothing to compare with).
+    A month with data both before and after it counts as covered.
+
+    Statement periods equal the first and last transaction date of the
+    statement (see ingest), so a finished month whose last transaction is on
+    the 28th still looks covered only to the 28th when nothing follows it;
+    the caller decides, from the clock, whether the month is really in
+    progress. The comparison over covered days is like for like either way.
     """
     first, last = _month_bounds(month)
     first_iso, last_iso = first.isoformat(), last.isoformat()
@@ -138,7 +146,11 @@ def _period_windows(conn: sqlite3.Connection, month: str) -> tuple[dict, dict | 
         window_end = prev_first.replace(day=min(covered_day, prev_last.day))
     else:
         window_end = prev_last
-    if ledger_start > prev_first.isoformat():
+    prev_has_data = conn.execute(
+        "SELECT 1 FROM transactions WHERE date(txn_date) BETWEEN ? AND ? LIMIT 1",
+        (prev_first.isoformat(), prev_last.isoformat()),
+    ).fetchone()
+    if not prev_has_data or ledger_start > prev_first.isoformat():
         return period, None
     return period, {
         "month": prev,
@@ -324,7 +336,8 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
 
     # 3. Unlinked credits nobody grouped or linked. A credit annotated with a
     #    spend category nets that category directly - the label already
-    #    asserts it is money coming back for spending. Income > Refund
+    #    asserts it is money coming back for spending. An unsorted credit
+    #    (Uncategorized) asserts nothing, so it never offsets spend. Income > Refund
     #    credits are attributed to the category of the most recent debit from
     #    the same counterparty when one exists, else to the most recent spend
     #    debit of the exact same amount (capped at that debit's remaining
@@ -341,6 +354,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
         WHERE t.debit_credit = 'credit'
           AND ((a.category = 'Income' AND a.subcategory = 'Refund')
                OR a.category NOT IN ({placeholders}))
+          AND NOT {unsorted_sql("a")}
         """,
         NON_SPEND_CATEGORIES,
     ).fetchall()
@@ -532,7 +546,7 @@ def _out_breakdown(
         extras.append({"key": "transfers", "label": "Transfers and cash", "total": total, "count": count})
     paid_back = round(sum(c["offsets"] for c in categories.values()), 2)
     if paid_back:
-        extras.append({"key": "paid_back", "label": "Paid back to you", "total": paid_back, "count": None})
+        extras.append({"key": "paid_back", "label": "Refunds and paybacks taken off the rows above", "total": paid_back, "count": None})
     count, total = debits(other_names)
     if total:
         extras.append({"key": "other", "label": "Other money out", "total": total, "count": count})
@@ -893,7 +907,9 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
 
     deltas = []
     if previous is not None:
-        for name in set(current) | set(previous):
+        # Uncategorized is never a shift worth naming: the unsorted figure and
+        # its own breakdown row already cover it.
+        for name in (set(current) | set(previous)) - {UNCATEGORIZED}:
             cur_net = current.get(name, {}).get("net", 0.0)
             prev_net = previous.get(name, {}).get("net", 0.0)
             delta = round(cur_net - prev_net, 2)
