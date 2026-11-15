@@ -14,6 +14,12 @@ small summary payload instead of the whole transaction table. Definitions:
 - The category breakdown uses net spend instead: spend excludes Self
   Transfers, Investments, Transfers (money to people, covered by the people
   ledger) and Income. Unannotated debits count as spend (Uncategorized).
+  Because Out is gross and the rows are net, the payload also carries the
+  reconciling rows (Transfers and cash, Paid back to you, other debits), so
+  rows + extras always sum to Out exactly (breakdown.total == verdict.money_out).
+- "Not sorted" has one definition (common.unsorted_sql): a debit with no
+  annotation or whose category is NULL or Uncategorized. The unexplained
+  figure, the Uncategorized breakdown row and the Transactions filter all use it.
 - Net spend is gross debits minus offsets. Offsets come from, in order:
   credits linked to a debit via transaction_links, credit members of expense
   groups typed split/reimbursement/refund (allocated across the group's spend
@@ -22,22 +28,35 @@ small summary payload instead of the whole transaction table. Definitions:
   unlinked Income > Refund credits (attributed to the category of the most
   recent debit with the same counterparty, else to the most recent spend
   debit of the exact same amount; a credit attributable to no category nets
-  nothing). Offsets land in the month the credit arrives (cash view).
+  nothing). Offsets land on the day the credit arrives (cash view), so they
+  sum over any date range.
 - Offsets attributed to a specific debit are capped at that debit's amount,
   so a charge is never netted below zero across mechanisms (e.g. a grouped
   concert charge whose friends' shares came in and which was then fully
   refunded after cancellation). Counterparty-matched refunds are exempt from
   the cap because one refund credit can cover several past debits from the
   same merchant.
+- Everything is computed over a date range, not a month string, so a month
+  still in progress is compared like for like: when the ledger only covers a
+  month up to day D, the comparison window is days 1..D of the previous month,
+  and there is no comparison at all when the ledger does not reach back to the
+  start of that window (see _period_windows).
 """
 from __future__ import annotations
 
+import calendar
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import date
 from statistics import median
 
+from finance_copilot.db.queries.common import unsorted_sql
+
 NON_SPEND_CATEGORIES = ("Self Transfers", "Investments", "Transfers", "Income")
+
+# Debits that never count as Out (the tiles are a cash view of money that left
+# for good: moving money between own accounts or into investments is not spend).
+OUT_EXCLUDED_CATEGORIES = ("Self Transfers", "Investments")
 
 # Credit-side link/group types that offset spending rather than being income.
 OFFSET_TYPES = ("split", "reimbursement", "refund")
@@ -52,6 +71,80 @@ def _prev_month(month: str) -> str:
     if mon == 1:
         return f"{year - 1}-12"
     return f"{year}-{mon - 1:02d}"
+
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    year, mon = int(month[:4]), int(month[5:7])
+    return date(year, mon, 1), date(year, mon, calendar.monthrange(year, mon)[1])
+
+
+def _period_windows(conn: sqlite3.Connection, month: str) -> tuple[dict, dict | None]:
+    """How far the ledger covers `month`, and the like-for-like window to compare with.
+
+    Returns (period, comparison). period = {month, start, end, covered_through,
+    partial}: start/end are the calendar bounds of the month, covered_through is
+    the last day the ledger has data for. covered_through is the latest of the
+    newest transaction in the month and the end of any statement period that
+    reaches into it (capped at the month's last day); a month that later data
+    follows is fully covered. A month is partial when covered_through is before
+    its last day.
+
+    comparison = {month, start, end} is the previous month when `month` is
+    complete, or only its first N days when `month` is covered to day N, so a
+    half month is never scored against a whole one. It is None when the
+    ledger's coverage does not reach back to the start of that window (the
+    first month of a ledger has nothing to compare with).
+    """
+    first, last = _month_bounds(month)
+    first_iso, last_iso = first.isoformat(), last.isoformat()
+    txn_first, txn_last = conn.execute(
+        "SELECT MIN(date(txn_date)), MAX(date(txn_date)) FROM transactions"
+    ).fetchone()
+    p_start, p_end = conn.execute(
+        "SELECT MIN(period_start), MAX(period_end) FROM statements"
+    ).fetchone()
+    ledger_start = min(d for d in (txn_first, p_start) if d)
+    ledger_end = max(d for d in (txn_last, p_end) if d)
+
+    if ledger_end > last_iso:
+        covered = last_iso
+    else:
+        month_last_txn = conn.execute(
+            "SELECT MAX(date(txn_date)) FROM transactions "
+            "WHERE date(txn_date) BETWEEN ? AND ?",
+            (first_iso, last_iso),
+        ).fetchone()[0]
+        period_ends = [
+            r[0] for r in conn.execute(
+                "SELECT MIN(period_end, ?) FROM statements "
+                "WHERE period_end >= ? AND (period_start IS NULL OR period_start <= ?)",
+                (last_iso, first_iso, last_iso),
+            )
+        ]
+        covered = max([d for d in [month_last_txn, *period_ends] if d], default=first_iso)
+    partial = covered < last_iso
+    period = {
+        "month": month,
+        "start": first_iso,
+        "end": last_iso,
+        "covered_through": covered,
+        "partial": partial,
+    }
+
+    prev = _prev_month(month)
+    prev_first, prev_last = _month_bounds(prev)
+    if partial:
+        covered_day = date.fromisoformat(covered).day
+        window_end = prev_first.replace(day=min(covered_day, prev_last.day))
+    else:
+        window_end = prev_last
+    if ledger_start > prev_first.isoformat():
+        return period, None
+    return period, {
+        "month": prev,
+        "start": prev_first.isoformat(),
+        "end": window_end.isoformat(),
+    }
 
 
 def _is_spend(category: str | None) -> bool:
@@ -120,8 +213,9 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     """Compute spend offsets across the full ledger (memoized on a ledger fingerprint).
 
     Returns (category_offsets, used_credit_ids):
-    - category_offsets: {(month, category): amount} for offsets attributable
-      to a spend category. A credit attributable to no category nets nothing;
+    - category_offsets: {(credit_date, category): amount} for offsets
+      attributable to a spend category, landing on the day the credit arrived
+      (sum them over any range with _offsets_in_range). A credit attributable to no category nets nothing;
       it still shows up in the verdict's cash view as money in.
     - used_credit_ids: credit transactions consumed as offsets, so other
       panels (the people ledger) can avoid counting a settled share twice.
@@ -154,9 +248,9 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
         """
         SELECT l.link_type,
                ta.id AS a_id, ta.debit_credit AS a_dc, ta.amount AS a_amount,
-               strftime('%Y-%m', ta.txn_date) AS a_month, aa.category AS a_category,
+               date(ta.txn_date) AS a_date, aa.category AS a_category,
                tb.id AS b_id, tb.debit_credit AS b_dc, tb.amount AS b_amount,
-               strftime('%Y-%m', tb.txn_date) AS b_month, ab.category AS b_category
+               date(tb.txn_date) AS b_date, ab.category AS b_category
         FROM transaction_links l
         JOIN transactions ta ON ta.id = l.txn_a
         JOIN transactions tb ON tb.id = l.txn_b
@@ -180,14 +274,14 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             continue
         debit_category = row[f"{debit}_category"]
         if _is_spend(debit_category):
-            category_offsets[(row[f"{credit}_month"], debit_category or "Uncategorized")] += amount
+            category_offsets[(row[f"{credit}_date"], debit_category or "Uncategorized")] += amount
 
     # 2. Group credits: shares friends paid back inside an expense group,
     #    allocated pro rata across the group's spend debits.
     member_rows = conn.execute(
         """
         SELECT gm.group_id, gm.txn_type, t.id, t.amount, t.debit_credit,
-               strftime('%Y-%m', t.txn_date) AS month, a.category
+               date(t.txn_date) AS credit_date, a.category
         FROM transaction_group_members gm
         JOIN transactions t ON t.id = gm.transaction_id
         LEFT JOIN annotations a ON a.transaction_id = t.id
@@ -226,7 +320,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                     continue
                 share = attributable * cap / total_capacity
                 remaining[deb["id"]] -= share
-                category_offsets[(cred["month"], deb["category"] or "Uncategorized")] += share
+                category_offsets[(cred["credit_date"], deb["category"] or "Uncategorized")] += share
 
     # 3. Unlinked credits nobody grouped or linked. A credit annotated with a
     #    spend category nets that category directly - the label already
@@ -241,7 +335,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     credit_rows = conn.execute(
         f"""
         SELECT t.id, t.amount, t.counterparty_key, t.txn_date,
-               strftime('%Y-%m', t.txn_date) AS month, a.category
+               date(t.txn_date) AS credit_date, a.category
         FROM transactions t
         JOIN annotations a ON a.transaction_id = t.id
         WHERE t.debit_credit = 'credit'
@@ -255,7 +349,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             continue
         used_credit_ids.add(row["id"])
         if row["category"] != "Income":
-            category_offsets[(row["month"], row["category"])] += row["amount"]
+            category_offsets[(row["credit_date"], row["category"])] += row["amount"]
             continue
         if row["counterparty_key"]:
             match = conn.execute(
@@ -270,7 +364,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                 (row["counterparty_key"], row["txn_date"]),
             ).fetchone()
             if match and _is_spend(match["category"]):
-                category_offsets[(row["month"], match["category"] or "Uncategorized")] += row["amount"]
+                category_offsets[(row["credit_date"], match["category"] or "Uncategorized")] += row["amount"]
                 continue
         amount_match = conn.execute(
             f"""
@@ -288,7 +382,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             take = _consume(amount_match["id"], amount_match["amount"], row["amount"])
             if take > 0:
                 category_offsets[
-                    (row["month"], amount_match["category"] or "Uncategorized")
+                    (row["credit_date"], amount_match["category"] or "Uncategorized")
                 ] += take
 
     result = (dict(category_offsets), used_credit_ids)
@@ -298,15 +392,25 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     return dict(result[0]), set(result[1])
 
 
-def _verdict(conn: sqlite3.Connection, month: str) -> dict:
-    """Cash-view tiles for one month; see the module docstring for the model.
+def _offsets_in_range(cat_offsets: dict, start: str, end: str) -> dict[str, float]:
+    """Offsets whose credit arrived in [start, end], summed per category."""
+    out: dict[str, float] = defaultdict(float)
+    for (credit_date, category), amount in cat_offsets.items():
+        if start <= credit_date <= end:
+            out[category] += amount
+    return out
+
+
+def _verdict(conn: sqlite3.Connection, start: str, end: str) -> dict:
+    """Cash-view tiles for [start, end]; see the module docstring for the model.
 
     No linking, netting or heuristics feed these numbers, so a missed
     reimbursement can never make the tiles contradict each other - a friend's
     unmatched payback simply shows up inside In (and other_in).
     """
+    excluded = ",".join("?" for _ in OUT_EXCLUDED_CATEGORIES)
     row = conn.execute(
-        """
+        f"""
         SELECT
           COALESCE(SUM(CASE WHEN t.debit_credit = 'credit'
               AND COALESCE(a.category, '') != 'Self Transfers'
@@ -317,15 +421,15 @@ def _verdict(conn: sqlite3.Connection, month: str) -> dict:
               AND COALESCE(a.subcategory, '') NOT IN ('Refund', 'Opening Balance')
               THEN t.amount END), 0) AS earned,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'
-              AND COALESCE(a.category, '') NOT IN ('Self Transfers', 'Investments')
+              AND COALESCE(a.category, '') NOT IN ({excluded})
               THEN t.amount END), 0) AS money_out,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit' AND a.category = 'Investments'
               THEN t.amount END), 0) AS invested
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE strftime('%Y-%m', t.txn_date) = ?
+        WHERE date(t.txn_date) BETWEEN ? AND ?
         """,
-        (month,),
+        (*OUT_EXCLUDED_CATEGORIES, start, end),
     ).fetchone()
     money_in, money_out = row["money_in"], row["money_out"]
     invested = row["invested"]
@@ -341,8 +445,8 @@ def _verdict(conn: sqlite3.Connection, month: str) -> dict:
     }
 
 
-def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dict) -> dict[str, dict]:
-    """Net spend per category for one month, with a subcategory drill-down."""
+def _categories_for_range(conn: sqlite3.Connection, start: str, end: str, cat_offsets: dict) -> dict[str, dict]:
+    """Net spend per category over [start, end], with a subcategory drill-down."""
     placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
     rows = conn.execute(
         f"""
@@ -350,11 +454,11 @@ def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dic
                a.subcategory, COUNT(*) AS n, SUM(t.amount) AS total
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE t.debit_credit = 'debit' AND strftime('%Y-%m', t.txn_date) = ?
+        WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
           AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
         GROUP BY 1, 2
         """,
-        (month, *NON_SPEND_CATEGORIES),
+        (start, end, *NON_SPEND_CATEGORIES),
     ).fetchall()
     categories: dict[str, dict] = {}
     for row in rows:
@@ -367,18 +471,23 @@ def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dic
         sub = cat["subcategories"][row["subcategory"] or "Other"]
         sub["total"] += row["total"]
         sub["count"] += row["n"]
-    # Offsets can land in a month where the category had no debit (e.g. a
+    # Offsets can land in a window where the category had no debit (e.g. a
     # refund arriving a month later); surface those as negative-net rows.
-    for (m, category), _amount in cat_offsets.items():
-        if m == month and category not in categories:
+    offsets = _offsets_in_range(cat_offsets, start, end)
+    for category in offsets:
+        if category not in categories:
             categories[category] = {
                 "gross": 0.0, "count": 0,
                 "subcategories": defaultdict(lambda: {"total": 0.0, "count": 0}),
             }
     for category, data in categories.items():
-        data["offsets"] = round(cat_offsets.get((month, category), 0.0), 2)
-        data["net"] = round(data["gross"] - data["offsets"], 2)
-        data["gross"] = round(data["gross"], 2)
+        # Round gross and net first and derive offsets from them, so the three
+        # always add up to the cent and the rows can reconcile to Out exactly.
+        gross = round(data["gross"], 2)
+        net = round(data["gross"] - offsets.get(category, 0.0), 2)
+        data["gross"] = gross
+        data["net"] = net
+        data["offsets"] = round(gross - net, 2)
         data["subcategories"] = sorted(
             (
                 {"name": name, "total": round(s["total"], 2), "count": s["count"]}
@@ -387,6 +496,47 @@ def _categories_for_month(conn: sqlite3.Connection, month: str, cat_offsets: dic
             key=lambda s: -s["total"],
         )
     return categories
+
+
+def _out_breakdown(
+    conn: sqlite3.Connection, start: str, end: str, categories: dict[str, dict], money_out: float,
+) -> dict:
+    """The rows that, listed after the category rows, make the breakdown sum to Out.
+
+    Out is gross cash that left (minus Self Transfers and Investments); the
+    category rows are net spend. So Out = sum(net) + offsets counted in the
+    window + Transfers debits (people and ATM) + any other debit no category
+    row covers (Income-labelled debits). Each extra appears only when non-zero.
+    `total` is Out itself (the verdict's figure, not a sum of these rows), so
+    a test and the UI can check the list closes on it.
+    """
+    other_names = sorted(set(NON_SPEND_CATEGORIES) - set(OUT_EXCLUDED_CATEGORIES) - {"Transfers"})
+
+    def debits(names: list[str]) -> tuple[int, float]:
+        marks = ",".join("?" for _ in names)
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n, COALESCE(SUM(t.amount), 0) AS total
+            FROM transactions t
+            JOIN annotations a ON a.transaction_id = t.id
+            WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
+              AND a.category IN ({marks})
+            """,
+            (start, end, *names),
+        ).fetchone()
+        return row["n"], round(row["total"], 2)
+
+    extras = []
+    count, total = debits(["Transfers"])
+    if total:
+        extras.append({"key": "transfers", "label": "Transfers and cash", "total": total, "count": count})
+    paid_back = round(sum(c["offsets"] for c in categories.values()), 2)
+    if paid_back:
+        extras.append({"key": "paid_back", "label": "Paid back to you", "total": paid_back, "count": None})
+    count, total = debits(other_names)
+    if total:
+        extras.append({"key": "other", "label": "Other money out", "total": total, "count": count})
+    return {"total": money_out, "extras": extras}
 
 
 def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
@@ -453,14 +603,20 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
     return items
 
 
+def _recurring_summary(items: list[dict]) -> dict:
+    """The one monthly-committed figure: active items billed monthly."""
+    monthly = [i for i in items if i["active"] and i["cadence"] == "monthly"]
+    return {"monthly_total": sum(i["amount"] for i in monthly), "count": len(monthly)}
+
+
 def _days_between(earlier: str, later: str) -> int:
     d1 = date.fromisoformat(earlier[:10])
     d2 = date.fromisoformat(later[:10])
     return (d2 - d1).days
 
 
-def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
-    """Net position per person over the full history of Transfers.
+def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str], start: str, end: str) -> dict:
+    """Net position per person over the Transfers dated in [start, end].
 
     Transactions carry no person foreign key; the annotation pipeline labels
     person payments as Transfers with the person's short name as merchant.
@@ -484,7 +640,9 @@ def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
         JOIN annotations a ON a.transaction_id = t.id
         WHERE a.category = 'Transfers'
           AND COALESCE(a.subcategory, '') != 'ATM Withdrawal'
-        """
+          AND date(t.txn_date) BETWEEN ? AND ?
+        """,
+        (start, end),
     ).fetchall()
     rows = [r for r in rows if r["id"] not in settled_ids]
 
@@ -535,8 +693,8 @@ def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str]) -> dict:
     return {"items": items, "unmatched": unmatched}
 
 
-def _merchants(conn: sqlite3.Connection, month: str) -> list[dict]:
-    """Top merchants for the month on canonical keys, with count and avg ticket."""
+def _merchants(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
+    """Top merchants for [start, end] on canonical keys, with count and avg ticket."""
     placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
     rows = conn.execute(
         f"""
@@ -544,11 +702,11 @@ def _merchants(conn: sqlite3.Connection, month: str) -> list[dict]:
                a.merchant, t.amount
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE t.debit_credit = 'debit' AND strftime('%Y-%m', t.txn_date) = ?
+        WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
           AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
           AND COALESCE(t.counterparty_key, a.merchant) IS NOT NULL
         """,
-        (month, *NON_SPEND_CATEGORIES),
+        (start, end, *NON_SPEND_CATEGORIES),
     ).fetchall()
     canonical = _merge_merchant_keys([r["key"] for r in rows])
     agg: dict[str, dict] = defaultdict(lambda: {"total": 0.0, "count": 0, "names": Counter()})
@@ -661,16 +819,17 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240) -> dict:
     return {"account": label, "series": series}
 
 
-def _unexplained(conn: sqlite3.Connection, month: str) -> dict:
+def _unexplained(conn: sqlite3.Connection, start: str, end: str) -> dict:
+    """Debits in [start, end] that are not sorted (common.unsorted_sql)."""
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n, COALESCE(SUM(t.amount), 0) AS total
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE t.debit_credit = 'debit' AND strftime('%Y-%m', t.txn_date) = ?
-          AND (a.id IS NULL OR a.category = 'Miscellaneous')
+        WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
+          AND {unsorted_sql("a")}
         """,
-        (month,),
+        (start, end),
     ).fetchone()
     return {"count": row["n"], "total": round(row["total"], 2)}
 
@@ -703,11 +862,16 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
     if month is None or month not in months:
         month = months[-1]
     prev = _prev_month(month)
+    period, comparison = _period_windows(conn, month)
+    start, end = period["start"], period["end"]
 
     cat_offsets, settled_ids = _spend_offsets(conn)
 
-    current = _categories_for_month(conn, month, cat_offsets)
-    previous = _categories_for_month(conn, prev, cat_offsets)
+    current = _categories_for_range(conn, start, end, cat_offsets)
+    previous = (
+        _categories_for_range(conn, comparison["start"], comparison["end"], cat_offsets)
+        if comparison else None
+    )
 
     categories = [
         {
@@ -716,8 +880,11 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
             "net": data["net"],
             "offsets": data["offsets"],
             "count": data["count"],
-            "prev_net": previous.get(name, {}).get("net", 0.0),
-            "delta": round(data["net"] - previous.get(name, {}).get("net", 0.0), 2),
+            "prev_net": previous.get(name, {}).get("net", 0.0) if previous is not None else None,
+            "delta": (
+                round(data["net"] - previous.get(name, {}).get("net", 0.0), 2)
+                if previous is not None else None
+            ),
             "subcategories": data["subcategories"],
         }
         for name, data in current.items()
@@ -725,33 +892,40 @@ def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> di
     categories.sort(key=lambda c: -c["net"])
 
     deltas = []
-    for name in set(current) | set(previous):
-        cur_net = current.get(name, {}).get("net", 0.0)
-        prev_net = previous.get(name, {}).get("net", 0.0)
-        delta = round(cur_net - prev_net, 2)
-        if abs(delta) >= 1:
-            deltas.append({
-                "category": name, "delta": delta,
-                "current": cur_net, "previous": prev_net,
-            })
-    deltas.sort(key=lambda d: -abs(d["delta"]))
+    if previous is not None:
+        for name in set(current) | set(previous):
+            cur_net = current.get(name, {}).get("net", 0.0)
+            prev_net = previous.get(name, {}).get("net", 0.0)
+            delta = round(cur_net - prev_net, 2)
+            if abs(delta) >= 1:
+                deltas.append({
+                    "category": name, "delta": delta,
+                    "current": cur_net, "previous": prev_net,
+                })
+        deltas.sort(key=lambda d: -abs(d["delta"]))
 
     latest_date = conn.execute("SELECT MAX(txn_date) FROM transactions").fetchone()[0]
+    verdict = _verdict(conn, start, end)
+    recurring = _recurring(conn, latest_date)
 
     return {
         "month": month,
         "prev_month": prev,
         "months": months,
+        "period": period,
+        "comparison": comparison,
         "verdict": {
-            **_verdict(conn, month),
-            "prev": _verdict(conn, prev),
+            **verdict,
+            "prev": _verdict(conn, comparison["start"], comparison["end"]) if comparison else None,
         },
         "what_changed": deltas[:3],
         "categories": categories,
-        "recurring": _recurring(conn, latest_date),
-        "people": _people_ledger(conn, settled_ids),
-        "merchants": _merchants(conn, month),
+        "breakdown": _out_breakdown(conn, start, end, current, verdict["money_out"]),
+        "recurring": recurring,
+        "recurring_summary": _recurring_summary(recurring),
+        "people": _people_ledger(conn, settled_ids, start, end),
+        "merchants": _merchants(conn, start, end),
         "balance": _balance_series(conn),
-        "unexplained": _unexplained(conn, month),
+        "unexplained": _unexplained(conn, start, end),
         "annotation": _annotation_coverage(conn, month),
     }

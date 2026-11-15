@@ -622,8 +622,63 @@ class TestTransactionsFilters:
         client, conn, _ = client_conn
         self._seed(conn)
         facets = client.get("/api/transactions/facets").json()
-        assert facets["categories"] == ["Food & Dining", "Shopping"]
+        # t_bare has no annotation, so Uncategorized is offered as a filter.
+        assert facets["categories"] == ["Food & Dining", "Shopping", "Uncategorized"]
         assert facets["sources"] == ["llm", "rule"]
+
+    def test_facets_omit_uncategorized_when_everything_is_sorted(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute("DELETE FROM transactions WHERE id = 't_bare'")
+        conn.commit()
+        facets = client.get("/api/transactions/facets").json()
+        assert facets["categories"] == ["Food & Dining", "Shopping"]
+
+    def test_uncategorized_filter_includes_unannotated_rows(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        # A row annotated Uncategorized and one with no annotation at all are
+        # the same bucket; a real label (Miscellaneous) is not.
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_unc', 's1', '2026-01-16', 50.0, 'debit', 'MYSTERY')"""
+        )
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_misc', 's1', '2026-01-17', 60.0, 'debit', 'ODD')"""
+        )
+        insert_annotation(conn, Annotation(
+            id="a_unc", transaction_id="t_unc", category="Uncategorized",
+            confidence=0.1, source="llm",
+        ))
+        insert_annotation(conn, Annotation(
+            id="a_misc", transaction_id="t_misc", category="Miscellaneous",
+            confidence=0.5, source="manual",
+        ))
+        conn.commit()
+        assert self._ids(client, "category=Uncategorized") == {"t_bare", "t_unc"}
+        assert self._ids(client, "category=Uncategorized,Shopping") == {"t_bare", "t_unc", "t_shop"}
+        assert self._ids(client, "category=Miscellaneous") == {"t_misc"}
+
+    def test_summary_describes_exactly_the_filtered_rows(self, client_conn):
+        client, conn, _ = client_conn
+        self._seed(conn)
+        conn.execute(
+            """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+               VALUES ('t_in', 's1', '2026-01-20', 250.5, 'credit', 'REFUND')"""
+        )
+        conn.commit()
+        for query in ("", "category=Uncategorized", "category=Shopping", "q=swiggy",
+                      "month=2026-01&min_amount=200", "month=2025-12"):
+            rows = client.get(f"/api/transactions?{query}").json()
+            summary = client.get(f"/api/transactions/summary?{query}").json()
+            assert summary == {
+                "count": len(rows),
+                "money_out": round(sum(r["amount"] for r in rows if r["debit_credit"] == "debit"), 2),
+                "money_in": round(sum(r["amount"] for r in rows if r["debit_credit"] == "credit"), 2),
+            }, query
+        everything = client.get("/api/transactions/summary").json()
+        assert everything == {"count": 4, "money_out": 300.0, "money_in": 250.5}
 
     def test_facets_respect_month_scope(self, client_conn):
         client, conn, _ = client_conn
