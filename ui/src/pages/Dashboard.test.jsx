@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
@@ -37,6 +37,8 @@ const SUMMARY = {
   month: '2026-05',
   prev_month: '2026-04',
   months: ['2026-04', '2026-05'],
+  period: { month: '2026-05', start: '2026-05-01', end: '2026-05-31', covered_through: '2026-05-31', partial: false },
+  comparison: { month: '2026-04', start: '2026-04-01', end: '2026-04-30' },
   verdict: {
     money_in: 89403, money_out: 50738, invested: 30000, kept: 8665,
     kept_rate: 0.0969, earned: 89403, other_in: 0,
@@ -52,10 +54,19 @@ const SUMMARY = {
     { category: 'Food & Dining', gross: 20500, net: 20500, offsets: 0, count: 40, prev_net: 16000, delta: 4500, subcategories: [] },
     { category: 'Travel', gross: 14207, net: 14207, offsets: 0, count: 6, prev_net: 2958, delta: 11249, subcategories: [] },
   ],
+  breakdown: {
+    total: 50738,
+    extras: [
+      { key: 'transfers', label: 'Transfers and cash', total: 7000, count: 2 },
+      { key: 'paid_back', label: 'Paid back to you', total: 1031, count: null },
+    ],
+  },
+  recurring_summary: { monthly_total: 26999, count: 2 },
   recurring: [
     { name: 'INDmoney', category: 'Investments', amount: 25000, months_seen: 6, months_span: 6, cadence: 'monthly', last_date: '2026-05-01', active: true },
     { name: 'Apple', category: 'Subscriptions', amount: 1999, months_seen: 4, months_span: 4, cadence: 'monthly', last_date: '2026-05-15', active: true },
     { name: 'LinkedIn', category: 'Subscriptions', amount: 499, months_seen: 3, months_span: 5, cadence: 'monthly', last_date: '2026-02-10', active: false },
+    { name: 'BESCOM', category: 'Utilities', amount: 2260, months_seen: 3, months_span: 4, cadence: 'irregular', last_date: '2026-05-04', active: true },
   ],
   people: {
     items: [
@@ -121,11 +132,15 @@ beforeEach(() => {
 describe('Dashboard', () => {
   it('renders the verdict sentence and server-computed tiles', async () => {
     renderDashboard()
-    // The hero's "kept" is everything that stayed: invested 30,000 + kept 8,665.
+    // The hero's "kept" is the Kept tile's figure (In - Out - Invested), with
+    // what was invested said beside it.
     expect(
-      await screen.findByText((_, el) => el.tagName === 'P' && /In May, you kept ₹38,665/.test(el.textContent))
+      await screen.findByText((_, el) => (
+        el.tagName === 'P'
+        && /In May, you kept ₹8,665 - 10% of what came in, and invested ₹30,000\./.test(el.textContent)
+      ))
     ).toBeInTheDocument()
-    expect(screen.getByText('43%')).toBeInTheDocument()
+    expect(screen.getAllByText('₹8,665').length).toBeGreaterThan(1) // hero and tile agree
     // Tiles show the insights verdict, not client-side sums.
     expect(screen.getAllByText('₹50,738').length).toBeGreaterThan(0)
     expect(screen.getAllByText('₹89,403').length).toBeGreaterThan(0)
@@ -272,6 +287,182 @@ describe('Dashboard', () => {
     renderDashboard()
     expect(await screen.findByRole('button', { name: /Sorting/ })).toBeDisabled()
     expect(mockRunAnnotationJob).not.toHaveBeenCalled()
+  })
+
+  describe('one definition of Kept', () => {
+    const text = re => screen.findByText((_, el) => el.tagName === 'P' && re.test(el.textContent))
+
+    it('omits the invested clause when nothing was invested', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...SUMMARY,
+            verdict: { ...SUMMARY.verdict, invested: 0, kept: 38665, kept_rate: 0.4325 },
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await text(/In May, you kept ₹38,665 - 43% of what came in\.$/)).toBeInTheDocument()
+    })
+
+    it('says "spent more than came in" when kept is negative', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...SUMMARY,
+            verdict: { ...SUMMARY.verdict, money_in: 40000, money_out: 55000, invested: 0, kept: -15000, kept_rate: -0.375 },
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await text(/In May, you spent ₹15,000 more than came in\.$/)).toBeInTheDocument()
+      expect(screen.queryByText(/you kept/)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('a month in progress', () => {
+    const PARTIAL = {
+      ...SUMMARY,
+      month: '2026-11',
+      prev_month: '2026-10',
+      period: { month: '2026-11', start: '2026-11-01', end: '2026-11-30', covered_through: '2026-11-15', partial: true },
+      comparison: { month: '2026-10', start: '2026-10-01', end: '2026-10-15' },
+    }
+
+    it('labels the month as in progress and compares the same days', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights') ? Promise.resolve(PARTIAL) : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await screen.findByText('1-15 Nov, in progress')).toBeInTheDocument()
+      expect(screen.getByText((_, el) => el.tagName === 'P' && /^In November so far, you kept/.test(el.textContent)))
+        .toBeInTheDocument()
+      // Every tile names the comparison window (Invested is unchanged: "same as").
+      expect(screen.getAllByText(/vs 1-15 Oct/).length).toBe(3)
+      expect(screen.getByText('same as 1-15 Oct')).toBeInTheDocument()
+      expect(screen.queryByText(/last month/)).not.toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /Travel ran ₹11,249 above 1-15 Oct/ })).toBeInTheDocument()
+    })
+
+    it('shows no delta at all when there is nothing to compare with', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      await screen.findByText('Kept')
+      expect(screen.queryByText(/ vs /)).not.toBeInTheDocument()
+      expect(screen.queryByText(/same as/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
+    })
+
+    it('names a complete month by its month', async () => {
+      renderDashboard()
+      await screen.findByText('Kept')
+      expect(screen.getAllByText(/vs April/).length).toBe(3)
+      expect(screen.getByText('same as April')).toBeInTheDocument()
+      expect(screen.queryByText(/in progress/)).not.toBeInTheDocument()
+    })
+  })
+
+  it('never raises Uncategorized as a spike (the unsorted item covers it)', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({
+          ...SUMMARY,
+          what_changed: [{ category: 'Uncategorized', delta: 5005, current: 5005, previous: 0 }],
+        })
+        : Promise.resolve([])
+    ))
+    renderDashboard()
+    await screen.findByText('Needs your attention')
+    expect(screen.queryByText(/Uncategorized ran/)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /has no category yet/ })).toBeInTheDocument()
+  })
+
+  // Sum every rupee figure inside the given rows (the Indian grouping has commas only).
+  const rupees = el => Number(el.textContent.match(/₹([\d,]+)/)[1].replace(/,/g, ''))
+
+  it('spending glance closes on Out: top rows plus "and N more" add up', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({
+          ...SUMMARY,
+          verdict: { ...SUMMARY.verdict, money_out: 48031 },
+          breakdown: { ...SUMMARY.breakdown, total: 48031 },
+          categories: [
+            { category: 'Food & Dining', gross: 20000, net: 20000, offsets: 0, count: 4, prev_net: 1, delta: 1, subcategories: [] },
+            { category: 'Travel', gross: 15000, net: 15000, offsets: 0, count: 2, prev_net: 1, delta: 1, subcategories: [] },
+            { category: 'Shopping', gross: 5000, net: 4000, offsets: 1000, count: 2, prev_net: 1, delta: 1, subcategories: [] },
+            { category: 'Health', gross: 800, net: 800, offsets: 0, count: 1, prev_net: 1, delta: 1, subcategories: [] },
+            { category: 'Uncategorized', gross: 200, net: 200, offsets: 0, count: 1, prev_net: 1, delta: 1, subcategories: [] },
+          ],
+        })
+        : Promise.resolve([])
+    ))
+    renderDashboard()
+    const card = (await screen.findByText(/money went/)).closest('div')
+    const rows = within(card).getAllByRole('listitem')
+    expect(rows).toHaveLength(4)
+    expect(rows[3]).toHaveTextContent('and 4 more')
+    expect(rows.map(rupees).reduce((a, b) => a + b, 0)).toBe(48031)
+  })
+
+  it('committed header equals the rows listed under it', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({
+          ...SUMMARY,
+          recurring_summary: { monthly_total: 40, count: 7 },
+          recurring: Array.from({ length: 7 }, (_, i) => ({
+            name: `Sub ${i}`, category: 'Subscriptions', amount: i === 6 ? 10 : 5, months_seen: 4, months_span: 4,
+            cadence: 'monthly', last_date: '2026-05-05', active: true,
+          })),
+        })
+        : Promise.resolve([])
+    ))
+    renderDashboard()
+    const title = await screen.findByText('Spoken for each month')
+    const card = title.closest('.overflow-hidden')
+    const rows = within(card).getAllByRole('listitem')
+    expect(rows).toHaveLength(6) // five rows plus "and 2 more"
+    expect(rows[5]).toHaveTextContent('and 2 more')
+    expect(rupees(title.parentElement)).toBe(40)
+    expect(rows.map(rupees).reduce((a, b) => a + b, 0)).toBe(40)
+  })
+
+  it('lists only active monthly items in the committed card', async () => {
+    renderDashboard()
+    await screen.findByText('INDmoney')
+    expect(screen.queryByText('BESCOM')).not.toBeInTheDocument() // irregular
+    expect(screen.queryByText('LinkedIn')).not.toBeInTheDocument() // stopped
+  })
+
+  it('offers no All time on a month screen and shows the month it honours', async () => {
+    localStorage.setItem('fc_period_month', 'all')
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/statements') {
+        return Promise.resolve([
+          { id: 's5', bank_name: 'kotak', statement_month: '2026-05', uploaded_at: '2026-06-01' },
+          { id: 's4', bank_name: 'kotak', statement_month: '2026-04', uploaded_at: '2026-05-01' },
+        ])
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    await screen.findByText('Kept')
+    const picker = screen.getByRole('combobox', { name: 'Period' })
+    expect(within(picker).queryByRole('option', { name: 'All time' })).not.toBeInTheDocument()
+    await waitFor(() => expect(picker).toHaveValue('2026-05'))
+    // The server picks its latest month; no unhonoured month is requested.
+    expect(mockApi.get).toHaveBeenCalledWith('/insights')
   })
 
   it('requests the shared period month from the server', async () => {

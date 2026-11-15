@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
@@ -32,9 +32,11 @@ const SUMMARY = {
   month: '2026-02',
   prev_month: '2026-01',
   months: ['2026-01', '2026-02'],
+  period: { month: '2026-02', start: '2026-02-01', end: '2026-02-28', covered_through: '2026-02-28', partial: false },
+  comparison: { month: '2026-01', start: '2026-01-01', end: '2026-01-31' },
   verdict: {
-    money_in: 100646, money_out: 65877, invested: 30000, kept: 4769,
-    kept_rate: 0.0474, earned: 57508, other_in: 43138,
+    money_in: 100646, money_out: 77763, invested: 30000, kept: -7117,
+    kept_rate: -0.0707, earned: 57508, other_in: 43138,
     prev: {
       money_in: 57583, money_out: 26006, invested: 30000, kept: 1577,
       kept_rate: 0.0274, earned: 57583, other_in: 0,
@@ -55,12 +57,24 @@ const SUMMARY = {
       subcategories: [{ name: 'Food Delivery', total: 5400, count: 12 }],
     },
   ],
+  breakdown: {
+    total: 77763,
+    extras: [
+      { key: 'transfers', label: 'Transfers and cash', total: 7000, count: 2 },
+      { key: 'paid_back', label: 'Paid back to you', total: 34810, count: null },
+      { key: 'other', label: 'Other money out', total: 700, count: 1 },
+    ],
+  },
+  recurring_summary: { monthly_total: 8000, count: 1 },
   recurring: [
     { name: 'INDmoney', category: 'Investments', amount: 8000, months_seen: 6, months_span: 6, cadence: 'monthly', last_date: '2026-02-03', active: true },
+    { name: 'BESCOM', category: 'Utilities', amount: 2260, months_seen: 3, months_span: 4, cadence: 'irregular', last_date: '2026-02-04', active: true },
+    { name: 'LinkedIn', category: 'Subscriptions', amount: 499, months_seen: 2, months_span: 2, cadence: 'monthly', last_date: '2025-11-20', active: false },
   ],
   people: {
     items: [
       { id: 'p1', name: 'sanya', relationship: 'friend', sent: 19686, received: 23468, net: 3782, count: 20, last_date: '2026-02-20' },
+      { id: 'p2', name: 'neha', relationship: null, sent: 440, received: 0, net: -440, count: 1, last_date: '2026-02-13' },
     ],
     unmatched: { sent: 0, received: 0, count: 0 },
   },
@@ -106,8 +120,12 @@ describe('Insights (Money Map)', () => {
     renderInsights()
     expect(await screen.findByText('Kept')).toBeInTheDocument()
     expect(screen.getAllByText('₹1,00,646').length).toBeGreaterThan(0) // In: all cash that arrived
-    expect(screen.getAllByText('₹65,877').length).toBeGreaterThan(0) // Out: gross, nothing netted
-    expect(screen.getByText('5% of money in')).toBeInTheDocument()
+    expect(screen.getAllByText('₹77,763').length).toBeGreaterThan(0) // Out: gross, nothing netted
+    expect(screen.getByText('-7% of money in')).toBeInTheDocument()
+    // Every tile words its delta against the same window (Invested is unchanged).
+    expect(screen.getByText('Out').closest('div')).toHaveTextContent(/vs January/)
+    expect(screen.getByText('Kept').closest('div')).toHaveTextContent(/vs January/)
+    expect(screen.getByText('same as January')).toBeInTheDocument()
     expect(screen.getByText(/incl ₹43,138 paid back or from people/)).toBeInTheDocument()
   })
 
@@ -147,11 +165,106 @@ describe('Insights (Money Map)', () => {
     // The sent/received line interleaves text nodes with Amount spans, so
     // match on the paragraph's full text content.
     expect(
-      screen.getByText((_, el) => el.tagName === 'P' && el.textContent.includes('sent ₹19,686 · received ₹23,468'))
+      screen.getByText((_, el) => el.tagName === 'P' && el.textContent.includes('sent ₹19,686 · received ₹23,468 · 20 transfers'))
     ).toBeInTheDocument()
+    // A single transfer is not "1 transfers".
+    expect(
+      screen.getByText((_, el) => el.tagName === 'P' && el.textContent.includes('sent ₹440 · received ₹0 · 1 transfer'))
+    ).toBeInTheDocument()
+    expect(screen.getByText('Sent and received in February')).toBeInTheDocument()
     expect(screen.getByText('Zomato')).toBeInTheDocument()
     expect(screen.getByText('10')).toBeInTheDocument() // order count
     expect(screen.getByText('₹447')).toBeInTheDocument() // avg ticket
+  })
+
+  it('closes the breakdown on Out with the reconciling rows and a total', async () => {
+    renderInsights()
+    const card = (await screen.findByText(/Where it went/)).closest('.overflow-hidden')
+    expect(within(card).getByText('Transfers and cash')).toBeInTheDocument()
+    expect(within(card).getByText('Paid back to you')).toBeInTheDocument()
+    expect(within(card).getByText('Other money out')).toBeInTheDocument()
+    const total = within(card).getByText('Total out').closest('div')
+    expect(total).toHaveTextContent('₹77,763')
+    // Rows (net) plus the reconciling rows are exactly the total.
+    const amounts = [...card.querySelectorAll('li > div > span.text-right.tabular-nums')]
+      .map(el => Number(el.textContent.replace(/[^\d]/g, '')))
+    const total_ = amounts.pop()
+    expect(amounts.reduce((a, b) => a + b, 0)).toBe(total_)
+  })
+
+  it('lists active monthly items under the header total, then the rest apart', async () => {
+    renderInsights()
+    const title = await screen.findByText(/Recurring/)
+    const card = title.closest('.overflow-hidden')
+    expect(card.querySelector('thead')).toBeNull()
+    expect(title.parentElement).toHaveTextContent('₹8,000/mo across 1')
+    const rows = [...card.querySelectorAll('tbody tr')].map(tr => tr.textContent)
+    expect(rows[0]).toMatch(/INDmoney.*₹8,000/)
+    expect(rows[1]).toMatch(/not in the monthly total/)
+    expect(rows[2]).toMatch(/BESCOM.*₹2,260/)
+    expect(rows[3]).toMatch(/Stopped/)
+    expect(rows[4]).toMatch(/LinkedIn/)
+    // The header is the sum of the monthly rows listed first.
+    expect(rows.filter(r => /Monthly/.test(r) && !/Stopped/.test(r)).length).toBe(2) // INDmoney + stopped LinkedIn
+  })
+
+  it('offers no All time and shows the latest month when the period is All time', async () => {
+    localStorage.setItem('fc_period_month', 'all')
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/statements') {
+        return Promise.resolve([
+          { id: 's2', bank_name: 'kotak', statement_month: '2026-02', uploaded_at: '2026-03-01' },
+          { id: 's1', bank_name: 'kotak', statement_month: '2026-01', uploaded_at: '2026-02-01' },
+        ])
+      }
+      return Promise.resolve([])
+    })
+    renderInsights()
+    await screen.findByText('Kept')
+    const picker = screen.getByRole('combobox', { name: 'Period' })
+    expect(within(picker).queryByRole('option', { name: 'All time' })).not.toBeInTheDocument()
+    await waitFor(() => expect(picker).toHaveValue('2026-02'))
+  })
+
+  describe('a month in progress', () => {
+    const PARTIAL = {
+      ...SUMMARY,
+      month: '2026-11',
+      period: { month: '2026-11', start: '2026-11-01', end: '2026-11-30', covered_through: '2026-11-15', partial: true },
+      comparison: { month: '2026-10', start: '2026-10-01', end: '2026-10-15' },
+    }
+
+    it('labels the month and words every delta against the same days', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights') ? Promise.resolve(PARTIAL) : Promise.resolve([])
+      ))
+      renderInsights()
+      expect(await screen.findByText('1-15 Nov, in progress')).toBeInTheDocument()
+      expect(screen.getByText('What changed vs 1-15 Oct')).toBeInTheDocument()
+      expect(screen.getAllByText(/vs 1-15 Oct/).length).toBeGreaterThan(3)
+      expect(screen.queryByText(/last month/)).not.toBeInTheDocument()
+    })
+
+    it('shows no delta anywhere without a comparison', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+            categories: PARTIAL.categories.map(c => ({ ...c, prev_net: null, delta: null })),
+          })
+          : Promise.resolve([])
+      ))
+      renderInsights()
+      await screen.findByText('Kept')
+      expect(screen.queryByText(/ vs /)).not.toBeInTheDocument()
+      expect(screen.queryByText(/same as/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
+      expect(screen.getByText('What changed')).toBeInTheDocument()
+    })
   })
 
   it('requests the period month from the server', async () => {
