@@ -1,16 +1,18 @@
 """Statement routes: upload PDF, list statements, list transactions for a statement."""
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.api.routes.annotations import enqueue_annotation_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
@@ -22,6 +24,8 @@ from finance_copilot.pipeline.ingest import (
     ingest_pdf,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 # Bank statements are a few MB at most; refuse anything larger so a bad or hostile
@@ -32,11 +36,16 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     # Form body, not query param — query strings end up in server access logs.
     password: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
+    """Upload a PDF, run the parser, persist statement + transactions, return the Statement.
+
+    The statement is sorted without being asked: a job for it is queued here, on
+    the server, so an upload by script gets the same treatment as one from the page.
+    """
     # Sample data is never mixed with a real statement: its fake rent and
     # salary would sit in every total.
     if has_demo_data(conn):
@@ -50,6 +59,14 @@ def upload_statement(
         raise HTTPException(
             status_code=413,
             detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    # A PDF starts with "%PDF" (some writers put a few bytes of junk before it).
+    # Say so up front rather than let the parser report "no transaction table".
+    if b"%PDF" not in contents[:1024]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{file.filename or 'This file'} isn't a PDF. Only PDF statements can be added.",
         )
 
     # Stage the statement next to the DB with owner-only perms, not in the shared
@@ -78,7 +95,30 @@ def upload_statement(
         os.unlink(tmp_path)
 
     warnings = check_continuity(conn, statement) + check_description_formats(conn, statement)
-    return {**statement.model_dump(), "warnings": warnings}
+
+    # Sorting starts by itself. Failing to queue it must not fail an upload that
+    # already landed: the statement is there and "Sort again" still works.
+    try:
+        job = enqueue_annotation_job(conn, statement.id, background_tasks, queue=True)
+        sorting_job_id = job["job_id"]
+    except Exception:
+        logger.exception("could not queue sorting for statement %s", statement.id)
+        sorting_job_id = None
+    # What the page reports for each file: payments added, and whether the
+    # running balance reconciles.
+    transaction_count = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE statement_id = ?", (statement.id,)
+    ).fetchone()[0]
+    balance_check = statement_balance_checks(conn).get(
+        statement.id, {"checked": 0, "consistent": 0, "balanced": True}
+    )
+    return {
+        **statement.model_dump(),
+        "warnings": warnings,
+        "transaction_count": transaction_count,
+        "balance_check": balance_check,
+        "sorting_job_id": sorting_job_id,
+    }
 
 
 @router.get("")

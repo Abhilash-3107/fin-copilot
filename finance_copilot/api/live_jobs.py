@@ -10,11 +10,14 @@ fails every job left in flight (reap_interrupted_jobs).
 """
 from __future__ import annotations
 
+import collections
 import functools
 import threading
 
 _live: set[str] = set()
 _lock = threading.Lock()
+_turn_changed = threading.Condition(_lock)
+_waiting: collections.deque[str] = collections.deque()
 
 
 def tracks_live_job(worker):
@@ -22,13 +25,18 @@ def tracks_live_job(worker):
 
     @functools.wraps(worker)
     def run(job_id: str, *args, **kwargs):
-        with _lock:
+        with _turn_changed:
             _live.add(job_id)
+            _waiting.append(job_id)
+            while _waiting[0] != job_id:
+                _turn_changed.wait()
         try:
             return worker(job_id, *args, **kwargs)
         finally:
-            with _lock:
+            with _turn_changed:
                 _live.discard(job_id)
+                _waiting.popleft()
+                _turn_changed.notify_all()
 
     return run
 

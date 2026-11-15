@@ -3,8 +3,9 @@ import { JobBusyError, getActiveAnnotationJob, pollAnnotationJob, runAnnotationJ
 
 const AnnotationJobContext = createContext(null)
 
-// App-wide tracker for the (single) running auto-annotate job. Pages start a
-// job through startAnnotation and handle their own success/error side effects;
+// App-wide tracker for the running auto-annotate job (and the queue behind it).
+// Pages start a job through startAnnotation and handle their own success/error
+// side effects;
 // the polled progress lives here so the floating card in Layout survives
 // navigating between pages while the job runs.
 export function AnnotationJobProvider({ children }) {
@@ -31,28 +32,37 @@ export function AnnotationJobProvider({ children }) {
     }
   }, [])
 
-  // On mount (e.g. a reload mid-run), the server may still be working a job we
-  // lost React state for. Re-attach the progress card by resuming the poll.
-  useEffect(() => {
-    let cancelled = false
-    getActiveAnnotationJob()
-      .then(active => {
-        if (cancelled || !active || attached.current) return
-        attached.current = true
-        setJob(active)
-        pollAnnotationJob(active.id, setJob)
-          .catch(() => {})
-          .finally(() => {
-            setJob(null)
-            attached.current = false
-          })
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
+  // Show the progress card for whatever job the server is working on, and
+  // carry on to the next queued one when it ends. Used on mount (a reload
+  // mid-run lost our state), and after a statement is uploaded: the server
+  // starts sorting by itself, and a second statement queues behind the first.
+  // A no-op while a job is already tracked: that loop picks up the next one.
+  const mounted = useRef(true)
+  const watchJobs = useCallback(async () => {
+    if (attached.current) return
+    let active
+    try { active = await getActiveAnnotationJob() } catch { return }
+    if (!active || attached.current || !mounted.current) return
+    attached.current = true
+    setJob(active)
+    try {
+      await pollAnnotationJob(active.id, setJob)
+    } catch {
+      // A failed run is reported by whoever started it; the card just goes.
+    }
+    setJob(null)
+    attached.current = false
+    if (mounted.current) watchJobs()
   }, [])
 
+  useEffect(() => {
+    mounted.current = true
+    watchJobs()
+    return () => { mounted.current = false }
+  }, [watchJobs])
+
   return (
-    <AnnotationJobContext.Provider value={{ job, startAnnotation }}>
+    <AnnotationJobContext.Provider value={{ job, startAnnotation, watchJobs }}>
       {children}
     </AnnotationJobContext.Provider>
   )

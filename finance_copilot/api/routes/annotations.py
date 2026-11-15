@@ -215,18 +215,23 @@ def _run_annotation_job(
         conn.close()
 
 
-@router.post("/auto-annotate/jobs", status_code=202)
-def start_auto_annotate_job(
-    body: AutoAnnotateRequest,
+def enqueue_annotation_job(
+    conn: sqlite3.Connection,
+    statement_id: str | None,
     background_tasks: BackgroundTasks,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress.
+    *,
+    transaction_ids: list[str] | None = None,
+    queue: bool = False,
+) -> dict:
+    """Record an annotation job and schedule its worker.
 
-    Single-user app: only one annotation job may be in flight at a time. A second
-    request (e.g. a double-click or a click from another open tab) re-attaches to
-    the running job instead of starting a duplicate, which would burn duplicate LLM
-    calls and could overwrite a manual label created mid-run.
+    Single-user app: only one job runs at a time. By default a request that
+    finds one in flight (a double-click, a click from another open tab)
+    re-attaches to it instead of starting a duplicate, which would burn
+    duplicate LLM calls and could overwrite a manual label created mid-run.
+    With queue=True (a statement that just landed) the new job is recorded
+    anyway and its worker waits its turn (live_jobs), so the statement is sorted
+    once the job ahead of it finishes.
     """
     # Reap + guard + insert must be atomic against a concurrent request (a
     # double-click or a second tab). SQLite serializes writes but not a
@@ -235,7 +240,6 @@ def start_auto_annotate_job(
     # schedule, which is the duplicate-LLM-burn the single-job guard exists to
     # prevent. BEGIN IMMEDIATE takes the write lock now, so the second request
     # blocks (busy_timeout) until the first commits and then sees its row.
-    scheduled_job_id: str | None = None
     conn.execute("BEGIN IMMEDIATE")
     try:
         # An in-flight row with a quiet heartbeat is an orphan (worker died or
@@ -247,7 +251,7 @@ def start_auto_annotate_job(
             "SELECT id, status, kind, statement_id FROM annotation_jobs "
             "WHERE status IN ('queued','running') ORDER BY created_at LIMIT 1"
         ).fetchone()
-        if inflight is not None:
+        if inflight is not None and not queue:
             conn.commit()
             # Say it's a re-attach and to what: the in-flight job may be a
             # different kind (a re-embed) or another statement's run, and the
@@ -263,20 +267,29 @@ def start_auto_annotate_job(
         job_id = str(ulid.ULID())
         conn.execute(
             "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
-            (job_id, body.statement_id),
+            (job_id, statement_id),
         )
         conn.commit()
-        scheduled_job_id = job_id
     except Exception:
         conn.rollback()
         raise
 
     # Schedule the worker only after the row is committed and the lock released,
     # so the background task's own connection can't deadlock on our write lock.
-    background_tasks.add_task(
-        _run_annotation_job, scheduled_job_id, body.statement_id, body.transaction_ids
+    background_tasks.add_task(_run_annotation_job, job_id, statement_id, transaction_ids)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@router.post("/auto-annotate/jobs", status_code=202)
+def start_auto_annotate_job(
+    body: AutoAnnotateRequest,
+    background_tasks: BackgroundTasks,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress."""
+    return enqueue_annotation_job(
+        conn, body.statement_id, background_tasks, transaction_ids=body.transaction_ids
     )
-    return {"job_id": scheduled_job_id, "status": "queued"}
 
 
 @router.get("/jobs")
@@ -289,10 +302,11 @@ def list_active_annotation_jobs(active: int = 0, conn: sqlite3.Connection = Depe
     """
     if _reap_stale_jobs(conn):
         conn.commit()
+    # Active: the running job first, then the queue in the order it arrived, so
+    # the progress card follows the work as it happens. History: newest first.
     where = "WHERE status IN ('queued','running')" if active else ""
-    rows = conn.execute(
-        f"SELECT * FROM annotation_jobs {where} ORDER BY created_at DESC"
-    ).fetchall()
+    order = "(status = 'running') DESC, created_at ASC" if active else "created_at DESC"
+    rows = conn.execute(f"SELECT * FROM annotation_jobs {where} ORDER BY {order}").fetchall()
     jobs = []
     for row in rows:
         job = dict(row)

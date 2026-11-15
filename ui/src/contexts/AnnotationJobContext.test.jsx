@@ -46,4 +46,30 @@ describe('AnnotationJobProvider', () => {
     await expect(result.current.startAnnotation({})).rejects.toThrow("memory is being rebuilt")
     expect(api.runAnnotationJob).not.toHaveBeenCalled()
   })
+
+  it('follows the queue: after one job ends it shows the next one the server has queued', async () => {
+    api.getActiveAnnotationJob
+      .mockResolvedValueOnce(null) // the mount check
+      .mockResolvedValueOnce({ id: 'a', status: 'running', kind: 'annotate' })
+      .mockResolvedValueOnce({ id: 'b', status: 'queued', kind: 'annotate' })
+      .mockResolvedValue(null)
+    const finish = {}
+    api.pollAnnotationJob.mockImplementation(
+      id => new Promise(r => { finish[id] = r }),
+    )
+    const { result } = renderHook(() => useAnnotationJob(), { wrapper })
+    await waitFor(() => expect(api.getActiveAnnotationJob).toHaveBeenCalledTimes(1))
+
+    act(() => { result.current.watchJobs() })
+    await waitFor(() => expect(result.current.job?.id).toBe('a'))
+
+    // A second call while a job is tracked changes nothing.
+    await act(async () => { await result.current.watchJobs() })
+    expect(api.getActiveAnnotationJob).toHaveBeenCalledTimes(2)
+
+    await act(async () => { finish.a({}) })
+    await waitFor(() => expect(result.current.job?.id).toBe('b'))
+    await act(async () => { finish.b({}) })
+    await waitFor(() => expect(result.current.job).toBeNull())
+  })
 })

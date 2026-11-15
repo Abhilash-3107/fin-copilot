@@ -1,7 +1,7 @@
 // J8 - Backup, delete, restore. The restored ledger must match the original.
 import { test, expect } from '../fixtures.js'
 import { derivedFigures, storedFacts } from '../lib/snapshot.js'
-import { categorise, uploadFixture } from '../lib/statement.js'
+import { sortedByServer, uploadFixture } from '../lib/statement.js'
 import { figureNear, open, openSettingsTab } from '../lib/ui.js'
 
 const openDataSettings = (page) => openSettingsTab(page, 'Data')
@@ -13,7 +13,7 @@ const openDataSettings = (page) => openSettingsTab(page, 'Data')
  */
 async function buildRichLedger(api) {
   const statement = await uploadFixture(api)
-  await categorise(api, statement.id)
+  await sortedByServer(api, statement.id)
   const person = await api.post('/people', { name: 'E2E Friend', upi: 'e2e.friend@upi', relationship: 'friend' })
   const rule = await api.post('/rules', { pattern: 'bookstore', category: 'Shopping', subcategory: 'General Retail' })
   await api.post(`/rules/${rule.id}/apply`)

@@ -3,7 +3,7 @@
 // are unsorted or before anything has been uploaded.
 import { test, expect } from '../fixtures.js'
 import { open } from '../lib/ui.js'
-import { categorise, uploadFixture } from '../lib/statement.js'
+import { sortedByServer, uploadFixture } from '../lib/statement.js'
 
 test.use({ modelMode: 'none' })
 
@@ -18,11 +18,11 @@ test.describe('J5 no model connected', () => {
     await expect(page.getByText(/all done|all caught up/i)).toHaveCount(0)
   })
 
-  test.describe('after a statement is categorised without a model', () => {
+  test.describe('after a statement is sorted without a model', () => {
     let unsorted
     test.beforeEach(async ({ app }) => {
       const statement = await uploadFixture(app.api)
-      const result = await categorise(app.api, statement.id)
+      const result = await sortedByServer(app.api, statement.id)
       expect(result.ai_active, 'the model must be off for this journey').toBe(false)
       unsorted = await app.api.get('/transactions?unannotated=true')
       expect(unsorted.length, 'rows the rules could not sort').toBeGreaterThan(0)

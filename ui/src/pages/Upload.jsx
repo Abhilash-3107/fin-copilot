@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X, AlertTriangle } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X, AlertTriangle, ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
-import { api } from '../lib/api.js'
+import { api, pollAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
-import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
+import { annotationSummary, sortOutcome, sortedText, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
 
 // Running-balance reconciliation badge (4.20): turns the parser's balance-chain
@@ -50,16 +50,80 @@ function CoverageBadge({ done, total }) {
   )
 }
 
+const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+
+// One line per file in a drop: what went in, then how sorting is going. The
+// states are ready (chosen, not sent), uploading, sorting, sorted, and failed
+// (the file did not go in: the reason is shown and the file can be retried).
+function balanceLine(check) {
+  if (!check || check.checked === 0) return 'No running balance to check'
+  return check.balanced
+    ? 'Balance checks out'
+    : `Balance check: ${check.consistent} of ${check.checked} steps reconcile`
+}
+
+function sortLine(entry) {
+  if (entry.status === 'sorted') return sortOutcome(entry.result).text
+  if (entry.status === 'sortFailed') return `Sorting stopped (${entry.message}). Use Sort again below.`
+  if (!entry.job) return 'Getting started…'
+  if (entry.job.status === 'queued') return 'Waiting to sort'
+  const { processed = 0, total = 0 } = entry.job
+  return total ? `Sorting ${processed} of ${total}` : 'Sorting'
+}
+
+function FileRow({ entry, onRemove }) {
+  const { file, status, statement } = entry
+  const added = statement && (
+    <>
+      {statement.bank_name} - {formatMonth(statement.statement_month)}
+      {' - '}{count(statement.transaction_count, 'payment')} added
+      {' - '}{balanceLine(statement.balance_check)}
+    </>
+  )
+  return (
+    <li className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0">
+      <FileText size={14} className="text-[#6366f1] shrink-0 mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <span className="text-sm text-[#e2e8f0] break-all">{file.name}</span>
+        {status === 'ready' && <p className="text-xs text-[#64748b] mt-0.5">Ready to upload</p>}
+        {status === 'uploading' && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
+        {status === 'failed' && <p className="text-xs text-[#fca5a5] mt-0.5">{entry.message}</p>}
+        {added && <p className="text-xs text-[#94a3b8] mt-0.5">{added}</p>}
+        {/* Warnings belong to the file they came from, so they sit on its row instead of in a toast. */}
+        {statement?.warnings?.map(w => <p key={w} className="text-xs text-[#fdba74] mt-0.5">{w}</p>)}
+        {['sorting', 'sorted', 'sortFailed'].includes(status) && (
+          <p className={`text-xs mt-0.5 ${status === 'sortFailed' ? 'text-[#fdba74]' : 'text-[#e2e8f0]'}`}>
+            {sortLine(entry)}
+          </p>
+        )}
+      </div>
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          aria-label={`Remove ${file.name}`}
+          className="text-[#475569] hover:text-[#94a3b8] transition-colors"
+        >
+          <X size={14} />
+        </button>
+      )}
+    </li>
+  )
+}
+
 export default function Upload() {
   const toast = useToast()
   const { removable, refresh: refreshDemoData } = useDemoData()
   // job is non-null while any run is tracked (here, another page, or
-  // re-attached after a reload): one run at a time, so every Categorize waits.
-  const { job, startAnnotation } = useAnnotationJob()
+  // re-attached after a reload): one run at a time, so every Sort again waits.
+  const { job, startAnnotation, watchJobs } = useAnnotationJob()
+  const hosted = useDemoData().hosted
   const [statements, setStatements] = useState([])
-  const [file, setFile] = useState(null)
+  // The files of this drop, one entry each, and the ones refused up front.
+  const [entries, setEntries] = useState([])
+  const [refused, setRefused] = useState([])
   const [password, setPassword] = useState('')
   const [uploading, setUploading] = useState(false)
+  const nextId = useRef(0)
   const [dragOver, setDragOver] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [resetTarget, setResetTarget] = useState(null)
@@ -82,41 +146,71 @@ export default function Upload() {
 
   useEffect(() => { loadStatements() }, [loadStatements])
 
+  const patchEntry = useCallback((id, patch) => {
+    setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
+  }, [])
+
+  // Take the PDFs, say which of the others were left out. Files from an earlier
+  // drop that are already in and sorted make way for the new ones.
+  function addFiles(files) {
+    const picked = Array.from(files)
+    const pdfs = picked.filter(isPdf)
+    setRefused(picked.filter(f => !isPdf(f)).map(f => `${f.name} isn't a PDF. Only PDF statements can be added.`))
+    if (pdfs.length === 0) return
+    setEntries(list => [
+      ...list.filter(e => ['ready', 'failed'].includes(e.status)),
+      ...pdfs.map(file => ({ id: nextId.current++, file, status: 'ready' })),
+    ])
+  }
+
   function onDrop(e) {
     e.preventDefault()
     setDragOver(false)
-    const f = e.dataTransfer.files[0]
-    if (f?.type === 'application/pdf') setFile(f)
-    else toast('Please drop a PDF file', 'error')
+    addFiles(e.dataTransfer.files)
   }
 
   function onFileChange(e) {
-    const f = e.target.files[0]
-    if (f) setFile(f)
+    addFiles(e.target.files)
     // Clear the input so picking the same file again (after an upload, a
-    // delete or Cancel) still fires a change event.
+    // delete or Remove) still fires a change event.
     e.target.value = ''
   }
 
+  function trackSorting(id, jobId) {
+    pollAnnotationJob(jobId, j => patchEntry(id, { job: j }))
+      .then(result => patchEntry(id, { status: 'sorted', result }))
+      .catch(e => patchEntry(id, { status: 'sortFailed', message: e.message }))
+      .finally(loadStatements)
+  }
+
+  // One file after another: each has its own result, so a bad file does not
+  // lose the others. The server starts sorting a statement the moment it lands;
+  // this only follows that work.
   async function handleUpload() {
-    if (!file) return
+    const todo = entries.filter(e => ['ready', 'failed'].includes(e.status))
+    if (todo.length === 0) return
+    setRefused([])
     setUploading(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      if (password) form.append('password', password)
-      const result = await api.upload('/statements/upload', form)
-      toast(`Uploaded: ${result.bank_name} - ${formatMonth(result.statement_month)}`, 'success')
-      // One toast at a time: the warnings share it, and it replaces the upload notice.
-      if (result.warnings?.length) toast(result.warnings.join(' '), 'error', 8000)
-      setFile(null)
-      setPassword('')
-      loadStatements()
-    } catch (e) {
-      toast(`Upload failed: ${e.message}`, 'error')
-    } finally {
-      setUploading(false)
+    for (const entry of todo) {
+      patchEntry(entry.id, { status: 'uploading', message: null })
+      try {
+        const form = new FormData()
+        form.append('file', entry.file)
+        if (password) form.append('password', password)
+        const result = await api.upload('/statements/upload', form)
+        if (result.sorting_job_id) {
+          patchEntry(entry.id, { status: 'sorting', statement: result, job: null })
+          watchJobs()
+          trackSorting(entry.id, result.sorting_job_id)
+        } else {
+          patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued" })
+        }
+        loadStatements()
+      } catch (e) {
+        patchEntry(entry.id, { status: 'failed', message: e.message })
+      }
     }
+    setUploading(false)
   }
 
   async function deleteStatement() {
@@ -157,7 +251,7 @@ export default function Upload() {
       toast(summary.message, summary.type, summaryDuration(summary))
       loadStatements()
     } catch (e) {
-      toast(`Categorization failed - ${e.message}`, 'error')
+      toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
       setAnnotatingId(null)
     }
@@ -213,6 +307,20 @@ export default function Upload() {
     }
   }
 
+  // The account of a drop, once nothing in it is still being read or sorted.
+  const sortedEntries = entries.filter(e => e.status === 'sorted')
+  const busy = entries.some(e => ['uploading', 'sorting'].includes(e.status))
+  const finished = !busy && sortedEntries.length > 0
+    ? {
+        ...sortedEntries.reduce((t, e) => {
+          const o = sortOutcome(e.result)
+          return { sorted: t.sorted + o.sorted, needYou: t.needYou + o.needYou }
+        }, { sorted: 0, needYou: 0 }),
+        noModel: sortedEntries.some(e => e.result.ai_active === false),
+        modelError: sortedEntries.map(e => e.result.llm_error).find(Boolean) ?? null,
+      }
+    : null
+
   return (
     <div className="px-6 py-5 space-y-6 max-w-5xl">
       <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
@@ -239,24 +347,65 @@ export default function Upload() {
         }`}
       >
         <UploadIcon size={32} className="mx-auto mb-3 text-[#475569]" />
-        {file ? (
-          <p className="text-sm text-[#a5b4fc] font-medium">{file.name}</p>
-        ) : (
-          <>
-            <p className="text-sm text-[#94a3b8]">Drop your bank statement here, or click to browse</p>
-            <p className="text-xs text-[#475569] mt-1">PDF format - we'll handle the rest</p>
-          </>
-        )}
-        <input ref={fileRef} type="file" accept=".pdf" onChange={onFileChange} className="hidden" />
+        <p className="text-sm text-[#94a3b8]">Drop your bank statements here, or click to browse</p>
+        <p className="text-xs text-[#475569] mt-1">PDF only. You can add several at once.</p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,application/pdf"
+          multiple
+          onChange={onFileChange}
+          className="hidden"
+        />
       </div>
 
-      {file && (
+      {refused.length > 0 && (
+        <div role="alert" className="rounded-xl border border-[#450a0a] bg-[#1c0f0f] px-4 py-3 space-y-1">
+          {refused.map(m => <p key={m} className="text-sm text-[#fca5a5]">{m}</p>)}
+        </div>
+      )}
+
+      {entries.length === 0 && !hosted && !removable && (
+        <ul className="space-y-1.5 text-sm text-[#94a3b8] list-disc pl-5 marker:text-[#475569]">
+          <li>
+            Works with Kotak statements, and with other banks when the statement has a
+            running-balance column.
+          </li>
+          <li>Password-protected PDFs work: enter the password after you choose the file.</li>
+          <li>
+            The file and everything in it stay on this computer, unless you connect an online
+            AI model in Settings.
+          </li>
+          <li>
+            What happens next: the balance is checked, then sorting starts by itself. Whatever
+            it can&apos;t decide waits for you in Teach Me.
+          </li>
+        </ul>
+      )}
+
+      {entries.length > 0 && (
+        <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+          <ul>
+            {entries.map(entry => (
+              <FileRow
+                key={entry.id}
+                entry={entry}
+                onRemove={entry.status === 'ready' || entry.status === 'failed'
+                  ? () => setEntries(list => list.filter(e => e.id !== entry.id))
+                  : null}
+              />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {entries.some(e => ['ready', 'failed', 'uploading'].includes(e.status)) && (
         <div className="flex items-center gap-3">
           <input
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            placeholder="Password (if your PDF is locked)"
+            placeholder="Password (if a PDF is locked)"
             className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] w-64"
           />
           <button
@@ -267,19 +416,43 @@ export default function Upload() {
             <UploadIcon size={14} />
             {uploading ? 'Uploading…' : 'Upload'}
           </button>
-          <button
-            onClick={() => setFile(null)}
-            className="text-[#475569] hover:text-[#94a3b8] text-sm"
-          >
-            Cancel
-          </button>
+        </div>
+      )}
+
+      {finished && (
+        <div role="status" className="bg-[#13151f] border border-[#2d3148] rounded-xl px-4 py-3 space-y-2">
+          <p className="text-sm text-[#e2e8f0]">{`Finished: ${sortedText(finished.sorted, finished.needYou)}`}</p>
+          {finished.needYou > 0 ? (
+            <Link to="/review" className="inline-flex items-center gap-1 text-sm text-[#818cf8] hover:underline">
+              Go to Teach Me to sort the rest <ArrowRight size={13} />
+            </Link>
+          ) : (
+            <Link to="/transactions" className="inline-flex items-center gap-1 text-sm text-[#818cf8] hover:underline">
+              See your payments <ArrowRight size={13} />
+            </Link>
+          )}
+          {finished.modelError && (
+            <p className="text-xs text-[#fdba74]">
+              The model stopped answering ({finished.modelError}), so what it hadn&apos;t reached was left for you.
+              Check it in{' '}
+              <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
+              and use Sort again to try the rest.
+            </p>
+          )}
+          {finished.noModel && (
+            <p className="text-xs text-[#64748b]">
+              No model is connected, so only your rules and remembered payees were used. Connect one in{' '}
+              <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
+              and use Sort again to try the rest.
+            </p>
+          )}
         </div>
       )}
 
       {/* Pipeline result */}
       {lastResult && (
         <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Categorization Results</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Sort results</p>
           <div className="flex flex-wrap gap-2">
             {[
               { label: 'Processed', value: lastResult.total_processed, color: 'bg-[#1e2235] text-[#94a3b8]' },
@@ -330,7 +503,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Balanced', 'Categorized', 'Memory', 'Uploaded', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Balanced', 'Sorted', 'Memory', 'Uploaded', 'Actions'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
@@ -376,7 +549,7 @@ export default function Upload() {
                     <BalancedBadge check={s.balance_check} />
                   </td>
                   <td className="px-4 py-3">
-                    <Tooltip content="Transactions that have been categorized">
+                    <Tooltip content="Payments that have been sorted">
                       <CoverageBadge done={s.annotated_count} total={s.txn_count} />
                     </Tooltip>
                   </td>
@@ -401,14 +574,14 @@ export default function Upload() {
                   <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <Tooltip content="Use AI to automatically categorize transactions in this statement">
+                      <Tooltip content="Sort this statement again, for example after connecting a model">
                         <button
                           onClick={() => autoAnnotate(s)}
                           disabled={annotatingId === s.id || job != null}
                           className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
                         >
                           <Zap size={13} />
-                          {annotatingId === s.id ? 'Categorizing…' : 'Categorize'}
+                          {annotatingId === s.id ? 'Sorting…' : 'Sort again'}
                         </button>
                       </Tooltip>
                       <Tooltip content="Rebuild the AI's memory - do this after making corrections">
