@@ -61,11 +61,12 @@ describe('DataSettings restore', () => {
 describe('DataSettings sample data', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    Object.assign(demoCtx, { sample: false, mixed: false })
+    Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
   })
 
   it('offers to remove sample data while the ledger has it', () => {
     demoCtx.sample = true
+    demoCtx.removable = true
     render(<DataSettings />)
     expect(screen.getByText('Sample data')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Remove sample data' })).toBeInTheDocument()
@@ -73,12 +74,20 @@ describe('DataSettings sample data', () => {
 
   it('says so when real statements sit next to the sample data', () => {
     demoCtx.sample = true
+    demoCtx.removable = true
     demoCtx.mixed = true
     render(<DataSettings />)
     expect(screen.getByText(/next to your own statements/)).toBeInTheDocument()
   })
 
   it('has no sample-data section on a ledger without it', () => {
+    render(<DataSettings />)
+    expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
+  })
+
+  it('has no remove action on the hosted demo, where the API refuses it', () => {
+    Object.assign(demoCtx, { sample: true, removable: false, hosted: true })
     render(<DataSettings />)
     expect(screen.queryByText('Sample data')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()

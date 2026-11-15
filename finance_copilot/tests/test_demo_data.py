@@ -319,3 +319,135 @@ class TestUploadWhileSampleDataPresent:
         assert r.status_code == 409
         assert "sample data" in r.json()["detail"].lower()
         assert "remove" in r.json()["detail"].lower()
+
+
+class TestWipeLeavesNothingDerivedFromTheSample:
+    def _review_some(self, client, conn, n=5):
+        """Confirm n machine-labelled sample annotations in one category, the way
+        the review queue does, so feedback and calibration have figures."""
+        category = conn.execute(
+            "SELECT category FROM annotations WHERE source IN ('llm','rag_prompted','rag_direct') "
+            "GROUP BY category HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC LIMIT 1", (n,)).fetchone()[0]
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM annotations WHERE category = ? AND source IN ('llm','rag_prompted','rag_direct') "
+            "LIMIT ?", (category, n))]
+        for ann_id in ids:
+            assert client.post(
+                f"/api/annotations/{ann_id}/confirm", json={"category": category}).status_code == 200
+
+    def test_accuracy_is_empty_once_the_sample_is_removed(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        self._review_some(client, conn)
+        assert client.get("/api/annotations/accuracy").json() != []
+        client.delete("/api/data/demo")
+        assert client.get("/api/annotations/accuracy").json() == []
+
+    def test_calibration_and_dismissed_rules_reset_with_it(self, client_conn):
+        from finance_copilot.pipeline.calibration import get_calibrated_dampening
+
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        category, source = conn.execute(
+            "SELECT category, source FROM annotations WHERE source IN ('llm','rag_prompted') "
+            "GROUP BY category, source ORDER BY COUNT(*) DESC LIMIT 1").fetchone()
+        untouched = get_calibrated_dampening(conn, source, category)
+        self._review_some(client, conn)
+        conn.execute("INSERT INTO learned_rule_suppressions (counterparty_key, direction) VALUES ('swiggy', 'debit')")
+        conn.commit()
+        client.delete("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM feedback_stats").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM learned_rule_suppressions").fetchone()[0] == 0
+        assert get_calibrated_dampening(conn, source, category) == untouched
+
+    def test_a_mixed_ledger_keeps_its_aggregated_feedback(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        self._review_some(client, conn)
+        before = conn.execute("SELECT * FROM feedback_stats ORDER BY source, category").fetchall()
+        _add_real_statement(conn)
+        client.delete("/api/data/demo")
+        assert conn.execute("SELECT * FROM feedback_stats ORDER BY source, category").fetchall() == before
+
+    def test_a_user_group_built_only_from_sample_rows_does_not_survive_empty(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        _add_real_statement(conn)
+        sample = [r[0] for r in conn.execute("SELECT id FROM transactions WHERE id LIKE 'demo_%' LIMIT 2")]
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g_only_sample', 'Mine')")
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g_mixed', 'Mixed')")
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g_untouched', 'Empty by choice')")
+        for txn in sample:
+            conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, txn_type) "
+                         "VALUES ('g_only_sample', ?, 'event')", (txn,))
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, txn_type) "
+                     "VALUES ('g_mixed', ?, 'event')", (sample[0],))
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, txn_type) "
+                     "VALUES ('g_mixed', 'real_t1', 'event')")
+        conn.commit()
+        client.delete("/api/data/demo")
+        left = {r[0] for r in conn.execute("SELECT id FROM transaction_groups")}
+        assert left == {"g_mixed", "g_untouched"}
+
+    def test_a_user_group_member_forgets_the_sample_people_it_tagged(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        _add_real_statement(conn)
+        sample = conn.execute("SELECT id FROM transactions WHERE id LIKE 'demo_%' LIMIT 1").fetchone()[0]
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g_real', 'Mine')")
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, txn_type, people) "
+                     "VALUES ('g_real', 'real_t1', 'split', '[\"demo_p02\", \"real_p1\"]')")
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, txn_type, people) "
+                     "VALUES ('g_real', ?, 'split', '[\"demo_p03\"]')", (sample,))
+        conn.commit()
+        client.delete("/api/data/demo")
+        members = client.get("/api/groups/g_real").json()["members"]
+        assert [m["people"] for m in members] == [["real_p1"]]
+
+
+class TestSampleDataIsReportedUntilEverythingSeededIsGone:
+    def _delete_statements_one_by_one(self, client, conn):
+        for (stmt,) in conn.execute("SELECT id FROM statements WHERE id GLOB 'demo_stmt*'").fetchall():
+            assert client.delete(f"/api/statements/{stmt}").status_code == 200
+
+    def test_leftover_people_groups_and_rule_still_offer_removal(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        self._delete_statements_one_by_one(client, conn)
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] > 0
+        assert client.get("/api/data/demo").json()["loaded"] is True
+        client.delete("/api/data/demo")
+        assert client.get("/api/data/demo").json() == {"loaded": False, "mixed": False}
+        for table in ("people", "transaction_groups", "user_rules"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+
+    @pytest.mark.parametrize("table,row", [
+        ("people", "INSERT INTO people (id, name) VALUES ('demo_p01', 'X')"),
+        ("transaction_groups", "INSERT INTO transaction_groups (id, name) VALUES ('demo_grp_x', 'X')"),
+        ("user_rules", "INSERT INTO user_rules (id, pattern, category_id) VALUES ('demo_rule_x', 'x', 'cat_transfers')"),
+    ])
+    def test_any_one_seeded_row_counts(self, client_conn, table, row):
+        client, conn = client_conn
+        conn.execute(row)
+        conn.commit()
+        assert client.get("/api/data/demo").json()["loaded"] is True
+
+    def test_a_users_own_people_and_rules_do_not_count(self, client_conn):
+        client, conn = client_conn
+        conn.execute("INSERT INTO people (id, name) VALUES ('p_mine', 'Mine')")
+        conn.execute("INSERT INTO user_rules (id, pattern, category_id) VALUES ('rule_mine', 'x', 'cat_transfers')")
+        conn.commit()
+        assert client.get("/api/data/demo").json()["loaded"] is False
+
+
+class TestRemoveReapsStaleJobs:
+    def test_a_job_whose_worker_died_does_not_block_removal(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, kind, updated_at) "
+            "VALUES ('zombie', 'running', 'annotate', datetime('now', '-3 hours'))")
+        conn.commit()
+        assert client.delete("/api/data/demo").status_code == 200
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id = 'zombie'").fetchone()[0] == "failed"

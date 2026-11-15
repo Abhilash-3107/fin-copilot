@@ -63,6 +63,22 @@ describe('DemoBanner', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('keeps the hosted banner when the sample-data status cannot be read', async () => {
+    mockApi.get.mockImplementation(path => (path === '/health'
+      ? Promise.resolve({ demo_mode: true })
+      : Promise.reject(new Error('boom'))))
+    renderBanner()
+    expect(await screen.findByText(/this demo can't accept uploads/)).toBeInTheDocument()
+  })
+
+  it('still offers removal when the health read fails but the sample status loads', async () => {
+    mockApi.get.mockImplementation(path => (path === '/data/demo'
+      ? Promise.resolve({ loaded: true, mixed: false })
+      : Promise.reject(new Error('boom'))))
+    renderBanner()
+    expect(await screen.findByRole('button', { name: 'Remove sample data' })).toBeInTheDocument()
+  })
+
   describe('removing', () => {
     const reload = vi.fn()
     const realLocation = window.location

@@ -6,7 +6,6 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
-import RemoveSampleData from '../components/RemoveSampleData.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
@@ -52,7 +51,7 @@ function CoverageBadge({ done, total }) {
 
 export default function Upload() {
   const toast = useToast()
-  const { sample } = useDemoData()
+  const { removable, refresh: refreshDemoData } = useDemoData()
   // job is non-null while any run is tracked (here, another page, or
   // re-attached after a reload): one run at a time, so every Categorize waits.
   const { job, startAnnotation } = useAnnotationJob()
@@ -125,6 +124,7 @@ export default function Upload() {
       toast(`Deleted ${deleteTarget.bank_name}`, 'info')
       setDeleteTarget(null)
       loadStatements()
+      refreshDemoData()
     } catch (e) {
       toast(`Delete failed: ${e.message}`, 'error')
     }
@@ -137,6 +137,7 @@ export default function Upload() {
       toast(`Reset ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
       setResetTarget(null)
       loadStatements()
+      refreshDemoData()
     } catch (e) {
       toast(`Reset failed: ${e.message}`, 'error')
     }
@@ -214,12 +215,12 @@ export default function Upload() {
     <div className="px-6 py-5 space-y-6 max-w-5xl">
       <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
 
-      {sample && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#451a03] bg-[#1c1208] px-4 py-3">
+      {removable && (
+        <div className="rounded-xl border border-[#451a03] bg-[#1c1208] px-4 py-3">
           <p className="text-sm text-[#fdba74]">
-            Your ledger still has sample data. Remove it first so it doesn&apos;t mix with your own statement.
+            Your ledger still has sample data. Use Remove sample data in the bar above first, so it
+            doesn&apos;t mix with your own statement.
           </p>
-          <RemoveSampleData className="shrink-0 rounded-md border border-[#92400e] px-3 py-1.5 text-sm font-medium text-[#fed7aa] transition-colors hover:bg-[#451a03] disabled:opacity-50" />
         </div>
       )}
 
@@ -230,7 +231,7 @@ export default function Upload() {
         onDrop={onDrop}
         onClick={() => fileRef.current?.click()}
         className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
-          sample ? 'pointer-events-none opacity-40' : ''
+          removable ? 'pointer-events-none opacity-40' : ''
         } ${
           dragOver ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] hover:border-[#3d4158] hover:bg-[#13151f]'
         }`}

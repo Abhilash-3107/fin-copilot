@@ -49,6 +49,26 @@ _WIPE_ORDER = (
 )
 
 
+def _refuse_while_job_running(conn: sqlite3.Connection, action: str) -> None:
+    """409 while a categorization or memory-rebuild job is really running.
+
+    Jobs whose worker died are failed first, so a zombie row can't block a
+    whole-ledger change forever.
+    """
+    from finance_copilot.api.routes.annotations import _reap_stale_jobs
+
+    if _reap_stale_jobs(conn):
+        conn.commit()
+    inflight = conn.execute(
+        "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued','running')"
+    ).fetchone()[0]
+    if inflight:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A categorization or memory rebuild is running. {action} once it finishes.",
+        )
+
+
 @router.get("/backup")
 def backup_database():
     """Download a consistent snapshot of the whole SQLite database.
@@ -138,14 +158,7 @@ def restore_database(file: UploadFile, conn: sqlite3.Connection = Depends(get_db
                 out.write(chunk)
         _validate_backup(upload_path)
 
-        inflight = conn.execute(
-            "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued','running')"
-        ).fetchone()[0]
-        if inflight:
-            raise HTTPException(
-                status_code=409,
-                detail="A categorization or memory rebuild is running. Restore once it finishes.",
-            )
+        _refuse_while_job_running(conn, "Restore")
         key_row = conn.execute("SELECT value FROM app_settings WHERE key = 'llm_api_key'").fetchone()
 
         safety_name = f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db"
@@ -224,14 +237,7 @@ def remove_demo_data(conn: sqlite3.Connection = Depends(get_db)):
     """Remove the sample data and nothing else; anything the user added stays."""
     from finance_copilot.demo_seed import wipe
 
-    inflight = conn.execute(
-        "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued','running')"
-    ).fetchone()[0]
-    if inflight:
-        raise HTTPException(
-            status_code=409,
-            detail="A categorization or memory rebuild is running. Remove the sample data once it finishes.",
-        )
+    _refuse_while_job_running(conn, "Remove the sample data")
     return {"transactions": wipe(conn)}
 
 

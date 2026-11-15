@@ -42,7 +42,7 @@ from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.categories import resolve_category_ids
-from finance_copilot.db.queries.common import dump_string_list
+from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
 
@@ -425,8 +425,19 @@ DEMO_STATEMENTS = "SELECT id FROM statements WHERE id GLOB 'demo_stmt*'"
 DEMO_TRANSACTIONS = f"SELECT id FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})"
 
 
+DEMO_PEOPLE = "SELECT id FROM people WHERE id GLOB 'demo_p[0-9]*'"
+
+
 def has_demo_data(conn) -> bool:
-    return conn.execute(f"SELECT EXISTS ({DEMO_STATEMENTS})").fetchone()[0] == 1
+    """True while anything the seeder wrote is still there: statements, but also
+    the people, groups and rule that outlive their statements when those are
+    deleted one by one, so the way to remove them never disappears early."""
+    return conn.execute(
+        f"""SELECT EXISTS ({DEMO_STATEMENTS})
+                OR EXISTS ({DEMO_PEOPLE})
+                OR EXISTS (SELECT 1 FROM transaction_groups WHERE id GLOB 'demo_grp*')
+                OR EXISTS (SELECT 1 FROM user_rules WHERE id GLOB 'demo_rule*')"""
+    ).fetchone()[0] == 1
 
 
 def wipe(conn) -> int:
@@ -434,6 +445,11 @@ def wipe(conn) -> int:
     transactions went. Rows the user added themselves, even on a ledger that
     mixes the two, are left alone."""
     removed = conn.execute(f"SELECT COUNT(*) FROM ({DEMO_TRANSACTIONS})").fetchone()[0]
+    demo_people = {r[0] for r in conn.execute(DEMO_PEOPLE)}
+    # User groups that hold sample transactions: any that end up empty go too.
+    touched_groups = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT group_id FROM transaction_group_members "
+        f"WHERE transaction_id IN ({DEMO_TRANSACTIONS}) AND group_id NOT GLOB 'demo_grp*'")]
     conn.execute(
         f"DELETE FROM transaction_links WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
         f"OR txn_b IN ({DEMO_TRANSACTIONS})")
@@ -441,6 +457,11 @@ def wipe(conn) -> int:
         f"DELETE FROM transaction_group_members WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
     conn.execute("DELETE FROM transaction_group_members WHERE group_id GLOB 'demo_grp*'")
     conn.execute("DELETE FROM transaction_groups WHERE id GLOB 'demo_grp*'")
+    for group_id in touched_groups:
+        conn.execute(
+            "DELETE FROM transaction_groups WHERE id = ? AND NOT EXISTS "
+            "(SELECT 1 FROM transaction_group_members WHERE group_id = ?)", (group_id, group_id))
+    _untag_people(conn, demo_people)
     conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
     conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
     try:
@@ -452,8 +473,31 @@ def wipe(conn) -> int:
     conn.execute("DELETE FROM statements WHERE id GLOB 'demo_stmt*'")
     conn.execute("DELETE FROM people WHERE id GLOB 'demo_p[0-9]*'")
     conn.execute("DELETE FROM user_rules WHERE id GLOB 'demo_rule*'")
+    # Review feedback and dismissed learned rules are aggregated per category
+    # and counterparty, so they cannot be split into sample and real. With no
+    # real statement left they can only have come from the sample: clear them,
+    # so accuracy and calibration don't keep figures from rows that are gone.
+    # On a mixed ledger they stay, as they are.
+    if not conn.execute("SELECT EXISTS (SELECT 1 FROM statements)").fetchone()[0]:
+        conn.execute("DELETE FROM feedback_stats")
+        conn.execute("DELETE FROM learned_rule_suppressions")
     conn.commit()
     return removed
+
+
+def _untag_people(conn, demo_people: set[str]) -> None:
+    """Drop sample person ids from the people tags of rows that stay (a user's
+    own group member that tagged a sample person), so none dangles."""
+    if not demo_people:
+        return
+    rows = conn.execute(
+        "SELECT group_id, transaction_id, people FROM transaction_group_members "
+        "WHERE people GLOB '*demo_p[0-9]*'").fetchall()
+    for group_id, txn_id, people in rows:
+        kept = [p for p in parse_string_list(people) if p not in demo_people]
+        conn.execute(
+            "UPDATE transaction_group_members SET people = ? WHERE group_id = ? AND transaction_id = ?",
+            (dump_string_list(kept) if kept else None, group_id, txn_id))
 
 
 def seed(conn, today: date) -> dict:

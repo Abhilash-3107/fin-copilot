@@ -10,7 +10,7 @@ const strip = 'flex items-center justify-center gap-3 bg-[#1e1b4b] border-b bord
 // them, not just the UI. On your own install it says the same about the sample
 // ledger and offers the way out.
 export default function DemoBanner() {
-  const { hosted, sample, mixed } = useDemoData()
+  const { hosted, removable, mixed } = useDemoData()
 
   if (hosted) {
     return (
@@ -28,7 +28,7 @@ export default function DemoBanner() {
       </div>
     )
   }
-  if (!sample) return null
+  if (!removable) return null
   return (
     <div className={strip}>
       <Sparkles size={13} className="shrink-0 text-[#818cf8]" />

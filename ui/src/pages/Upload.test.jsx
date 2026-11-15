@@ -16,7 +16,7 @@ vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
   useAnnotationJob: () => jobCtx,
 }))
 
-const { demoCtx } = vi.hoisted(() => ({ demoCtx: { sample: false, mixed: false, hosted: false, refresh: () => {} } }))
+const { demoCtx } = vi.hoisted(() => ({ demoCtx: { sample: false, removable: false, mixed: false, hosted: false, refresh: vi.fn() } }))
 vi.mock('../contexts/DemoDataContext.jsx', () => ({
   useDemoData: () => demoCtx,
 }))
@@ -37,7 +37,7 @@ describe('Upload', () => {
     vi.clearAllMocks()
     jobCtx.job = null
     jobCtx.startAnnotation = vi.fn()
-    Object.assign(demoCtx, { sample: false, mixed: false })
+    Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
     mockApi.get.mockResolvedValue([])
     mockApi.upload.mockResolvedValue({ bank_name: 'kotak', statement_month: '2026-07', warnings: [] })
   })
@@ -126,16 +126,49 @@ describe('Upload', () => {
     expect(link.getAttribute('href')).toBe('#/settings?tab=ai')
   })
 
-  it('tells you to remove sample data before adding a statement', async () => {
-    demoCtx.sample = true
-    renderUpload()
+  it('tells you to remove sample data before adding a statement, and points at the bar', async () => {
+    Object.assign(demoCtx, { sample: true, removable: true })
+    const { container } = renderUpload()
     expect(await screen.findByText(/still has sample data/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Remove sample data' })).toBeInTheDocument()
+    // One remove action per screen: the bar's. The notice only explains.
+    expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
+    expect(container.querySelector('.pointer-events-none')).not.toBeNull()
   })
 
   it('shows no sample-data notice on a ledger without it', async () => {
     renderUpload()
     await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
     expect(screen.queryByText(/still has sample data/)).not.toBeInTheDocument()
+  })
+
+  it('on the hosted demo does not tell you to remove sample data, and leaves the dropzone to the API', async () => {
+    Object.assign(demoCtx, { sample: true, removable: false, hosted: true })
+    const { container } = renderUpload()
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
+    expect(screen.queryByText(/still has sample data/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
+    expect(container.querySelector('.pointer-events-none')).toBeNull()
+  })
+
+  it('refreshes the sample-data status after deleting a statement', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.delete.mockResolvedValue({})
+    const { container } = renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(container.querySelector('svg.lucide-trash2').closest('button'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1'))
+    await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
+  })
+
+  it('refreshes the sample-data status after resetting a statement', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.delete.mockResolvedValue({})
+    const { container } = renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(container.querySelector('svg.lucide-rotate-ccw').closest('button'))
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
+    await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
   })
 })
