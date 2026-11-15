@@ -101,11 +101,21 @@ class TestBankLineMerchants:
 
     def test_migration_clears_stored_bank_line_merchants(self):
         conn = _conn()
-        _labeled(conn, "x", "RAVI KUMAR SHA", "Self Transfers")
+        _labeled(conn, "x", "RAVI KUMAR SHA", "Self Transfers", source="llm")
         conn.execute("UPDATE annotations SET merchant = 'UPI/RAVI KUMAR SHA/120777386275/self'")
         _labeled(conn, "y", "SWIGGY", "Food & Dining", day=2)
         conn.execute("UPDATE annotations SET merchant = 'Swiggy' WHERE transaction_id = 'y'")
         conn.executescript((MIGRATIONS / "030_clear_bank_line_merchants.sql").read_text())
         assert dict(conn.execute("SELECT transaction_id, merchant FROM annotations").fetchall()) == {
             "x": None, "y": "Swiggy",
+        }
+
+    def test_migration_keeps_a_merchant_the_user_typed(self):
+        conn = _conn()
+        for day, (txn_id, source) in enumerate((("m", "manual"), ("i", "imported"), ("u", "user_rule"), ("l", "llm"), ("r", "rag_direct")), 1):
+            _labeled(conn, txn_id, "SOME PAYEE", "Shopping", day=day, source=source)
+            conn.execute("UPDATE annotations SET merchant = 'Foo/Bar/Baz' WHERE transaction_id = ?", (txn_id,))
+        conn.executescript((MIGRATIONS / "030_clear_bank_line_merchants.sql").read_text())
+        assert dict(conn.execute("SELECT transaction_id, merchant FROM annotations").fetchall()) == {
+            "m": "Foo/Bar/Baz", "i": "Foo/Bar/Baz", "u": "Foo/Bar/Baz", "l": None, "r": None,
         }
