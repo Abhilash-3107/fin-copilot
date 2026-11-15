@@ -37,9 +37,36 @@ export function sectionOf(page, heading) {
     .locator('xpath=ancestor::div[.//table or .//ul][1]')
 }
 
-/** Go to a page and wait for the shell to render. */
+/**
+ * What proves a route has rendered, and not the page that was showing before.
+ * A route with a heading names it. Transactions waits for its own button. Teach Me
+ * has neither, so open() waits for the request only that page makes, its queue.
+ */
+const ARRIVED = {
+  '/dashboard': (page) => page.getByRole('heading', { name: 'Your money at a glance' }),
+  '/insights': (page) => page.getByRole('heading', { name: 'Money Map' }),
+  '/people': (page) => page.getByRole('heading', { name: 'People', exact: true }),
+  '/groups': (page) => page.getByRole('heading', { name: 'Groups', exact: true }),
+  '/upload': (page) => page.getByRole('heading', { name: 'Add Statement' }),
+  '/settings': (page) => page.getByRole('heading', { name: 'Settings', exact: true }),
+  '/transactions': (page) => page.getByRole('button', { name: 'Auto-annotate' }),
+  // Teach Me has no fixed text: its empty and finished states are what some journeys judge.
+  '/review': null,
+}
+
+/** Go to a route and wait until that page, not the one before it, is on screen. */
 export async function open(page, route) {
-  await page.goto(`/#${route}`)
+  const key = route.split('?')[0]
+  const arrived = ARRIVED[key]
+  if (arrived === undefined) throw new Error(`open(): no landmark known for ${key}. Add it to ARRIVED in lib/ui.js.`)
+  // Hash navigation inside the page does not reload it, so a route that is
+  // already showing would keep its old data. Reload for a fresh read.
+  const same = new URL(page.url(), 'http://x').hash === `#${route}`
+  const queue = key === '/review' ? page.waitForResponse((r) => r.url().includes('/api/annotations/review-queue')) : null
+  if (same) await page.reload()
+  else await page.goto(`/#${route}`)
+  await queue
+  if (arrived) await expect(arrived(page)).toBeVisible()
   await expect(page.getByRole('main')).toBeVisible()
 }
 
@@ -62,5 +89,20 @@ export async function waitForRows(page) {
   await expect(page.getByRole('row').nth(1)).toBeVisible()
 }
 
-export const PERIOD_WORDS =
-  /all[ -]time|every month|lifetime|since\s+\w+|this month|\b(?:January|February|March|April|June|July|August|September|October|November|December)\b|\bMay\b/i
+const MONTHS = 'January|February|March|April|May|June|July|August|September|October|November|December'
+
+/**
+ * Words that say over what period a figure is counted: "all time", "every
+ * month", "in November" or "November 2026". A bare month name does not count,
+ * because a person called April would satisfy it.
+ */
+export const PERIOD_WORDS = new RegExp(
+  `all[ -]time|every month|lifetime|since\\s+(?:${MONTHS})|this month|\\b(?:in|during|for)\\s+(?:${MONTHS})\\b|\\b(?:${MONTHS})\\s+\\d{4}\\b`,
+  'i',
+)
+
+/** Open Settings on one of its tabs. The tab names match whole, so "Data" is not "Remove sample data". */
+export async function openSettingsTab(page, name) {
+  await open(page, '/settings')
+  await page.getByRole('button', { name, exact: true }).click()
+}

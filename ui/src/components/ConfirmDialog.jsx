@@ -1,12 +1,18 @@
+import { useId } from 'react'
+
 export default function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', onConfirm, onCancel, danger }) {
+  const titleId = useId()
   if (!open) return null
   return (
     <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center" onClick={onCancel}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="bg-[#1a1d27] border border-[#2d3148] rounded-xl w-96 max-w-[90vw] p-6"
         onClick={e => e.stopPropagation()}
       >
-        <h3 className="text-sm font-semibold text-[#e2e8f0] mb-2">{title}</h3>
+        <h3 id={titleId} className="text-sm font-semibold text-[#e2e8f0] mb-2">{title}</h3>
         {description && <p className="text-sm text-[#94a3b8] mb-5">{description}</p>}
         <div className="flex gap-3 justify-end">
           <button

@@ -29,6 +29,13 @@ test.describe('J3 add a statement', () => {
     await row.getByRole('button', { name: 'Categorize' }).click()
     await expect(row).toContainText('Full')
 
+    // The stub, not some other model, did the work.
+    const chats = app.stub.requests.filter((r) => r.path === '/api/chat')
+    expect(chats.length, 'chat calls the model stub received').toBeGreaterThan(0)
+    const [job] = await app.api.get('/annotations/jobs')
+    expect(job.status).toBe('completed')
+    expect(job.result.ai_active, 'the run reports the model as active').toBe(true)
+
     // Whatever the model was not sure about waits for the user.
     const queue = await app.api.get('/annotations/review-queue')
     expect(queue.length, 'rows waiting in the queue').toBeGreaterThan(0)

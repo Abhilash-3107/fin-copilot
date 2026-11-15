@@ -3,13 +3,20 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: './journeys',
   globalSetup: './global-setup.js',
+  globalTeardown: './global-teardown.js',
+  // A committed test.only would silently skip the rest of the suite.
+  forbidOnly: !!process.env.CI,
   // Every test boots its own app instance on its own port, so tests share nothing.
   fullyParallel: true,
   workers: process.env.CI ? 2 : '50%',
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  reporter: [
+    ['list'],
+    ['./hygiene-reporter.js'],
+    ...(process.env.CI ? [['html', { open: 'never' }]] : []),
+  ],
   use: {
     ...devices['Desktop Chrome'],
     viewport: { width: 1440, height: 900 },

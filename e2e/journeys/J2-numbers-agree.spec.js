@@ -6,6 +6,49 @@ import {
   PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, visibleSpend, waitForRows,
 } from '../lib/ui.js'
 
+// A figure that stands alone on its line, as an amount does in a list row.
+// Deltas carry an arrow and notes carry words, so they do not match.
+const BARE_AMOUNT = /^[−-]?₹[\d,]+(\.\d+)?$/
+
+const sum = (numbers) => Math.round(numbers.reduce((a, b) => a + b, 0) * 100) / 100
+
+/** Read one list row as the user sees it: its label and the amount on its own line. */
+async function readRow(item) {
+  const lines = (await item.innerText()).split('\n').map((l) => l.trim()).filter(Boolean)
+  const amount = lines.find((l) => BARE_AMOUNT.test(l))
+  return { label: lines[0].replace(/^[▸▾]\s*/, ''), amount: amount === undefined ? null : firstRupees(amount) }
+}
+
+/** The Money Map breakdown card and its top-level rows, one per category or reconciling line. */
+async function breakdownRows(page) {
+  const card = sectionOf(page, /^Where it went/)
+  await expect(card).toBeVisible()
+  const items = card.locator(':scope > ul > li')
+  await expect(items.first()).toBeVisible()
+  const rows = []
+  for (const item of await items.all()) rows.push({ item, ...(await readRow(item)) })
+  return rows
+}
+
+/** The Money Map recurring card: its header total and its rows in the order shown. */
+async function recurringPanel(page) {
+  const card = sectionOf(page, /Recurring & Subscriptions/)
+  await expect(card).toBeVisible()
+  const header = firstRupees(await card.getByText(/\/mo across/).locator('..').innerText())
+  const rows = []
+  for (const tr of await card.locator('tbody > tr').all()) {
+    const cells = await tr.locator('td').allInnerTexts()
+    // A heading row inside the table ("not in the monthly total", "Stopped") has one cell.
+    rows.push(cells.length === 1 ? { heading: cells[0].trim() } : { amount: firstRupees(cells.at(-1)), text: cells.join(' ') })
+  }
+  // The header counts the monthly charges that are still running: the rows
+  // above the first heading. Everything after a heading is listed for
+  // information only. Where there are no headings, every row is counted.
+  const firstHeading = rows.findIndex((r) => r.heading !== undefined)
+  const counted = rows.slice(0, firstHeading === -1 ? rows.length : firstHeading)
+  return { header, monthlyRows: counted, all: rows.filter((r) => r.heading === undefined) }
+}
+
 test.describe('J2 numbers agree', () => {
   test.beforeEach(async ({ app }) => {
     await app.loadDemo()
@@ -14,7 +57,9 @@ test.describe('J2 numbers agree', () => {
   test('Kept is one figure on the Dashboard headline, the Dashboard tile and Money Map', async ({ page }) => {
     expectedFailure('R1 item 2: the headline is In - Out, the tile and Money Map also subtract Invested')
     await open(page, '/dashboard')
-    const headline = firstRupees(await page.getByText(/you (kept|went over by)/).first().innerText())
+    const sentence = await page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in/).first().innerText()
+    // The headline words a shortfall as a positive amount; the tiles show it as a negative.
+    const headline = /went over by|more than came in/.test(sentence) ? -firstRupees(sentence) : firstRupees(sentence)
     const tile = await figureNear(page, 'Kept')
     await open(page, '/insights')
     const moneyMap = await figureNear(page, 'Kept')
@@ -27,54 +72,59 @@ test.describe('J2 numbers agree', () => {
     await open(page, '/insights')
     const out = await figureNear(page, 'Out')
 
-    const breakdown = sectionOf(page, /^Where it went/)
-    await expect(breakdown).toBeVisible()
-    // A category's amount stands alone on its line. Deltas carry an arrow and
-    // the footnotes carry words, so they do not count.
-    const lines = (await breakdown.innerText()).split('\n').map((l) => l.trim())
-    const amounts = lines.filter((l) => /^[−-]?₹[\d,]+(\.\d+)?$/.test(l)).map(firstRupees)
-    expect(amounts.length, 'category rows found').toBeGreaterThan(3)
+    const rows = await breakdownRows(page)
+    const total = rows.filter((r) => /^total( out)?$/i.test(r.label))
+    expect(total, 'a closing "Total out" row').toHaveLength(1)
+    const parts = rows.filter((r) => !total.includes(r))
+    expect(parts.length, 'category rows found').toBeGreaterThan(3)
+    expect(parts.filter((r) => r.amount === null), 'rows without an amount').toEqual([])
 
-    expect(amounts.reduce((a, b) => a + b, 0)).toBe(out)
+    expect(sum(parts.map((r) => r.amount))).toBe(out)
+    expect(total[0].amount).toBe(out)
   })
 
   test('the recurring header total equals the sum of its rows', async ({ page }) => {
     expectedFailure('R1 item 6: the header counts monthly items only, the rows include one that is not monthly')
     await open(page, '/insights')
-    const panel = sectionOf(page, /Recurring & Subscriptions/)
-    const header = firstRupees(await panel.getByText(/\/mo across/).locator('..').innerText())
+    const { header, monthlyRows } = await recurringPanel(page)
+    expect(monthlyRows.length, 'monthly recurring rows found').toBeGreaterThan(3)
 
-    const rows = panel.getByRole('row').filter({ hasNotText: 'Stopped' })
-    await expect(rows.first()).toBeVisible()
-    const amounts = await rows.getByRole('cell').filter({ hasText: /^\s*₹[\d,]+$/ }).allInnerTexts()
-    expect(amounts.length, 'recurring rows found').toBeGreaterThan(3)
-
-    expect(amounts.map(firstRupees).reduce((a, b) => a + b, 0)).toBe(header)
+    expect(sum(monthlyRows.map((r) => r.amount))).toBe(header)
   })
 
   test('the recurring header total equals what the Dashboard says is committed each month', async ({ page }) => {
     expectedFailure('R1 item 6: Money Map and the Dashboard disagree on the monthly commitment')
     await open(page, '/insights')
-    const moneyMap = firstRupees(
-      await sectionOf(page, /Recurring & Subscriptions/).getByText(/\/mo across/).locator('..').innerText(),
-    )
+    const { header, monthlyRows } = await recurringPanel(page)
     await open(page, '/dashboard')
     const dashboard = await figureNear(page, 'Spoken for each month')
 
-    expect(moneyMap).toBe(dashboard)
+    // One commitment, three places: the Money Map header, its rows, the Dashboard.
+    expect({ dashboard, header, rows: sum(monthlyRows.map((r) => r.amount)) }).toEqual({ dashboard: header, header, rows: header })
   })
 
-  test('the Dashboard uncategorised figure equals the total of the transactions it links to', async ({ page }) => {
-    expectedFailure('R1 item 5: the link opens Teach Me, and the Dashboard shows two different uncategorised totals')
+  test('the Dashboard uncategorised figure equals the Money Map row and the transactions behind it', async ({ page }) => {
+    expectedFailure('R1 item 5: the Dashboard shows two different uncategorised totals and neither matches the list')
     await open(page, '/dashboard')
+    // Where this link goes is not judged here, only the figure it states.
     const item = page.getByRole('link', { name: /no category/i })
     await expect(item).toBeVisible()
-    const claimed = firstRupees(await item.innerText())
+    const dashboard = firstRupees(await item.innerText())
 
-    await item.click()
-    await expect(page, 'the link should open a list of those transactions').toHaveURL(/#\/transactions/)
+    await open(page, '/insights')
+    const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
+    expect(row, 'an Uncategorized row on Money Map').toBeDefined()
+    await row.item.getByRole('button').click()
+    await row.item.getByRole('link', { name: /View transactions/ }).click()
+
+    await expect(page).toHaveURL(/#\/transactions/)
     await waitForRows(page)
-    expect(await visibleSpend(page)).toBe(claimed)
+    const listed = await visibleSpend(page)
+    // The Transactions summary line states money out when the page has one.
+    const summary = page.getByText(/transactions? · ₹[\d,]+ out/)
+    const summaryOut = (await summary.count()) > 0 ? rupeeFigures(await summary.first().innerText())[0] : listed
+
+    expect({ dashboard, moneyMap: row.amount, summaryOut }).toEqual({ dashboard: listed, moneyMap: listed, summaryOut: listed })
   })
 
   test('a category drill-through from Money Map lists rows that sum to the figure clicked', async ({ page }) => {
@@ -92,17 +142,20 @@ test.describe('J2 numbers agree', () => {
   test('Money Map says what each per-person figure counts and over what period', async ({ page }) => {
     expectedFailure('R1 item 9: the people panel shows sent, received and a net with no period')
     await open(page, '/insights')
-    const panel = sectionOf(page, /^Between you and/)
-    await expect(panel).toBeVisible()
+    // Found by what it holds, so a retitled panel is still the panel.
+    const person = page.getByRole('main').getByRole('listitem').filter({ hasText: /sent\s+₹[\d,]+\s*·\s*received\s+₹/ }).first()
+    await expect(person, 'a person row with sent and received figures').toBeVisible()
+    const panel = person.locator('xpath=ancestor::ul[1]/parent::div')
+
     expect(rupeeFigures(await panel.innerText()).length, 'person figures found').toBeGreaterThan(0)
-    await expect(panel).toContainText(PERIOD_WORDS)
+    await expect(panel).toContainText(PERIOD_WORDS, { useInnerText: true })
   })
 
   test('People says what each per-person figure counts and over what period', async ({ page }) => {
     expectedFailure('R1 item 9: Net is all transfers ever, and the page never says so')
     await open(page, '/people')
     await expect(page.getByRole('row').nth(1)).toBeVisible()
-    await expect(page.getByRole('main')).toContainText(PERIOD_WORDS)
+    await expect(page.getByRole('main')).toContainText(PERIOD_WORDS, { useInnerText: true })
   })
 
   test('a group says what its figure is, and does not call gross outflow "net"', async ({ page, app }) => {

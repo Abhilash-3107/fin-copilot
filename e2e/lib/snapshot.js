@@ -1,7 +1,21 @@
 // "Stored facts": everything the user put into the ledger or the app derived
-// once and stored. Taken through the API so it does not depend on the screen.
+// once and stored, read through the API so it does not depend on the screen.
 // J8 compares one before a backup and after a restore. J15 compares one across
-// an upgrade. Figures computed on the fly (totals, deltas, stats) are left out.
+// an upgrade.
+//
+// Rows are kept whole, minus a short deny-list of fields that change on their
+// own. Whole rows mean a new column is covered the day it ships; an allow-list
+// would hide it. Figures computed on the fly (totals, deltas, stats) are not
+// stored facts: derivedFigures() reads those.
+
+/** Fields that move without the user doing anything. */
+export const VOLATILE = [
+  'updated_at', // rewritten whenever a row is edited
+  'annotated_at', // rewritten whenever a row is re-annotated
+  'embedded_count', // the vector store is rebuilt on demand
+  'stats', // per-person totals are computed from transactions
+  'summary', // per-group totals are computed from members
+]
 
 const PAGE = 1000
 
@@ -18,8 +32,22 @@ async function allTransactions(api) {
 
 const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 
-export async function storedFacts(api) {
-  const [statements, transactions, people, groupList, rules, policies, categories, config, llm] =
+function without(value, drop) {
+  if (Array.isArray(value)) return value.map((v) => without(v, drop))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).filter(([k]) => !drop.has(k)).map(([k, v]) => [k, without(v, drop)]))
+  }
+  return value
+}
+
+/**
+ * @param {object} api the app fixture's api helper
+ * @param {{ ignore?: string[] }} [options] extra field names to leave out, for a
+ *   journey where one more field legitimately changes (an upgrade that re-derives it)
+ */
+export async function storedFacts(api, { ignore = [] } = {}) {
+  const drop = new Set([...VOLATILE, ...ignore])
+  const [statements, transactions, people, groupList, rules, policies, categories, config, llm, learnedRules, tidyUp, queue, snoozed] =
     await Promise.all([
       api.get('/statements'),
       allTransactions(api),
@@ -30,49 +58,58 @@ export async function storedFacts(api) {
       api.get('/categories'),
       api.get('/config'),
       api.get('/config/llm'),
+      api.get('/annotations/learned-rules'),
+      api.get('/categories/tidy-up'),
+      api.get('/annotations/review-queue'),
+      api.get('/annotations/review-queue/snoozed-count'),
     ])
+  const groups = await Promise.all(groupList.map(({ id }) => api.get(`/groups/${id}`)))
 
-  const groups = []
-  for (const { id } of groupList) {
-    const g = await api.get(`/groups/${id}`)
-    groups.push({
-      id: g.id,
-      name: g.name,
-      note: g.note,
-      labels: g.labels,
-      members: [...g.members]
-        .map((m) => ({ transaction_id: m.transaction_id, txn_type: m.txn_type, people: m.people }))
-        .sort((a, b) => (a.transaction_id < b.transaction_id ? -1 : 1)),
-    })
-  }
-
-  return {
-    // The vector store is rebuilt on demand, so what is embedded is not a stored fact.
-    statements: statements
-      .map(({ embedded_count, ...rest }) => rest) // eslint-disable-line no-unused-vars
-      .sort(byId),
-    transactions: transactions
-      .map((t) => ({
-        id: t.id,
-        statement_id: t.statement_id,
-        txn_date: t.txn_date,
-        amount: t.amount,
-        debit_credit: t.debit_credit,
-        raw_description: t.raw_description,
-        running_balance: t.running_balance,
-        category: t.category ?? null,
-        subcategory: t.subcategory ?? null,
-        merchant: t.merchant ?? null,
-        tags: t.tags ?? [],
-        source: t.source ?? null,
-        confidence: t.confidence ?? null,
-      }))
-      .sort(byId),
-    people: people.map(({ stats, ...rest }) => rest).sort(byId), // eslint-disable-line no-unused-vars
-    groups: groups.sort(byId),
-    rules: [...rules].sort(byId),
-    policies: [...policies].sort(byId),
-    categories: [...categories].sort(byId),
+  const facts = {
+    statements: statements.sort(byId),
+    transactions: transactions.sort(byId),
+    people: people.sort(byId),
+    groups: groups.map((g) => ({ ...g, members: [...g.members].sort((a, b) => (a.transaction_id < b.transaction_id ? -1 : 1)) })).sort(byId),
+    rules: rules.sort(byId),
+    policies: policies.sort(byId),
+    categories: categories.sort(byId),
+    // What the app learned and what the user dismissed. A dismissed learned
+    // rule or tidy-up suggestion shows up as an absence, so both lists are kept.
+    learnedRules: learnedRules.sort((a, b) => (a.counterparty_key + a.direction < b.counterparty_key + b.direction ? -1 : 1)),
+    tidyUp,
+    // Skipped items drop out of the queue and are counted separately.
+    reviewQueue: queue.map((q) => q.id).sort(),
+    snoozedCount: snoozed.count,
     settings: { config, llm },
   }
+  return without(facts, drop)
+}
+
+/**
+ * The figures the app computes from the stored facts, per month: In, Out,
+ * Invested, Kept, the category breakdown, the recurring total and the people
+ * panel. A later upgrade journey compares these before and after, so a change
+ * in how they are computed shows up as a change here. Fields a build does not
+ * have yet come back as null, so the shape is the same before and after.
+ */
+export async function derivedFigures(api) {
+  const { months } = await api.get('/insights')
+  const figures = {}
+  for (const month of months) {
+    const i = await api.get(`/insights?month=${month}`)
+    const monthly = i.recurring.filter((r) => r.active && r.cadence === 'monthly')
+    figures[month] = {
+      in: i.verdict.money_in,
+      out: i.verdict.money_out,
+      invested: i.verdict.invested,
+      kept: i.verdict.kept,
+      breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
+      breakdownExtras: i.breakdown?.extras ?? null,
+      recurringTotal: i.recurring_summary?.monthly_total ?? monthly.reduce((s, r) => s + r.amount, 0),
+      recurring: i.recurring,
+      people: i.people.items.map(({ id, sent, received, net, count }) => ({ id, sent, received, net, count })),
+      unexplained: i.unexplained,
+    }
+  }
+  return figures
 }

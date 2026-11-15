@@ -1,7 +1,7 @@
 // A deterministic stand-in for the model providers the app talks to.
 //
 // Speaks the Ollama endpoints the app calls (/api/chat, /api/embed, /api/tags,
-// /api/ps, /api/show) and the OpenAI-compatible /v1/chat/completions and
+// /api/ps) and the OpenAI-compatible /v1/chat/completions and
 // /v1/models. Chat answers come from a small keyword table keyed on the
 // transaction description, so every AI path gives the same answer on every run.
 // Embeddings are hashed character trigrams, L2-normalised: the same text gives
@@ -134,9 +134,6 @@ export async function startStubModel() {
     }
     if (req.method === 'GET' && path === '/api/ps') {
       return send({ models: [{ name: CHAT_MODEL }] })
-    }
-    if (req.method === 'POST' && path === '/api/show') {
-      return send({ details: { family: 'stub' }, model_info: {} })
     }
     if (req.method === 'GET' && path === '/v1/models') {
       return send({ data: [{ id: CHAT_MODEL }] })

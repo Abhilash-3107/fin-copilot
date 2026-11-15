@@ -8,9 +8,7 @@ import { categorise, uploadFixture } from '../lib/statement.js'
 test.use({ modelMode: 'none' })
 
 async function openTeachMe(page) {
-  const queueLoaded = page.waitForResponse((r) => r.url().includes('/api/annotations/review-queue'))
   await open(page, '/review')
-  await queueLoaded
   await expect(page.getByText('Getting your review list ready')).toBeHidden()
 }
 
