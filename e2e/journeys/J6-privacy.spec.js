@@ -36,7 +36,7 @@ const CONTENT = {
   '/transactions': (page) => figuresLoaded(page),
   '/people': (page) => figuresLoaded(page),
   '/groups': (page) => figuresLoaded(page),
-  '/review': (page) => expect(page.getByText('My best guess').first()).toBeVisible(),
+  '/review': (page) => expect(page.getByRole('combobox', { name: 'Another category' })).toBeVisible(),
   // A statement row, under the table's header row.
   '/upload': (page) => expect(page.getByRole('row').nth(1)).toBeVisible(),
 }
