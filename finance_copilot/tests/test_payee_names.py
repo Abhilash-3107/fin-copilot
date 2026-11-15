@@ -3,6 +3,7 @@ parsed counterparty > raw line), the two ways to rename, and every API that
 returns the resolved name."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.insights import summarize_insights
+from finance_copilot.db.queries.payee import clean_note
 from finance_copilot.models.annotation import Annotation
 from finance_copilot.parsers.description import channel_of, parse_description
 from finance_copilot.pipeline.counterparty import normalize_identity
@@ -95,16 +97,37 @@ class TestResolutionOrder:
         txn = add_txn(conn, "SOME BANK LINE 123", annotate=False)
         assert get_txn(client, txn)["payee"] == "SOME BANK LINE 123"
 
-    def test_unrecognised_upi_shape_falls_back_to_the_raw_line(self, conn, client):
-        raw = "UPI/SOMEONE/NOREFHERE"
-        txn = add_txn(conn, raw, annotate=False)
-        assert get_txn(client, txn)["payee"] == raw
+    def test_unrecognised_upi_shape_falls_back_to_the_line_without_its_channel(self, conn, client):
+        txn = add_txn(conn, "UPI/SOMEONE/NOREFHERE", annotate=False)
+        row = get_txn(client, txn)
+        assert row["payee"] == "SOMEONE/NOREFHERE"
+        assert row["channel"] == "UPI"
 
-    def test_parsed_counterparty_is_tidied(self, conn, client):
+    @pytest.mark.parametrize("raw, fallback, channel", [
+        ("POS/GLENS BAKEHOUSE 123/4567", "GLENS BAKEHOUSE 123/4567", "Card"),
+        ("NEFT/HDFC CREDIT CARD PAYMENT", "HDFC CREDIT CARD PAYMENT", "NEFT"),
+        ("IMPS/P2P/TRANSFER/TO OWN SBI SAVINGS", "P2P/TRANSFER/TO OWN SBI SAVINGS", "IMPS"),
+        # No separator after the first word: the line is all there is, so it stays whole.
+        ("ATM WITHDRAWAL HDFC INDIRANAGAR", "ATM WITHDRAWAL HDFC INDIRANAGAR", "ATM"),
+        ("FLIPKART INTERNET PVT LTD", "FLIPKART INTERNET PVT LTD", None),
+    ])
+    def test_the_fallback_line_does_not_repeat_the_channel(self, conn, client, raw, fallback, channel):
+        row = get_txn(client, add_txn(conn, raw, annotate=False))
+        assert (row["payee"], row["channel"]) == (fallback, channel)
+
+    def test_parsed_counterparty_is_shown_as_printed(self, conn, client):
         chai = add_txn(conn, CHAI, annotate=False)
         vpa = add_txn(conn, AMIT, annotate=False)
-        assert get_txn(client, chai)["payee"] == "Chai Wala Corner"
+        assert get_txn(client, chai)["payee"] == "CHAI WALA CORNER"
         assert get_txn(client, vpa)["payee"] == "amit.landlord@oksbi"
+
+    @pytest.mark.parametrize("raw, printed", [
+        ("UPI/IRCTC/501234567890/ticket", "IRCTC"),
+        ("UPI/DOMINO'S/501234567890/pizza", "DOMINO'S"),
+        ("UPI/Chai Wala/501234567890/tea", "Chai Wala"),
+    ])
+    def test_a_printed_payee_is_never_title_cased(self, conn, client, raw, printed):
+        assert get_txn(client, add_txn(conn, raw, annotate=False))["payee"] == printed
 
     def test_annotation_merchant_beats_the_parsed_name(self, conn, client):
         txn = add_txn(conn, AMIT, merchant="Amit Kumar")
@@ -112,7 +135,7 @@ class TestResolutionOrder:
 
     def test_blank_merchant_is_ignored(self, conn, client):
         txn = add_txn(conn, CHAI, merchant="  ")
-        assert get_txn(client, txn)["payee"] == "Chai Wala Corner"
+        assert get_txn(client, txn)["payee"] == "CHAI WALA CORNER"
 
     def test_payee_name_beats_the_merchant(self, conn, client):
         txn = add_txn(conn, AMIT, merchant="Amit Kumar")
@@ -149,15 +172,16 @@ class TestRenamePayee:
         rows = listed(client)
         assert rows[past]["payee"] == "Rent"
         assert rows[future]["payee"] == "Rent"
-        assert rows[other]["payee"] == "Chai Wala Corner"
+        assert rows[other]["payee"] == "CHAI WALA CORNER"
 
-    def test_also_clears_the_payment_s_own_name_so_this_payment_shows_it(self, conn, client):
+    def test_never_clears_the_payment_s_own_name(self, conn, client):
         txn = add_txn(conn, AMIT)
         client.put(f"/api/transactions/{txn}/name", json={"name": "Odd one"})
         client.put(f"/api/transactions/{txn}/payee-name", json={"name": "Rent"})
         row = get_txn(client, txn)
-        assert row["display_name"] is None
-        assert row["payee"] == "Rent"
+        assert row["display_name"] == "Odd one"
+        assert row["payee"] == "Odd one"
+        assert row["payee_all"] == "Rent"
 
     def test_a_payment_with_another_own_name_keeps_it(self, conn, client):
         first = add_txn(conn, AMIT, date="2026-01-01")
@@ -228,6 +252,130 @@ class TestRenamePayment:
         assert row["payee"] == "Rent"
 
 
+class TestOnePayeeOneName:
+    """Rule-sorted payments have no merchant of their own; they still read as
+    the payee every other payment to it reads as, in the Ledger and in insights."""
+
+    BESCOM = "UPI/BESCOM/501234567890/electricity"
+
+    def _bill(self, conn, n, *, merchant, month=None):
+        return add_txn(conn, self.BESCOM.replace("501234567890", f"5000000000{n}"),
+                       date=f"2026-0{n}-05", amount=900, merchant=merchant, category="Bills")
+
+    def test_a_payment_with_no_merchant_reads_as_its_payee(self, conn, client):
+        sorted_by_llm = self._bill(conn, 1, merchant="Bescom")
+        by_rule = self._bill(conn, 2, merchant=None)
+        rows = listed(client)
+        assert rows[sorted_by_llm]["payee"] == rows[by_rule]["payee"] == "Bescom"
+        assert rows[by_rule]["payee_all"] == "Bescom"
+        assert get_txn(client, by_rule)["payee"] == "Bescom"
+
+    def test_the_most_common_merchant_names_the_payee(self, conn, client):
+        self._bill(conn, 1, merchant="BESCOM")
+        self._bill(conn, 2, merchant="Bescom")
+        self._bill(conn, 3, merchant="Bescom")
+        by_rule = self._bill(conn, 4, merchant=None)
+        assert listed(client)[by_rule]["payee"] == "Bescom"
+
+    def test_a_tie_goes_to_the_same_name_every_time(self, conn, client):
+        self._bill(conn, 1, merchant="Bescom")
+        self._bill(conn, 2, merchant="BESCOM")
+        by_rule = self._bill(conn, 3, merchant=None)
+        assert listed(client)[by_rule]["payee"] == "BESCOM"
+
+    def test_this_payment_s_own_merchant_still_beats_the_payee_level_one(self, conn, client):
+        self._bill(conn, 1, merchant="Bescom")
+        odd = self._bill(conn, 2, merchant="Electricity deposit")
+        assert listed(client)[odd]["payee"] == "Electricity deposit"
+
+    def test_a_payee_name_beats_the_payee_level_merchant(self, conn, client):
+        a = self._bill(conn, 1, merchant="Bescom")
+        client.put(f"/api/transactions/{a}/payee-name", json={"name": "Power"})
+        by_rule = self._bill(conn, 2, merchant=None)
+        assert listed(client)[by_rule]["payee"] == "Power"
+
+    def test_insights_use_the_same_name_with_no_title_casing_of_their_own(self, conn):
+        for n in (1, 2, 3):
+            self._bill(conn, n, merchant="Bescom" if n == 1 else None)
+        irctc = [add_txn(conn, f"UPI/IRCTC/50000000000{n}/ticket", date=f"2026-0{n}-09", amount=500,
+                         category="Travel", annotate=False) for n in (1, 2, 3)]
+        assert irctc
+        insights = summarize_insights(conn, "2026-03")
+        assert {r["name"] for r in insights["recurring"]} == {"Bescom", "IRCTC"}
+        assert {m["name"] for m in insights["merchants"]} == {"Bescom", "IRCTC"}
+
+    def test_a_row_shows_the_same_name_in_the_ledger_and_insights(self, conn, client):
+        for n in (1, 2, 3):
+            self._bill(conn, n, merchant="Bescom" if n == 2 else None)
+        ledger = {r["payee_all"] for r in listed(client).values()}
+        insights = summarize_insights(conn, "2026-03")
+        assert ledger == {"Bescom"} == {r["name"] for r in insights["recurring"]} == {m["name"] for m in insights["merchants"]}
+
+
+class TestNote:
+    """The note line shows what the person typed, not the bank's or app's boilerplate.
+    Display only: the stored note, search and embeddings are unchanged."""
+
+    @pytest.mark.parametrize("note, shown", [
+        ("Swiggy dinner", "Swiggy dinner"),
+        ("chai and samosa", "chai and samosa"),
+        ("Monthly SIP", "Monthly SIP"),
+        ("to office", "to office"),
+        ("running shoes", "running shoes"),
+        ("food order", "food order"),
+        ("self", "self"),
+        ("Salary", "Salary"),
+        ("Refund", "Refund"),
+        # Notes as the demo ledger's statements print them.
+        ("PAYTM QR/chai and samosa", "chai and samosa"),
+        ("GROCERIES/Weekly groceries", "Weekly groceries"),
+        ("ORDER/Zepto milk eggs bread", "Zepto milk eggs bread"),
+        ("SIP/PPFAS FLEXI CAP/Monthly SIP", "Monthly SIP"),
+        ("AUTOPAY/Jio monthly plan", "Jio monthly plan"),
+        ("RIDE/BANGALORE/to HSR Layout", "to HSR Layout"),
+        ("YBL/Haircut and grooming", "Haircut and grooming"),
+        ("BROADBAND", None),
+        ("AUTOPAY", None),
+        ("BROADBAND", None),
+        ("UPI Collect Request", None),
+        ("upi collect/AUTOPAY", None),
+        ("Pay to Merchant", None),
+        ("PaymentToZomato", None),
+        ("UPI Transaction", None),
+        ("Pay via Razorpay", None),
+        ("PayViaRazorpay", None),
+        ("Oid32479003 3", None),
+        ("Oid3192692657@A", None),
+        ("rent/UTIB0001234", "rent"),
+        ("Oid1234/dinner with friends/ABC123", "dinner with friends"),
+        ("", None),
+        (None, None),
+    ])
+    def test_clean_note(self, note, shown):
+        assert clean_note(note) == shown
+
+    def test_a_row_shows_the_cleaned_note_and_search_still_finds_the_stored_one(self, conn, client):
+        boiler = add_txn(conn, "UPI/ZOMATO/501234567890/AUTOPAY", annotate=False)
+        typed = add_txn(conn, "UPI/ZOMATO/501234567891/Swiggy dinner", annotate=False)
+        rows = listed(client)
+        assert rows[boiler]["note"] is None
+        assert rows[typed]["note"] == "Swiggy dinner"
+        assert set(listed(client, "&q=autopay")) == {boiler}
+        stored = json.loads(conn.execute("SELECT upi_meta FROM transactions WHERE id = ?", (boiler,)).fetchone()[0])
+        assert stored["note"] == "AUTOPAY"
+
+    def test_no_note_in_the_parser_fixtures_comes_out_as_boilerplate(self):
+        fixtures = Path(__file__).parent / "fixtures" / "description_shapes.jsonl"
+        noted = [json.loads(line)["note"] for line in fixtures.read_text().splitlines() if line.strip()]
+        shown = [clean_note(n) for n in noted if n]
+        assert shown, "the fixtures hold notes"
+        for note in shown:
+            if note is None:
+                continue
+            assert not note.lower().startswith(("oid", "upi collect", "pay to ", "paymentto", "upi transact"))
+            assert not all(part.strip().isupper() or part.strip().isdigit() for part in note.split("/"))
+
+
 class TestRowFields:
     def test_note_and_channel(self, conn, client):
         upi = add_txn(conn, AMIT, annotate=False)
@@ -277,13 +425,6 @@ class TestSearch:
         client.put(f"/api/transactions/{a}/name", json={"name": "Deposit"})
         assert set(listed(client, "&q=deposit")) == {a}
 
-    def test_drill_filter_by_payee_name(self, conn, client):
-        a = add_txn(conn, AMIT, date="2026-01-01")
-        b = add_txn(conn, AMIT.replace("501234567890", "509999999999"), date="2026-02-01")
-        add_txn(conn, CHAI)
-        client.put(f"/api/transactions/{a}/payee-name", json={"name": "Rent"})
-        assert set(listed(client, "&merchant=Rent")) == {a, b}
-
 
 class TestInsightsKeepTheirIdentity:
     def _recurring_month(self, conn, month, amount=15000):
@@ -321,6 +462,75 @@ class TestInsightsKeepTheirIdentity:
         recurring = summarize_insights(conn, "2026-03")["recurring"]
         assert [r["name"] for r in recurring] == ["Amit Kumar"]
         assert len(recurring) == 1
+
+
+class TestDrillByKey:
+    """A row on the Money Map drills by the key it was grouped on, never by a
+    name: renaming one payment to the same word must not pull it in."""
+
+    def _setup(self, conn, client):
+        rent = [add_txn(conn, AMIT.replace("501234567890", f"50000000000{i}"), date=f"2026-0{i}-01",
+                        amount=15000, merchant="Amit Kumar", category="Housing") for i in (1, 2, 3)]
+        swiggy = [add_txn(conn, f"UPI/SWIGGY/50000000010{i}/dinner", date=f"2026-0{i}-09", amount=300 + i,
+                          merchant="Swiggy", category="Food & Dining") for i in (1, 2, 3)]
+        client.put(f"/api/transactions/{rent[0]}/payee-name", json={"name": "Rent"})
+        client.put(f"/api/transactions/{swiggy[0]}/name", json={"name": "Rent"})
+        return rent, swiggy
+
+    def test_the_recurring_row_carries_its_key_and_drills_to_exactly_its_payments(self, conn, client):
+        rent, swiggy = self._setup(conn, client)
+        recurring = summarize_insights(conn, "2026-03")["recurring"]
+        row = next(r for r in recurring if r["name"] == "Rent")
+        assert row["keys"] == [conn.execute(
+            "SELECT counterparty_key FROM transactions WHERE id = ?", (rent[0],)).fetchone()[0]]
+        drilled = listed(client, "".join(f"&payee_key={k}" for k in row["keys"]))
+        assert set(drilled) == set(rent)
+
+    def test_the_merchant_row_carries_its_keys_and_the_summary_agrees(self, conn, client):
+        rent, swiggy = self._setup(conn, client)
+        merchants = summarize_insights(conn, "2026-03")["merchants"]
+        row = next(m for m in merchants if m["name"] == "Rent")
+        query = "".join(f"&payee_key={k}" for k in row["keys"])
+        assert set(listed(client, query)) == set(rent)
+        summary = client.get(f"/api/transactions/summary?{query[1:]}").json()
+        assert summary["count"] == 3
+
+    def test_the_key_matches_without_regard_to_case(self, conn, client):
+        rent, _ = self._setup(conn, client)
+        assert set(listed(client, "&payee_key=amit.landlord@oksbi")) == set(rent)
+
+    def test_merchant_is_the_exact_annotated_merchant_again(self, conn, client):
+        rent, swiggy = self._setup(conn, client)
+        assert set(listed(client, "&merchant=Swiggy")) == set(swiggy)
+        # A name the user gave is not a merchant: it matches nothing here.
+        assert listed(client, "&merchant=Rent") == {}
+
+
+class TestInsightsLabelAtThePayeeLevel:
+    def _subscription(self, conn, month, key="NETFLIX"):
+        return add_txn(conn, f"UPI/{key}/50{month.replace('-', '')}111/plan", date=f"{month}-05",
+                       amount=649, merchant="Netflix", category="Subscriptions")
+
+    def test_renaming_one_of_two_payments_does_not_relabel_the_recurring_row(self, conn, client):
+        a, b = (self._subscription(conn, m) for m in ("2026-02", "2026-03"))
+        before = summarize_insights(conn, "2026-03")["recurring"]
+        client.put(f"/api/transactions/{b}/name", json={"name": "Film night"})
+        after = summarize_insights(conn, "2026-03")["recurring"]
+        assert [r["name"] for r in before] == [r["name"] for r in after] == ["Netflix"]
+        assert after[0]["keys"] == before[0]["keys"]
+
+    def test_renaming_one_of_two_payments_does_not_relabel_the_merchant_row(self, conn, client):
+        a, b = (self._subscription(conn, m) for m in ("2026-02", "2026-03"))
+        client.put(f"/api/transactions/{b}/name", json={"name": "Film night"})
+        rows = summarize_insights(conn, "2026-03")["merchants"]
+        assert [m["name"] for m in rows] == ["Netflix"]
+
+    def test_renaming_the_payee_relabels_the_row_and_its_drill_still_lists_every_payment(self, conn, client):
+        ids = [self._subscription(conn, m) for m in ("2026-02", "2026-03")]
+        client.put(f"/api/transactions/{ids[0]}/payee-name", json={"name": "Movies"})
+        row = summarize_insights(conn, "2026-03")["recurring"][0]
+        assert row["name"] == "Movies"
+        assert set(listed(client, f"&payee_key={row['keys'][0]}")) == set(ids)
 
 
 class TestOtherApis:

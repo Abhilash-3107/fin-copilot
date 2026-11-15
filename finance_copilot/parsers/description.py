@@ -186,3 +186,12 @@ def channel_of(raw: str | None) -> str | None:
         return "UPI reversal"
     words = (raw or "").replace("/", " ").split(None, 1)
     return _OTHER_CHANNELS.get(words[0].upper()) if words else None
+
+
+def without_channel(raw: str) -> str:
+    """The line without its leading channel word ("POS/", "NEFT/", "UPI/"), for
+    a row that already says the channel next to it. A line with nothing after
+    the first word, or whose first word is no channel, is returned whole."""
+    head, sep, rest = raw.partition("/")
+    known = head.strip().upper() in _OTHER_CHANNELS or head.strip().upper() in _RAIL_HEADS
+    return rest.strip() if sep and known and rest.strip() else raw

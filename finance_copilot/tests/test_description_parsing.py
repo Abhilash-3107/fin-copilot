@@ -267,6 +267,26 @@ class TestRederive:
         keys = [r[0] for r in conn.execute("SELECT counterparty_key FROM learned_rule_suppressions")]
         assert keys == ["OBEROIFC TUCKSH"]
 
+    def test_payee_name_follows_moved_key(self):
+        conn = _conn()
+        self._seed_stale(conn)
+        conn.execute("INSERT INTO payee_names (counterparty_key, name) VALUES ('OBEROIFC TUCKS', 'Tea')")
+        rederive_descriptions(conn)
+        assert [tuple(r) for r in conn.execute("SELECT counterparty_key, name FROM payee_names")] == [
+            ("OBEROIFC TUCKSH", "Tea")
+        ]
+
+    def test_payee_name_stays_when_a_key_splits(self):
+        conn = _conn()
+        conn.executemany(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, "
+            "counterparty_key) VALUES (?, 's1', '2026-06-01', 1, 'debit', ?, 'MERGED')",
+            [("x", "UPI/FIRST PAYEE/118364694521/UPI"), ("y", "UPI/SECOND PAYEE/118364694522/UPI")],
+        )
+        conn.execute("INSERT INTO payee_names (counterparty_key, name) VALUES ('MERGED', 'Both')")
+        rederive_descriptions(conn)
+        assert [tuple(r) for r in conn.execute("SELECT counterparty_key, name FROM payee_names")] == [("MERGED", "Both")]
+
     def test_suppression_stays_when_a_key_splits(self):
         conn = _conn()
         conn.executemany(

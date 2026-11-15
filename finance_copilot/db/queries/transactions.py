@@ -136,6 +136,7 @@ def _filter_conditions(
     categories: list[str] | None,
     sources: list[str] | None,
     merchant: str | None,
+    payee_keys: list[str] | None,
     person_token: str | None,
     min_amount: float | None,
     max_amount: float | None,
@@ -191,13 +192,15 @@ def _filter_conditions(
         params += sources
 
     if merchant:
-        # A payee's name, as a row on the Money Map shows it: the user's name
-        # for the payment or its payee, the sorted merchant, or the bank's key.
-        conditions.append(
-            "(a.merchant = ? OR t.display_name = ? OR UPPER(t.counterparty_key) = UPPER(?) "
-            "OR t.counterparty_key IN (SELECT counterparty_key FROM payee_names WHERE name = ?))"
-        )
-        params += [merchant, merchant, merchant, merchant]
+        conditions.append("a.merchant = ?")
+        params.append(merchant)
+
+    if payee_keys:
+        # The key a Money Map row was grouped on (insights.py: counterparty
+        # key, else the merchant), so a drill lists exactly the payments the
+        # row adds up, whatever anyone has since called them.
+        conditions.append(f"UPPER(COALESCE(t.counterparty_key, a.merchant)) IN ({','.join('?' * len(payee_keys))})")
+        params += [k.upper() for k in payee_keys]
 
     if person_token:
         # Person→transaction matching is token-based (VPA-exact or name-prefix on
@@ -242,6 +245,7 @@ def list_transactions(
     categories: list[str] | None = None,
     sources: list[str] | None = None,
     merchant: str | None = None,
+    payee_keys: list[str] | None = None,
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
@@ -255,8 +259,9 @@ def list_transactions(
     include_annotation joins each row's annotation (same shape as the per-id
     endpoint: annotation_id, category, ...) so list pages need one round-trip.
     q is a case-insensitive substring match over the raw description, the
-    annotated merchant, the UPI note and the names the user gave. sources/merchant filter on annotation
-    fields, so they only ever match annotated rows; the category filter does
+    annotated merchant, the UPI note and the names the user gave. payee_keys
+    are the grouping keys insights rows carry (counterparty key, else merchant).
+    sources/merchant filter on annotation fields, so they only ever match annotated rows; the category filter does
     too, except that Uncategorized also matches rows with no annotation.
     after/limit give keyset pagination: pass the last row's id to get the next
     page in (txn_date, id) order.
@@ -274,9 +279,9 @@ def list_transactions(
     conditions, params = _filter_conditions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
-        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
     )
-    needs_annotation_join = unannotated or q or categories or sources or merchant
+    needs_annotation_join = unannotated or q or categories or sources or merchant or payee_keys
     if needs_annotation_join and not include_annotation:
         query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
 
@@ -317,6 +322,7 @@ def summarize_transactions(
     categories: list[str] | None = None,
     sources: list[str] | None = None,
     merchant: str | None = None,
+    payee_keys: list[str] | None = None,
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
@@ -326,7 +332,7 @@ def summarize_transactions(
     conditions, params = _filter_conditions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
-        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
     )
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     row = conn.execute(

@@ -324,7 +324,7 @@ class TestMerchants:
             seed_txn(conn, f"2026-01-{d:02d}", amt, "debit", category="Food & Dining",
                      merchant="Zomato", counterparty="ZOMATO")
         s = summarize_insights(conn, "2026-01")
-        assert s["merchants"] == [{"name": "Zomato", "total": 1500, "count": 3, "avg": 500}]
+        assert s["merchants"] == [{"name": "Zomato", "keys": ["ZOMATO"], "total": 1500, "count": 3, "avg": 500}]
 
 
 class TestBalanceAndShape:

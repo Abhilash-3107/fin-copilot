@@ -42,7 +42,8 @@ def _filters(
     q: str | None = Query(None, description="substring match on description, merchant, UPI note, and the names the user gave"),
     category: str | None = Query(None, description="comma-separated annotation categories; Uncategorized also matches unannotated rows"),
     source: str | None = Query(None, description="comma-separated annotation sources"),
-    merchant: str | None = Query(None, description="exact payee name: annotated merchant, or a name the user gave"),
+    merchant: str | None = Query(None, description="exact annotated merchant"),
+    payee_key: list[str] | None = Query(None, description="payee grouping key (repeat for several), as Money Map rows carry them"),
     person: str | None = Query(None, description="match-token of a person; filters to their matched transactions"),
     min_amount: float | None = Query(None, description="minimum transaction amount"),
     max_amount: float | None = Query(None, description="maximum transaction amount"),
@@ -56,6 +57,7 @@ def _filters(
         "categories": _split_csv(category),
         "sources": _split_csv(source),
         "merchant": merchant,
+        "payee_keys": payee_key,
         "person_token": person,
         "min_amount": min_amount,
         "max_amount": max_amount,
@@ -225,13 +227,12 @@ def rename_payee(
 ):
     """Name every payment to this payment's payee, past and future.
 
-    This payment's own name, if it has one, is dropped so it shows the new
-    name too: the user asked for every payment to be called this.
+    A payment's own name, this one's included, keeps winning: the payee name
+    never clears a name the user gave one payment.
     """
     row = _payment_or_404(conn, transaction_id)
     if row["counterparty_key"] is None:
         raise HTTPException(status_code=409, detail="This payment has no payee to rename.")
     set_payee_name(conn, row["counterparty_key"], body.name)
-    set_payment_name(conn, transaction_id, None)
     conn.commit()
     return get_transaction(transaction_id, conn)

@@ -206,6 +206,14 @@ class Settings(BaseSettings):
         "UPI", "NEFT", "IMPS", "RTGS", "NA", "NO REMARKS", "N/A", "NONE", "-",
     ]
 
+    # Note segments that are the payment app's text, not the person's: dropped,
+    # by prefix and without regard to case, from the note a row shows (the
+    # stored note, search and embeddings keep them). All-capitals and numeric
+    # segments are dropped too, by pattern.
+    upi_note_app_texts: list[str] = [
+        "upi collect", "pay to ", "paymentto", "upi transact", "pay via razorpa", "payviarazorpay", "oid",
+    ]
+
     model_config = {"env_file": dotenv_file(), "extra": "ignore"}
 
     @model_validator(mode="after")

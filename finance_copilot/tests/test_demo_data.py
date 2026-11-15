@@ -360,6 +360,30 @@ class TestWipeLeavesNothingDerivedFromTheSample:
         assert conn.execute("SELECT COUNT(*) FROM learned_rule_suppressions").fetchone()[0] == 0
         assert get_calibrated_dampening(conn, source, category) == untouched
 
+    def test_payee_names_go_with_the_sample(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        key = conn.execute(
+            "SELECT counterparty_key FROM transactions WHERE counterparty_key IS NOT NULL LIMIT 1").fetchone()[0]
+        conn.execute("INSERT INTO payee_names (counterparty_key, name) VALUES (?, 'Mine')", (key,))
+        conn.commit()
+        client.delete("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM payee_names").fetchone()[0] == 0
+
+    def test_a_mixed_ledger_keeps_names_that_still_have_payments_and_drops_the_rest(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        _add_real_statement(conn)
+        conn.execute("UPDATE transactions SET counterparty_key = 'CHAI' WHERE id = 'real_t1'")
+        sample_key = conn.execute(
+            "SELECT counterparty_key FROM transactions WHERE id LIKE 'demo_%' AND counterparty_key IS NOT NULL "
+            "AND counterparty_key != 'CHAI' LIMIT 1").fetchone()[0]
+        conn.execute("INSERT INTO payee_names (counterparty_key, name) VALUES ('CHAI', 'Tea')")
+        conn.execute("INSERT INTO payee_names (counterparty_key, name) VALUES (?, 'Sample only')", (sample_key,))
+        conn.commit()
+        client.delete("/api/data/demo")
+        assert [tuple(r) for r in conn.execute("SELECT counterparty_key, name FROM payee_names")] == [("CHAI", "Tea")]
+
     def test_a_mixed_ledger_keeps_its_aggregated_feedback(self, client_conn):
         client, conn = client_conn
         client.post("/api/data/demo")
