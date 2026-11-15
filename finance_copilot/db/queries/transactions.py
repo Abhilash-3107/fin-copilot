@@ -155,8 +155,12 @@ def _filter_conditions(
             "LOWER(t.raw_description) LIKE ? ESCAPE '\\'",
             "LOWER(a.merchant) LIKE ? ESCAPE '\\'",
             "(json_valid(t.upi_meta) AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')",
+            # The names the user gave: this payment's own, or its payee's.
+            "LOWER(t.display_name) LIKE ? ESCAPE '\\'",
+            "t.counterparty_key IN (SELECT counterparty_key FROM payee_names "
+            "WHERE LOWER(name) LIKE ? ESCAPE '\\')",
         ]
-        params += [pattern, pattern, pattern]
+        params += [pattern] * 5
         # A numeric query also matches on amount (exact or, for a whole-rupee
         # query, the rupee part), so "1200" finds the ₹1,200 transaction.
         amount = _parse_amount_query(q)
@@ -187,8 +191,13 @@ def _filter_conditions(
         params += sources
 
     if merchant:
-        conditions.append("a.merchant = ?")
-        params.append(merchant)
+        # A payee's name, as a row on the Money Map shows it: the user's name
+        # for the payment or its payee, the sorted merchant, or the bank's key.
+        conditions.append(
+            "(a.merchant = ? OR t.display_name = ? OR UPPER(t.counterparty_key) = UPPER(?) "
+            "OR t.counterparty_key IN (SELECT counterparty_key FROM payee_names WHERE name = ?))"
+        )
+        params += [merchant, merchant, merchant, merchant]
 
     if person_token:
         # Person→transaction matching is token-based (VPA-exact or name-prefix on
@@ -246,7 +255,7 @@ def list_transactions(
     include_annotation joins each row's annotation (same shape as the per-id
     endpoint: annotation_id, category, ...) so list pages need one round-trip.
     q is a case-insensitive substring match over the raw description, the
-    annotated merchant, and the UPI note. sources/merchant filter on annotation
+    annotated merchant, the UPI note and the names the user gave. sources/merchant filter on annotation
     fields, so they only ever match annotated rows; the category filter does
     too, except that Uncategorized also matches rows with no annotation.
     after/limit give keyset pagination: pass the last row's id to get the next

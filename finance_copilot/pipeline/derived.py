@@ -17,7 +17,11 @@ from collections import Counter
 from finance_copilot.config import settings
 from finance_copilot.parsers.description import DESCRIPTION_PARSER_VERSION, parse_description
 from finance_copilot.parsers.upi import upi_meta_json
-from finance_copilot.pipeline.counterparty import canonical_keys, identity_from_parsed
+from finance_copilot.pipeline.counterparty import (
+    canonical_keys,
+    identity_from_parsed,
+    move_payee_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +31,8 @@ PARSER_VERSION_KEY = "description_parser_version"
 def rederive_descriptions(conn: sqlite3.Connection) -> dict:
     """Recompute upi_meta and canonical counterparty_key for every transaction.
 
-    Learned-rule suppressions follow a key only when all of its rows moved to
-    one new key; a key that split keeps its suppression where it was. Caller
+    Learned-rule suppressions and payee names follow a key only when all of its
+    rows moved to one new key; a key that split keeps them where they were. Caller
     commits.
     """
     rows = conn.execute("SELECT id, raw_description, upi_meta, counterparty_key FROM transactions").fetchall()
@@ -56,6 +60,7 @@ def rederive_descriptions(conn: sqlite3.Connection) -> dict:
                 "UPDATE OR IGNORE learned_rule_suppressions SET counterparty_key = ? WHERE counterparty_key = ?",
                 (new_key, old_key),
             )
+            move_payee_name(conn, old_key, new_key)
     return {
         "rows": len(rows),
         "updated": updated,

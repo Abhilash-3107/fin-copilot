@@ -1,4 +1,4 @@
-"""Transaction routes: list with filters, get by id with optional annotation."""
+"""Transaction routes: list with filters, get by id with optional annotation, rename."""
 from __future__ import annotations
 
 import csv
@@ -8,10 +8,17 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.app_settings import get_dev_mode
 from finance_copilot.db.queries.common import parse_string_list
+from finance_copilot.db.queries.payee import (
+    MAX_NAME_LENGTH,
+    set_payee_name,
+    set_payment_name,
+    with_payee,
+)
 from finance_copilot.db.queries.transactions import (
     list_transaction_facets,
     list_transactions,
@@ -32,10 +39,10 @@ def _filters(
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
-    q: str | None = Query(None, description="substring match on description, merchant, UPI note"),
+    q: str | None = Query(None, description="substring match on description, merchant, UPI note, and the names the user gave"),
     category: str | None = Query(None, description="comma-separated annotation categories; Uncategorized also matches unannotated rows"),
     source: str | None = Query(None, description="comma-separated annotation sources"),
-    merchant: str | None = Query(None, description="exact annotated merchant"),
+    merchant: str | None = Query(None, description="exact payee name: annotated merchant, or a name the user gave"),
     person: str | None = Query(None, description="match-token of a person; filters to their matched transactions"),
     min_amount: float | None = Query(None, description="minimum transaction amount"),
     max_amount: float | None = Query(None, description="maximum transaction amount"),
@@ -77,7 +84,7 @@ def get_transactions(
     if include == "annotation":
         for row in rows:
             row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
-    return rows
+    return with_payee(conn, rows)
 
 
 @router.get("/summary")
@@ -103,7 +110,7 @@ def get_transaction_facets(
 _EXPORT_COLUMNS = [
     "id", "txn_date", "amount", "debit_credit", "raw_description",
     "running_balance", "category", "subcategory", "merchant", "tags",
-    "confidence", "source",
+    "confidence", "source", "payee",
 ]
 
 
@@ -117,7 +124,7 @@ def export_transactions(
     A user-facing "your data is portable" export; annotation fields are flattened
     onto each row and tags are joined so both formats are flat and spreadsheet-ready.
     """
-    rows = list_transactions(conn, include_annotation=True)
+    rows = with_payee(conn, list_transactions(conn, include_annotation=True))
     records = []
     for r in rows:
         tags = parse_string_list(r.get("tags")) if r.get("annotation_id") else []
@@ -134,6 +141,7 @@ def export_transactions(
             "tags": ",".join(tags),
             "confidence": r.get("confidence"),
             "source": r.get("source"),
+            "payee": r["payee"],
         })
 
     if format == "json":
@@ -171,7 +179,7 @@ def get_transaction(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    result = dict(row)
+    result = with_payee(conn, [dict(row)])[0]
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])
     result["tags"] = parse_string_list(result.get("tags")) if result.get("annotation_id") else []
@@ -184,3 +192,46 @@ def get_transaction(
         except (TypeError, json.JSONDecodeError):
             result["reasoning"] = None
     return result
+
+
+class NameBody(BaseModel):
+    """A name for a payment or a payee; null or blank clears it."""
+    name: str | None = Field(None, max_length=MAX_NAME_LENGTH)
+
+
+def _payment_or_404(conn: sqlite3.Connection, transaction_id: str):
+    row = conn.execute(
+        "SELECT id, counterparty_key FROM transactions WHERE id = ?", (transaction_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return row
+
+
+@router.put("/{transaction_id}/name")
+def rename_payment(
+    transaction_id: str, body: NameBody, conn: sqlite3.Connection = Depends(get_db),
+):
+    """Name this one payment. Clearing it falls back to the payee's name."""
+    _payment_or_404(conn, transaction_id)
+    set_payment_name(conn, transaction_id, body.name)
+    conn.commit()
+    return get_transaction(transaction_id, conn)
+
+
+@router.put("/{transaction_id}/payee-name")
+def rename_payee(
+    transaction_id: str, body: NameBody, conn: sqlite3.Connection = Depends(get_db),
+):
+    """Name every payment to this payment's payee, past and future.
+
+    This payment's own name, if it has one, is dropped so it shows the new
+    name too: the user asked for every payment to be called this.
+    """
+    row = _payment_or_404(conn, transaction_id)
+    if row["counterparty_key"] is None:
+        raise HTTPException(status_code=409, detail="This payment has no payee to rename.")
+    set_payee_name(conn, row["counterparty_key"], body.name)
+    set_payment_name(conn, transaction_id, None)
+    conn.commit()
+    return get_transaction(transaction_id, conn)

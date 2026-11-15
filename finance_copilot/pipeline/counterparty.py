@@ -149,6 +149,14 @@ def rekey_counterparty(conn: sqlite3.Connection, old_key: str, new_key: str) -> 
         "UPDATE OR IGNORE learned_rule_suppressions SET counterparty_key = ? WHERE counterparty_key = ?",
         (new_key, old_key),
     )
+    move_payee_name(conn, old_key, new_key)
+
+
+def move_payee_name(conn: sqlite3.Connection, old_key: str, new_key: str) -> None:
+    """A name the user gave a payee follows the payee to its new key; when the
+    new key already has one, that one stays. Caller commits."""
+    conn.execute("UPDATE OR IGNORE payee_names SET counterparty_key = ? WHERE counterparty_key = ?", (new_key, old_key))
+    conn.execute("DELETE FROM payee_names WHERE counterparty_key = ?", (old_key,))
 
 
 def _label_weight(source: str | None) -> float:

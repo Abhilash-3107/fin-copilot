@@ -21,6 +21,7 @@ from finance_copilot.db.queries.groups import (
     summarize_groups,
     update_member,
 )
+from finance_copilot.db.queries.payee import with_payee
 
 router = APIRouter()
 
@@ -72,7 +73,7 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
     group = get_group(conn, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    group["members"] = list_members_for_group(conn, group_id)
+    group["members"] = with_payee(conn, list_members_for_group(conn, group_id))
     # Same rollup the list serves, so the open card's header refreshes from the
     # server after every membership change instead of keeping the list's copy.
     group["summary"] = summarize_groups(conn, [group_id]).get(group_id, empty_summary())

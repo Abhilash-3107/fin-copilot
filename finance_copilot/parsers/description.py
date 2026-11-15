@@ -164,3 +164,25 @@ KNOWN_SHAPES = frozenset({
 def is_known_shape(parsed: ParsedDescription) -> bool:
     """Whether a UPI description matched a layout the grammar fully understands."""
     return parsed.shape in KNOWN_SHAPES
+
+
+# Non-UPI rails by the first word of the line, as the user would name them.
+_OTHER_CHANNELS = {
+    "NEFT": "NEFT", "IMPS": "IMPS", "RTGS": "RTGS", "POS": "Card", "ATM": "ATM",
+}
+
+
+def channel_of(raw: str | None) -> str | None:
+    """How the money moved, in the user's words, when the line says so.
+
+    UPI and its reversals come from the parser; other rails are named by the
+    first word of the line (NEFT, IMPS, RTGS, ATM, and POS as a card payment).
+    None when the line gives no sign of the channel.
+    """
+    parsed = parse_description(raw)
+    if parsed.rail == "upi":
+        return "UPI"
+    if parsed.rail == "upi_reversal":
+        return "UPI reversal"
+    words = (raw or "").replace("/", " ").split(None, 1)
+    return _OTHER_CHANNELS.get(words[0].upper()) if words else None

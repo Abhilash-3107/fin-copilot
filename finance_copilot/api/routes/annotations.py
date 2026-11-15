@@ -33,6 +33,7 @@ from finance_copilot.db.queries.categories import (
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
 from finance_copilot.db.queries.feedback_stats import category_accuracy, record_feedback
+from finance_copilot.db.queries.payee import with_payee
 from finance_copilot.models.annotation import (
     Annotation,
     AnnotationCreate,
@@ -652,7 +653,7 @@ def similar_candidates(
         f"""
         SELECT a.id AS annotation_id, a.category, a.subcategory, a.merchant, a.source,
                a.confidence, t.id AS transaction_id, t.txn_date, t.amount,
-               t.debit_credit, t.raw_description
+               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.upi_meta
         FROM annotations a JOIN transactions t ON t.id = a.transaction_id
         WHERE t.id IN ({placeholders})
         """,
@@ -671,7 +672,7 @@ def similar_candidates(
         out.append(item)
     # Different-label candidates first (the ones worth fixing), then by similarity.
     out.sort(key=lambda x: (not x["differs"], -(x["similarity"] or 0.0)))
-    return out
+    return with_payee(conn, out)
 
 
 @router.post("/{annotation_id}/apply-to-similar")
@@ -800,7 +801,7 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     items = take_whole_groups(
         group_review_queue(list_review_queue(conn, get_confidence_threshold(conn))), REVIEW_QUEUE_PAGE
     )
-    for item in items:
+    for item in with_payee(conn, items):
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw
         # column so the UI never sees it. Older rows have reasoning=NULL → None.

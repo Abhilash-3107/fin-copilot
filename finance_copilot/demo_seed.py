@@ -481,6 +481,7 @@ def wipe(conn) -> int:
     if not conn.execute("SELECT EXISTS (SELECT 1 FROM statements)").fetchone()[0]:
         conn.execute("DELETE FROM feedback_stats")
         conn.execute("DELETE FROM learned_rule_suppressions")
+        conn.execute("DELETE FROM payee_names")
     conn.commit()
     return removed
 
