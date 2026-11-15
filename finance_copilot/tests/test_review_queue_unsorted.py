@@ -230,13 +230,13 @@ class TestCounts:
         _txn(conn, "guess", "Shopping", confidence=0.3)
         _txn(conn, "sorted", "Shopping", confidence=0.95)
         _txn(conn, "away")
-        assert _counts(client) == {"unsorted": 3, "guesses": 1, "set_aside": 0}
+        assert _counts(client) == {"unsorted": 3, "guesses": 1, "set_aside": 0, "set_aside_unsorted": 0}
         client.post("/api/annotations/review-queue/skip", json={"transaction_id": "away"})
         client.post("/api/annotations/review-queue/skip", json={"transaction_id": "guess"})
-        assert _counts(client) == {"unsorted": 2, "guesses": 0, "set_aside": 2}
+        assert _counts(client) == {"unsorted": 2, "guesses": 0, "set_aside": 2, "set_aside_unsorted": 1}
 
     def test_an_empty_ledger_counts_zero(self, client):
-        assert _counts(client) == {"unsorted": 0, "guesses": 0, "set_aside": 0}
+        assert _counts(client) == {"unsorted": 0, "guesses": 0, "set_aside": 0, "set_aside_unsorted": 0}
 
     def test_the_old_snoozed_count_route_is_gone(self, client):
         assert client.get("/api/annotations/review-queue/snoozed-count").status_code == 404

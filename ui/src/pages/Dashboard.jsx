@@ -450,7 +450,8 @@ export default function Dashboard() {
   const toast = useToast()
   const { month: periodMonth } = usePeriod()
   const [data, setData] = useState(null)
-  const [reviewCount, setReviewCount] = useState(0)
+  // Low-confidence guesses waiting in Teach Me (every month, not just this one).
+  const [guessCount, setGuessCount] = useState(0)
   const [accuracy, setAccuracy] = useState([])
   const [loading, setLoading] = useState(true)
   // Any tracked run (this page, another page, or re-attached after a reload)
@@ -470,14 +471,15 @@ export default function Dashboard() {
     async function load() {
       setLoading(true)
       try {
-        const [summary, queue, acc] = await Promise.all([
+        const [summary, counts, acc] = await Promise.all([
           api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
-          api.get('/annotations/review-queue'),
+          // Counts only: the queue itself can be thousands of rows long.
+          api.get('/annotations/review-queue/counts').catch(() => null),
           api.get('/annotations/accuracy').catch(() => []),
         ])
         if (cancelled) return
         setData(summary)
-        setReviewCount(queue.length)
+        setGuessCount(counts?.guesses ?? 0)
         setAccuracy(acc)
       } catch (e) {
         if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
@@ -523,24 +525,27 @@ export default function Dashboard() {
   const coverage = coverageLabel(data?.period)
   const attention = []
   if (data?.month) {
-    // One row for one job: the count is the queue's own (what Teach Me will
-    // ask), the money is this month's unsorted debits.
-    if (reviewCount > 0 || data.unexplained.count > 0) {
+    // One figure per fact, over one set: this month's unsorted payments and
+    // their money. Guesses to check are a different fact (and span every
+    // month, as Teach Me does), so they get their own row.
+    const unsorted = data.unexplained.count
+    if (unsorted > 0) {
       attention.push({
         key: 'unsorted', icon: HelpCircle, color: '#fbbf24', to: '/review',
         text: (
           <>
-            {reviewCount > 0 && `${reviewCount} to sort`}
-            {reviewCount > 0 && data.unexplained.count > 0 && ' - '}
-            {data.unexplained.count > 0 && (
-              <>
-                <Amount value={data.unexplained.total} decimals={0} /> not sorted yet in{' '}
-                {dayjs(data.month).format('MMMM')}
-              </>
-            )}
+            {unsorted} {unsorted === 1 ? 'payment' : 'payments'} in {dayjs(data.month).format('MMMM')}{' '}
+            {unsorted === 1 ? "isn't" : "aren't"} sorted yet (<Amount value={data.unexplained.total} decimals={0} />)
           </>
         ),
         cta: 'Sort them',
+      })
+    }
+    if (guessCount > 0) {
+      attention.push({
+        key: 'guesses', icon: Sparkles, color: '#a78bfa', to: '/review',
+        text: `${guessCount} ${guessCount === 1 ? 'guess' : 'guesses'} to check, across all months`,
+        cta: 'Check them',
       })
     }
     // Statements land as whole months after the bank issues them, so "fresh"

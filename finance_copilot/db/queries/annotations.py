@@ -245,21 +245,23 @@ def queue_counts(conn: sqlite3.Connection, threshold: float) -> dict:
     """How many payments wait in the queue, without loading it: `unsorted` have
     no real category (no guess, or Uncategorized), `guesses` have a machine
     label below the bar, `set_aside` are skipped ones that would otherwise be
-    queued. The first two are what Teach Me will ask; the three never overlap."""
+    queued (`set_aside_unsorted` of them have no real category). The first two
+    are what Teach Me will ask; unsorted, guesses and set_aside never overlap."""
     condition, params = _queue_condition(threshold)
     row = conn.execute(
         f"""
         SELECT
           COALESCE(SUM(t.review_snoozed_at IS NULL AND {unsorted_sql('a')}), 0) AS unsorted,
           COALESCE(SUM(t.review_snoozed_at IS NULL AND NOT {unsorted_sql('a')}), 0) AS guesses,
-          COALESCE(SUM(t.review_snoozed_at IS NOT NULL), 0) AS set_aside
+          COALESCE(SUM(t.review_snoozed_at IS NOT NULL), 0) AS set_aside,
+          COALESCE(SUM(t.review_snoozed_at IS NOT NULL AND {unsorted_sql('a')}), 0) AS set_aside_unsorted
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE {condition}
         """,
         params,
     ).fetchone()
-    return {"unsorted": row["unsorted"], "guesses": row["guesses"], "set_aside": row["set_aside"]}
+    return {key: row[key] for key in ("unsorted", "guesses", "set_aside", "set_aside_unsorted")}
 
 
 def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:

@@ -102,6 +102,8 @@ const PENDING_SUMMARY = {
   annotation: { total: 120, annotated: 0 },
 }
 
+const COUNTS = { unsorted: 5, guesses: 64, set_aside: 0, set_aside_unsorted: 0 }
+
 function renderDashboard() {
   render(
     <MemoryRouter>
@@ -123,7 +125,7 @@ beforeEach(() => {
   localStorage.clear()
   mockApi.get.mockImplementation(path => {
     if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
-    if (path === '/annotations/review-queue') return Promise.resolve(new Array(64))
+    if (path === '/annotations/review-queue/counts') return Promise.resolve(COUNTS)
     if (path === '/statements') return Promise.resolve([])
     return Promise.resolve([])
   })
@@ -167,17 +169,42 @@ describe('Dashboard', () => {
 
   it('ranks the attention items with the unsorted row first', async () => {
     renderDashboard()
-    // One row for one job: the queue's count and this month's unsorted money.
-    const review = await screen.findByRole('link', { name: /64 to sort - ₹620 not sorted yet in May/ })
+    // One figure per fact: this month's unsorted count and money in one row,
+    // the guesses to check (every month) in their own.
+    const review = await screen.findByRole('link', { name: /3 payments in May aren't sorted yet \(\s*₹620\s*\)/ })
     expect(review).toHaveAttribute('href', '/review')
     expect(screen.getAllByRole('link', { name: /Sort them/ })).toHaveLength(1)
+    expect(screen.getByRole('link', { name: /64 guesses to check, across all months/ })).toHaveAttribute('href', '/review')
     // Data is from May but "today" is later, so the freshness nudge fires.
     expect(screen.getByRole('link', { name: /newest statement is May/ })).toHaveAttribute('href', '/upload')
     // Travel is 4.8x April: the spike item deep-links into filtered transactions.
     expect(screen.getByRole('link', { name: /Travel ran ₹11,249 above April/ }))
       .toHaveAttribute('href', '/transactions?category=Travel&month=2026-05')
-    // The merged unsorted row frees a slot, so the people item (rank four) fits.
-    expect(screen.getByText(/Between you and sanya/)).toBeInTheDocument()
+    // Four rows fit: unsorted, guesses, freshness, spike. The people item is fifth.
+    expect(screen.queryByText(/Between you and sanya/)).not.toBeInTheDocument()
+  })
+
+  it('says one payment in the singular and never downloads the queue to count it', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve({ ...SUMMARY, unexplained: { count: 1, total: 450 } })
+      if (path === '/annotations/review-queue/counts') return Promise.resolve({ ...COUNTS, guesses: 1 })
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByRole('link', { name: /1 payment in May isn't sorted yet \(\s*₹450\s*\)/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /1 guess to check, across all months/ })).toBeInTheDocument()
+    expect(mockApi.get.mock.calls.some(([p]) => p === '/annotations/review-queue')).toBe(false)
+  })
+
+  it('shows no guesses row when none are waiting', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/annotations/review-queue/counts') return Promise.resolve({ ...COUNTS, guesses: 0 })
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    await screen.findByRole('link', { name: /3 payments in May aren't sorted yet/ })
+    expect(screen.queryByText(/to check/)).not.toBeInTheDocument()
   })
 
   it('shows all-caught-up when nothing needs attention', async () => {
@@ -191,7 +218,7 @@ describe('Dashboard', () => {
           people: { items: [], unmatched: { sent: 0, received: 0, count: 0 } },
         })
       }
-      if (path === '/annotations/review-queue') return Promise.resolve([])
+      if (path === '/annotations/review-queue/counts') return Promise.resolve({ unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 })
       return Promise.resolve([])
     })
     renderDashboard()
@@ -247,7 +274,7 @@ describe('Dashboard', () => {
     let insights = PENDING_SUMMARY
     mockApi.get.mockImplementation(path => {
       if (path.startsWith('/insights')) return Promise.resolve(insights)
-      if (path === '/annotations/review-queue') return Promise.resolve([])
+      if (path === '/annotations/review-queue/counts') return Promise.resolve({ unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 })
       return Promise.resolve([])
     })
     mockRunAnnotationJob.mockImplementation(async () => {

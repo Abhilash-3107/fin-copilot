@@ -817,8 +817,9 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
 def review_queue_counts(conn: sqlite3.Connection = Depends(get_db)):
     """What waits in the review queue, counted without loading it: payments with
     no real category (`unsorted`), machine guesses below the confidence bar
-    (`guesses`), and payments the user set aside (`set_aside`). The queue list is
-    capped, so this is also where its true size comes from."""
+    (`guesses`), and payments the user set aside (`set_aside`, of which
+    `set_aside_unsorted` have no real category). The queue list is capped, so
+    this is also where its true size comes from."""
     return queue_counts(conn, get_confidence_threshold(conn))
 
 

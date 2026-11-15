@@ -83,7 +83,7 @@ function CategoryChips({ tree, category, subcategory, onChange, onCreate }) {
         {roots.map(r => (
           <button
             key={r.id}
-            onClick={() => onChange({ category: r.name, subcategory: '' })}
+            onClick={e => onChange({ category: r.name, subcategory: '' }, e)}
             className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
               category === r.name
                 ? 'bg-[#6366f1] text-white'
@@ -112,7 +112,7 @@ function CategoryChips({ tree, category, subcategory, onChange, onCreate }) {
           {children.map(c => (
             <button
               key={c.id}
-              onClick={() => onChange({ category, subcategory: c.name })}
+              onClick={e => onChange({ category, subcategory: c.name }, e)}
               className={`px-2 py-0.5 rounded-full text-xs transition-colors ${
                 subcategory === c.name
                   ? 'bg-[#4f46e5] text-white'
@@ -208,6 +208,20 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
 // The amount ceiling a suggested policy starts with; editable in Settings > Rules.
 const POLICY_DEFAULT_MAX = 500
 
+// What the server says is waiting: payments with no real category, guesses to
+// check, and payments the user set aside (of which set_aside_unsorted have no
+// real category either).
+const NO_COUNTS = { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 }
+
+function statsLine(stats) {
+  return [
+    `${stats.confirmed} confirmed`,
+    `${stats.edited} corrected`,
+    stats.sorted > 0 && `${stats.sorted} sorted by hand`,
+    `${stats.skipped} skipped`,
+  ].filter(Boolean).join(' · ')
+}
+
 // A guess of Uncategorized, or no guess at all, is not an answer to vouch for.
 function isRealCategory(category) {
   return !!category && category !== 'Uncategorized'
@@ -228,7 +242,14 @@ export default function ReviewQueue() {
   // only shown then, never from the local list alone.
   const [verified, setVerified] = useState(false)
   const [hasTransactions, setHasTransactions] = useState(true)
+  // Set when loading the queue fails, so a failed load is never read as "done".
+  const [loadError, setLoadError] = useState(null)
+  const [retrying, setRetrying] = useState(false)
   const [sorting, setSorting] = useState(false)
+  // True once an automatic sorting run has finished while this page was open:
+  // payments still bare after it are beyond what it can do.
+  const [sortRan, setSortRan] = useState(false)
+  const [aiActive, setAiActive] = useState(false)
   const [tree, setTree] = useState(_catCache ?? [])
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [showTags, setShowTags] = useState(false)
@@ -256,7 +277,8 @@ export default function ReviewQueue() {
   const [devMode, setDevMode] = useState(false)
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
-  const [snoozedCount, setSnoozedCount] = useState(0)
+  const [counts, setCounts] = useState(NO_COUNTS)
+  const snoozedCount = counts.set_aside
   // One answer for every queued payment to the same payee (on by default).
   const [applyToGroup, setApplyToGroup] = useState(true)
   // Policy suggestion: after the user labels a few small payments to people the
@@ -267,6 +289,7 @@ export default function ReviewQueue() {
   const [policyDismissed, setPolicyDismissed] = useState(false)
   const idxRef = useRef(0)
   useEffect(() => { idxRef.current = idx }, [idx])
+  const cardRef = useRef(null)
 
   // Skips are written in order and the done check waits for them, so a card
   // skipped a moment ago never comes back from the server's list.
@@ -280,9 +303,9 @@ export default function ReviewQueue() {
   const refresh = useCallback(async ({ keepCards = false } = {}) => {
     await writesRef.current
     try {
-      const [data, snoozed, anyTxn] = await Promise.all([
+      const [data, nextCounts, anyTxn] = await Promise.all([
         api.get('/annotations/review-queue'),
-        api.get('/annotations/review-queue/snoozed-count'),
+        api.get('/annotations/review-queue/counts'),
         api.get('/transactions?limit=1'),
       ])
       if (data.length > 0 || !keepCards) {
@@ -290,12 +313,14 @@ export default function ReviewQueue() {
         setIdx(0)
         setHistory([])
       }
-      setSnoozedCount(snoozed?.count ?? 0)
+      setCounts({ ...NO_COUNTS, ...nextCounts })
       setHasTransactions(!Array.isArray(anyTxn) || anyTxn.length > 0)
       setVerified(data.length === 0)
+      setLoadError(null)
     } catch (e) {
+      // Never "done": the server was not asked successfully, so nothing is known.
       toast(`Couldn't load the review list - ${e.message}`, 'error')
-      setVerified(true)
+      setLoadError(e.message || 'Something went wrong')
     }
   }, [toast])
 
@@ -312,6 +337,7 @@ export default function ReviewQueue() {
     // Fetch fresh each mount so a toggle on the Settings page takes effect.
     api.get('/config').then(cfg => {
       setDevMode(!!cfg.dev_mode)
+      setAiActive(!!cfg.ai_active)
     }).catch(() => {})
 
     api.get('/policies')
@@ -319,22 +345,35 @@ export default function ReviewQueue() {
       .catch(() => {})
   }, [refresh])
 
-  // The set-aside count follows the server after every answer and skip, never a
-  // local tally that an answer to a skipped card could leave stale.
-  const syncSnoozed = useCallback(() => {
-    return api.get('/annotations/review-queue/snoozed-count')
-      .then(r => setSnoozedCount(r?.count ?? 0))
+  // The counts (set aside, still waiting) follow the server after every answer
+  // and skip, never a local tally that an answer to a skipped card could leave stale.
+  const syncCounts = useCallback(() => {
+    return api.get('/annotations/review-queue/counts')
+      .then(r => setCounts({ ...NO_COUNTS, ...r }))
       .catch(() => {})
   }, [])
 
   // Out of cards locally: ask the server before saying so. Anything still
-  // waiting there (new rows, a re-decided label) continues the session.
+  // waiting there (new rows, a re-decided label, the next page of a long queue)
+  // continues the session. A failed ask stops here instead of looping; Retry asks again.
   const outOfCards = idx >= queue.length
   useEffect(() => {
     if (loading) return
     if (!outOfCards) setVerified(false)
-    else if (!verified) refresh({ keepCards: true })
-  }, [loading, outOfCards, verified, refresh])
+    else if (!verified && !loadError) refresh({ keepCards: true })
+  }, [loading, outOfCards, verified, loadError, refresh])
+
+  // A sorting run that finishes while this page is open (started here or on
+  // another page) changes what is waiting: start again from the server's list.
+  const jobRunning = job != null
+  const jobWasRunning = useRef(false)
+  useEffect(() => {
+    if (jobRunning) { jobWasRunning.current = true; return }
+    if (!jobWasRunning.current) return
+    jobWasRunning.current = false
+    setSortRan(true)
+    refresh({ keepCards: true })
+  }, [jobRunning, refresh])
 
   const current = queue[idx]
 
@@ -357,6 +396,12 @@ export default function ReviewQueue() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, current?.transaction_id])
 
+  // A new card takes the keyboard: no chip or button keeps focus from the last
+  // card, so Enter cannot activate something the user never chose.
+  useEffect(() => {
+    if (!loading) cardRef.current?.focus({ preventScroll: true })
+  }, [loading, current?.transaction_id])
+
   // Single source of truth for "has the user changed this card?"
   // Used by both the keyboard handler and the render body so Enter/c never
   // disagree with the buttons (a merchant- or tags-only edit still counts).
@@ -378,10 +423,15 @@ export default function ReviewQueue() {
   // Derived stats: one tally per resolved card, so a card revisited via "go
   // back" and re-decided moves between buckets instead of being counted twice.
   const stats = useMemo(() => {
-    const s = { confirmed: 0, edited: 0, skipped: 0 }
+    const s = { confirmed: 0, edited: 0, sorted: 0, skipped: 0 }
     for (const outcome of Object.values(outcomes)) s[outcome] += 1
     return s
   }, [outcomes])
+
+  // 'edited' corrected a guess; 'sorted' answered a payment that had no real guess.
+  function answeredAs(item) {
+    return isRealCategory(item.category) ? 'edited' : 'sorted'
+  }
 
   function record(transactionId, outcome) {
     setOutcomes(o => ({ ...o, [transactionId]: outcome }))
@@ -481,12 +531,14 @@ export default function ReviewQueue() {
     writesRef.current = writesRef.current
       .then(() => api.post('/annotations/review-queue/skip', { transaction_id: transactionId }))
       .catch(() => {})
-      .then(syncSnoozed)
+      .then(syncCounts)
   }
 
   async function restoreSnoozed() {
     try {
       const { restored } = await api.post('/annotations/review-queue/unsnooze', {})
+      // They are back in play, so they no longer count as skipped this session.
+      setOutcomes(o => Object.fromEntries(Object.entries(o).filter(([, outcome]) => outcome !== 'skipped')))
       await refresh()
       toast(`Restored ${restored} skipped ${restored === 1 ? 'item' : 'items'}`, 'info')
     } catch (e) {
@@ -510,7 +562,7 @@ export default function ReviewQueue() {
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, current.category, current.subcategory)
       advance()
-      syncSnoozed()
+      syncCounts()
     } catch (e) {
       if (e.status === 409) {
         // The label changed under this card (new evidence settled it); show
@@ -538,24 +590,23 @@ export default function ReviewQueue() {
       }
       const group = applyToGroup ? groupFromHere() : [current]
       let res
-      if (group.length > 1) {
+      if (group.length > 1 || !current.annotation_id) {
+        // The server decides how each payment is labelled: a plain manual label
+        // where nothing has labelled it, a correction where a sorting run got
+        // there first. So a bare card never trips over an annotation that
+        // appeared since the list loaded.
         res = await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
-      } else if (current.annotation_id) {
-        res = await api.patch(`/annotations/${current.annotation_id}`, label)
       } else {
-        // Nothing has labelled this payment yet: a plain manual annotation.
-        res = await api.post('/annotations', {
-          transaction_id: current.transaction_id, ...label, confidence: 1.0, source: 'manual',
-        })
+        res = await api.patch(`/annotations/${current.annotation_id}`, label)
       }
       pushHistory()
-      group.forEach(it => record(it.transaction_id, 'edited'))
+      group.forEach(it => record(it.transaction_id, answeredAs(it)))
       const sorted = settle(group, res.reevaluated)
       const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee} updated.` : "Noted, I'll remember that."
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, payload.category, payload.subcategory)
       advance()
-      syncSnoozed()
+      syncCounts()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
       // A payment with no annotation has no neighbours to compare with; its
@@ -599,8 +650,12 @@ export default function ReviewQueue() {
     }
   }
 
-  function handleCategoryChange({ category, subcategory }) {
+  function handleCategoryChange({ category, subcategory }, event) {
     setForm(f => ({ ...f, category, subcategory, tags: [] }))
+    // After a mouse pick, hand the keyboard back to the card so Enter saves the
+    // pick. (A keyboard pick keeps its focus on the chip, so tabbing on to a
+    // subcategory still works.)
+    if (event?.detail > 0) cardRef.current?.focus({ preventScroll: true })
   }
 
   // Keyboard shortcuts. The handler closes over queue/form/idx state, so instead
@@ -611,6 +666,9 @@ export default function ReviewQueue() {
     // Shortcuts stay live on the group checkbox; text fields keep their keys.
     if ((e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
     if (e.ctrlKey || e.metaKey || e.altKey) return
+    // Enter on a focused button or chip is that control's own activation: the
+    // browser clicks it, so the shortcut must not also act (AUDIT B13).
+    if (e.key === 'Enter' && e.target.closest?.('button, a')) return
     if (propagate) return // dialog owns the keyboard
     if (e.key === 'b') goBack()
     // Both c and Enter save when the card is dirty; confirming a stale
@@ -629,16 +687,17 @@ export default function ReviewQueue() {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // Payments no sorting run has touched yet (AI off, a run that failed, a
-  // statement added since): they are in the queue and can be sorted by hand, or
-  // the automatic pass can take a first look at them.
+  // Payments no sorting run has touched yet (a statement added since, or a run
+  // that failed): they are in the queue and can be sorted by hand, or the
+  // automatic pass can take a first look at them. The queue reloads when the
+  // run ends, whoever started it (the job effect above).
   async function sortAutomatically() {
     setSorting(true)
     try {
       const result = await startAnnotation({})
       const summary = annotationSummary(result)
       toast(summary.message, summary.type)
-      await refresh()
+      setSortRan(true)
     } catch (e) {
       toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
@@ -680,6 +739,26 @@ export default function ReviewQueue() {
     />
   )
 
+  if (done && loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6" role="alert">
+        <h2 className="text-lg font-semibold text-[#e2e8f0]">Couldn't load your review list</h2>
+        <p className="text-sm text-[#94a3b8] max-w-sm">{loadError}</p>
+        <button
+          disabled={retrying}
+          onClick={async () => {
+            setRetrying(true)
+            await refresh({ keepCards: true })
+            setRetrying(false)
+          }}
+          className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {retrying ? 'Retrying…' : 'Retry'}
+        </button>
+      </div>
+    )
+  }
+
   if (done && !verified) {
     return (
       <div className="flex items-center justify-center h-full text-[#475569]">
@@ -690,7 +769,9 @@ export default function ReviewQueue() {
   }
 
   if (done) {
-    const learned = stats.confirmed + stats.edited
+    const learned = stats.confirmed + stats.edited + stats.sorted
+    const awayUnsorted = counts.set_aside_unsorted
+    const awayAll = snoozedCount
     const setAside = (
       snoozedCount > 0 && (
         <button
@@ -723,7 +804,11 @@ export default function ReviewQueue() {
               {snoozedCount} {snoozedCount === 1 ? 'payment is' : 'payments are'} set aside
             </h2>
             <p className="text-sm text-[#94a3b8]">
-              You skipped {snoozedCount === 1 ? 'it' : 'them'}, so {snoozedCount === 1 ? 'it is' : 'they are'} still not sorted.
+              {awayUnsorted === awayAll
+                ? `You skipped ${awayAll === 1 ? 'it' : 'them'}, so ${awayAll === 1 ? 'it is' : 'they are'} still not sorted.`
+                : awayUnsorted === 0
+                  ? `You skipped ${awayAll === 1 ? 'it' : 'them'}, so ${awayAll === 1 ? 'it is' : 'they are'} still unchecked.`
+                  : `You skipped ${awayAll === 1 ? 'it' : 'them'}: ${awayUnsorted} still not sorted, the rest unchecked.`}
             </p>
             {setAside}
           </>
@@ -738,10 +823,8 @@ export default function ReviewQueue() {
             </p>
           </>
         )}
-        {(stats.confirmed + stats.edited + stats.skipped > 0) && (
-          <p className="text-xs text-[#64748b] mt-1">
-            {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
-          </p>
+        {(stats.confirmed + stats.edited + stats.sorted + stats.skipped > 0) && (
+          <p className="text-xs text-[#64748b] mt-1">{statsLine(stats)}</p>
         )}
         {history.length > 0 && (
           <button
@@ -757,10 +840,15 @@ export default function ReviewQueue() {
 
   const item = current
   const isDebit = item.debit_credit === 'debit'
-  const src = item.source ?? 'pending'
+  const src = item.source
   const groupSize = groupFromHere().length
   const payeesLeft = new Set(queue.slice(idx).map(it => it.group_key)).size
   const unannotatedLeft = queue.slice(idx).filter(it => !it.annotation_id).length
+  // The server's count of everything waiting; the list it sent may be shorter.
+  const waiting = counts.unsorted + counts.guesses
+  // The run can only help when a model is there to ask, and not after one has
+  // already left these payments bare.
+  const canSort = aiActive && !sortRan
 
   return (
     <div className="flex flex-col h-full px-4 py-5">
@@ -778,8 +866,9 @@ export default function ReviewQueue() {
           />
         </div>
         <p className="text-[10px] text-[#475569] mt-1">
-          {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
+          {statsLine(stats)}
           {payeesLeft > 0 && ` · ${payeesLeft} payee${payeesLeft === 1 ? '' : 's'} left`}
+          {waiting > total && ` · showing the first ${total} of ${waiting} waiting`}
         </p>
       </div>
 
@@ -788,9 +877,9 @@ export default function ReviewQueue() {
           <p className="flex-1 text-sm text-[#cbd5e1]">
             {job != null || sorting
               ? 'Automatic sorting is running. Payments it settles will leave this list.'
-              : `${unannotatedLeft} payment${unannotatedLeft === 1 ? ' hasn\'t' : 's haven\'t'} been through automatic sorting yet. You can sort ${unannotatedLeft === 1 ? 'it' : 'them'} by hand here.`}
+              : `${unannotatedLeft} ${unannotatedLeft === 1 ? 'payment has' : 'payments have'} no guess yet. Pick a category for ${unannotatedLeft === 1 ? 'it' : 'each'} below${canSort ? ', or run automatic sorting.' : '.'}`}
           </p>
-          {job == null && !sorting && (
+          {canSort && job == null && !sorting && (
             <button
               onClick={sortAutomatically}
               className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-[#2d3148] px-3 py-1.5 text-xs font-medium text-[#e2e8f0] transition-colors hover:border-[#6366f1]"
@@ -831,7 +920,13 @@ export default function ReviewQueue() {
       )}
 
       {/* Card */}
-      <div className="max-w-2xl mx-auto w-full bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+      <div
+        ref={cardRef}
+        tabIndex={-1}
+        role="group"
+        aria-label={`Payment to review: ${item.raw_description}`}
+        className="max-w-2xl mx-auto w-full bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden focus:outline-none"
+      >
         {/* Transaction header */}
         <div className="px-6 py-5 border-b border-[#2d3148]">
           <div className="flex items-start justify-between gap-4 mb-2">
@@ -871,10 +966,12 @@ export default function ReviewQueue() {
             {item.merchant && (
               <span className="text-sm text-[#94a3b8]">{item.merchant}</span>
             )}
-            <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-              {/* Review-card voice: two contextual overrides, shared labels otherwise */}
-              {src === 'manual' ? 'you set this' : src === 'rule' ? 'rule match' : sourceLabel(src)}
-            </span>
+            {src && (
+              <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
+                {/* Review-card voice: two contextual overrides, shared labels otherwise */}
+                {src === 'manual' ? 'you set this' : src === 'rule' ? 'rule match' : sourceLabel(src)}
+              </span>
+            )}
           </div>
           {item.annotation_id && (
             <>
@@ -1003,9 +1100,13 @@ export default function ReviewQueue() {
 
       <p className="text-center text-xs text-[#475569] mt-4">
         Keyboard: <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">b</kbd> back ·
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">c</kbd> confirm ·
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> confirm or save ·
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">s</kbd> skip
+        {!needsPick && (
+          <>
+            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">c</kbd> {isDirty ? 'save' : 'confirm'} ·
+            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> {isDirty ? 'save' : 'confirm'} ·
+          </>
+        )}
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">s</kbd> skip
         {groupSize > 1 && (
           <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd> all from this payee</>
         )}

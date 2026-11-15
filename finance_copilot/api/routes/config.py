@@ -28,15 +28,23 @@ class ConfigPatch(BaseModel):
     confidence_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+def _flags(conn: sqlite3.Connection) -> dict:
+    return {
+        "dev_mode": get_dev_mode(conn),
+        "confidence_threshold": get_confidence_threshold(conn),
+        # A model is configured, so a sorting run can ask it; with provider
+        # "none" a run only applies rules and history.
+        "ai_active": settings.llm_provider != "none",
+    }
+
+
 @router.get("")
 def get_config(conn: sqlite3.Connection = Depends(get_db)):
     """Flags the frontend reads on startup. dev_mode gates the review-queue trace
     panel; confidence_threshold is the review bar the queue explains and the
-    Settings page tunes (a runtime override of the config default)."""
-    return {
-        "dev_mode": get_dev_mode(conn),
-        "confidence_threshold": get_confidence_threshold(conn),
-    }
+    Settings page tunes (a runtime override of the config default); ai_active
+    says whether a model is configured."""
+    return _flags(conn)
 
 
 @router.put("")
@@ -48,10 +56,7 @@ def update_config(body: ConfigPatch, conn: sqlite3.Connection = Depends(get_db))
     if body.confidence_threshold is not None:
         set_confidence_threshold(conn, body.confidence_threshold)
     conn.commit()
-    return {
-        "dev_mode": get_dev_mode(conn),
-        "confidence_threshold": get_confidence_threshold(conn),
-    }
+    return _flags(conn)
 
 
 class LlmConfigPatch(BaseModel):
