@@ -10,8 +10,6 @@ function getTooltipStyle(rect, position) {
   switch (position) {
     case 'bottom':
       return { top: rect.bottom + scrollY + GAP, left: rect.left + scrollX + rect.width / 2 }
-    case 'bottom-end':
-      return { top: rect.bottom + scrollY + GAP, left: rect.right + scrollX }
     case 'left':
       return { top: rect.top + scrollY + rect.height / 2, left: rect.left + scrollX - GAP }
     case 'right':
@@ -25,9 +23,6 @@ function getTooltipStyle(rect, position) {
 const TRANSFORM = {
   top: 'translateX(-50%) translateY(-100%)',
   bottom: 'translateX(-50%)',
-  // Below the anchor with its right edge on the anchor's: for an anchor at the
-  // right edge of the window, where a centred tooltip would run off the screen.
-  'bottom-end': 'translateX(-100%)',
   left: 'translateX(-100%) translateY(-50%)',
   right: 'translateY(-50%)',
 }

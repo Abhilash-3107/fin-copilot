@@ -37,7 +37,9 @@ const TYPE_STYLES = {
 
 // A message stays as written until it is shown, so hiding amounts also hides
 // the ones in a toast that is already on screen. Messages the app builds from
-// a figure use useMoney(); this covers text that comes from the server.
+// a figure use useMoney(); this covers text that comes from the server. A
+// message that is not a string (a fragment) is shown as written, for a figure
+// that must stay visible, such as a policy limit.
 function Toast({ message, type }) {
   const { hidden } = usePrivacy()
   return (

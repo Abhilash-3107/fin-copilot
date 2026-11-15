@@ -107,37 +107,78 @@ export async function openSettingsTab(page, name) {
   await page.getByRole('button', { name, exact: true }).click()
 }
 
+// What a leak looks like: a rupee amount (the minus may come before the rupee
+// sign or after it), or a share of money.
+const LEAK_PATTERNS = [
+  /.{0,30}[₹]\s*[-−]?\d.{0,20}/g,
+  /.{0,30}\d+\s*%\s*(of\s+)?(what came in|money in|money out).{0,10}/gi,
+  /.{0,10}\b(kept|saved|spent)\b.{0,24}\d+\s*%.{0,10}/gi,
+]
+const patternArgs = () => LEAK_PATTERNS.map((re) => [re.source, re.flags])
+
 /**
- * What privacy mode must hide, found on the screen as it is now. Hidden figures
- * stay in the page, blurred and labelled "... hidden", so the walk skips
- * anything inside such a label. What is left must hold no rupee amount and no
- * percentage of money. Text, tooltips, and the title, aria-label, placeholder
- * and alt of every element are read. Confidence and accuracy percentages are
- * not money and are left alone. Returns the offending snippets.
+ * What privacy mode must hide, found on the screen as it is now. A hidden
+ * figure stays in the page, blurred, inside an element marked
+ * data-privacy-mask (and aria-hidden), so the walk skips those. What is left
+ * must hold no rupee amount and no percentage of money. Text, tooltips, the
+ * title, aria-label, placeholder and alt of every element, and the value of
+ * every field are read. Confidence and accuracy percentages are not money and
+ * are left alone. Returns the offending snippets.
+ *
+ * `allow` is for what is deliberately not hidden: `fields` lists the
+ * accessible names (a prefix is enough) of number fields whose value may show,
+ * `text` lists regular expressions for sentences that may show an amount.
+ * A number field holds money in digits with no rupee sign, so any one that is
+ * not allowed counts as a leak.
  */
-export async function moneyLeaks(page) {
-  return page.evaluate(() => {
-    const clone = document.body.cloneNode(true)
-    for (const el of clone.querySelectorAll('[aria-label*="hidden" i]')) el.remove()
-    for (const el of clone.querySelectorAll('script, style')) el.remove()
-    const seen = []
-    // A space between elements keeps "39%" and "of what came in" in one sentence
-    // while stopping neighbouring cells from running together.
-    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT)
-    let text = ''
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) text += ` ${node.nodeValue}`
-    seen.push(text.replace(/\s+/g, ' '))
-    for (const el of clone.querySelectorAll('*')) {
-      for (const name of ['title', 'aria-label', 'placeholder', 'alt']) {
-        const value = el.getAttribute(name)
-        if (value) seen.push(value)
+export async function moneyLeaks(page, allow = {}) {
+  const { fields = [], text: allowedText = [] } = allow
+  return page.evaluate(
+    ({ patterns, fields, allowedText }) => {
+      const allowed = allowedText.map((source) => new RegExp(source, 'g'))
+      const fieldLeaks = []
+      const seen = []
+      // Fields first, read from the page itself: a value typed or set after load
+      // is a property, not an attribute.
+      const nameOf = (el) =>
+        el.getAttribute('aria-label') || [...(el.labels ?? [])].map((l) => l.textContent).join(' ').trim()
+      for (const el of document.querySelectorAll('input, textarea')) {
+        const value = el.value ?? ''
+        if (!value) continue
+        const name = nameOf(el)
+        if (fields.some((f) => name.startsWith(f))) continue
+        if (el.type === 'number' || /₹\s*[-−]?\d/.test(value)) fieldLeaks.push(`field "${name || el.type}": ${value}`)
       }
-    }
-    const patterns = [
-      /.{0,30}[\u20B9]\s*\d.{0,20}/g,
-      /.{0,30}\d+\s*%\s*(of\s+)?(what came in|money in|money out).{0,10}/gi,
-      /.{0,10}\b(kept|saved|spent)\b.{0,24}\d+\s*%.{0,10}/gi,
-    ]
-    return seen.flatMap((line) => patterns.flatMap((re) => line.match(re) ?? []))
-  })
+
+      const clone = document.body.cloneNode(true)
+      for (const el of clone.querySelectorAll('[data-privacy-mask]')) el.remove()
+      for (const el of clone.querySelectorAll('script, style')) el.remove()
+      // A space between elements keeps "39%" and "of what came in" in one sentence
+      // while stopping neighbouring cells from running together.
+      const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT)
+      let body = ''
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) body += ` ${node.nodeValue}`
+      seen.push(body.replace(/\s+/g, ' '))
+      for (const el of clone.querySelectorAll('*')) {
+        for (const name of ['title', 'aria-label', 'placeholder', 'alt']) {
+          const value = el.getAttribute(name)
+          if (value) seen.push(value)
+        }
+      }
+      const res = patterns.map(([source, flags]) => new RegExp(source, flags))
+      const lines = seen.map((line) => allowed.reduce((rest, re) => rest.replace(re, ' '), line))
+      return [...fieldLeaks, ...lines.flatMap((line) => res.flatMap((re) => line.match(re) ?? []))]
+    },
+    { patterns: patternArgs(), fields, allowedText: allowedText.map((re) => re.source) },
+  )
+}
+
+/**
+ * What a screen reader is given: the page's accessibility tree, as text, held
+ * to the same patterns. A hidden figure must read as "Amount hidden", not as
+ * its digits. Returns the offending snippets.
+ */
+export async function accessibleMoneyLeaks(page) {
+  const tree = await page.locator('body').ariaSnapshot()
+  return LEAK_PATTERNS.flatMap((re) => tree.match(re) ?? [])
 }

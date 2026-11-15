@@ -356,6 +356,23 @@ describe('Dashboard', () => {
       expect(await text(/In May, you kept ₹38,665 - 43% of what came in\.$/)).toBeInTheDocument()
     })
 
+    describe.each([
+      ['shown', false, 0.4325, '43%', 'rgb(52, 211, 153)'],
+      ['hidden', true, 0.0969, '10%', 'rgb(251, 191, 36)'],
+    ])('the kept rate colour with amounts %s', (_, hide, rate, label, color) => {
+      it('follows how healthy the rate is', async () => {
+        if (hide) localStorage.setItem('fc_privacy_hidden', '1')
+        mockApi.get.mockImplementation(path => (
+          path.startsWith('/insights')
+            ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, invested: 0, kept: 38665, kept_rate: rate } })
+            : Promise.resolve([])
+        ))
+        renderDashboard()
+        await text(/you kept/)
+        expect(screen.getByText(label).closest('span.font-semibold')).toHaveStyle({ color })
+      })
+    })
+
     it('says "spent more than came in" when kept is negative', async () => {
       mockApi.get.mockImplementation(path => (
         path.startsWith('/insights')
@@ -456,8 +473,8 @@ describe('Dashboard', () => {
     ))
     renderDashboard()
     const note = (await screen.findByText(/in refunds and paybacks/)).closest('p')
-    expect(note).toHaveTextContent('incl ₹750 in refunds and paybacks')
-    expect(note.querySelector('[aria-label="Amount hidden"]')).toHaveTextContent('₹750')
+    expect(note).toHaveTextContent('incl ₹750Amount hidden in refunds and paybacks')
+    expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹750')
   })
 
   // Sum every rupee figure inside the given rows (the Indian grouping has commas only).
@@ -581,7 +598,7 @@ describe('privacy mode', () => {
     await screen.findByText('Needs your attention')
     const rate = screen.getAllByText('10%')[0]
     expect(rate).toHaveClass('blur-[5px]')
-    expect(rate).toHaveAttribute('aria-label', 'Percentage hidden')
+    expect(rate).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('keeps the balance chart tooltip and ticks free of amounts', async () => {

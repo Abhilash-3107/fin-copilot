@@ -75,7 +75,7 @@ function VerdictHero({ verdict, period }) {
           {rate != null && (
             <>
               {' '}-{' '}
-              <Percent value={rate} className="font-semibold" />
+              <Percent value={rate} className="font-semibold" style={{ color: tone.color }} />
               {' of what came in'}
             </>
           )}

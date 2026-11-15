@@ -51,7 +51,40 @@ describe('<Amount>', () => {
     const el = screen.getByText('₹2,500')
     expect(el).toHaveClass('blur-[5px]')
     expect(el).toHaveClass('select-none')
-    expect(el).toHaveAttribute('aria-label', 'Amount hidden')
+  })
+
+  it('tells a screen reader the amount is hidden and never reads the figure', () => {
+    // An aria-label on a plain span is ignored, so the blurred text is
+    // aria-hidden and a visually hidden phrase stands in for it.
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const { container } = renderWithPrivacy(<Amount value={2500} decimals={0} />)
+
+    expect(screen.getByText('₹2,500')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('₹2,500')).toHaveAttribute('data-privacy-mask')
+    expect(screen.getByText('Amount hidden')).toHaveClass('sr-only')
+    // The text a screen reader would reach: everything outside aria-hidden.
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+    let readable = ''
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.parentElement.closest('[aria-hidden="true"]')) readable += n.nodeValue
+    }
+    expect(readable).not.toMatch(/₹|2,500/)
+  })
+
+  it('passes className and style through, hidden or not', () => {
+    const { container, unmount } = renderWithPrivacy(
+      <Amount value={2500} decimals={0} className="font-semibold" style={{ color: 'rgb(52, 211, 153)' }} />,
+    )
+    expect(container.firstChild).toHaveClass('font-semibold')
+    expect(container.firstChild).toHaveStyle({ color: 'rgb(52, 211, 153)' })
+    unmount()
+
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const hidden = renderWithPrivacy(
+      <Amount value={2500} decimals={0} className="font-semibold" style={{ color: 'rgb(52, 211, 153)' }} />,
+    )
+    expect(hidden.container.firstChild).toHaveClass('font-semibold')
+    expect(hidden.container.firstChild).toHaveStyle({ color: 'rgb(52, 211, 153)' })
   })
 
   it('toggles blur when the Shift+P shortcut fires', () => {
@@ -80,7 +113,22 @@ describe('<Percent>', () => {
     const el = screen.getByText('31%')
     expect(el).toHaveClass('blur-[5px]')
     expect(el).toHaveClass('select-none')
-    expect(el).toHaveAttribute('aria-label', 'Percentage hidden')
+    expect(el).toHaveAttribute('aria-hidden', 'true')
+    expect(el).toHaveAttribute('data-privacy-mask')
+    expect(screen.getByText('Percentage hidden')).toHaveClass('sr-only')
+  })
+
+  it('passes className and style through, hidden or not', () => {
+    const style = { color: 'rgb(52, 211, 153)' }
+    const { container, unmount } = renderWithPrivacy(<Percent value={0.3} className="font-semibold" style={style} />)
+    expect(container.firstChild).toHaveClass('font-semibold')
+    expect(container.firstChild).toHaveStyle(style)
+    unmount()
+
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const hidden = renderWithPrivacy(<Percent value={0.3} className="font-semibold" style={style} />)
+    expect(hidden.container.firstChild).toHaveClass('font-semibold')
+    expect(hidden.container.firstChild).toHaveStyle(style)
   })
 
   it('follows the Shift+P shortcut like an amount does', () => {
@@ -111,6 +159,10 @@ describe('maskRupees', () => {
   it('masks every amount in a sentence, with or without a sign or decimals', () => {
     expect(maskRupees('Opening balance ₹12,000.50 does not match the closing balance −₹1,00,000.'))
       .toBe(`Opening balance ${HIDDEN_FIGURE} does not match the closing balance ${HIDDEN_FIGURE}.`)
+  })
+
+  it('masks a minus written after the rupee sign, as Python formats a negative', () => {
+    expect(maskRupees('Closing balance ₹-1,234.00 is short.')).toBe(`Closing balance ${HIDDEN_FIGURE} is short.`)
   })
 
   it('leaves text with no amount alone', () => {

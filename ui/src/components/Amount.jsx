@@ -19,53 +19,42 @@ export function formatRupees(amount, { decimals = 2, debitCredit } = {}) {
 // chart tooltip or tick) and cannot be blurred in place.
 export const HIDDEN_FIGURE = '••••'
 // Rupee amounts inside free text we do not build ourselves, such as an error
-// or warning the server wrote.
-export const maskRupees = text => text.replace(/[−+-]?₹\s?\d[\d,]*(\.\d+)?/g, HIDDEN_FIGURE)
+// or warning the server wrote. The sign may come before the rupee sign or
+// after it ("-₹5" and "₹-5" both occur).
+export const maskRupees = text => text.replace(/[−+-]?₹\s?[−-]?\d[\d,]*(\.\d+)?/g, HIDDEN_FIGURE)
 const HIDDEN_TITLE = 'Amounts hidden - press Shift+P to reveal'
 
-// Renders a rupee amount, honoring the global privacy mode. When privacy is on
-// the value is blurred in place (width and layout preserved) instead of being
-// swapped for a placeholder, so it reads as deliberately hidden rather than
-// still loading.
-export default function Amount({ value, debitCredit, decimals = 2, className = '' }) {
+// A figure hidden in place. The blurred text keeps the layout (it reads as
+// deliberately hidden, not still loading) but is aria-hidden, because an
+// aria-label on a plain span is not announced; a screen reader gets `label`
+// instead. data-privacy-mask lets tests tell a masked figure from a leak.
+function Masked({ text, label, className, style }) {
+  return (
+    <span className={className} style={style} title={HIDDEN_TITLE}>
+      <span aria-hidden="true" data-privacy-mask className="blur-[5px] select-none">{text}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  )
+}
+
+// Renders a rupee amount, honoring the global privacy mode.
+export default function Amount({ value, debitCredit, decimals = 2, className = '', style }) {
   const { hidden } = usePrivacy()
   const text = formatRupees(value, { decimals, debitCredit })
 
-  if (hidden) {
-    return (
-      <span
-        className={`blur-[5px] select-none ${className}`}
-        aria-label="Amount hidden"
-        title={HIDDEN_TITLE}
-      >
-        {text}
-      </span>
-    )
-  }
-
-  return <span className={className}>{text}</span>
+  if (hidden) return <Masked text={text} label="Amount hidden" className={className} style={style} />
+  return <span className={className} style={style}>{text}</span>
 }
 
 // A share of money, such as the kept rate: as private as the amounts it is
 // computed from. `value` is a fraction (0.31 renders 31%). Not for confidence
 // or accuracy, which say nothing about money.
-export function Percent({ value, className = '' }) {
+export function Percent({ value, className = '', style }) {
   const { hidden } = usePrivacy()
   const text = `${Math.round(value * 100)}%`
 
-  if (hidden) {
-    return (
-      <span
-        className={`blur-[5px] select-none ${className}`}
-        aria-label="Percentage hidden"
-        title={HIDDEN_TITLE}
-      >
-        {text}
-      </span>
-    )
-  }
-
-  return <span className={className}>{text}</span>
+  if (hidden) return <Masked text={text} label="Percentage hidden" className={className} style={style} />
+  return <span className={className} style={style}>{text}</span>
 }
 
 // Privacy-safe money strings for the places JSX cannot reach: toast messages,

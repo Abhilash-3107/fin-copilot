@@ -8,7 +8,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import TagInput from '../components/TagInput.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
-import Amount from '../components/Amount.jsx'
+import Amount, { formatRupees } from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import ReasoningPanel from '../components/ReasoningPanel.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
@@ -894,7 +894,7 @@ export default function ReviewQueue() {
       {policySuggestion && (
         <div className="max-w-2xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
           <p className="flex-1 text-sm text-[#c7d2fe]">
-            Sort small payments (up to <Amount value={POLICY_DEFAULT_MAX} decimals={0} />) to people who aren't in your People list as{' '}
+            Sort small payments (up to {formatRupees(POLICY_DEFAULT_MAX, { decimals: 0 })}) to people who aren't in your People list as{' '}
             <span className="font-semibold text-[#e0e7ff]">
               {policySuggestion.subcategory ? `${policySuggestion.category} › ${policySuggestion.subcategory}` : policySuggestion.category}
             </span>{' '}

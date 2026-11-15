@@ -245,7 +245,7 @@ describe('Insights (Money Map)', () => {
     localStorage.setItem('fc_privacy_hidden', '1')
     renderInsights()
     const note = (await screen.findByText(/in refunds and paybacks/)).closest('span.text-xs')
-    expect(note.querySelector('[aria-label="Amount hidden"]')).toHaveTextContent('₹43,138')
+    expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹43,138')
   })
 
   describe('a month in progress', () => {
@@ -326,7 +326,7 @@ describe('privacy mode', () => {
     await screen.findByText('Kept')
     const rate = screen.getAllByText('-7%')[0]
     expect(rate).toHaveClass('blur-[5px]')
-    expect(rate).toHaveAttribute('aria-label', 'Percentage hidden')
+    expect(rate).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('keeps the balance chart tooltip and ticks free of amounts', async () => {

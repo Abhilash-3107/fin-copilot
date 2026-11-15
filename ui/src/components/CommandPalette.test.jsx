@@ -95,6 +95,7 @@ describe('CommandPalette and privacy mode', () => {
     search()
     const amount = await screen.findByText('−₹1,200')
     expect(amount).toHaveClass('blur-[5px]')
-    expect(amount).toHaveAttribute('aria-label', 'Amount hidden')
+    expect(amount).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('Amount hidden')).toBeInTheDocument()
   })
 })
