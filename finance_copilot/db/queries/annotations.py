@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from finance_copilot.db.queries.categories import resolve_category_ids
-from finance_copilot.db.queries.common import unsorted_sql
+from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 from finance_copilot.models.annotation import Annotation
 from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES, VERIFIED_SOURCES
 
@@ -26,7 +26,10 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
     transaction_id it does nothing rather than overwriting, so a re-run or an
     errant POST can never clobber an existing row's original_source /
     annotated_at / reasoning history. Edits must go through update_annotation.
-    Returns True when a row was inserted, False when one already existed.
+    Returns True when a row was inserted, False when one already existed. A new
+    annotation also clears the payment's snooze: a skipped payment that now has
+    an answer (a hand label, or a machine guess from a later run) is a new
+    question, not the one that was set aside.
 
     A subcategory name outside the taxonomy (an LLM's free text, a learned
     rule's stale name) is snapped to the sibling it plainly means or dropped,
@@ -56,6 +59,10 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
             annotation.reasoning,
         ),
     )
+    if cur.rowcount > 0:
+        conn.execute(
+            "UPDATE transactions SET review_snoozed_at = NULL WHERE id = ?", (annotation.transaction_id,)
+        )
     return cur.rowcount > 0
 
 
@@ -138,6 +145,10 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
     unknown = set(patch) - _UPDATABLE_COLUMNS
     if unknown:
         raise ValueError(f"update_annotation: disallowed column(s) {sorted(unknown)}")
+    if patch.get("category") == UNCATEGORIZED:
+        # Uncategorized has no subcategories; a stale one would label the row
+        # with a category it does not belong to.
+        patch = {**patch, "subcategory": None, "subcategory_id": None}
 
     set_clauses = [f"{col} = ?" for col in patch]
     values = list(patch.values())
@@ -176,24 +187,23 @@ def get_annotation_by_transaction(conn: sqlite3.Connection, transaction_id: str)
 
 def _queue_condition(threshold: float) -> tuple[str, tuple]:
     """The one definition of "belongs in the review queue", over transactions t
-    LEFT JOINed to annotations a. Three kinds of payment, in either direction:
-    a machine label below the confidence bar, a machine label that says
-    Uncategorized at any confidence, and a payment with no annotation at all.
-    A human's label (or a rule the user wrote) is never queued, even when the
-    user chose Uncategorized."""
-    reviewable = sorted(REVIEWABLE_SOURCES)
-    human = sorted(VERIFIED_SOURCES | {"user_rule"})
-    reviewable_ph = ",".join("?" for _ in reviewable)
-    human_ph = ",".join("?" for _ in human)
-    sql = (
-        f"((a.source IN ({reviewable_ph}) AND a.confidence < ?) "
-        f"OR ({unsorted_sql('a')} AND (a.id IS NULL OR a.source NOT IN ({human_ph}))))"
-    )
-    return sql, (*reviewable, threshold, *human)
+    LEFT JOINed to annotations a. Two kinds of payment, in either direction:
+    a machine label below the confidence bar (a guess to check), and anything
+    not sorted by common.unsorted_sql (no annotation, or a NULL or Uncategorized
+    category) whatever its source and confidence. So the queue is a superset of
+    what the Dashboard and Money Map call not sorted, and a payment counted as
+    unsorted can always be reached here. A label the user made or wrote a rule
+    for is never a guess to check, whatever its confidence; only an
+    Uncategorized one is still queued."""
+    guessers = sorted(REVIEWABLE_SOURCES - VERIFIED_SOURCES - {"user_rule"})
+    placeholders = ",".join("?" for _ in guessers)
+    sql = f"((a.source IN ({placeholders}) AND a.confidence < ?) OR {unsorted_sql('a')})"
+    return sql, (*guessers, threshold)
 
 
 def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
-    """Payments that still need a human answer, keyed by transaction.
+    """Payments that still need a human answer, keyed by transaction, most
+    worth asking about first.
 
     Items without an annotation carry annotation_id/category/source None and
     confidence 0. Snoozed payments (skipped by the user) are excluded so a skip
@@ -231,20 +241,30 @@ def snooze_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
     return cur.rowcount > 0
 
 
-def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
-    """How many payments are set aside: snoozed and would otherwise be queued.
-    The count the queue surfaces so skipped items are never fully hidden."""
+def queue_counts(conn: sqlite3.Connection, threshold: float) -> dict:
+    """How many payments wait in the queue, without loading it: `unsorted` have
+    no real category (no guess, or Uncategorized), `guesses` have a machine
+    label below the bar, `set_aside` are skipped ones that would otherwise be
+    queued. The first two are what Teach Me will ask; the three never overlap."""
     condition, params = _queue_condition(threshold)
     row = conn.execute(
         f"""
-        SELECT COUNT(*) AS n
+        SELECT
+          COALESCE(SUM(t.review_snoozed_at IS NULL AND {unsorted_sql('a')}), 0) AS unsorted,
+          COALESCE(SUM(t.review_snoozed_at IS NULL AND NOT {unsorted_sql('a')}), 0) AS guesses,
+          COALESCE(SUM(t.review_snoozed_at IS NOT NULL), 0) AS set_aside
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE {condition} AND t.review_snoozed_at IS NOT NULL
+        WHERE {condition}
         """,
         params,
     ).fetchone()
-    return row["n"] if row else 0
+    return {"unsorted": row["unsorted"], "guesses": row["guesses"], "set_aside": row["set_aside"]}
+
+
+def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
+    """How many payments are set aside: snoozed and would otherwise be queued."""
+    return queue_counts(conn, threshold)["set_aside"]
 
 
 def unsnooze_all(conn: sqlite3.Connection, threshold: float) -> int:

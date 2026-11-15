@@ -12,8 +12,9 @@ WHERE id IN (SELECT transaction_id FROM annotations WHERE review_snoozed_at IS N
 DROP INDEX IF EXISTS idx_annotations_review_snoozed;
 ALTER TABLE annotations DROP COLUMN review_snoozed_at;
 
--- Partial index so the queue's "review_snoozed_at IS NULL" filter and the
--- snoozed count stay cheap as the corpus grows.
+-- Partial index over the skipped payments only, so finding them (to bring them
+-- back) stays cheap. The queue's "review_snoozed_at IS NULL" filter is the
+-- common case and does not use it.
 CREATE INDEX IF NOT EXISTS idx_transactions_review_snoozed
     ON transactions(review_snoozed_at)
     WHERE review_snoozed_at IS NOT NULL;

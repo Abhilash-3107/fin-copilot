@@ -23,7 +23,7 @@ Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollam
 - **Local-first** - one SQLite file on your machine; AI runs through Ollama, a built-in local model, or an OpenAI-compatible endpoint you choose
 - **Multi-stage annotation pipeline** - Your rules > built-in rules > learned merchants > RAG Direct > RAG Prompted > Plain LLM, with graceful fallbacks
 - **Your own rules** - Settings > Rules: a word or phrase and a category, with a live preview of what it matches before you save
-- **Human-in-the-loop** - Low-confidence predictions surface in an intuitive and fast review queue for correction
+- **Human-in-the-loop** - Every payment that still needs an answer lands in one fast review queue (Teach Me): guesses the AI was unsure about, payments it left Uncategorized, and payments that were never sorted at all, such as when AI is off
 - **Bank statement parsing** - Dedicated Kotak parser plus a generic parser that handles most banks' tabular statement PDFs, with every row verified against the running balance; UPI metadata extracted automatically
 - **Vector similarity search** - sqlite-vec powers few-shot retrieval for better categorization over time
 - **React dashboard** - Transaction management, annotation review, expense groups, and insights/charts
@@ -53,7 +53,7 @@ Transaction
 [Stage 4: Plain LLM]      - Cold LLM call without examples
     |  confidence: dynamic    llm_conf × calibrated dampening (base 0.85, adapts with feedback)
     v
- Annotation saved → below threshold (0.85)? → Review Queue
+ Annotation saved → below threshold (0.85), or Uncategorized? → Review Queue
 ```
 
 Confidence dampening for Stages 3 and 4 uses Bayesian calibration, starting from static base values but dynamically adjusting per `(source, category)` as human feedback (confirmations, corrections) accumulates.
@@ -72,7 +72,7 @@ See [`docs/annotation-pipeline.md`](https://github.com/Abhilash-3107/fin-copilot
 | Embeddings | Ollama (nomic-embed-text) or built-in fastembed (BAAI/bge-small-en-v1.5) |
 | PDF Parsing | pdfplumber |
 | Charts | Chart.js + react-chartjs-2 |
-| CLI | Typer + Rich (terminal review queue) |
+| CLI | Typer + Rich (`version`) |
 | IDs | ULID (sortable, unique) |
 
 ## Developing
@@ -135,14 +135,6 @@ All values have sensible defaults in `finance_copilot/config.py`, so the `.env` 
 Only a source checkout reads this file, from the repo root.
 The installed app (`uvx finance-copilot`) ignores any `.env` and takes overrides from real environment variables instead.
 
-### CLI Review Queue
-
-```bash
-uv run python -m finance_copilot.cli review
-```
-
-Interactive terminal UI for reviewing and correcting low-confidence annotations.
-
 ## Project Structure
 
 ```
@@ -156,7 +148,7 @@ finance_copilot/
 │   └── banks/           # Bank-specific PDF parsers (kotak.py)
 ├── pipeline/            # Annotation engine (rules, embed, annotate, llm, calibration)
 ├── config.py            # All settings (Pydantic BaseSettings, reads .env)
-├── cli.py               # Typer CLI for terminal review
+├── cli.py               # Typer CLI (version)
 └── main.py              # FastAPI app entry point
 
 ui/
@@ -197,7 +189,7 @@ uv run python scripts/seed_demo_data.py --wipe    # remove demo rows
 The demo data includes:
 - Pre-annotated transactions from all pipeline stages (rule, rag_direct, rag_prompted, llm, manual)
 - Low-confidence annotations that appear in the review queue
-- Unannotated transactions ready for auto-annotate
+- Unannotated transactions ready for auto-annotate (until they are sorted they wait in the review queue too)
 - Synthetic people for known-person matching, and a settled Goa trip group
 
 After seeding, trigger auto-annotate on the remaining unannotated transactions to see the full pipeline in action.

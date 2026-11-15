@@ -338,7 +338,7 @@ class TestReviewSnooze:
 
         # Gone from the queue, counted as snoozed.
         assert all(i["annotation_id"] != "a1" for i in client.get("/api/annotations/review-queue").json())
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 1
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 1
 
     def test_unsnooze_restores(self, client_conn):
         client, conn, _ = client_conn
@@ -348,7 +348,7 @@ class TestReviewSnooze:
         resp = client.post("/api/annotations/review-queue/unsnooze")
         assert resp.json()["restored"] == 1
         assert any(i["annotation_id"] == "a1" for i in client.get("/api/annotations/review-queue").json())
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 0
 
     def test_skip_unknown_transaction_404s(self, client_conn):
         client, _, _ = client_conn
@@ -360,7 +360,7 @@ class TestReviewSnooze:
         client.post("/api/annotations/review-queue/skip", json={"transaction_id": "t1"})
         # Correcting the annotation should drop the lingering snooze flag.
         client.patch("/api/annotations/a1", json={"category": "Food & Dining"})
-        assert client.get("/api/annotations/review-queue/snoozed-count").json()["count"] == 0
+        assert client.get("/api/annotations/review-queue/counts").json()["set_aside"] == 0
 
 
 class TestTransactionsList:

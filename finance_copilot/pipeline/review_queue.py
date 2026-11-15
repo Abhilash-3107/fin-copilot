@@ -37,3 +37,14 @@ def group_review_queue(items: list[dict]) -> list[dict]:
         for item in sorted(members, key=lambda i: (i["txn_date"], i["transaction_id"])):
             ordered.append({**item, "group_key": key, "group_size": len(members), "payee": payee, "payee_kind": kind})
     return ordered
+
+
+def take_whole_groups(items: list[dict], limit: int) -> list[dict]:
+    """The first `limit` items of an ordered, grouped queue, extended to the end
+    of the group the cut falls in so no payee group is split."""
+    if len(items) <= limit:
+        return items
+    cut = limit
+    while cut < len(items) and items[cut]["group_key"] == items[cut - 1]["group_key"]:
+        cut += 1
+    return items[:cut]

@@ -15,11 +15,11 @@ from finance_copilot.api.deps import get_db
 from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
-    count_snoozed,
     get_annotation,
     get_annotation_by_transaction,
     insert_annotation,
     list_review_queue,
+    queue_counts,
     snooze_transaction,
     unsnooze_all,
     update_annotation,
@@ -50,7 +50,7 @@ from finance_copilot.pipeline.embed import (
     embed_transactions,
     get_embedding_single,
 )
-from finance_copilot.pipeline.review_queue import group_review_queue
+from finance_copilot.pipeline.review_queue import group_review_queue, take_whole_groups
 from finance_copilot.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
 from finance_copilot.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
 
@@ -465,19 +465,19 @@ class GroupLabel(BaseModel):
 
 def _label_by_hand(conn: sqlite3.Connection, transaction_id: str, patch: dict) -> bool:
     """A plain manual annotation for a payment nothing has labelled yet. Returns
-    False when the payment does not exist. Caller commits."""
+    False when it was not written: the payment does not exist, or an annotation
+    appeared since the caller looked (a sorting run landed first). Caller commits."""
     if conn.execute("SELECT 1 FROM transactions WHERE id = ?", (transaction_id,)).fetchone() is None:
         return False
-    insert_annotation(conn, Annotation(
+    return insert_annotation(conn, Annotation(
         transaction_id=transaction_id,
         merchant=patch.get("merchant"),
         category=patch["category"],
         subcategory=patch.get("subcategory"),
-        tags=patch.get("tags", ""),
+        tags=patch.get("tags", dump_string_list([])),
         confidence=1.0,
         source="manual",
     ))
-    return True
 
 
 class BulkLabelRequest(BaseModel):
@@ -494,8 +494,10 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     the calibration feedback its own PATCH would record: 'confirmed' where its
     machine label already matched, 'corrected'/'refined' where it didn't. A
     member with no annotation gets a plain manual one and records no feedback,
-    as no model guess was involved. Then the new labels re-decide the machine
-    labels they could change."""
+    as no model guess was involved; if a sorting run annotated it a moment ago,
+    it is corrected like any other member. So the review queue answers every
+    card through here, one payment or many. Then the new labels re-decide the
+    machine labels they could change."""
     try:
         category_id, subcategory_id = require_category_ids(conn, body.label.category, body.label.subcategory)
     except CategoryError as e:
@@ -511,10 +513,13 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     taught = []
     for transaction_id in dict.fromkeys(body.transaction_ids):
         existing = get_annotation_by_transaction(conn, transaction_id)
-        if existing is not None:
-            _apply_correction(conn, existing, patch)
-        elif not _label_by_hand(conn, transaction_id, patch):
+        if existing is None and _label_by_hand(conn, transaction_id, patch):
+            taught.append(transaction_id)
             continue
+        existing = existing or get_annotation_by_transaction(conn, transaction_id)
+        if existing is None:
+            continue  # the payment is gone
+        _apply_correction(conn, existing, patch)
         taught.append(transaction_id)
     conn.commit()
     embed_transactions(conn, taught)
@@ -782,10 +787,19 @@ def dismiss_learned_rule(
     conn.commit()
 
 
+# The queue ships this many items at most (whole payee groups, so an answer to
+# "all payments to X" never lands on a half-loaded group). With AI off every
+# payment is queued, so the list must not grow with the ledger; the counts
+# endpoint says how many wait in all.
+REVIEW_QUEUE_PAGE = 200
+
+
 @router.get("/review-queue")
 def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     dev_mode = get_dev_mode(conn)
-    items = group_review_queue(list_review_queue(conn, get_confidence_threshold(conn)))
+    items = take_whole_groups(
+        group_review_queue(list_review_queue(conn, get_confidence_threshold(conn))), REVIEW_QUEUE_PAGE
+    )
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw
@@ -799,11 +813,13 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     return items
 
 
-@router.get("/review-queue/snoozed-count")
-def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
-    """How many payments the user has set aside (skipped). The queue surfaces
-    this so skipped items are never fully hidden and can be restored."""
-    return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
+@router.get("/review-queue/counts")
+def review_queue_counts(conn: sqlite3.Connection = Depends(get_db)):
+    """What waits in the review queue, counted without loading it: payments with
+    no real category (`unsorted`), machine guesses below the confidence bar
+    (`guesses`), and payments the user set aside (`set_aside`). The queue list is
+    capped, so this is also where its true size comes from."""
+    return queue_counts(conn, get_confidence_threshold(conn))
 
 
 @router.post("/review-queue/rescore", status_code=200)

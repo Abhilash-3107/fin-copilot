@@ -57,8 +57,8 @@ def preview(body: PolicyBody, conn: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(status_code=422, detail=str(e)) from e
     draft = [{**body.model_dump(), "enabled": True}]
     queued = conn.execute(
-        "SELECT t.* FROM transactions t JOIN annotations a ON a.transaction_id = t.id "
-        "WHERE a.source NOT IN ('manual', 'imported') AND a.confidence < ?",
+        "SELECT t.* FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id "
+        "WHERE a.id IS NULL OR (a.source NOT IN ('manual', 'imported') AND a.confidence < ?)",
         (get_confidence_threshold(conn),),
     ).fetchall()
     return {"matches": sum(match_policy(conn, draft, dict(r), as_of=None) is not None for r in queued)}
