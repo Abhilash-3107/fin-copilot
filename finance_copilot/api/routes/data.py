@@ -192,10 +192,9 @@ def load_demo_data(conn: sqlite3.Connection = Depends(get_db)):
     ledger. Re-running on an already-demo DB is a no-op top-up (idempotent
     inserts); delete-everything is the way back.
     """
-    from datetime import date
-
     from fastapi import HTTPException
 
+    from finance_copilot.clock import today
     from finance_copilot.demo_seed import seed
 
     non_demo = conn.execute(
@@ -206,7 +205,7 @@ def load_demo_data(conn: sqlite3.Connection = Depends(get_db)):
             status_code=409,
             detail="You already have real statements - demo data won't be mixed into them.",
         )
-    return seed(conn, date.today())
+    return seed(conn, today())
 
 
 @router.post("/delete-all")

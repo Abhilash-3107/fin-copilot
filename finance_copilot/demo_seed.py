@@ -25,6 +25,7 @@ Other usage:
 
     uv run python scripts/seed_demo_data.py --wipe          # remove demo rows
     uv run python scripts/seed_demo_data.py --db path.db    # custom target
+    uv run python scripts/seed_demo_data.py --today 2026-11-15  # pin the anchor date
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ import random
 from datetime import date
 from pathlib import Path
 
+from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.common import dump_string_list
@@ -542,6 +544,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Seed the demo ledger (default target: data/demo.db)")
     parser.add_argument("--db", default=DEFAULT_DB, help="target SQLite database path")
     parser.add_argument("--wipe", action="store_true", help="delete existing demo rows instead of seeding")
+    parser.add_argument(
+        "--today", type=date.fromisoformat, default=None, metavar="YYYY-MM-DD",
+        help="anchor the data to this date instead of today (also: FC_TODAY)",
+    )
     args = parser.parse_args()
 
     conn = get_migrated_db(args.db)
@@ -552,7 +558,7 @@ def main() -> None:
         conn.close()
         return
 
-    summary = seed(conn, date.today())
+    summary = seed(conn, args.today or app_today())
     conn.close()
     print(f"Seeded {summary['transactions']} transactions across {summary['months']} months")
     print(f"Seeded {summary['annotations']} annotations, {summary['people']} people, "
