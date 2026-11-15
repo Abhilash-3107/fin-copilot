@@ -83,12 +83,19 @@ export function patternToRegExp(pattern, vars = {}) {
   return new RegExp(`^${source}$`)
 }
 
+function appends(change, tail) {
+  const { from, to } = change
+  return typeof from === 'string' && typeof to === 'string' && to.startsWith(from) && new RegExp(tail).test(to.slice(from.length))
+}
+
 /**
  * Sort a diff into the changes the release declares and the ones it does not.
  *
- * An entry matches a change when its path pattern matches, its kind (if the
- * entry limits it) is right, and its `from` and `to` (if given) equal the old
- * and the new value. A value that is absent counts as null.
+ * An entry matches a change when one of its path patterns matches (`path` is a
+ * pattern or a list of them), its kind (if the entry limits it) is right, and
+ * its `from` and `to` (if given) equal the old and the new value. A value that
+ * is absent counts as null. `appends`, a regular expression, says the new value
+ * is the old string followed by text the expression matches ("/ORDER").
  *
  * @param {object[]} changes the output of diff()
  * @param {object[]} expected entries of one scope from expected-changes.json
@@ -99,16 +106,17 @@ export function patternToRegExp(pattern, vars = {}) {
  *   hide a regression the day it comes back.
  */
 export function explain(changes, expected, vars = {}) {
-  const compiled = expected.map((entry) => ({ entry, regexp: patternToRegExp(entry.path, vars) }))
+  const compiled = expected.map((entry) => ({ entry, regexps: [entry.path].flat().map((p) => patternToRegExp(p, vars)) }))
   const hits = new Map(expected.map((entry) => [entry, []]))
   const unexplained = []
   for (const change of changes) {
     const match = compiled.find(
-      ({ entry, regexp }) =>
-        regexp.test(change.path) &&
+      ({ entry, regexps }) =>
+        regexps.some((regexp) => regexp.test(change.path)) &&
         (entry.kinds === undefined || entry.kinds.includes(change.kind)) &&
         (!('from' in entry) || same(entry.from, change.from ?? null)) &&
-        (!('to' in entry) || same(entry.to, change.to ?? null)),
+        (!('to' in entry) || same(entry.to, change.to ?? null)) &&
+        (entry.appends === undefined || appends(change, entry.appends)),
     )
     if (match) hits.get(match.entry).push(change)
     else unexplained.push(change)

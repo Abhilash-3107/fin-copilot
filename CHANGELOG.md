@@ -9,13 +9,26 @@ The categorizer and the statement reader got a round of fixes, and there is now 
 ### Before you upgrade
 
 Download a backup first (Settings > Data > Download backup).
-This release rewrites data in your ledger: it fills category ids that sample data left empty, moves "skipped" from the label to the payment, and re-reads every payment's description.
-If anything looks wrong afterwards, restore the backup.
+This release rewrites data in your ledger, and the new version cannot be undone by installing the old one on the same folder.
+On the first start of 0.1.3 it:
+
+- fills category ids that sample data left empty, and moves "skipped" from the label to the payment;
+- re-reads every payment's description and stores what it finds;
+- removes a trailing "Closing Balance" or "Opening Balance" from a payment's description, which an older Kotak reader had left there;
+- clears a merchant name that has two or more slashes in it ("UPI/NAME/1207.../self"), where a machine copied it from the bank line.
+  A merchant you typed or imported yourself, or set with your own rule, is kept, whatever it contains;
+- deletes a subcategory that has exactly the same name and parent as another and that nothing uses (no label, rule or policy).
+  The copy that is used stays.
+
 A migration that fails now rolls back whole instead of stopping halfway.
+
+To go back to 0.1.2, do not run it on the same folder: on a ledger 0.1.3 has opened, 0.1.2 fails (Teach Me does not load), and a 0.1.2 backup restored into 0.1.3 is migrated again.
+Run `uvx finance-copilot==0.1.2 --data-dir <a new folder>` and restore your backup there (Settings > Data).
 
 ### Figures that change in this release
 
-Your payments, balances, categories, people, groups and rules are unchanged, and so are In, Out, Invested and the Kept tile.
+Your payments, amounts, dates, balances, people, groups and rules are unchanged, and so are In, Out, Invested and the Kept tile.
+Categories are unchanged too, apart from an unused duplicate subcategory (above).
 What moves is how some of them are added up and compared, so the same ledger reads differently on these screens:
 
 - The Dashboard headline.
@@ -25,6 +38,7 @@ What moves is how some of them are added up and compared, so the same ledger rea
 - Comparisons for a month still running.
   A partial month is compared with the same days of the previous month, not with all of it, and the screen says the month is in progress.
   The first month in your ledger has no month before it, so it shows no comparison and no change, instead of comparing with zero.
+  "What changed" for a month still running also leaves out a category the same days of the previous month did not hold, and lists one that held money then and none now.
 - Where it went.
   The rows now end with the lines that make them add up to Out (Transfers and cash, and refunds and paybacks taken off the rows above), plus a total.
   The category rows themselves are unchanged.
@@ -82,6 +96,7 @@ What moves is how some of them are added up and compared, so the same ledger rea
   A locked PDF says it needs a password.
 - Payment descriptions are read once, by one grammar, so lowercase bank codes and payee names containing a slash (M/S.) no longer trigger the format warning.
   The first start of 0.1.3 re-reads your stored descriptions and rebuilds the AI memory in the background.
+  For some UPI layouts the payee now includes the word after the name (SWIGGY/ORDER where 0.1.2 showed SWIGGY), so a payee, and a learned rule listed by that payee in Settings > Rules, can appear under the longer name.
 - Merchant knowledge: well-known merchants the rules missed are recognised, and personal names are not labelled Self Transfers unless you have told the app the account is yours.
 - Matches from your own history count only when the neighbour is similar enough to be evidence, so teaching more merchants no longer makes exact matches score lower.
 - Subcategory names the machine writes outside your taxonomy are snapped to the one they plainly mean, and Settings > Categories has a Tidy up panel for look-alike and orphaned subcategories.

@@ -78,3 +78,25 @@ test('an entry that matches nothing is unused unless it is optional', () => {
   const expected = [{ path: 'gone' }, { path: 'maybe', optional: true }]
   assert.deepEqual(explain([], expected).unused, [{ path: 'gone' }])
 })
+
+test('an entry can list several paths', () => {
+  const changes = [
+    { path: 'a[1].x', kind: 'added', to: 1 },
+    { path: 'b[1].y', kind: 'added', to: 1 },
+    { path: 'c[1].z', kind: 'added', to: 1 },
+  ]
+  const { unexplained } = explain(changes, [{ path: ['a[*].x', 'b[*].y'], kinds: ['added'] }])
+  assert.deepEqual(unexplained.map((c) => c.path), ['c[1].z'])
+})
+
+test('an entry can say the new value is the old one plus a word', () => {
+  const change = (from, to) => ({ path: 't[a].key', kind: 'changed', from, to })
+  const entry = [{ path: 't[*].key', appends: '^/[A-Za-z]+$' }]
+  const unexplained = (c) => explain([c], entry).unexplained.length
+  assert.equal(unexplained(change('SWIGGY', 'SWIGGY/ORDER')), 0)
+  assert.equal(unexplained(change('SWIGGY', 'ZOMATO')), 1)
+  assert.equal(unexplained(change('SWIGGY', 'SWIGGYX/ORDER')), 1)
+  assert.equal(unexplained(change('SWIGGY', 'SWIGGY/ORDER/4001')), 1)
+  assert.equal(unexplained(change('SWIGGY', 'SWIGGY/')), 1)
+  assert.equal(unexplained(change(null, 'SWIGGY/ORDER')), 1)
+})

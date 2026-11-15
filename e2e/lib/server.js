@@ -36,8 +36,9 @@ export function serverCommand(dataDir, port) {
 
 // What uv and node need to run, and nothing else. A developer's shell can set
 // any setting the app reads, so the app's environment is built from this list
-// and not copied from the shell.
-const INHERITED = /^(PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TEMP|TMP|TERM|LANG|LC_\w+|UV_\w+|XDG_\w+|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|(?:https?|all)_proxy)$/i
+// and not copied from the shell. TZ is on it so the app and node (which tells it
+// what day it is) agree on where midnight falls.
+const INHERITED = /^(PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TEMP|TMP|TERM|TZ|LANG|LC_\w+|UV_\w+|XDG_\w+|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|(?:https?|all)_proxy)$/i
 
 /**
  * @param {string|null} today the day the app should believe it is (FC_TODAY), or

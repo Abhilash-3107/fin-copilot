@@ -14,8 +14,9 @@ import { TEMP_PREFIX, installWheel, wheelPath } from '../global-setup.js'
 import { killTree, makeApi, startServer } from '../lib/server.js'
 import { derivedFigures, storedFacts } from '../lib/snapshot.js'
 import { categorise, uploadFixture } from '../lib/statement.js'
-import { storedColumns } from './db.js'
-import { diff, explain } from './diff.js'
+import { compareSnapshots } from './compare.js'
+import { plantLegacyRows, storedColumns } from './db.js'
+import { baseVersion } from './version.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const expectedFile = path.join(here, 'expected-changes.json')
@@ -33,13 +34,30 @@ function localToday() {
   return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`
 }
 
+// Text the journey plants where a migration of this release acts. expected-changes.json
+// names the same strings, because a migration's effect is part of what the release declares.
+const CLOSING_BALANCE_ROW = 'UPI/ZEPTO/ORDER/400112235/UPI'
+const BANK_LINE_MERCHANT = 'UPI/RAVI KUMAR SHA/120777386275/self'
+const TYPED_MERCHANT = 'Chai/Stall/Koramangala'
+const DUPLICATE_SUBCATEGORY = 'legacy-copy-of-restaurants'
+
 /**
  * Build the ledger the way a user of the previous release builds one: the demo
  * data, a real statement with machine answers, then what they add by hand.
  * Only routes that release has are used.
+ *
+ * @returns the day the demo was seeded on, and what the journey planted for the
+ *   migrations to repair (ids by the names expected-changes.json uses)
  */
 async function buildLedger(api) {
+  // The demo is anchored to the day the previous release believes it is, which is
+  // the real date (it has no FC_TODAY). The 0.1.3 run is pinned to that day, so a
+  // midnight in the middle of the seeding would leave the two runs a day apart.
+  const dayBefore = localToday()
   await api.post('/data/demo')
+  const today = localToday()
+  if (today !== dayBefore) throw new Error(`Midnight passed while the demo was being seeded (${dayBefore} -> ${today}): run the journey again.`)
+
   const statement = await uploadFixture(api)
   await categorise(api, statement.id)
 
@@ -52,8 +70,22 @@ async function buildLedger(api) {
   await api.patch(`/annotations/${confident.annotation_id}`, { category: 'Shopping', subcategory: 'General Retail' })
   await api.post(`/annotations/${queue[0].annotation_id}/confirm`)
   await api.post(`/annotations/${queue[1].annotation_id}/skip`)
-  const bare = rows.find((t) => !t.annotation_id)
+  const [bare, bankLine] = rows.filter((t) => !t.annotation_id && t.debit_credit === 'debit')
   await api.post('/annotations', { transaction_id: bare.id, category: 'Food & Dining', subcategory: 'Restaurants', source: 'manual', confidence: 1 })
+
+  // Data that migrations 030 (merchant names with two slashes), 027 (a balance label
+  // on a description) and 033 (a duplicate subcategory) act on. A merchant the user
+  // typed must survive 030; one a machine echoed from the bank line must not.
+  const typed = rows.find((t) => t.annotation_id && t.id !== confident.id && !queue.some((q) => q.annotation_id === t.annotation_id))
+  await api.patch(`/annotations/${typed.annotation_id}`, { merchant: TYPED_MERCHANT })
+  await api.post('/annotations', {
+    transaction_id: bankLine.id, merchant: BANK_LINE_MERCHANT, category: 'Shopping', subcategory: 'General Retail', source: 'llm', confidence: 0.9,
+  })
+  const closing = rows.find((t) => t.statement_id === statement.id && t.raw_description === CLOSING_BALANCE_ROW)
+  if (!closing) throw new Error(`The fixture statement has no payment described ${CLOSING_BALANCE_ROW}`)
+  const categories = await api.get('/categories')
+  const dining = categories.find((c) => c.name === 'Food & Dining' && c.parent_id === null)
+  const restaurants = categories.find((c) => c.name === 'Restaurants' && c.parent_id === dining.id)
 
   // A person, a rule, and a group member.
   const person = await api.post('/people', { name: 'Upgrade Friend', upi: 'upgrade.friend@upi', relationship: 'friend' })
@@ -62,6 +94,15 @@ async function buildLedger(api) {
   const group = await api.post('/groups', { name: 'Upgrade dinner', note: 'Split two ways' })
   const debit = rows.find((t) => t.debit_credit === 'debit' && t.statement_id === statement.id)
   await api.post(`/groups/${group.id}/members`, { transaction_id: debit.id, people: [person.id], txn_type: 'split' })
+
+  return {
+    today,
+    planted: {
+      ids: { closingBalanceRow: closing.id, bankLineRow: bankLine.id, duplicateSubcategory: DUPLICATE_SUBCATEGORY },
+      duplicateOf: restaurants.id,
+      typedMerchant: { id: typed.id, value: TYPED_MERCHANT },
+    },
+  }
 }
 
 async function snapshot(api, version) {
@@ -69,18 +110,12 @@ async function snapshot(api, version) {
   return { facts, figures }
 }
 
-function describeChange(change) {
-  const show = (v) => JSON.stringify(v)
-  if (change.kind === 'added') return `${change.path}: added ${show(change.to)}`
-  if (change.kind === 'removed') return `${change.path}: removed (was ${show(change.from)})`
-  return `${change.path}: ${show(change.from)} -> ${show(change.to)}`
-}
-
 async function main() {
   const expected = JSON.parse(readFileSync(expectedFile, 'utf8'))
   const wheel = wheelPath(process.env.FC_E2E_WHEEL ?? path.join(here, '..', '..', 'dist'))
   const wheelVersion = path.basename(wheel).split('-')[1]
-  if (wheelVersion !== expected.version) {
+  // A release candidate (0.3.0rc1) runs the journey of the release it leads to (0.3.0).
+  if (baseVersion(wheelVersion) !== expected.version) {
     throw new Error(
       `The wheel is ${wheelVersion} but expected-changes.json describes ${expected.version}. ` +
         'Each release needs its own list: set "version" and "from" and review every entry.',
@@ -94,26 +129,35 @@ async function main() {
   let server
   try {
     // 1. The previous published release, from PyPI, as a user runs it.
-    const today = localToday()
     const previousLaunch = (dir, port) => ({
       cmd: 'uvx',
       args: ['--from', `finance-copilot==${expected.from}`, 'finance-copilot', '--data-dir', dir, '--port', String(port), '--no-browser'],
       cwd: os.tmpdir(),
     })
-    console.log(`Starting finance-copilot ${expected.from} from PyPI on ${dataDir}`)
     // The first start downloads the release and its dependencies, so it gets longer than a start from a cache.
-    server = await startServer(dataDir, null, { launch: previousLaunch, timeoutMs: 300_000 })
-    let api = makeApi(server.url)
-    const running = (await api.get('/health')).version
-    if (running !== expected.from) throw new Error(`Asked for ${expected.from} but the server reports ${running}`)
-    await buildLedger(api)
-    const before = await snapshot(api, expected.from)
+    const startPrevious = async () => {
+      const started = await startServer(dataDir, null, { launch: previousLaunch, timeoutMs: 300_000 })
+      const running = (await makeApi(started.url).get('/health')).version
+      if (running !== expected.from) {
+        await killTree(started.child)
+        throw new Error(`Asked for ${expected.from} but the server reports ${running}`)
+      }
+      return started
+    }
+    console.log(`Starting finance-copilot ${expected.from} from PyPI on ${dataDir}`)
+    server = await startPrevious()
+    const { today, planted } = await buildLedger(makeApi(server.url))
+    await killTree(server.child)
+    // Rows the previous release's API cannot make, written with it stopped, then it reads them back.
+    plantLegacyRows(dataDir, { closingBalanceRow: planted.ids.closingBalanceRow, duplicateOf: planted.duplicateOf, duplicateId: DUPLICATE_SUBCATEGORY })
+    server = await startPrevious()
+    const before = await snapshot(makeApi(server.url), expected.from)
     await killTree(server.child)
     server = null
     Object.assign(before.facts, storedColumns(dataDir))
 
     // 2. The release under test, on the same folder.
-    console.log(`Starting the ${expected.version} wheel on the same folder`)
+    console.log(`Starting the ${wheelVersion} wheel on the same folder`)
     venv = installWheel(wheel)
     const currentLaunch = (dir, port) => ({
       cmd: path.join(venv, 'bin', 'finance-copilot'),
@@ -122,9 +166,9 @@ async function main() {
     })
     // The same day the previous release seeded on, so a midnight between the two runs cannot move a figure.
     server = await startServer(dataDir, null, { launch: currentLaunch, today })
-    api = makeApi(server.url)
+    const api = makeApi(server.url)
     const now = (await api.get('/health')).version
-    if (now !== expected.version) throw new Error(`Expected ${expected.version} but the server reports ${now}`)
+    if (now !== wheelVersion) throw new Error(`Expected ${wheelVersion} but the server reports ${now}`)
     const after = await snapshot(api, undefined)
     const startupLog = server.log.all()
     await killTree(server.child)
@@ -133,41 +177,18 @@ async function main() {
 
     // 3. Compare.
     mkdirSync(reportDir, { recursive: true })
-    for (const [name, value] of Object.entries({ before, after })) {
+    for (const [name, value] of Object.entries({ before, after, context: { today, planted } })) {
       writeFileSync(path.join(reportDir, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`)
     }
-    const vars = { month: today.slice(0, 7) }
-    const problems = []
-    const report = []
-    for (const scope of ['stored', 'derived']) {
-      const [a, b] = scope === 'stored' ? [before.facts, after.facts] : [before.figures, after.figures]
-      const changes = diff(a, b)
-      const entries = expected.changes.filter((c) => c.scope === scope)
-      const { unexplained, hits, unused } = explain(changes, entries, vars)
-      report.push(`\n${scope}: ${changes.length} differences, ${changes.length - unexplained.length} expected`)
-      for (const [entry, matched] of hits) {
-        if (matched.length > 0) report.push(`  [${entry.id}] ${matched.length} x ${entry.path}`)
-      }
-      for (const entry of unused) problems.push(`expected change "${entry.id}" (${scope}) did not happen: remove it, or find out why it stopped`)
-      for (const change of unexplained) problems.push(`unexpected ${scope} change: ${describeChange(change)}`)
-    }
+    const { problems, report } = compareSnapshots(before, after, expected, { today, planted })
     writeFileSync(path.join(reportDir, 'report.txt'), `${report.join('\n')}\n`)
     console.log(report.join('\n'))
-
-    // 4. What a list of paths cannot say. Teach Me now holds every payment with
-    // no category; so each payment it newly holds must be one that had none.
-    const unsorted = new Set(
-      before.facts.transactions.filter((t) => t.annotation_id === null || t.category === null || t.category === 'Uncategorized').map((t) => t.id),
-    )
-    for (const id of after.facts.reviewQueue.filter((q) => !before.facts.reviewQueue.includes(q))) {
-      if (!unsorted.has(id)) problems.push(`Teach Me newly holds payment ${id}, which already had a category`)
-    }
     if (/Traceback|ERROR/.test(startupLog)) problems.push('the new release logged an error while opening the old ledger')
 
     if (problems.length > 0) {
       fail(`${problems.length} problem(s)\n  - ${problems.slice(0, 40).join('\n  - ')}\nSnapshots and report: ${reportDir}`)
     } else {
-      console.log(`\nJ15 passed: ${expected.from} -> ${expected.version}. Snapshots and report: ${reportDir}`)
+      console.log(`\nJ15 passed: ${expected.from} -> ${wheelVersion}. Snapshots and report: ${reportDir}`)
     }
   } finally {
     if (server) await killTree(server.child)

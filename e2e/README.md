@@ -76,6 +76,9 @@ It needs network access to PyPI.
 
 1. `uvx --from finance-copilot==<from> finance-copilot --data-dir <tmp> ...` starts the previous release.
    The journey loads the demo data, uploads the fixture statement, and sorts a few payments, adds a person, a rule and a group member, all through that release's own API.
+   It also plants what the migrations that rewrite data act on: a merchant typed by hand with two slashes (migration 030 must keep it), a machine-labelled merchant copied from a bank line (030 clears it), a description ending in "Closing Balance" (027 strips it) and an unused duplicate subcategory (033 deletes it).
+   The first three go through the API; the last two cannot be made there, so `upgrade/db.js` writes them with the server stopped, and the old release is started again to read them back.
+   The day the demo is seeded on is read right after it, and the journey stops if midnight fell inside the seeding.
 2. It records stored facts (`lib/snapshot.js` `storedFacts`, plus the annotation category ids and snooze times that migrations 035 and 036 rewrite, read from the SQLite file) and derived figures (`derivedFigures`: In, Out, Invested, Kept, the breakdown, the recurring totals, the people panel, per month).
    Both take the release as an argument, because the old and new API differ; each release's payload is mapped to one neutral shape in `lib/snapshot.js`.
 3. It stops that release, starts the wheel on the same folder, and records both again.
@@ -83,11 +86,15 @@ It needs network access to PyPI.
    An entry that matches nothing is also a failure (a stale entry would hide the day the change comes back), unless it is marked `optional`, which a date-dependent change is.
    The same list goes into `CHANGELOG.md` under "Figures that change in this release".
 
-An entry has a `scope` (`stored` or `derived`), a `path` pattern (`*` is one key, `**` is anything, `{month}` is the month the run happens in), optional `kinds` (`added`, `removed`, `changed`), optional `from` and `to` values, and a `reason` written for the person reading the changelog.
+An entry has a `scope` (`stored` or `derived`), a `path` pattern or a list of them (`*` is one key, `**` is anything; `{month}` is the month the run happens in, `{firstMonth}` the first month of the ledger, and the ids of the planted rows have their own names), optional `kinds` (`added`, `removed`, `changed`), optional `from` and `to` values, optional `appends` (a regular expression for the text a changed string gained at its end), and a `reason` written for the person reading the changelog.
+Pin `from` and `to` wherever the values are fixed, and scope a path to the rows or months it explains (`demo_*` rows, the first month): a loose entry lets a regression through.
+`upgrade/invariants.js` holds what paths cannot say: the new value in relation to the old one (an id names its label, a person's months add up to the old all-time figure, unsorted never shrinks, the headline equals Kept).
+`upgrade/compare.test.js` damages a good upgrade in one way at a time and checks the comparison fails each time, so an entry that gets looser breaks a test.
 Snapshots and a report go to `test-results/upgrade/`.
 
 For a new release, set `version` and `from` at the top of `expected-changes.json` and review every entry: the file describes one release.
-`npm run test:lib` unit-tests the comparison.
+A release candidate (`0.3.0rc1`) runs the file of the release it leads to (`0.3.0`): the journey compares base versions, and still checks that the server reports the wheel's exact version.
+`npm run test:lib` unit-tests the comparison and the damage it must catch.
 J15 runs in the Release workflow, between the build and the publish, and not on every push, because it depends on PyPI.
 
 ## Layout
@@ -101,5 +108,5 @@ J15 runs in the Release workflow, between the build and the publish, and not on 
   `derivedFigures(api)` records the per-month figures the app computes, for the upgrade journey.
   Both take `{ version }` for a release whose API differs.
 - `lib/server.js`: starting and stopping the app as a child process, and the API client. Shared by `fixtures.js` and `upgrade/run.js`.
-- `upgrade/`: J15. `run.js` is the journey, `diff.js` compares snapshots and holds them against `expected-changes.json`, `db.js` reads the two facts the API does not show.
+- `upgrade/`: J15. `run.js` is the journey, `diff.js` compares snapshots and holds them against `expected-changes.json`, `compare.js` is the whole comparison, `invariants.js` the checks beside the list, `db.js` reads the two facts the API does not show and plants the two rows it cannot make, `version.js` maps a release candidate to its release.
 - `lib/statement.js`: the fixture statement and categorisation helpers.

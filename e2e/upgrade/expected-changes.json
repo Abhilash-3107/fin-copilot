@@ -3,46 +3,125 @@
   "from": "0.1.2",
   "changes": [
     {
-      "id": "stored-upi-meta-rederived",
+      "id": "stored-upi-meta-bank-and-shape",
       "scope": "stored",
-      "path": "transactions[*].upi_meta",
-      "kinds": ["changed"],
-      "reason": "The description parser re-reads every payment's raw description on first start and stores what it found, including the bank and the shape it recognised. Sample data seeded by 0.1.2 carried hand-written notes that the raw description does not hold, so those notes are replaced by what the description says."
+      "path": [
+        "transactions[*].upi_meta.bank",
+        "transactions[*].upi_meta.shape",
+        "groups[*].members[*].upi_meta.bank",
+        "groups[*].members[*].upi_meta.shape"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The description parser re-reads every payment's raw description on first start and stores two more things it found: the bank, and the shape of description it recognised. Every other key a payment had keeps its value."
     },
     {
-      "id": "stored-upi-meta-rederived-in-groups",
+      "id": "stored-upi-meta-sample-notes",
       "scope": "stored",
-      "path": "groups[*].members[*].upi_meta",
-      "kinds": ["changed"],
-      "reason": "The same re-read, seen through the payments listed inside a group."
+      "path": [
+        "transactions[demo_*].upi_meta.note",
+        "groups[*].members[demo_*].upi_meta.note"
+      ],
+      "kinds": [
+        "changed",
+        "removed"
+      ],
+      "reason": "Sample data seeded by 0.1.2 carried hand-written notes that the raw description does not hold, so on sample payments the note is replaced by what the description says. Payments from a statement keep their note."
     },
     {
-      "id": "stored-counterparty-rederived",
+      "id": "stored-upi-meta-sample-found",
+      "scope": "stored",
+      "path": [
+        "transactions[demo_*].upi_meta.vpa",
+        "transactions[demo_*].upi_meta.ref",
+        "groups[*].members[demo_*].upi_meta.vpa",
+        "groups[*].members[demo_*].upi_meta.ref"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The same re-read finds the UPI address and reference in a sample payment's description, which 0.1.2 stored only as a note."
+    },
+    {
+      "id": "stored-upi-meta-sample-whole",
+      "scope": "stored",
+      "path": [
+        "transactions[demo_*].upi_meta",
+        "groups[*].members[demo_*].upi_meta"
+      ],
+      "kinds": [
+        "changed"
+      ],
+      "reason": "A sample payment whose only stored detail was a hand-written note either has none now (its description holds nothing to read) or gets everything its description holds."
+    },
+    {
+      "id": "stored-counterparty-longer-key",
       "scope": "stored",
       "path": "transactions[*].counterparty_key",
-      "kinds": ["changed"],
-      "reason": "The same re-read recognises payee names that contain a slash (SWIGGY/ORDER) where 0.1.2 cut them at the first one (SWIGGY)."
+      "kinds": [
+        "changed"
+      ],
+      "appends": "^/[A-Za-z]+$",
+      "reason": "The description parser now reads the first word after the payee in some UPI layouts (UPI/SWIGGY/ORDER/...) as part of the payee key, SWIGGY/ORDER, where 0.1.2 kept SWIGGY. The extra word is a note word and not part of the name, so this is a known rough edge. A key is only ever extended by one word, never replaced."
+    },
+    {
+      "id": "stored-closing-balance-stripped",
+      "scope": "stored",
+      "path": "transactions[{closingBalanceRow}].raw_description",
+      "kinds": [
+        "changed"
+      ],
+      "from": "UPI/ZEPTO/ORDER/400112235/UPI Closing Balance",
+      "to": "UPI/ZEPTO/ORDER/400112235/UPI",
+      "reason": "Migration 027 removes a statement's 'Closing Balance' or 'Opening Balance' label from the end of a payment's description, where an older Kotak reader left it. The planted payment is one such."
+    },
+    {
+      "id": "stored-bank-line-merchant-cleared",
+      "scope": "stored",
+      "path": "transactions[{bankLineRow}].merchant",
+      "kinds": [
+        "changed"
+      ],
+      "from": "UPI/RAVI KUMAR SHA/120777386275/self",
+      "to": null,
+      "reason": "Migration 030 clears a merchant name that a machine copied from the bank line (it has two or more slashes), so the payee shows instead. A merchant name you typed, imported or set by your own rule is never touched, which the journey checks with a name typed by hand that has two slashes."
+    },
+    {
+      "id": "stored-duplicate-subcategory-dropped",
+      "scope": "stored",
+      "path": "categories[{duplicateSubcategory}]",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "Migration 033 deletes a subcategory that has exactly the same name and parent as another and that nothing uses (no label, rule or policy). The copy that is used, or else the built-in one, stays."
     },
     {
       "id": "stored-snooze-on-payment",
       "scope": "stored",
       "path": "transactions[*].review_snoozed_at",
-      "kinds": ["added"],
+      "kinds": [
+        "added"
+      ],
       "reason": "Migration 035 moves 'skipped in Teach Me' from the label to the payment, so a payment with no label can be skipped too. Every payment now carries the field; the skipped ones keep their time, which the snoozedAt comparison checks."
     },
     {
       "id": "stored-category-ids-backfilled",
       "scope": "stored",
       "path": "annotationCategoryIds[*].category_id",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "from": null,
-      "reason": "Migration 036 fills the category id that 0.1.2's sample-data seeder left empty, only where the name matches exactly one category. A filled id is never changed."
+      "reason": "Migration 036 fills the category id that 0.1.2's sample-data seeder left empty, only where the name matches exactly one category, and checks that the id names the label. A filled id is never changed."
     },
     {
       "id": "stored-subcategory-ids-backfilled",
       "scope": "stored",
       "path": "annotationCategoryIds[*].subcategory_id",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "from": null,
       "reason": "Migration 036, for the subcategory id."
     },
@@ -50,7 +129,9 @@
       "id": "stored-policies-readable",
       "scope": "stored",
       "path": "policies",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "from": null,
       "to": [],
       "reason": "0.1.2 has no review policies to read. The upgraded ledger has none either, because nobody created one."
@@ -59,65 +140,94 @@
       "id": "stored-tidy-up-readable",
       "scope": "stored",
       "path": "tidyUp",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "from": null,
-      "to": { "duplicates": [], "orphans": [] },
-      "reason": "0.1.2 has no taxonomy tidy-up report. The upgraded ledger has no duplicate and no orphaned categories, which is what migration 036 is for."
+      "to": {
+        "duplicates": [],
+        "orphans": []
+      },
+      "reason": "0.1.2 has no taxonomy tidy-up report. The upgraded ledger has no duplicate and no orphaned categories, which is what migrations 033 and 036 are for."
     },
     {
       "id": "stored-learned-rules-per-direction",
       "scope": "stored",
       "path": "learnedRules[*].direction",
-      "kinds": ["added"],
+      "kinds": [
+        "added"
+      ],
       "reason": "Learned merchant rules are kept per direction (money out or in) since migration 029."
     },
     {
       "id": "stored-queue-holds-every-unsorted-payment",
       "scope": "stored",
       "path": "reviewQueue[*]",
-      "kinds": ["added"],
+      "kinds": [
+        "added"
+      ],
       "reason": "Teach Me now holds every payment with no category, including payments with no label at all and machine labels of Uncategorized at any confidence. The journey checks that each payment it newly holds had no category before."
     },
     {
       "id": "stored-queue-counts",
       "scope": "stored",
       "path": "reviewCounts.*",
-      "kinds": ["added"],
+      "kinds": [
+        "added"
+      ],
       "reason": "The queue counts endpoint is new: 0.1.2 only reported how many were set aside, which is unchanged."
     },
     {
       "id": "stored-ai-active-setting",
       "scope": "stored",
       "path": "settings.config.ai_active",
-      "kinds": ["added"],
-      "reason": "The settings payload says whether an AI provider is switched on, so the app can word its messages for a setup with no model."
+      "kinds": [
+        "added"
+      ],
+      "to": false,
+      "reason": "The settings payload says whether an AI provider is switched on, so the app can word its messages for a setup with no model. The journey runs with none."
     },
     {
       "id": "figures-kept-headline",
       "scope": "derived",
       "path": "months.*.keptHeadline",
-      "kinds": ["changed"],
-      "reason": "The Dashboard headline said 'kept' for what was invested plus what was kept. Kept is now In - Out - Invested everywhere: headline, tile and Money Map, and the headline says what was invested."
+      "kinds": [
+        "changed"
+      ],
+      "reason": "The Dashboard headline said 'kept' for what was invested plus what was kept. Kept is now In - Out - Invested everywhere: headline, tile and Money Map, and the headline says what was invested. The journey checks the new headline equals the Kept figure."
     },
     {
       "id": "figures-no-comparison-before-first-month",
       "scope": "derived",
-      "path": "months.*.comparison",
-      "kinds": ["changed"],
+      "path": "months.{firstMonth}.comparison",
+      "kinds": [
+        "changed"
+      ],
+      "from": {
+        "in": 0,
+        "out": 0,
+        "invested": 0,
+        "kept": 0
+      },
+      "to": null,
       "reason": "The first month has no month before it. It used to compare against zeros and now shows no comparison and no delta."
     },
     {
-      "id": "figures-no-changes-without-comparison",
+      "id": "figures-no-changes-before-first-month",
       "scope": "derived",
-      "path": "months.*.whatChanged[*]",
-      "kinds": ["removed"],
-      "reason": "'What changed' lists nothing when there is no month to compare with, and leaves out a category the same days of the previous month did not hold."
+      "path": "months.{firstMonth}.whatChanged[*]",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "'What changed' lists nothing for the first month, which has no month to compare with. It used to list every category against zero."
     },
     {
       "id": "figures-partial-month-comparison",
       "scope": "derived",
       "path": "months.{month}.comparison.*",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "optional": true,
       "reason": "A month still running is compared with the same days of the previous month, not with all of it. Optional because on the last day of a month nothing is partial."
     },
@@ -125,38 +235,59 @@
       "id": "figures-partial-month-what-changed",
       "scope": "derived",
       "path": "months.{month}.whatChanged**",
-      "kinds": ["changed", "added"],
+      "kinds": [
+        "changed",
+        "added",
+        "removed"
+      ],
       "optional": true,
-      "reason": "The same like-for-like comparison, for the categories that moved."
+      "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears."
     },
     {
       "id": "figures-breakdown-closes-on-out",
       "scope": "derived",
       "path": "months.*.breakdownExtras",
-      "kinds": ["changed"],
+      "kinds": [
+        "changed"
+      ],
       "from": null,
-      "reason": "Where it went now ends with reconciling lines (Transfers and cash, Paid back to you) so the rows add up to Out. The category rows themselves are unchanged."
+      "reason": "Where it went now ends with reconciling lines (Transfers and cash, and Refunds and paybacks taken off the rows above) so the rows add up to Out. The category rows themselves are unchanged. The journey checks that the rows and the lines add up to Out."
     },
     {
       "id": "figures-recurring-total",
       "scope": "derived",
       "path": "months.*.committedEachMonth",
-      "kinds": ["changed"],
-      "reason": "The Dashboard's 'Spoken for each month' added every active recurring charge, whatever its cadence, and so disagreed with Money Map. Both now show the monthly charges that are still running."
+      "kinds": [
+        "changed"
+      ],
+      "reason": "The Dashboard's 'Spoken for each month' added every active recurring charge, whatever its cadence, and so disagreed with Money Map. Both now show the monthly charges that are still running. The journey checks it equals Money Map's header."
     },
     {
-      "id": "figures-people-panel-scope",
+      "id": "figures-people-panel-scope-rows",
       "scope": "derived",
-      "path": "months.*.people**",
-      "kinds": ["changed", "removed", "added"],
-      "reason": "The people panel shows the month it sits on. It used to show all time under every month."
+      "path": "months.*.people[*]",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "The people panel shows the month it sits on. It used to show all time under every month, so a person with no payments in a month is no longer listed there."
+    },
+    {
+      "id": "figures-people-panel-scope-figures",
+      "scope": "derived",
+      "path": "months.*.people[*].*",
+      "kinds": [
+        "changed"
+      ],
+      "reason": "The same: a person's sent, received, net and count are the month's. The journey checks that a person's months add up to the all-time figure the panel used to show."
     },
     {
       "id": "figures-unsorted",
       "scope": "derived",
       "path": "months.*.unexplained.*",
-      "kinds": ["changed"],
-      "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized."
+      "kinds": [
+        "changed"
+      ],
+      "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized. The journey checks the figure never shrinks."
     }
   ]
 }
