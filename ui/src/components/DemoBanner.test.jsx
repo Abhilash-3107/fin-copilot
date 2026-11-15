@@ -6,9 +6,11 @@ const { mockApi } = vi.hoisted(() => ({
 }))
 vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class extends Error {} }))
 const toast = vi.fn()
+const reloadWithToast = vi.fn()
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => toast,
+  reloadWithToast: (...args) => reloadWithToast(...args),
 }))
 
 import DemoBanner from './DemoBanner.jsx'
@@ -113,10 +115,9 @@ describe('DemoBanner', () => {
       const [, confirm] = screen.getAllByRole('button', { name: 'Remove sample data' })
       fireEvent.click(confirm)
       await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/data/demo'))
-      await waitFor(() => expect(toast).toHaveBeenCalledWith('Sample data removed.', 'info'))
-      vi.advanceTimersByTime(700)
+      // The app reloads onto the dashboard and says what it did once it is back.
+      await waitFor(() => expect(reloadWithToast).toHaveBeenCalledWith('Sample data removed.', 'info'))
       expect(window.location.hash).toBe('#/dashboard')
-      expect(reload).toHaveBeenCalled()
     })
 
     it('reports a failure and stays put', async () => {
@@ -128,6 +129,7 @@ describe('DemoBanner', () => {
       await waitFor(() => expect(toast).toHaveBeenCalledWith(
         expect.stringContaining('A categorization is running'), 'error', 5000))
       expect(reload).not.toHaveBeenCalled()
+      expect(reloadWithToast).not.toHaveBeenCalled()
     })
   })
 })

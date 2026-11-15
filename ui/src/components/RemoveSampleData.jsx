@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api } from '../lib/api.js'
-import { useToast } from '../contexts/ToastContext.jsx'
+import { reloadWithToast, useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 
 // The one way out of the sample ledger, used by the banner, the upload page and
@@ -16,11 +16,8 @@ export default function RemoveSampleData({ className }) {
     setBusy(true)
     try {
       await api.delete('/data/demo')
-      toast('Sample data removed.', 'info')
-      setTimeout(() => {
-        window.location.hash = '#/dashboard'
-        window.location.reload()
-      }, 600)
+      window.location.hash = '#/dashboard'
+      reloadWithToast('Sample data removed.', 'info')
     } catch (e) {
       toast(`Couldn't remove the sample data - ${e.message}`, 'error', 5000)
       setBusy(false)
