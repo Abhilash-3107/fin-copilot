@@ -47,7 +47,7 @@ function without(value, drop) {
  */
 export async function storedFacts(api, { ignore = [] } = {}) {
   const drop = new Set([...VOLATILE, ...ignore])
-  const [statements, transactions, people, groupList, rules, policies, categories, config, llm, learnedRules, tidyUp, queue, snoozed] =
+  const [statements, transactions, people, groupList, rules, policies, categories, config, llm, learnedRules, tidyUp, queue, queueCounts] =
     await Promise.all([
       api.get('/statements'),
       allTransactions(api),
@@ -61,7 +61,7 @@ export async function storedFacts(api, { ignore = [] } = {}) {
       api.get('/annotations/learned-rules'),
       api.get('/categories/tidy-up'),
       api.get('/annotations/review-queue'),
-      api.get('/annotations/review-queue/snoozed-count'),
+      api.get('/annotations/review-queue/counts'),
     ])
   const groups = await Promise.all(groupList.map(({ id }) => api.get(`/groups/${id}`)))
 
@@ -77,9 +77,10 @@ export async function storedFacts(api, { ignore = [] } = {}) {
     // rule or tidy-up suggestion shows up as an absence, so both lists are kept.
     learnedRules: learnedRules.sort((a, b) => (a.counterparty_key + a.direction < b.counterparty_key + b.direction ? -1 : 1)),
     tidyUp,
-    // Skipped items drop out of the queue and are counted separately.
-    reviewQueue: queue.map((q) => q.id).sort(),
-    snoozedCount: snoozed.count,
+    // Skipped items drop out of the queue and are counted separately. The
+    // queue is keyed by transaction: a row with no annotation has no annotation id.
+    reviewQueue: queue.map((q) => q.transaction_id).sort(),
+    reviewCounts: queueCounts,
     settings: { config, llm },
   }
   return without(facts, drop)

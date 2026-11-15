@@ -26,12 +26,12 @@ async function buildRichLedger(api) {
   const queue = await api.get('/annotations/review-queue')
   expect(queue.length, 'rows waiting for review').toBeGreaterThan(0)
   const rows = (await api.get('/transactions?include=annotation')).filter((t) => t.annotation_id)
-  const relabel = rows.find((t) => !queue.some((q) => q.id === t.annotation_id))
+  const relabel = rows.find((t) => !queue.some((q) => q.transaction_id === t.id))
   expect(relabel, 'a confidently labelled row to relabel by hand').toBeDefined()
 
   // A manual relabel, a skipped review item and a group with members.
   await api.patch(`/annotations/${relabel.annotation_id}`, { category: 'Shopping', subcategory: 'General Retail' })
-  await api.post(`/annotations/${queue[0].id}/skip`)
+  await api.post('/annotations/review-queue/skip', { transaction_id: queue[0].transaction_id })
   const group = await api.post('/groups', { name: 'E2E dinner', note: 'Split three ways' })
   const [first, second] = rows.filter((t) => t.debit_credit === 'debit')
   await api.post(`/groups/${group.id}/members`, { transaction_id: first.id, people: [person.id], txn_type: 'split' })
@@ -47,7 +47,7 @@ test('a backup restores the ledger exactly after everything is deleted', async (
   expect(original.people).toHaveLength(1)
   expect(original.rules).toHaveLength(1)
   expect(original.groups[0].members).toHaveLength(2)
-  expect(original.snoozedCount).toBe(1)
+  expect(original.reviewCounts.set_aside).toBe(1)
   expect(original.transactions.some((t) => t.source === 'manual')).toBe(true)
   await open(page, '/dashboard')
   const keptBefore = await figureNear(page, 'Kept')

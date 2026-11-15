@@ -20,7 +20,7 @@ import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
-  GraduationCap, FilePlus2, TrendingUp, HelpCircle, Users,
+  FilePlus2, TrendingUp, HelpCircle, Users,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
 } from 'lucide-react'
 
@@ -450,7 +450,8 @@ export default function Dashboard() {
   const toast = useToast()
   const { month: periodMonth } = usePeriod()
   const [data, setData] = useState(null)
-  const [reviewCount, setReviewCount] = useState(0)
+  // Low-confidence guesses waiting in Teach Me (every month, not just this one).
+  const [guessCount, setGuessCount] = useState(0)
   const [accuracy, setAccuracy] = useState([])
   const [loading, setLoading] = useState(true)
   // Any tracked run (this page, another page, or re-attached after a reload)
@@ -470,14 +471,15 @@ export default function Dashboard() {
     async function load() {
       setLoading(true)
       try {
-        const [summary, queue, acc] = await Promise.all([
+        const [summary, counts, acc] = await Promise.all([
           api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
-          api.get('/annotations/review-queue'),
+          // Counts only: the queue itself can be thousands of rows long.
+          api.get('/annotations/review-queue/counts').catch(() => null),
           api.get('/annotations/accuracy').catch(() => []),
         ])
         if (cancelled) return
         setData(summary)
-        setReviewCount(queue.length)
+        setGuessCount(counts?.guesses ?? 0)
         setAccuracy(acc)
       } catch (e) {
         if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
@@ -523,11 +525,27 @@ export default function Dashboard() {
   const coverage = coverageLabel(data?.period)
   const attention = []
   if (data?.month) {
-    if (reviewCount > 0) {
+    // One figure per fact, over one set: this month's unsorted payments and
+    // their money. Guesses to check are a different fact (and span every
+    // month, as Teach Me does), so they get their own row.
+    const unsorted = data.unexplained.count
+    if (unsorted > 0) {
       attention.push({
-        key: 'review', icon: GraduationCap, color: '#a78bfa', to: '/review',
-        text: `${reviewCount} transaction${reviewCount === 1 ? '' : 's'} need a quick look - every answer makes your copilot smarter`,
-        cta: 'Teach me',
+        key: 'unsorted', icon: HelpCircle, color: '#fbbf24', to: '/review',
+        text: (
+          <>
+            {unsorted} {unsorted === 1 ? 'payment' : 'payments'} in {dayjs(data.month).format('MMMM')}{' '}
+            {unsorted === 1 ? "isn't" : "aren't"} sorted yet (<Amount value={data.unexplained.total} decimals={0} />)
+          </>
+        ),
+        cta: 'Sort them',
+      })
+    }
+    if (guessCount > 0) {
+      attention.push({
+        key: 'guesses', icon: Sparkles, color: '#a78bfa', to: '/review',
+        text: `${guessCount} ${guessCount === 1 ? 'guess' : 'guesses'} to check, across all months`,
+        cta: 'Check them',
       })
     }
     // Statements land as whole months after the bank issues them, so "fresh"
@@ -557,18 +575,6 @@ export default function Dashboard() {
           </>
         ),
         cta: 'Look closer',
-      })
-    }
-    if (data.unexplained.count > 0) {
-      attention.push({
-        key: 'unexplained', icon: HelpCircle, color: '#fbbf24', to: '/review',
-        text: (
-          <>
-            <Amount value={data.unexplained.total} decimals={0} /> across {data.unexplained.count}{' '}
-            transaction{data.unexplained.count === 1 ? '' : 's'} has no category yet
-          </>
-        ),
-        cta: 'Sort it',
       })
     }
     const person = data.people.items.find(p => Math.abs(p.net) >= 500)

@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
 # Migrations that predate the schema_migrations table. Databases created by the
 # old runner already have all of these applied, so when we encounter a DB with
 # tables but no schema_migrations rows, we baseline these as applied.
@@ -85,8 +87,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     recorded, or rolls back and raises. Statements touching the vec_items virtual
     table are skipped when the sqlite-vec extension is unavailable.
     """
-    migrations_dir = Path(__file__).parent / "migrations"
-    migration_files = sorted(migrations_dir.glob("*.sql"))
+    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
 
     conn.execute(
         """
@@ -120,6 +121,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         if sql_path.name in applied:
             continue
         try:
+            # Explicit BEGIN: the sqlite3 module opens a transaction only before
+            # INSERT/UPDATE/DELETE, so a leading ALTER or CREATE would commit on
+            # its own and a failure further down would leave the file half applied.
+            conn.execute("BEGIN")
             for stmt in _iter_statements(sql_path.read_text()):
                 if "vec_items" in stmt and not vec_available:
                     continue

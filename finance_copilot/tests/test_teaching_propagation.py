@@ -143,7 +143,7 @@ class TestPropagation:
         for i in range(3):
             _row(conn, f"m{i}", "Food & Dining", "manual", 1.0, day=i + 1)
         _row(conn, "q1", "Miscellaneous", "llm", 0.15, day=20)
-        conn.execute("UPDATE annotations SET review_snoozed_at = datetime('now') WHERE transaction_id = 'q1'")
+        conn.execute("UPDATE transactions SET review_snoozed_at = datetime('now') WHERE id = 'q1'")
         _row(conn, "other", "Miscellaneous", "llm", 0.12, key="SOMEONE ELSE", day=21)
         assert [c["transaction_id"] for c in rescore_review_queue(conn)] == ["q1"]
         assert _ann(conn, "other")["source"] == "llm"
