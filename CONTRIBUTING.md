@@ -41,6 +41,9 @@ uv run pytest
 cd ui && npm run lint && npm test && npm run build
 ```
 
+CI also runs the browser journeys in `e2e/` against the built wheel.
+To run them locally, build the UI and see `e2e/README.md`.
+
 Add or update tests for the behaviour you change.
 A bug fix should come with a test that fails without it.
 
