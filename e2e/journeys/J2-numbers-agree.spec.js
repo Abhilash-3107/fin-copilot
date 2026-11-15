@@ -102,7 +102,7 @@ test.describe('J2 numbers agree', () => {
   test('the Dashboard uncategorised figure equals the Money Map row and the transactions behind it', async ({ page }) => {
     await open(page, '/dashboard')
     // Where this link goes is not judged here, only the figure it states.
-    const item = page.getByRole('link', { name: /no category/i })
+    const item = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
     await expect(item).toBeVisible()
     const dashboard = firstRupees(await item.innerText())
 
