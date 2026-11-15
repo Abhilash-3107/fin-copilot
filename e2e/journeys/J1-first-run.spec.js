@@ -1,5 +1,5 @@
 // J1 - First run, load demo data.
-import { test, expect, expectedFailure } from '../fixtures.js'
+import { test, expect } from '../fixtures.js'
 import { figureNear, open, openSettingsTab } from '../lib/ui.js'
 
 test.describe('J1 first run', () => {
@@ -20,7 +20,6 @@ test.describe('J1 first run', () => {
   })
 
   test('Settings > Categories shows no tidy-up warnings', async ({ page, app }) => {
-    expectedFailure('R1 item 10: the demo seeder writes no category ids, so Settings reports 35 false tidy-up warnings')
     await app.loadDemo()
     await openSettingsTab(page, 'Categories')
     await expect(page.getByText('Refine the subcategories')).toBeVisible()
@@ -28,14 +27,12 @@ test.describe('J1 first run', () => {
   })
 
   test('demo data is visibly marked once loaded', async ({ page, app }) => {
-    expectedFailure('R1 item 10: nothing on screen tells demo data from real data')
     await app.loadDemo()
     await open(page, '/dashboard')
     await expect(page.getByText(/demo data|sample data/i).first()).toBeVisible()
   })
 
   test('removing the demo data leaves what the user added', async ({ page, app }) => {
-    expectedFailure('R1 item 10: only "Delete all data" exists, there is no way to remove just the demo data')
     await app.loadDemo()
     // Things the user made themselves, which removal must not touch.
     const person = await app.api.post('/people', { name: 'E2E Friend', upi: 'e2e.friend@upi', relationship: 'friend' })
