@@ -148,12 +148,37 @@ def list_members_for_group(conn: sqlite3.Connection, group_id: str) -> list[dict
     return [_with_parsed_lists(dict(r), ("people",)) for r in rows]
 
 
-def summarize_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[str, dict]:
-    """Per-group rollup for the collapsed row: date range, spend/received totals,
-    net position, and member count. One query over all requested groups.
+_EMPTY_SUMMARY: dict = {
+    "member_count": 0,
+    "first_date": None,
+    "last_date": None,
+    "spend": 0,
+    "received": 0,
+    "your_share": 0,
+    "has_people": False,
+    "settle_up": [],
+}
 
-    net = credits - debits across the group's transactions, i.e. money that came
-    to the user minus money that left. spend/received are the gross legs.
+
+def empty_summary() -> dict:
+    """Rollup for a group with no members yet (a fresh copy, never shared)."""
+    return {**_EMPTY_SUMMARY, "settle_up": []}
+
+
+def summarize_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[str, dict]:
+    """Per-group rollup for the header: date range, gross legs, your share, who owes.
+
+    spend/received are the gross legs (money out of / into your account).
+    `settle_up` is the per-person list from settle_up_for_group, the same one the
+    card body shows, so header and body cannot disagree. `your_share` is what the
+    group cost you after money that came back and money still owed to you:
+
+        your_share = spend - received - sum(settle_up nets)
+
+    A 880 stay split with Neha (she owes 440) is a share of 440; money you merely
+    sent a person (transfer / refund) is owed back in full, so it is not your share.
+    `has_people` says whether anyone is tagged, which separates "settled" (people
+    tagged, nothing owed) from "nobody tagged, nothing to settle".
     """
     if not group_ids:
         return {}
@@ -165,7 +190,8 @@ def summarize_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[str
                MIN(t.txn_date)                                            AS first_date,
                MAX(t.txn_date)                                            AS last_date,
                COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'  THEN t.amount ELSE 0 END), 0) AS spend,
-               COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' THEN t.amount ELSE 0 END), 0) AS received
+               COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' THEN t.amount ELSE 0 END), 0) AS received,
+               MAX(m.people IS NOT NULL AND m.people NOT IN ('', '[]'))   AS has_people
         FROM transaction_group_members m
         JOIN transactions t ON t.id = m.transaction_id
         WHERE m.group_id IN ({placeholders})
@@ -176,8 +202,12 @@ def summarize_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[str
     summary: dict[str, dict] = {}
     for r in rows:
         d = dict(r)
-        d["net"] = round(d["received"] - d["spend"], 2)
-        summary[d.pop("group_id")] = d
+        group_id = d.pop("group_id")
+        d["has_people"] = bool(d["has_people"])
+        d["settle_up"] = settle_up_for_group(conn, group_id)
+        owed = sum(s["net"] for s in d["settle_up"])
+        d["your_share"] = round(d["spend"] - d["received"] - owed, 2)
+        summary[group_id] = d
     return summary
 
 

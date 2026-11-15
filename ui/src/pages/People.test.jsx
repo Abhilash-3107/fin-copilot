@@ -47,6 +47,34 @@ describe('People', () => {
     expect(screen.getByText(/₹300/)).toBeInTheDocument()
   })
 
+  it('states what the figure counts and over what period', async () => {
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    expect(screen.getByText(/Sent and received/)).toBeInTheDocument()
+    expect(screen.getByText(/all time/i)).toBeInTheDocument()
+    expect(screen.queryByText('Net')).not.toBeInTheDocument()
+  })
+
+  it('reads the sign in words and does not colour sending money red', async () => {
+    mockApi.get.mockResolvedValue([
+      PEOPLE[0],
+      { id: 'p3', name: 'Neha', upi: 'neha', relationship: null, stats: { matched: 2, sent: 100, received: 4800, net: 4700 } },
+    ])
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    const sent = screen.getByText(/more sent/)
+    expect(sent).toHaveTextContent('₹300 more sent')
+    expect(screen.getByText(/more received/)).toHaveTextContent('₹4,700 more received')
+    expect(sent.className).not.toMatch(/red|green/)
+    expect(screen.getByText(/more received/).className).not.toMatch(/red|green/)
+  })
+
+  it('counts contacts with the right plural', async () => {
+    mockApi.get.mockResolvedValue([PEOPLE[0]])
+    renderPeople()
+    expect(await screen.findByText('1 contact')).toBeInTheDocument()
+  })
+
   it('clicks the matched count through to filtered transactions', async () => {
     renderPeople()
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())

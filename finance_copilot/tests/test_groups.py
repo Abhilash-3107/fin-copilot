@@ -55,11 +55,78 @@ class TestSummarize:
         assert s["last_date"] == "2026-01-20"
         assert s["spend"] == 300.0
         assert s["received"] == 100.0
-        # net = received - spend
-        assert s["net"] == -200.0
+        # No gross "net" is exposed: the header shows your share instead.
+        assert "net" not in s
 
     def test_empty_group_ids(self, conn):
         assert summarize_groups(conn, []) == {}
+
+
+class TestShare:
+    """summarize_groups: your share and who still owes, from the same numbers as settle-up."""
+
+    def test_person_tagged_on_two_debits(self, conn):
+        # Coorg weekend: two 440 stays, Neha on both. Spent 880, she owes half
+        # of each (440 total), so your share is the other 440.
+        g = create_group(conn, "Coorg")
+        _txn(conn, "t1", "2026-01-05", 440.0, "debit")
+        _txn(conn, "t2", "2026-01-06", 440.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Neha"])
+        add_member(conn, g["id"], "t2", people=["Neha"])
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["spend"] == 880.0
+        assert s["your_share"] == 440.0
+        assert s["has_people"] is True
+        assert [(p["person"], p["net"]) for p in s["settle_up"]] == [("Neha", 440.0)]
+        # One computation feeds both: the header list is the settle-up list.
+        assert s["settle_up"] == settle_up_for_group(conn, g["id"])
+
+    def test_settled_group(self, conn):
+        g = create_group(conn, "Goa")
+        _txn(conn, "t1", "2026-01-05", 1000.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 500.0, "credit")
+        add_member(conn, g["id"], "t1", people=["Rahul"])
+        add_member(conn, g["id"], "t2", people=["Rahul"])
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["settle_up"] == []
+        assert s["has_people"] is True
+        # You paid 1,000 and got 500 back: 500 is yours, nothing is owed.
+        assert s["your_share"] == 500.0
+
+    def test_credit_share_received_without_tags(self, conn):
+        g = create_group(conn, "Trip")
+        _txn(conn, "t1", "2026-01-05", 900.0, "debit")
+        _txn(conn, "t2", "2026-01-10", 300.0, "credit")
+        add_member(conn, g["id"], "t1")
+        add_member(conn, g["id"], "t2")
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["has_people"] is False
+        assert s["settle_up"] == []
+        assert s["your_share"] == 600.0
+
+    def test_money_sent_to_a_person_is_not_your_share(self, conn):
+        g = create_group(conn, "Loan")
+        _txn(conn, "t1", "2026-01-05", 400.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Alice"], txn_type="transfer")
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["your_share"] == 0.0
+        assert s["settle_up"][0]["net"] == 400.0
+
+    def test_share_reflects_membership_changes(self, conn):
+        g = create_group(conn, "G")
+        _txn(conn, "t1", "2026-01-05", 100.0, "debit")
+        assert summarize_groups(conn, [g["id"]]) == {}
+        add_member(conn, g["id"], "t1")
+        conn.commit()
+        assert summarize_groups(conn, [g["id"]])[g["id"]]["your_share"] == 100.0
 
 
 class TestSettleUp:

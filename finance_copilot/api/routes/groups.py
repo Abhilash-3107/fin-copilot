@@ -12,12 +12,12 @@ from finance_copilot.db.queries.groups import (
     add_member,
     create_group,
     delete_group,
+    empty_summary,
     get_group,
     list_groups_for_transaction,
     list_members_for_group,
     remove_member,
     search_groups,
-    settle_up_for_group,
     summarize_groups,
     update_member,
 )
@@ -57,14 +57,13 @@ def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
 
 @router.get("")
 def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
-    """List groups (optionally name-filtered), each with a rollup for the
-    collapsed row: date range, spend/received totals, net position, member count."""
+    """List groups (optionally name-filtered), each with the header rollup:
+    date range, gross legs, your share, who owes, member count."""
     from finance_copilot.db.queries.groups import list_groups
     groups = search_groups(conn, q) if q else list_groups(conn)
     summaries = summarize_groups(conn, [g["id"] for g in groups])
-    empty = {"member_count": 0, "first_date": None, "last_date": None, "spend": 0, "received": 0, "net": 0}
     for g in groups:
-        g["summary"] = summaries.get(g["id"], empty)
+        g["summary"] = summaries.get(g["id"], empty_summary())
     return groups
 
 
@@ -74,7 +73,10 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     group["members"] = list_members_for_group(conn, group_id)
-    group["settle_up"] = settle_up_for_group(conn, group_id)
+    # Same rollup the list serves, so the open card's header refreshes from the
+    # server after every membership change instead of keeping the list's copy.
+    group["summary"] = summarize_groups(conn, [group_id]).get(group_id, empty_summary())
+    group["settle_up"] = group["summary"]["settle_up"]
     return group
 
 

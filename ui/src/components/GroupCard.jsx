@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X } from '
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { formatDateRange } from '../lib/dates.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import PeoplePicker from './PeoplePicker.jsx'
@@ -108,6 +109,29 @@ function RemoveMemberButton({ member, onRemove }) {
   )
 }
 
+// What is still owed, as the header's second line. Reads the same settle-up
+// list the card body shows. Several balances collapse into one net sum.
+function OwedLine({ summary }) {
+  const list = summary.settle_up ?? []
+  if (list.length === 0) {
+    // Nobody tagged means there is nothing to settle, which is not the same as settled.
+    return summary.has_people ? <span className="text-green-400">Settled</span> : null
+  }
+  if (list.length === 1) {
+    const [s] = list
+    const name = s.name ?? s.person
+    const amount = <Amount value={Math.abs(s.net)} decimals={Number.isInteger(s.net) ? 0 : 2} />
+    return s.net > 0
+      ? <span className="text-green-400">{name} owes you {amount}</span>
+      : <span className="text-red-400">You owe {name} {amount}</span>
+  }
+  const total = list.reduce((sum, s) => sum + s.net, 0)
+  const amount = <Amount value={Math.abs(total)} decimals={Number.isInteger(total) ? 0 : 2} />
+  if (total > 0) return <span className="text-green-400">{list.length} people owe you {amount}</span>
+  if (total < 0) return <span className="text-red-400">You owe {list.length} people {amount}</span>
+  return <span className="text-[#94a3b8]">{list.length} balances to settle</span>
+}
+
 function SettleUp({ settleUp, hasPeople }) {
   if (!settleUp?.length) {
     // Tagged people with every balance at zero is an answer worth showing;
@@ -152,7 +176,9 @@ export default function GroupCard({ group, onDelete }) {
   const [loading, setLoading] = useState(false)
   const [people, setPeople] = useState([])
 
-  const summary = group.summary ?? {}
+  // The open card's detail carries a fresh rollup from the server; the list's
+  // copy (group.summary) only describes the group as it was when the page loaded.
+  const summary = detail?.summary ?? group.summary ?? {}
 
   async function reload() {
     const [data, allPeople] = await Promise.all([
@@ -247,17 +273,18 @@ export default function GroupCard({ group, onDelete }) {
           <div className="flex items-center gap-2 mt-0.5 text-xs text-[#64748b] flex-wrap">
             {dateRange && <span>{dateRange}</span>}
             {dateRange && <span className="text-[#2d3148]">·</span>}
-            <span>{summary.member_count ?? 0} {summary.member_count === 1 ? 'txn' : 'txns'}</span>
+            <span>{count(summary.member_count ?? 0, 'payment')}</span>
             {group.note && <><span className="text-[#2d3148]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
           </div>
         </div>
-        {/* Net position */}
+        {/* Your share and what is still owed */}
         {summary.member_count > 0 && (
           <div className="text-right shrink-0">
-            <div className={`text-sm font-medium tabular-nums ${summary.net > 0 ? 'text-green-400' : summary.net < 0 ? 'text-red-400' : 'text-[#94a3b8]'}`}>
-              {summary.net > 0 ? '+' : ''}<Amount value={summary.net} decimals={0} />
+            <div className="text-sm tabular-nums text-[#e2e8f0]">
+              <span className="text-xs text-[#64748b]">Your share</span>{' '}
+              <span className="font-medium tabular-nums"><Amount value={summary.your_share} decimals={Number.isInteger(summary.your_share) ? 0 : 2} /></span>
             </div>
-            <div className="text-[10px] text-[#475569]">net</div>
+            <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
           </div>
         )}
         <button

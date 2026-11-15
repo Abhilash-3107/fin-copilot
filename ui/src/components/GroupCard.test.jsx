@@ -33,7 +33,9 @@ const GROUP = {
     last_date: '2026-01-20',
     spend: 300,
     received: 100,
-    net: -200,
+    your_share: 200,
+    has_people: false,
+    settle_up: [],
   },
 }
 
@@ -45,14 +47,84 @@ function mockDetail(detail, people = []) {
 describe('GroupCard', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('renders the collapsed summary: name, date range, txn count, net', () => {
+  it('renders the collapsed header: name, date range, payments, your share', () => {
     renderCard(GROUP)
     expect(screen.getByText('Goa Trip')).toBeInTheDocument()
     expect(screen.getByText('05 - 20 Jan 2026')).toBeInTheDocument()
-    expect(screen.getByText('2 txns')).toBeInTheDocument()
-    // net is negative → shows −₹200 and a "net" label
-    expect(screen.getByText('net')).toBeInTheDocument()
-    expect(screen.getByText(/₹200/)).toBeInTheDocument()
+    expect(screen.getByText('2 payments')).toBeInTheDocument()
+    expect(screen.getByText('Your share')).toBeInTheDocument()
+    expect(screen.getByText('₹200')).toBeInTheDocument()
+    // The gross outflow is not a "net", and nobody is tagged so nothing is settled yet.
+    expect(screen.queryByText(/net/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Settled')).not.toBeInTheDocument()
+  })
+
+  it('says who owes you in the header, from the same list as settle up', () => {
+    renderCard({
+      ...GROUP,
+      summary: { ...GROUP.summary, your_share: 440, has_people: true, settle_up: [{ person: 'p1', name: 'Neha Gupta', net: 440 }] },
+    })
+    expect(screen.getByText('Your share')).toBeInTheDocument()
+    expect(screen.getAllByText('₹440')).toHaveLength(2)
+    expect(screen.getByText(/Neha Gupta owes you/)).toBeInTheDocument()
+    expect(screen.queryByText(/net/i)).not.toBeInTheDocument()
+  })
+
+  it('says you owe someone when the balance is negative', () => {
+    renderCard({
+      ...GROUP,
+      summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'p1', name: 'Neha Gupta', net: -150 }] },
+    })
+    expect(screen.getByText(/You owe Neha Gupta/)).toBeInTheDocument()
+  })
+
+  it('sums several balances into one line', () => {
+    renderCard({
+      ...GROUP,
+      summary: {
+        ...GROUP.summary,
+        has_people: true,
+        settle_up: [{ person: 'p1', name: 'A', net: 100 }, { person: 'p2', name: 'B', net: 50 }],
+      },
+    })
+    expect(screen.getByText(/2 people owe you/)).toBeInTheDocument()
+  })
+
+  it('shows Settled when people are tagged and nothing is owed', () => {
+    renderCard({ ...GROUP, summary: { ...GROUP.summary, has_people: true, settle_up: [] } })
+    expect(screen.getByText('Settled')).toBeInTheDocument()
+    expect(screen.queryByText(/net/i)).not.toBeInTheDocument()
+  })
+
+  it('uses the singular for one payment', () => {
+    renderCard({ ...GROUP, summary: { ...GROUP.summary, member_count: 1 } })
+    expect(screen.getByText('1 payment')).toBeInTheDocument()
+  })
+
+  it('refreshes the header from the server after adding a payment', async () => {
+    const empty = { ...GROUP, summary: { member_count: 0, first_date: null, last_date: null, spend: 0, received: 0, your_share: 0, has_people: false, settle_up: [] } }
+    const afterAdd = {
+      ...GROUP,
+      members: [{ transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null }],
+      summary: { member_count: 1, first_date: '2026-01-05', last_date: '2026-01-05', spend: 300, received: 0, your_share: 300, has_people: false, settle_up: [] },
+      settle_up: [],
+    }
+    let added = false
+    mockApi.get.mockImplementation(url => {
+      if (url === '/people') return Promise.resolve([])
+      if (url.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER' }])
+      return Promise.resolve(added ? afterAdd : { ...empty, members: [], settle_up: [] })
+    })
+    mockApi.post.mockImplementation(() => { added = true; return Promise.resolve({}) })
+    renderCard(empty)
+    expect(screen.getByText('0 payments')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Goa Trip'))
+    await waitFor(() => expect(screen.getByPlaceholderText(/Add a transaction/)).toBeInTheDocument())
+    fireEvent.change(screen.getByPlaceholderText(/Add a transaction/), { target: { value: 'dinner' } })
+    fireEvent.click(await screen.findByText('DINNER', {}, { timeout: 2000 }))
+    await waitFor(() => expect(screen.getByText('1 payment')).toBeInTheDocument())
+    expect(screen.getByText('Your share')).toBeInTheDocument()
+    expect(screen.queryByText('0 payments')).not.toBeInTheDocument()
   })
 
   it('loads detail and shows settle-up when expanded', async () => {

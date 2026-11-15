@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Search, HelpCircle } from 'lucide-react'
 import { api } from '../lib/api.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
@@ -132,7 +133,7 @@ export default function People() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">People</h1>
-        <span className="text-xs text-[#64748b]">{people.length} contacts</span>
+        <span className="text-xs text-[#64748b]">{count(people.length, 'contact')}</span>
       </div>
 
       {/* Search + add trigger */}
@@ -185,11 +186,14 @@ export default function People() {
                     </Tooltip>
                   </span>
                 </th>
-                <th className={`${th} text-right`}>Matched</th>
+                <th className={`${th} text-right`}>Payments</th>
                 <th className={`${th} text-right`}>
                   <span className="inline-flex items-center gap-1">
-                    Net
-                    <Tooltip content="Received from them minus sent to them, across matched transactions. Green = they sent you more; red = you sent more." position="bottom">
+                    <span className="flex flex-col items-end leading-tight">
+                      <span>Sent and received</span>
+                      <span className="font-normal normal-case tracking-normal text-[#475569]">all time</span>
+                    </span>
+                    <Tooltip content="Money you received from them minus money you sent them, across every payment in your statements that matches this person. It is not a group balance: Groups counts only the payments you put in a group, and Money Map counts one month." position="bottom">
                       <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
@@ -248,10 +252,13 @@ export default function People() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {stats.matched > 0 ? (
-                        <span className={stats.net > 0 ? 'text-green-400' : stats.net < 0 ? 'text-red-400' : 'text-[#94a3b8]'}>
-                          {stats.net > 0 ? '+' : ''}<Amount value={stats.net} decimals={0} />
+                      {stats.matched > 0 && stats.net !== 0 ? (
+                        // Words carry the direction; sending money to someone is not a loss, so no red.
+                        <span className="text-[#cbd5e1]">
+                          <Amount value={Math.abs(stats.net)} decimals={0} /> more {stats.net > 0 ? 'received' : 'sent'}
                         </span>
+                      ) : stats.matched > 0 ? (
+                        <span className="text-[#94a3b8]">even</span>
                       ) : (
                         <span className="text-[#475569]">—</span>
                       )}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import GroupCard from '../components/GroupCard.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -65,7 +66,7 @@ export default function Groups() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">Groups</h1>
-        <span className="text-xs text-[#64748b]">{groups.length} groups</span>
+        <span className="text-xs text-[#64748b]">{count(groups.length, 'group')}</span>
       </div>
 
       {/* Search + create */}
