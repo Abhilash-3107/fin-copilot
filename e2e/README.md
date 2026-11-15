@@ -61,6 +61,35 @@ Use it to check that a test fails for the reason it states.
 An expected-failure test has to fail by assertion, not by timeout, because a timed-out test never counts as an expected failure.
 The config sets a 10 second action timeout for this reason.
 
+## The upgrade journey (J15)
+
+J15 opens a ledger made by the previous published release in the release being built.
+It is not a Playwright test: it starts two builds one after the other on one data folder, so it is a script.
+
+```
+uv build
+cd e2e && npm run upgrade
+```
+
+It needs network access to PyPI.
+`FC_E2E_WHEEL` picks the wheel and defaults to `../dist`.
+
+1. `uvx --from finance-copilot==<from> finance-copilot --data-dir <tmp> ...` starts the previous release.
+   The journey loads the demo data, uploads the fixture statement, and sorts a few payments, adds a person, a rule and a group member, all through that release's own API.
+2. It records stored facts (`lib/snapshot.js` `storedFacts`, plus the annotation category ids and snooze times that migrations 035 and 036 rewrite, read from the SQLite file) and derived figures (`derivedFigures`: In, Out, Invested, Kept, the breakdown, the recurring totals, the people panel, per month).
+   Both take the release as an argument, because the old and new API differ; each release's payload is mapped to one neutral shape in `lib/snapshot.js`.
+3. It stops that release, starts the wheel on the same folder, and records both again.
+4. Every difference must be explained by an entry in `upgrade/expected-changes.json` for this version, with its reason.
+   An entry that matches nothing is also a failure (a stale entry would hide the day the change comes back), unless it is marked `optional`, which a date-dependent change is.
+   The same list goes into `CHANGELOG.md` under "Figures that change in this release".
+
+An entry has a `scope` (`stored` or `derived`), a `path` pattern (`*` is one key, `**` is anything, `{month}` is the month the run happens in), optional `kinds` (`added`, `removed`, `changed`), optional `from` and `to` values, and a `reason` written for the person reading the changelog.
+Snapshots and a report go to `test-results/upgrade/`.
+
+For a new release, set `version` and `from` at the top of `expected-changes.json` and review every entry: the file describes one release.
+`npm run test:lib` unit-tests the comparison.
+J15 runs in the Release workflow, between the build and the publish, and not on every push, because it depends on PyPI.
+
 ## Layout
 
 - `journeys/J<n>-<slug>.spec.js`: one file per journey.
@@ -68,6 +97,9 @@ The config sets a 10 second action timeout for this reason.
 - `stub-model.js`: the model stub.
 - `lib/ui.js`: reading figures off the screen, and `open(page, route)`, which waits for that route's own landmark.
   A new route needs an entry in `ARRIVED`.
-- `lib/snapshot.js`: `storedFacts(api)`, whole stored rows minus a short deny-list of volatile fields, used by J8 and later by the upgrade journey.
+- `lib/snapshot.js`: `storedFacts(api)`, whole stored rows minus a short deny-list of volatile fields, used by J8 and by the upgrade journey.
   `derivedFigures(api)` records the per-month figures the app computes, for the upgrade journey.
+  Both take `{ version }` for a release whose API differs.
+- `lib/server.js`: starting and stopping the app as a child process, and the API client. Shared by `fixtures.js` and `upgrade/run.js`.
+- `upgrade/`: J15. `run.js` is the journey, `diff.js` compares snapshots and holds them against `expected-changes.json`, `db.js` reads the two facts the API does not show.
 - `lib/statement.js`: the fixture statement and categorisation helpers.

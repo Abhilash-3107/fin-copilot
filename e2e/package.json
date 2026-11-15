@@ -5,6 +5,8 @@
   "description": "Browser journeys that drive the real app. Not part of the wheel.",
   "scripts": {
     "test": "playwright test",
+    "test:lib": "node --test upgrade/diff.test.js",
+    "upgrade": "node upgrade/run.js",
     "lint": "eslint . --max-warnings 0"
   },
   "devDependencies": {

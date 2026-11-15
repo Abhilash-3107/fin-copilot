@@ -2,8 +2,9 @@ name: Release
 
 # Tag vX.Y.Z → build the UI + wheel, test against the *installed* wheel (which
 # catches missing package data), smoke-test the real user command on all three
-# OSes, run the browser journeys against the wheel, then publish to PyPI via
-# trusted publishing (no long-lived tokens).
+# OSes, run the browser journeys against the wheel, open a ledger made by the
+# previous release with the new wheel (J15), then publish to PyPI via trusted
+# publishing (no long-lived tokens).
 on:
   push:
     tags: ["v*"]
@@ -151,9 +152,53 @@ jobs:
             e2e/playwright-report
             e2e/test-results
 
+  upgrade:
+    # J15: a ledger made by the previous published release (installed from PyPI,
+    # as a user runs it) opens in this wheel. Stored facts must be identical and
+    # a figure may differ only if e2e/upgrade/expected-changes.json lists it.
+    # It needs PyPI, so it runs here and not on every push.
+    name: Upgrade from the previous release (J15)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install the journeys' dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Open the previous release's ledger in the new wheel
+        working-directory: e2e
+        env:
+          FC_E2E_WHEEL: ${{ github.workspace }}/dist
+        run: npm run upgrade
+
+      - name: Keep the snapshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-report
+          path: e2e/test-results/upgrade
+
   publish:
     name: Publish to PyPI
-    needs: [build, smoke, e2e]
+    needs: [build, smoke, e2e, upgrade]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

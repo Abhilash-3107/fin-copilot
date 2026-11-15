@@ -127,6 +127,10 @@ jobs:
         working-directory: e2e
         run: npm run lint
 
+      - name: Test the upgrade journey's comparison
+        working-directory: e2e
+        run: npm run test:lib
+
       - name: Run the journeys
         working-directory: e2e
         env:

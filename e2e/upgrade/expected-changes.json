@@ -1,0 +1,162 @@
+{
+  "version": "0.1.3",
+  "from": "0.1.2",
+  "changes": [
+    {
+      "id": "stored-upi-meta-rederived",
+      "scope": "stored",
+      "path": "transactions[*].upi_meta",
+      "kinds": ["changed"],
+      "reason": "The description parser re-reads every payment's raw description on first start and stores what it found, including the bank and the shape it recognised. Sample data seeded by 0.1.2 carried hand-written notes that the raw description does not hold, so those notes are replaced by what the description says."
+    },
+    {
+      "id": "stored-upi-meta-rederived-in-groups",
+      "scope": "stored",
+      "path": "groups[*].members[*].upi_meta",
+      "kinds": ["changed"],
+      "reason": "The same re-read, seen through the payments listed inside a group."
+    },
+    {
+      "id": "stored-counterparty-rederived",
+      "scope": "stored",
+      "path": "transactions[*].counterparty_key",
+      "kinds": ["changed"],
+      "reason": "The same re-read recognises payee names that contain a slash (SWIGGY/ORDER) where 0.1.2 cut them at the first one (SWIGGY)."
+    },
+    {
+      "id": "stored-snooze-on-payment",
+      "scope": "stored",
+      "path": "transactions[*].review_snoozed_at",
+      "kinds": ["added"],
+      "reason": "Migration 035 moves 'skipped in Teach Me' from the label to the payment, so a payment with no label can be skipped too. Every payment now carries the field; the skipped ones keep their time, which the snoozedAt comparison checks."
+    },
+    {
+      "id": "stored-category-ids-backfilled",
+      "scope": "stored",
+      "path": "annotationCategoryIds[*].category_id",
+      "kinds": ["changed"],
+      "from": null,
+      "reason": "Migration 036 fills the category id that 0.1.2's sample-data seeder left empty, only where the name matches exactly one category. A filled id is never changed."
+    },
+    {
+      "id": "stored-subcategory-ids-backfilled",
+      "scope": "stored",
+      "path": "annotationCategoryIds[*].subcategory_id",
+      "kinds": ["changed"],
+      "from": null,
+      "reason": "Migration 036, for the subcategory id."
+    },
+    {
+      "id": "stored-policies-readable",
+      "scope": "stored",
+      "path": "policies",
+      "kinds": ["changed"],
+      "from": null,
+      "to": [],
+      "reason": "0.1.2 has no review policies to read. The upgraded ledger has none either, because nobody created one."
+    },
+    {
+      "id": "stored-tidy-up-readable",
+      "scope": "stored",
+      "path": "tidyUp",
+      "kinds": ["changed"],
+      "from": null,
+      "to": { "duplicates": [], "orphans": [] },
+      "reason": "0.1.2 has no taxonomy tidy-up report. The upgraded ledger has no duplicate and no orphaned categories, which is what migration 036 is for."
+    },
+    {
+      "id": "stored-learned-rules-per-direction",
+      "scope": "stored",
+      "path": "learnedRules[*].direction",
+      "kinds": ["added"],
+      "reason": "Learned merchant rules are kept per direction (money out or in) since migration 029."
+    },
+    {
+      "id": "stored-queue-holds-every-unsorted-payment",
+      "scope": "stored",
+      "path": "reviewQueue[*]",
+      "kinds": ["added"],
+      "reason": "Teach Me now holds every payment with no category, including payments with no label at all and machine labels of Uncategorized at any confidence. The journey checks that each payment it newly holds had no category before."
+    },
+    {
+      "id": "stored-queue-counts",
+      "scope": "stored",
+      "path": "reviewCounts.*",
+      "kinds": ["added"],
+      "reason": "The queue counts endpoint is new: 0.1.2 only reported how many were set aside, which is unchanged."
+    },
+    {
+      "id": "stored-ai-active-setting",
+      "scope": "stored",
+      "path": "settings.config.ai_active",
+      "kinds": ["added"],
+      "reason": "The settings payload says whether an AI provider is switched on, so the app can word its messages for a setup with no model."
+    },
+    {
+      "id": "figures-kept-headline",
+      "scope": "derived",
+      "path": "months.*.keptHeadline",
+      "kinds": ["changed"],
+      "reason": "The Dashboard headline said 'kept' for what was invested plus what was kept. Kept is now In - Out - Invested everywhere: headline, tile and Money Map, and the headline says what was invested."
+    },
+    {
+      "id": "figures-no-comparison-before-first-month",
+      "scope": "derived",
+      "path": "months.*.comparison",
+      "kinds": ["changed"],
+      "reason": "The first month has no month before it. It used to compare against zeros and now shows no comparison and no delta."
+    },
+    {
+      "id": "figures-no-changes-without-comparison",
+      "scope": "derived",
+      "path": "months.*.whatChanged[*]",
+      "kinds": ["removed"],
+      "reason": "'What changed' lists nothing when there is no month to compare with, and leaves out a category the same days of the previous month did not hold."
+    },
+    {
+      "id": "figures-partial-month-comparison",
+      "scope": "derived",
+      "path": "months.{month}.comparison.*",
+      "kinds": ["changed"],
+      "optional": true,
+      "reason": "A month still running is compared with the same days of the previous month, not with all of it. Optional because on the last day of a month nothing is partial."
+    },
+    {
+      "id": "figures-partial-month-what-changed",
+      "scope": "derived",
+      "path": "months.{month}.whatChanged**",
+      "kinds": ["changed", "added"],
+      "optional": true,
+      "reason": "The same like-for-like comparison, for the categories that moved."
+    },
+    {
+      "id": "figures-breakdown-closes-on-out",
+      "scope": "derived",
+      "path": "months.*.breakdownExtras",
+      "kinds": ["changed"],
+      "from": null,
+      "reason": "Where it went now ends with reconciling lines (Transfers and cash, Paid back to you) so the rows add up to Out. The category rows themselves are unchanged."
+    },
+    {
+      "id": "figures-recurring-total",
+      "scope": "derived",
+      "path": "months.*.committedEachMonth",
+      "kinds": ["changed"],
+      "reason": "The Dashboard's 'Spoken for each month' added every active recurring charge, whatever its cadence, and so disagreed with Money Map. Both now show the monthly charges that are still running."
+    },
+    {
+      "id": "figures-people-panel-scope",
+      "scope": "derived",
+      "path": "months.*.people**",
+      "kinds": ["changed", "removed", "added"],
+      "reason": "The people panel shows the month it sits on. It used to show all time under every month."
+    },
+    {
+      "id": "figures-unsorted",
+      "scope": "derived",
+      "path": "months.*.unexplained.*",
+      "kinds": ["changed"],
+      "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized."
+    }
+  ]
+}
