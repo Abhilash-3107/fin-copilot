@@ -157,7 +157,7 @@ class TestApi:
         _txn(conn, "t0", "OBEROIFC tucksh", 100, day=1, label="Food & Dining")
         _txn(conn, "t1", "OBEROIFC tucksh", 100, day=2, label="Shopping")
         resp = client.post("/api/annotations/bulk-label", json={
-            "annotation_ids": ["a_t0", "a_t1"], "label": {"category": "Food & Dining"},
+            "transaction_ids": ["t0", "t1"], "label": {"category": "Food & Dining"},
         })
         assert resp.json()["updated"] == 2
         assert {tuple(r) for r in conn.execute("SELECT category, source, confidence FROM annotations")} == {
@@ -168,7 +168,7 @@ class TestApi:
 
     def test_group_answer_needs_a_label(self, client, conn):
         _txn(conn, "t0", "OBEROIFC tucksh", 100, day=1, label="Food & Dining")
-        assert client.post("/api/annotations/bulk-label", json={"annotation_ids": ["a_t0"]}).status_code == 422
+        assert client.post("/api/annotations/bulk-label", json={"transaction_ids": ["t0"]}).status_code == 422
 
     def test_review_queue_carries_group_fields(self, client, conn):
         _txn(conn, "t0", "OBEROIFC tucksh", 100, day=1, label="Miscellaneous")

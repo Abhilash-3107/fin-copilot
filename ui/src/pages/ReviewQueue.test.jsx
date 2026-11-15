@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 
 // Mock the API layer so the queue is hermetic (no backend, no fetch).
 const { mockApi } = vi.hoisted(() => ({
@@ -18,6 +19,12 @@ const noopToast = () => {}
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => noopToast,
+}))
+
+// The page reads the single job slot for the "haven't been sorted yet" line.
+const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: null } }))
+vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
+  useAnnotationJob: () => jobCtx,
 }))
 
 import { ToastProvider } from '../contexts/ToastContext.jsx'
@@ -52,10 +59,20 @@ function makeCard(overrides = {}) {
 }
 
 // Route api.get by path; the queue fetches review-queue, categories and config on mount.
+// `queue` may be a function of the fetch number to script each response.
+let snoozed = 0
+let anyTransactions = true
+// By default the server serves `queue` once, then an empty list: whatever the
+// test answers has left it by the time the page asks again.
 function stubGet(queue) {
+  let served = 0
   mockApi.get.mockImplementation(path => {
-    if (path === '/annotations/review-queue') return Promise.resolve(queue)
-    if (path === '/annotations/review-queue/snoozed-count') return Promise.resolve({ count: 0 })
+    if (path === '/annotations/review-queue') {
+      if (typeof queue === 'function') return Promise.resolve(queue(served++))
+      return Promise.resolve(served++ === 0 ? queue : [])
+    }
+    if (path === '/annotations/review-queue/snoozed-count') return Promise.resolve({ count: snoozed })
+    if (path === '/transactions?limit=1') return Promise.resolve(anyTransactions ? [{ id: 't' }] : [])
     if (path === '/categories') return Promise.resolve(CATEGORIES)
     if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
     if (path.endsWith('/similar')) return Promise.resolve([]) // no propagation candidates
@@ -67,19 +84,29 @@ function stubGet(queue) {
 // Render and wait until all three mount fetches (review-queue, categories, config)
 // have settled, so no stray setState lands during teardown.
 async function renderQueue() {
-  render(
-    <ToastProvider>
-      <PrivacyProvider>
-        <ReviewQueue />
-      </PrivacyProvider>
-    </ToastProvider>
-  )
+  renderPage()
   await screen.findByText('SWIGGY ORDER 8842')
   await act(async () => {}) // flush the remaining categories/config promises
 }
 
+function renderPage() {
+  render(
+    <MemoryRouter>
+      <ToastProvider>
+        <PrivacyProvider>
+          <ReviewQueue />
+        </PrivacyProvider>
+      </ToastProvider>
+    </MemoryRouter>
+  )
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  snoozed = 0
+  anyTransactions = true
+  jobCtx.job = null
+  jobCtx.startAnnotation = vi.fn()
   mockApi.post.mockResolvedValue({ reevaluated: [] })
   mockApi.patch.mockResolvedValue({ reevaluated: [] })
 })
@@ -140,7 +167,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     // Advances to the next card; the skip persists as a snooze (4.15), and
     // neither save endpoint is touched.
     await screen.findByText('UBER TRIP')
-    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/skip', {})
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/review-queue/skip', { transaction_id: 100 })
     expect(mockApi.patch).not.toHaveBeenCalled()
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
   })
@@ -236,7 +263,7 @@ describe('ReviewQueue payee groups', () => {
 
     expect(await screen.findByText('UBER TRIP 77')).toBeInTheDocument()
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
-      annotation_ids: [10, 11], label: { category: 'Food', subcategory: null },
+      transaction_ids: [110, 111], label: { category: 'Food', subcategory: null },
     })
     expect(screen.queryByText('OBEROIFC SECOND 1')).not.toBeInTheDocument()
   })
@@ -343,5 +370,149 @@ describe('ReviewQueue custom categories', () => {
     await user.type(screen.getByLabelText('New category name'), 'Food{Enter}')
 
     expect(await screen.findByLabelText('New category name')).toHaveValue('Food')
+  })
+})
+
+describe('ReviewQueue unsorted payments', () => {
+  const bare = (id, desc, extra = {}) => makeCard({
+    annotation_id: null, transaction_id: id, raw_description: desc, category: null, subcategory: null,
+    merchant: null, confidence: 0, source: null, ...extra,
+  })
+
+  it('says "Nothing to sort yet" on a fresh install, never "all done"', async () => {
+    anyTransactions = false
+    stubGet([])
+    renderPage()
+    expect(await screen.findByText('Nothing to sort yet')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Add a statement' })).toHaveAttribute('href', '/upload')
+    expect(screen.queryByText(/all done/)).not.toBeInTheDocument()
+  })
+
+  it('says how many payments are set aside instead of "all done"', async () => {
+    snoozed = 3
+    stubGet([])
+    renderPage()
+    expect(await screen.findByText('3 payments are set aside')).toBeInTheDocument()
+    expect(screen.queryByText(/all done/)).not.toBeInTheDocument()
+    mockApi.post.mockResolvedValue({ restored: 3 })
+    stubGet(() => [makeCard()])
+    snoozed = 0
+    fireEvent.click(screen.getByRole('button', { name: 'Review them again' }))
+    expect(await screen.findByText('SWIGGY ORDER 8842')).toBeInTheDocument()
+  })
+
+  it('says the work is done only when the server agrees', async () => {
+    // The last local card is answered, but the server has one more waiting.
+    stubGet(n => (n === 0 ? [makeCard()] : n === 1 ? [makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })] : []))
+    await renderQueue()
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(await screen.findByText('UBER TRIP')).toBeInTheDocument()
+    expect(screen.queryByText("You're all done!")).not.toBeInTheDocument()
+  })
+
+  it('shows a line about payments that have not been through automatic sorting, and starts it', async () => {
+    stubGet([bare(100, 'SWIGGY ORDER 8842'), bare(101, 'UBER TRIP')])
+    jobCtx.startAnnotation.mockResolvedValue({ ai_active: false, rule_matched: 0, low_confidence: 2 })
+    await renderQueue()
+    expect(screen.getByText(/2 payments haven't been through automatic sorting yet/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Sort my transactions/ }))
+    await act(async () => {})
+    expect(jobCtx.startAnnotation).toHaveBeenCalledWith({})
+  })
+
+  it('says sorting is running while a job holds the slot', async () => {
+    jobCtx.job = { status: 'running', kind: 'annotate' }
+    stubGet([bare(100, 'SWIGGY ORDER 8842')])
+    await renderQueue()
+    expect(screen.getByText(/Automatic sorting is running/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+  })
+
+  it('shows no line when every queued payment has a guess', async () => {
+    stubGet([makeCard()])
+    await renderQueue()
+    expect(screen.queryByText(/automatic sorting/)).not.toBeInTheDocument()
+  })
+
+  it('does not offer Confirm on a payment with no guess; Enter does nothing until a category is picked', async () => {
+    const user = userEvent.setup()
+    stubGet([bare(100, 'SWIGGY ORDER 8842')])
+    await renderQueue()
+    expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pick a category' })).toBeInTheDocument()
+    expect(screen.getByText('No guess yet')).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+    fireEvent.keyDown(window, { key: 'c' })
+    await act(async () => {})
+    expect(mockApi.post).not.toHaveBeenCalled()
+    expect(mockApi.patch).not.toHaveBeenCalled()
+
+    // Picking a category answers it by hand, as a plain manual annotation.
+    await user.click(screen.getByRole('button', { name: 'Transport' }))
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await screen.findByText("You're all done!")
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations', {
+      transaction_id: 100, category: 'Transport', subcategory: null, merchant: null, tags: [],
+      confidence: 1.0, source: 'manual',
+    })
+    // No similar lookup for a payment with no annotation.
+    expect(mockApi.get.mock.calls.some(([p]) => p.endsWith('/similar'))).toBe(false)
+  })
+
+  it('does not offer Confirm on an Uncategorized guess either', async () => {
+    stubGet([makeCard({ category: 'Uncategorized', confidence: 0.97 })])
+    await renderQueue()
+    expect(screen.queryByRole('button', { name: /Confirm/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pick a category' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await act(async () => {})
+    expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('answers a payee group that mixes guessed and unannotated payments by transaction', async () => {
+    const user = userEvent.setup()
+    const g = { group_key: 'OBEROI|debit', group_size: 2, payee: 'OBEROI' }
+    stubGet([bare(100, 'SWIGGY ORDER 8842', g), makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'OBEROI TWO', category: 'Uncategorized', ...g })])
+    await renderQueue()
+    await user.click(screen.getByRole('button', { name: 'Transport' }))
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await screen.findByText("You're all done!")
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
+      transaction_ids: [100, 101],
+      label: { category: 'Transport', subcategory: null, merchant: null, tags: [] },
+    })
+  })
+
+  it('skips an unannotated payment by transaction', async () => {
+    stubGet([bare(100, 'SWIGGY ORDER 8842'), bare(101, 'UBER TRIP')])
+    await renderQueue()
+    fireEvent.keyDown(window, { key: 's' })
+    await screen.findByText('UBER TRIP')
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/review-queue/skip', { transaction_id: 100 })
+  })
+
+  it('leaves no phantom set-aside item after skip, back, confirm', async () => {
+    // AUDIT B2: the count comes from the server, which forgets the snooze once the card is answered.
+    mockApi.post.mockImplementation(path => {
+      if (path === '/annotations/review-queue/skip') snoozed = 1
+      else snoozed = 0
+      return Promise.resolve({ reevaluated: [] })
+    })
+    stubGet(n => (n === 0 ? [makeCard(), makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })] : []))
+    await renderQueue()
+
+    fireEvent.keyDown(window, { key: 's' })
+    await screen.findByText('UBER TRIP')
+    fireEvent.keyDown(window, { key: 'b' })
+    await screen.findByText('SWIGGY ORDER 8842')
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await screen.findByText('UBER TRIP')
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(await screen.findByText("You're all done!")).toBeInTheDocument()
+    expect(screen.queryByText(/set aside/)).not.toBeInTheDocument()
+    expect(screen.getByText('2 confirmed · 0 corrected · 0 skipped')).toBeInTheDocument()
   })
 })

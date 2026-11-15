@@ -165,18 +165,19 @@ describe('Dashboard', () => {
     expect(screen.queryByText(/vs end of April/)).not.toBeInTheDocument()
   })
 
-  it('ranks the attention items with the review queue first', async () => {
+  it('ranks the attention items with the unsorted row first', async () => {
     renderDashboard()
-    const review = await screen.findByRole('link', { name: /64 transactions need a quick look/ })
+    // One row for one job: the queue's count and this month's unsorted money.
+    const review = await screen.findByRole('link', { name: /64 to sort - ₹620 not sorted yet in May/ })
     expect(review).toHaveAttribute('href', '/review')
+    expect(screen.getAllByRole('link', { name: /Sort them/ })).toHaveLength(1)
     // Data is from May but "today" is later, so the freshness nudge fires.
     expect(screen.getByRole('link', { name: /newest statement is May/ })).toHaveAttribute('href', '/upload')
     // Travel is 4.8x April: the spike item deep-links into filtered transactions.
     expect(screen.getByRole('link', { name: /Travel ran ₹11,249 above April/ }))
       .toHaveAttribute('href', '/transactions?category=Travel&month=2026-05')
-    expect(screen.getByRole('link', { name: /has no category yet/ })).toHaveAttribute('href', '/review')
-    // Capped at four: the people item (rank five) drops off.
-    expect(screen.queryByText(/Between you and sanya/)).not.toBeInTheDocument()
+    // The merged unsorted row frees a slot, so the people item (rank four) fits.
+    expect(screen.getByText(/Between you and sanya/)).toBeInTheDocument()
   })
 
   it('shows all-caught-up when nothing needs attention', async () => {

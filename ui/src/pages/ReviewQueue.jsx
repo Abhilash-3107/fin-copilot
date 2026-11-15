@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy, Plus } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy, Plus, Sparkles } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
+import { annotationSummary } from '../lib/annotationSummary.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import TagInput from '../components/TagInput.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from '../components/Amount.jsx'
@@ -205,6 +208,11 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
 // The amount ceiling a suggested policy starts with; editable in Settings > Rules.
 const POLICY_DEFAULT_MAX = 500
 
+// A guess of Uncategorized, or no guess at all, is not an answer to vouch for.
+function isRealCategory(category) {
+  return !!category && category !== 'Uncategorized'
+}
+
 function withResolved(message, sorted) {
   if (!sorted) return message
   return `${message} Also sorted ${sorted} similar transaction${sorted === 1 ? '' : 's'}.`
@@ -212,9 +220,15 @@ function withResolved(message, sorted) {
 
 export default function ReviewQueue() {
   const toast = useToast()
+  const { job, startAnnotation } = useAnnotationJob()
   const [queue, setQueue] = useState([])
   const [idx, setIdx] = useState(0)
   const [loading, setLoading] = useState(true)
+  // True once the server has confirmed the queue is empty; the done states are
+  // only shown then, never from the local list alone.
+  const [verified, setVerified] = useState(false)
+  const [hasTransactions, setHasTransactions] = useState(true)
+  const [sorting, setSorting] = useState(false)
   const [tree, setTree] = useState(_catCache ?? [])
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
   const [showTags, setShowTags] = useState(false)
@@ -232,7 +246,7 @@ export default function ReviewQueue() {
     savingRef.current = false
     setSaving(false)
   }
-  // Per-card outcome keyed by annotation_id ('confirmed' | 'edited' | 'skipped').
+  // Per-card outcome keyed by transaction_id ('confirmed' | 'edited' | 'skipped').
   // Stats are derived from this, so going back to a card and changing your mind
   // re-keys the same entry instead of double-counting — the server already
   // no-ops a repeat confirm (source flips to 'manual', out of _MODEL_SOURCES),
@@ -254,14 +268,39 @@ export default function ReviewQueue() {
   const idxRef = useRef(0)
   useEffect(() => { idxRef.current = idx }, [idx])
 
+  // Skips are written in order and the done check waits for them, so a card
+  // skipped a moment ago never comes back from the server's list.
+  const writesRef = useRef(Promise.resolve())
+
+  // Everything the page shows about the queue comes from the server: the list,
+  // how many payments are set aside, and whether there is anything to sort at
+  // all. A non-empty list starts the session over from its first card; an empty
+  // one keeps the cards already passed (keepCards) so the done screen can still
+  // go back and undo the last answer.
+  const refresh = useCallback(async ({ keepCards = false } = {}) => {
+    await writesRef.current
+    try {
+      const [data, snoozed, anyTxn] = await Promise.all([
+        api.get('/annotations/review-queue'),
+        api.get('/annotations/review-queue/snoozed-count'),
+        api.get('/transactions?limit=1'),
+      ])
+      if (data.length > 0 || !keepCards) {
+        setQueue(data)
+        setIdx(0)
+        setHistory([])
+      }
+      setSnoozedCount(snoozed?.count ?? 0)
+      setHasTransactions(!Array.isArray(anyTxn) || anyTxn.length > 0)
+      setVerified(data.length === 0)
+    } catch (e) {
+      toast(`Couldn't load the review list - ${e.message}`, 'error')
+      setVerified(true)
+    }
+  }, [toast])
+
   useEffect(() => {
-    api.get('/annotations/review-queue').then(data => {
-      setQueue(data)
-      setLoading(false)
-    }).catch(e => {
-      toast(`Couldn't load the review list — ${e.message}`, 'error')
-      setLoading(false)
-    })
+    refresh().finally(() => setLoading(false))
 
     if (!_catCache) {
       api.get('/categories').then(data => {
@@ -275,14 +314,27 @@ export default function ReviewQueue() {
       setDevMode(!!cfg.dev_mode)
     }).catch(() => {})
 
-    api.get('/annotations/review-queue/snoozed-count')
-      .then(r => setSnoozedCount(r.count ?? 0))
-      .catch(() => {})
-
     api.get('/policies')
       .then(ps => setHasPolicy(Array.isArray(ps) && ps.some(p => p.enabled)))
       .catch(() => {})
-  }, [toast])
+  }, [refresh])
+
+  // The set-aside count follows the server after every answer and skip, never a
+  // local tally that an answer to a skipped card could leave stale.
+  const syncSnoozed = useCallback(() => {
+    return api.get('/annotations/review-queue/snoozed-count')
+      .then(r => setSnoozedCount(r?.count ?? 0))
+      .catch(() => {})
+  }, [])
+
+  // Out of cards locally: ask the server before saying so. Anything still
+  // waiting there (new rows, a re-decided label) continues the session.
+  const outOfCards = idx >= queue.length
+  useEffect(() => {
+    if (loading) return
+    if (!outOfCards) setVerified(false)
+    else if (!verified) refresh({ keepCards: true })
+  }, [loading, outOfCards, verified, refresh])
 
   const current = queue[idx]
 
@@ -303,11 +355,14 @@ export default function ReviewQueue() {
     // where `current` is a fresh object from a new queue array — otherwise an
     // in-progress edit would be clobbered mid-keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, current?.annotation_id])
+  }, [idx, current?.transaction_id])
 
   // Single source of truth for "has the user changed this card?"
   // Used by both the keyboard handler and the render body so Enter/c never
   // disagree with the buttons (a merchant- or tags-only edit still counts).
+  // Confirm vouches for the machine's label, so it needs a real one. Anything
+  // else (no guess, Uncategorized) must be answered by picking a category.
+  const needsPick = !isRealCategory(form.category)
   const isDirty = useMemo(() => {
     if (!current) return false
     return (
@@ -328,8 +383,8 @@ export default function ReviewQueue() {
     return s
   }, [outcomes])
 
-  function record(annotationId, outcome) {
-    setOutcomes(o => ({ ...o, [annotationId]: outcome }))
+  function record(transactionId, outcome) {
+    setOutcomes(o => ({ ...o, [transactionId]: outcome }))
   }
 
   function pushHistory() {
@@ -393,9 +448,7 @@ export default function ReviewQueue() {
       const res = await api.post('/policies', draft)
       setHasPolicy(true)
       setPolicySuggestion(null)
-      setQueue(await api.get('/annotations/review-queue'))
-      setIdx(0)
-      setHistory([])
+      await refresh()
       toast(
         res.resolved
           ? `Policy saved. It sorted ${res.resolved} waiting transaction${res.resolved === 1 ? '' : 's'}.`
@@ -418,26 +471,23 @@ export default function ReviewQueue() {
 
   function skip() {
     if (!current || savingRef.current) return
-    const id = current.annotation_id
+    const transactionId = current.transaction_id
     pushHistory()
-    record(id, 'skipped')
-    setSnoozedCount(n => n + 1)
+    record(transactionId, 'skipped')
     advance()
-    // Persist the snooze so the skip sticks across sessions (4.15). Best-effort:
-    // the card is already advanced; a failure just means it reappears next load.
-    api.post(`/annotations/${id}/skip`, {}).catch(() => {
-      setSnoozedCount(n => Math.max(0, n - 1))
-    })
+    // Persist the snooze so the skip sticks across sessions (4.15), then take
+    // the set-aside count from the server. Best-effort: the card has already
+    // advanced; a failure just means it reappears next load.
+    writesRef.current = writesRef.current
+      .then(() => api.post('/annotations/review-queue/skip', { transaction_id: transactionId }))
+      .catch(() => {})
+      .then(syncSnoozed)
   }
 
   async function restoreSnoozed() {
     try {
       const { restored } = await api.post('/annotations/review-queue/unsnooze', {})
-      setSnoozedCount(0)
-      const data = await api.get('/annotations/review-queue')
-      setQueue(data)
-      setIdx(0)
-      setHistory([])
+      await refresh()
       toast(`Restored ${restored} skipped ${restored === 1 ? 'item' : 'items'}`, 'info')
     } catch (e) {
       toast(`Couldn't restore skipped items - ${e.message}`, 'error')
@@ -445,29 +495,28 @@ export default function ReviewQueue() {
   }
 
   async function confirm() {
-    if (!current || !beginSave()) return
+    if (!current || !isRealCategory(current.category) || !beginSave()) return
     try {
       const group = applyToGroup ? groupFromHere() : [current]
       const label = { category: current.category, subcategory: current.subcategory || null }
       const res = group.length > 1
         // One answer for the whole group: the label on this card, as seen.
-        ? await api.post('/annotations/bulk-label', { annotation_ids: group.map(it => it.annotation_id), label })
+        ? await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
         : await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
       pushHistory()
-      group.forEach(it => record(it.annotation_id, 'confirmed'))
+      group.forEach(it => record(it.transaction_id, 'confirmed'))
       const sorted = settle(group, res.reevaluated)
       const message = group.length > 1 ? `Got it, all ${group.length} from ${current.payee} confirmed.` : 'Got it, thanks!'
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, current.category, current.subcategory)
       advance()
+      syncSnoozed()
     } catch (e) {
       if (e.status === 409) {
         // The label changed under this card (new evidence settled it); show
         // the current queue instead of confirming something unseen.
         toast(`${e.message}. Here's the updated list.`, 'info')
-        setQueue(await api.get('/annotations/review-queue'))
-        setIdx(0)
-        setHistory([])
+        await refresh()
         return
       }
       toast(`Something went wrong — ${e.message}`, 'error')
@@ -478,7 +527,7 @@ export default function ReviewQueue() {
 
   async function saveEdit(overrides = {}) {
     const payload = { ...form, ...overrides }
-    if (!payload.category) { toast('Pick a category first', 'error'); return }
+    if (!isRealCategory(payload.category)) { toast('Pick a category first', 'error'); return }
     if (!beginSave()) return
     try {
       const label = {
@@ -488,18 +537,30 @@ export default function ReviewQueue() {
         tags: payload.tags,
       }
       const group = applyToGroup ? groupFromHere() : [current]
-      const res = group.length > 1
-        ? await api.post('/annotations/bulk-label', { annotation_ids: group.map(it => it.annotation_id), label })
-        : await api.patch(`/annotations/${current.annotation_id}`, label)
+      let res
+      if (group.length > 1) {
+        res = await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
+      } else if (current.annotation_id) {
+        res = await api.patch(`/annotations/${current.annotation_id}`, label)
+      } else {
+        // Nothing has labelled this payment yet: a plain manual annotation.
+        res = await api.post('/annotations', {
+          transaction_id: current.transaction_id, ...label, confidence: 1.0, source: 'manual',
+        })
+      }
       pushHistory()
-      group.forEach(it => record(it.annotation_id, 'edited'))
+      group.forEach(it => record(it.transaction_id, 'edited'))
       const sorted = settle(group, res.reevaluated)
       const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee} updated.` : "Noted, I'll remember that."
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, payload.category, payload.subcategory)
       advance()
+      syncSnoozed()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
+      // A payment with no annotation has no neighbours to compare with; its
+      // payee group already covers that need.
+      if (!current.annotation_id) return
       try {
         const similar = await api.get(`/annotations/${current.annotation_id}/similar`)
         const fixable = similar.filter(s => s.differs)
@@ -554,16 +615,36 @@ export default function ReviewQueue() {
     if (e.key === 'b') goBack()
     // Both c and Enter save when the card is dirty; confirming a stale
     // machine label would discard the edit and poison calibration.
-    else if (e.key === 'c') isDirty ? saveEdit() : confirm()
     else if (e.key === 's') skip()
     else if (e.key === 'a') setApplyToGroup(v => !v)
-    else if (e.key === 'Enter') isDirty ? saveEdit() : confirm()
+    else if (e.key === 'c' || e.key === 'Enter') {
+      // With no real category on the card there is nothing to confirm or save.
+      if (needsPick) return
+      isDirty ? saveEdit() : confirm()
+    }
   }
   useEffect(() => {
     const handler = e => keyActionRef.current?.(e)
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
+
+  // Payments no sorting run has touched yet (AI off, a run that failed, a
+  // statement added since): they are in the queue and can be sorted by hand, or
+  // the automatic pass can take a first look at them.
+  async function sortAutomatically() {
+    setSorting(true)
+    try {
+      const result = await startAnnotation({})
+      const summary = annotationSummary(result)
+      toast(summary.message, summary.type)
+      await refresh()
+    } catch (e) {
+      toast(`Sorting failed - ${e.message}`, 'error')
+    } finally {
+      setSorting(false)
+    }
+  }
 
   async function applyPropagation(transactionIds) {
     setApplying(true)
@@ -599,27 +680,68 @@ export default function ReviewQueue() {
     />
   )
 
-  if (done) {
+  if (done && !verified) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
+      <div className="flex items-center justify-center h-full text-[#475569]">
         {propagateDialog}
-        <div className="text-4xl">✓</div>
-        <h2 className="text-lg font-semibold text-[#e2e8f0]">You're all done!</h2>
-        <p className="text-sm text-[#94a3b8]">
-          {stats.confirmed + stats.edited > 0
-            ? `Thanks! I learned from ${stats.confirmed + stats.edited} transaction${stats.confirmed + stats.edited !== 1 ? 's' : ''}.`
-            : 'Nothing to review right now.'}
-        </p>
-        <p className="text-xs text-[#64748b] mt-1">
-          {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
-        </p>
-        {snoozedCount > 0 && (
-          <button
-            onClick={restoreSnoozed}
-            className="text-xs text-[#64748b] hover:text-[#a5b4fc] underline underline-offset-2 transition-colors"
-          >
-            {snoozedCount} skipped {snoozedCount === 1 ? 'item is' : 'items are'} set aside - review {snoozedCount === 1 ? 'it' : 'them'} again
-          </button>
+        Checking for anything left…
+      </div>
+    )
+  }
+
+  if (done) {
+    const learned = stats.confirmed + stats.edited
+    const setAside = (
+      snoozedCount > 0 && (
+        <button
+          onClick={restoreSnoozed}
+          className="text-sm text-[#a5b4fc] hover:text-[#c7d2fe] underline underline-offset-2 transition-colors"
+        >
+          Review {snoozedCount === 1 ? 'it' : 'them'} again
+        </button>
+      )
+    )
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6">
+        {propagateDialog}
+        {!hasTransactions ? (
+          <>
+            <h2 className="text-lg font-semibold text-[#e2e8f0]">Nothing to sort yet</h2>
+            <p className="text-sm text-[#94a3b8] max-w-sm">
+              Once you add a statement, any payment that needs a decision shows up here, one card at a time.
+            </p>
+            <Link
+              to="/upload"
+              className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            >
+              Add a statement
+            </Link>
+          </>
+        ) : snoozedCount > 0 ? (
+          <>
+            <h2 className="text-lg font-semibold text-[#e2e8f0]">
+              {snoozedCount} {snoozedCount === 1 ? 'payment is' : 'payments are'} set aside
+            </h2>
+            <p className="text-sm text-[#94a3b8]">
+              You skipped {snoozedCount === 1 ? 'it' : 'them'}, so {snoozedCount === 1 ? 'it is' : 'they are'} still not sorted.
+            </p>
+            {setAside}
+          </>
+        ) : (
+          <>
+            <div className="text-4xl">✓</div>
+            <h2 className="text-lg font-semibold text-[#e2e8f0]">You're all done!</h2>
+            <p className="text-sm text-[#94a3b8]">
+              {learned > 0
+                ? `Thanks! I learned from ${learned} transaction${learned !== 1 ? 's' : ''}.`
+                : 'Everything is sorted. Nothing to review right now.'}
+            </p>
+          </>
+        )}
+        {(stats.confirmed + stats.edited + stats.skipped > 0) && (
+          <p className="text-xs text-[#64748b] mt-1">
+            {stats.confirmed} confirmed · {stats.edited} corrected · {stats.skipped} skipped
+          </p>
         )}
         {history.length > 0 && (
           <button
@@ -638,6 +760,7 @@ export default function ReviewQueue() {
   const src = item.source ?? 'pending'
   const groupSize = groupFromHere().length
   const payeesLeft = new Set(queue.slice(idx).map(it => it.group_key)).size
+  const unannotatedLeft = queue.slice(idx).filter(it => !it.annotation_id).length
 
   return (
     <div className="flex flex-col h-full px-4 py-5">
@@ -659,6 +782,24 @@ export default function ReviewQueue() {
           {payeesLeft > 0 && ` · ${payeesLeft} payee${payeesLeft === 1 ? '' : 's'} left`}
         </p>
       </div>
+
+      {unannotatedLeft > 0 && (
+        <div className="max-w-2xl mx-auto w-full mb-4 flex items-center gap-4 rounded-xl border border-[#2d3148] bg-[#13151f] px-5 py-3">
+          <p className="flex-1 text-sm text-[#cbd5e1]">
+            {job != null || sorting
+              ? 'Automatic sorting is running. Payments it settles will leave this list.'
+              : `${unannotatedLeft} payment${unannotatedLeft === 1 ? ' hasn\'t' : 's haven\'t'} been through automatic sorting yet. You can sort ${unannotatedLeft === 1 ? 'it' : 'them'} by hand here.`}
+          </p>
+          {job == null && !sorting && (
+            <button
+              onClick={sortAutomatically}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-[#2d3148] px-3 py-1.5 text-xs font-medium text-[#e2e8f0] transition-colors hover:border-[#6366f1]"
+            >
+              <Sparkles size={13} /> Sort my transactions
+            </button>
+          )}
+        </div>
+      )}
 
       {policySuggestion && (
         <div className="max-w-2xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
@@ -719,8 +860,10 @@ export default function ReviewQueue() {
         <div className="px-6 py-4 border-b border-[#2d3148]">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">My best guess</p>
           <div className="flex items-center gap-3 flex-wrap mb-3">
-            {item.category && (
+            {item.category ? (
               <span className="bg-[#1e1b4b] text-[#a5b4fc] text-sm px-3 py-1 rounded-full">{item.category}</span>
+            ) : (
+              <span className="text-sm text-[#94a3b8]">No guess yet</span>
             )}
             {item.subcategory && (
               <span className="bg-[#1e1b4b] text-[#818cf8] text-xs px-2.5 py-1 rounded-full">{item.subcategory}</span>
@@ -733,16 +876,20 @@ export default function ReviewQueue() {
               {src === 'manual' ? 'you set this' : src === 'rule' ? 'rule match' : sourceLabel(src)}
             </span>
           </div>
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
-          </div>
-          <Tooltip
-            content="How sure the AI is about this guess. Below 60% means it's mostly guessing."
-            position="bottom"
-            className="block"
-          >
-            <ConfidenceBar confidence={item.confidence} />
-          </Tooltip>
+          {item.annotation_id && (
+            <>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
+              </div>
+              <Tooltip
+                content="How sure the AI is about this guess. Below 60% means it's mostly guessing."
+                position="bottom"
+                className="block"
+              >
+                <ConfidenceBar confidence={item.confidence} />
+              </Tooltip>
+            </>
+          )}
         </div>
 
         {/* Dev mode: collapsible reasoning trace */}
@@ -751,7 +898,9 @@ export default function ReviewQueue() {
         {/* Inline category picker — always visible */}
         <div className="px-6 py-4 border-b border-[#2d3148]">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">
-            Correct it <span className="normal-case font-normal text-[#475569]">— click to change</span>
+            {item.category
+              ? <>Correct it <span className="normal-case font-normal text-[#475569]">- click to change</span></>
+              : 'Pick a category'}
           </p>
           <CategoryChips
             tree={tree}
@@ -799,7 +948,24 @@ export default function ReviewQueue() {
           >
             <Undo2 size={15} /> <span className="text-xs opacity-60">[b]</span>
           </button>
-          {isDirty ? (
+          {needsPick ? (
+            <>
+              <button
+                type="button"
+                aria-disabled="true"
+                onClick={() => toast('Pick a category below first', 'info')}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border border-[#2d3148] bg-[#1e2235] text-sm font-medium text-[#94a3b8] cursor-not-allowed"
+              >
+                Pick a category
+              </button>
+              <button
+                onClick={skip}
+                className="flex items-center justify-center gap-2 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-2.5 rounded-lg text-sm hover:text-[#e2e8f0] transition-colors"
+              >
+                <SkipForward size={16} /> <span className="text-xs opacity-60">[s]</span>
+              </button>
+            </>
+          ) : isDirty ? (
             <>
               <button
                 onClick={() => saveEdit()}

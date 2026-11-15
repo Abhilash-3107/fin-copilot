@@ -20,7 +20,7 @@ import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
-  GraduationCap, FilePlus2, TrendingUp, HelpCircle, Users,
+  FilePlus2, TrendingUp, HelpCircle, Users,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
 } from 'lucide-react'
 
@@ -523,11 +523,24 @@ export default function Dashboard() {
   const coverage = coverageLabel(data?.period)
   const attention = []
   if (data?.month) {
-    if (reviewCount > 0) {
+    // One row for one job: the count is the queue's own (what Teach Me will
+    // ask), the money is this month's unsorted debits.
+    if (reviewCount > 0 || data.unexplained.count > 0) {
       attention.push({
-        key: 'review', icon: GraduationCap, color: '#a78bfa', to: '/review',
-        text: `${reviewCount} transaction${reviewCount === 1 ? '' : 's'} need a quick look - every answer makes your copilot smarter`,
-        cta: 'Teach me',
+        key: 'unsorted', icon: HelpCircle, color: '#fbbf24', to: '/review',
+        text: (
+          <>
+            {reviewCount > 0 && `${reviewCount} to sort`}
+            {reviewCount > 0 && data.unexplained.count > 0 && ' - '}
+            {data.unexplained.count > 0 && (
+              <>
+                <Amount value={data.unexplained.total} decimals={0} /> not sorted yet in{' '}
+                {dayjs(data.month).format('MMMM')}
+              </>
+            )}
+          </>
+        ),
+        cta: 'Sort them',
       })
     }
     // Statements land as whole months after the bank issues them, so "fresh"
@@ -557,18 +570,6 @@ export default function Dashboard() {
           </>
         ),
         cta: 'Look closer',
-      })
-    }
-    if (data.unexplained.count > 0) {
-      attention.push({
-        key: 'unexplained', icon: HelpCircle, color: '#fbbf24', to: '/review',
-        text: (
-          <>
-            <Amount value={data.unexplained.total} decimals={0} /> across {data.unexplained.count}{' '}
-            transaction{data.unexplained.count === 1 ? '' : 's'} has no category yet
-          </>
-        ),
-        cta: 'Sort it',
       })
     }
     const person = data.people.items.find(p => Math.abs(p.net) >= 500)

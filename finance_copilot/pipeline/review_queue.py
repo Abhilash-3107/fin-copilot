@@ -34,6 +34,6 @@ def group_review_queue(items: list[dict]) -> list[dict]:
     ):
         payee = parse_description(members[0]["raw_description"]).counterparty
         kind = classify_payee(payee)
-        for item in sorted(members, key=lambda i: (i["txn_date"], i["annotation_id"])):
+        for item in sorted(members, key=lambda i: (i["txn_date"], i["transaction_id"])):
             ordered.append({**item, "group_key": key, "group_size": len(members), "payee": payee, "payee_kind": kind})
     return ordered

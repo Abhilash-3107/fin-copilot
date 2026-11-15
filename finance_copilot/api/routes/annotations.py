@@ -20,7 +20,7 @@ from finance_copilot.db.queries.annotations import (
     get_annotation_by_transaction,
     insert_annotation,
     list_review_queue,
-    snooze_annotation,
+    snooze_transaction,
     unsnooze_all,
     update_annotation,
 )
@@ -463,8 +463,25 @@ class GroupLabel(BaseModel):
     tags: list[str] | None = None
 
 
+def _label_by_hand(conn: sqlite3.Connection, transaction_id: str, patch: dict) -> bool:
+    """A plain manual annotation for a payment nothing has labelled yet. Returns
+    False when the payment does not exist. Caller commits."""
+    if conn.execute("SELECT 1 FROM transactions WHERE id = ?", (transaction_id,)).fetchone() is None:
+        return False
+    insert_annotation(conn, Annotation(
+        transaction_id=transaction_id,
+        merchant=patch.get("merchant"),
+        category=patch["category"],
+        subcategory=patch.get("subcategory"),
+        tags=patch.get("tags", ""),
+        confidence=1.0,
+        source="manual",
+    ))
+    return True
+
+
 class BulkLabelRequest(BaseModel):
-    annotation_ids: list[str]
+    transaction_ids: list[str]
     # The label on the card the user answered: confirming the group sends the
     # card's own label, so no member is stamped with a label nobody saw.
     label: GroupLabel
@@ -475,8 +492,10 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     """One review answer for a group of transactions (the review queue's
     "apply to all payments to this payee"). Each member gets the label with
     the calibration feedback its own PATCH would record: 'confirmed' where its
-    machine label already matched, 'corrected'/'refined' where it didn't. Then
-    the new labels re-decide the machine labels they could change."""
+    machine label already matched, 'corrected'/'refined' where it didn't. A
+    member with no annotation gets a plain manual one and records no feedback,
+    as no model guess was involved. Then the new labels re-decide the machine
+    labels they could change."""
     try:
         category_id, subcategory_id = require_category_ids(conn, body.label.category, body.label.subcategory)
     except CategoryError as e:
@@ -490,10 +509,13 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     if "tags" in body.label.model_fields_set:
         patch["tags"] = dump_string_list(body.label.tags)
     taught = []
-    for annotation_id in dict.fromkeys(body.annotation_ids):
-        existing = get_annotation(conn, annotation_id)
-        _apply_correction(conn, existing, patch)
-        taught.append(existing["transaction_id"])
+    for transaction_id in dict.fromkeys(body.transaction_ids):
+        existing = get_annotation_by_transaction(conn, transaction_id)
+        if existing is not None:
+            _apply_correction(conn, existing, patch)
+        elif not _label_by_hand(conn, transaction_id, patch):
+            continue
+        taught.append(transaction_id)
     conn.commit()
     embed_transactions(conn, taught)
     return {"updated": len(taught), "reevaluated": reevaluate_after_teaching(conn, taught)}
@@ -779,8 +801,8 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
 
 @router.get("/review-queue/snoozed-count")
 def review_queue_snoozed_count(conn: sqlite3.Connection = Depends(get_db)):
-    """How many below-threshold items the user has skipped (snoozed). The queue
-    surfaces this so snoozed items are never fully hidden and can be restored."""
+    """How many payments the user has set aside (skipped). The queue surfaces
+    this so skipped items are never fully hidden and can be restored."""
     return {"count": count_snoozed(conn, get_confidence_threshold(conn))}
 
 
@@ -796,17 +818,22 @@ def review_queue_rescore(conn: sqlite3.Connection = Depends(get_db)):
 @router.post("/review-queue/unsnooze", status_code=200)
 def review_queue_unsnooze(conn: sqlite3.Connection = Depends(get_db)):
     """Bring every snoozed item back into the review queue."""
-    cleared = unsnooze_all(conn)
+    cleared = unsnooze_all(conn, get_confidence_threshold(conn))
     conn.commit()
     return {"restored": cleared}
 
 
-@router.post("/{annotation_id}/skip", status_code=200)
-def skip_annotation(annotation_id: str, conn: sqlite3.Connection = Depends(get_db)):
-    """Snooze one annotation out of the review queue - a skip that persists across
-    sessions instead of silently reappearing (4.15)."""
-    if not snooze_annotation(conn, annotation_id):
-        raise HTTPException(status_code=404, detail=f"Annotation {annotation_id} not found")
+class SkipRequest(BaseModel):
+    transaction_id: str
+
+
+@router.post("/review-queue/skip", status_code=200)
+def skip_review_item(body: SkipRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """Snooze one payment out of the review queue - a skip that persists across
+    sessions instead of silently reappearing (4.15). Keyed by transaction so a
+    payment with no annotation can be set aside too."""
+    if not snooze_transaction(conn, body.transaction_id):
+        raise HTTPException(status_code=404, detail=f"Transaction {body.transaction_id} not found")
     conn.commit()
     return {"snoozed": True}
 

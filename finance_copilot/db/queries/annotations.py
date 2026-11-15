@@ -4,8 +4,9 @@ from __future__ import annotations
 import sqlite3
 
 from finance_copilot.db.queries.categories import resolve_category_ids
+from finance_copilot.db.queries.common import unsorted_sql
 from finance_copilot.models.annotation import Annotation
-from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES
+from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES, VERIFIED_SOURCES
 
 
 def _resolve_label(conn: sqlite3.Connection, category: str, subcategory: str | None) -> tuple:
@@ -77,27 +78,36 @@ def replace_machine_annotation(
     """Overwrite a machine-produced annotation with a re-evaluated one.
 
     The WHERE clause refuses any non-machine row, so a human label can never be
-    replaced even if a caller gets the candidate set wrong. A snooze survives
-    when the category is unchanged (the user already skipped this exact
+    replaced even if a caller gets the candidate set wrong. The payment's snooze
+    survives when the category is unchanged (the user already skipped this exact
     question) and clears when the answer changed. Caller commits.
     """
     from finance_copilot.pipeline.sources import MACHINE_SOURCES
 
     category_id, subcategory, subcategory_id = _resolve_label(conn, category, subcategory)
     placeholders = ",".join("?" * len(MACHINE_SOURCES))
-    cur = conn.execute(
-        f"""
+    previous = conn.execute(
+        f"SELECT transaction_id, category FROM annotations WHERE id = ? AND source IN ({placeholders})",
+        (annotation_id, *sorted(MACHINE_SOURCES)),
+    ).fetchone()
+    if previous is None:
+        return False
+    conn.execute(
+        """
         UPDATE annotations
-        SET review_snoozed_at = CASE WHEN category = ? THEN review_snoozed_at ELSE NULL END,
-            merchant = ?, category = ?, subcategory = ?, tags = ?, confidence = ?,
+        SET merchant = ?, category = ?, subcategory = ?, tags = ?, confidence = ?,
             source = ?, reasoning = ?, category_id = ?, subcategory_id = ?,
             annotated_at = datetime('now')
-        WHERE id = ? AND source IN ({placeholders})
+        WHERE id = ?
         """,
-        (category, merchant, category, subcategory, tags, confidence, source, reasoning,
-         category_id, subcategory_id, annotation_id, *sorted(MACHINE_SOURCES)),
+        (merchant, category, subcategory, tags, confidence, source, reasoning,
+         category_id, subcategory_id, annotation_id),
     )
-    return cur.rowcount == 1
+    if previous["category"] != category:
+        conn.execute(
+            "UPDATE transactions SET review_snoozed_at = NULL WHERE id = ?", (previous["transaction_id"],)
+        )
+    return True
 
 
 def demote_machine_annotation(conn: sqlite3.Connection, annotation_id: str, cap: float) -> bool:
@@ -135,14 +145,18 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
         "original_source = COALESCE(original_source, source)",
         "source = 'manual'",
         "annotated_at = datetime('now')",
-        # A correction is engagement; drop any lingering snooze so the flag never
-        # outlives the reason it was set.
-        "review_snoozed_at = NULL",
     ]
 
     conn.execute(
         f"UPDATE annotations SET {', '.join(set_clauses)} WHERE id = ?",
         [*values, annotation_id],
+    )
+    # A correction is engagement; drop any lingering snooze so the flag never
+    # outlives the reason it was set.
+    conn.execute(
+        "UPDATE transactions SET review_snoozed_at = NULL "
+        "WHERE id = (SELECT transaction_id FROM annotations WHERE id = ?)",
+        (annotation_id,),
     )
 
 
@@ -160,63 +174,83 @@ def get_annotation_by_transaction(conn: sqlite3.Connection, transaction_id: str)
     return dict(row) if row else None
 
 
-def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
-    """Return model annotations below the confidence threshold, joined with their transactions.
+def _queue_condition(threshold: float) -> tuple[str, tuple]:
+    """The one definition of "belongs in the review queue", over transactions t
+    LEFT JOINed to annotations a. Three kinds of payment, in either direction:
+    a machine label below the confidence bar, a machine label that says
+    Uncategorized at any confidence, and a payment with no annotation at all.
+    A human's label (or a rule the user wrote) is never queued, even when the
+    user chose Uncategorized."""
+    reviewable = sorted(REVIEWABLE_SOURCES)
+    human = sorted(VERIFIED_SOURCES | {"user_rule"})
+    reviewable_ph = ",".join("?" for _ in reviewable)
+    human_ph = ",".join("?" for _ in human)
+    sql = (
+        f"((a.source IN ({reviewable_ph}) AND a.confidence < ?) "
+        f"OR ({unsorted_sql('a')} AND (a.id IS NULL OR a.source NOT IN ({human_ph}))))"
+    )
+    return sql, (*reviewable, threshold, *human)
 
-    Snoozed rows (skipped by the user) are excluded so a skip sticks across
-    sessions instead of silently reappearing; see snooze_annotation / count_snoozed.
+
+def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
+    """Payments that still need a human answer, keyed by transaction.
+
+    Items without an annotation carry annotation_id/category/source None and
+    confidence 0. Snoozed payments (skipped by the user) are excluded so a skip
+    sticks across sessions; see snooze_transaction / count_snoozed.
     """
-    sources = sorted(REVIEWABLE_SOURCES)
-    placeholders = ",".join("?" for _ in sources)
+    condition, params = _queue_condition(threshold)
     rows = conn.execute(
         f"""
-        SELECT a.*, a.id AS annotation_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
-               t.counterparty_key
-        FROM annotations a
-        JOIN transactions t ON t.id = a.transaction_id
-        WHERE a.source IN ({placeholders}) AND a.confidence < ?
-          AND a.review_snoozed_at IS NULL
-        -- Uncertainty × impact ordering: a wrong label on a large transaction
+        SELECT t.id AS transaction_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
+               t.counterparty_key,
+               a.id AS annotation_id, a.merchant, a.category, a.subcategory, a.tags,
+               COALESCE(a.confidence, 0.0) AS confidence, a.source, a.original_source,
+               a.annotated_at, a.reasoning
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        WHERE {condition} AND t.review_snoozed_at IS NULL
+        -- Uncertainty x impact ordering: a wrong label on a large transaction
         -- costs more than one on a small one, so weight by log-amount instead of
         -- ranking purely by confidence.
-        ORDER BY (1.0 - a.confidence) * ln(1.0 + abs(t.amount)) DESC, a.annotated_at ASC
+        ORDER BY (1.0 - COALESCE(a.confidence, 0.0)) * ln(1.0 + abs(t.amount)) DESC, t.txn_date ASC, t.id
         """,
-        (*sources, threshold),
+        params,
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def snooze_annotation(conn: sqlite3.Connection, annotation_id: str) -> bool:
-    """Snooze a low-confidence annotation out of the review queue (a "skip" that
-    sticks). Idempotent; returns True when a row was updated. Caller commits."""
+def snooze_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
+    """Snooze a payment out of the review queue (a "skip" that sticks), whether
+    or not it has an annotation. Idempotent; returns True when the payment
+    exists. Caller commits."""
     cur = conn.execute(
-        "UPDATE annotations SET review_snoozed_at = datetime('now') WHERE id = ?",
-        (annotation_id,),
+        "UPDATE transactions SET review_snoozed_at = datetime('now') WHERE id = ?",
+        (transaction_id,),
     )
     return cur.rowcount > 0
 
 
-def unsnooze_all(conn: sqlite3.Connection) -> int:
-    """Clear every snooze so skipped items return to the queue. Returns the count
-    cleared. Caller commits."""
-    cur = conn.execute(
-        "UPDATE annotations SET review_snoozed_at = NULL WHERE review_snoozed_at IS NOT NULL"
-    )
-    return cur.rowcount
-
-
 def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
-    """How many below-threshold model annotations are currently snoozed - the
-    count the queue surfaces so snoozed items are never fully hidden."""
-    sources = sorted(REVIEWABLE_SOURCES)
-    placeholders = ",".join("?" for _ in sources)
+    """How many payments are set aside: snoozed and would otherwise be queued.
+    The count the queue surfaces so skipped items are never fully hidden."""
+    condition, params = _queue_condition(threshold)
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS n
-        FROM annotations
-        WHERE source IN ({placeholders}) AND confidence < ?
-          AND review_snoozed_at IS NOT NULL
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        WHERE {condition} AND t.review_snoozed_at IS NOT NULL
         """,
-        (*sources, threshold),
+        params,
     ).fetchone()
     return row["n"] if row else 0
+
+
+def unsnooze_all(conn: sqlite3.Connection, threshold: float) -> int:
+    """Clear every snooze so skipped payments return to the queue. Returns how
+    many came back (a snoozed payment that has since been answered is cleared
+    too but not counted). Caller commits."""
+    came_back = count_snoozed(conn, threshold)
+    conn.execute("UPDATE transactions SET review_snoozed_at = NULL WHERE review_snoozed_at IS NOT NULL")
+    return came_back
