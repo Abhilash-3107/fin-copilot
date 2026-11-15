@@ -50,7 +50,7 @@ class TestLoadDemoData:
         client, conn = client_conn
         client.post("/api/data/demo")
         detail = client.get("/api/groups/demo_grp_goa").json()
-        assert detail["settle_up"] == []
+        assert detail["summary"]["settle_up"] == []
         tagged = {p for m in detail["members"] for p in (m["people"] or [])}
         names = {r[0] for r in conn.execute(
             f"SELECT name FROM people WHERE id IN ({','.join('?' * len(tagged))})", list(tagged))}

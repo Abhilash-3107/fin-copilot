@@ -69,6 +69,23 @@ describe('People', () => {
     expect(screen.getByText(/more received/).className).not.toMatch(/red|green/)
   })
 
+  it('says Even for a net that rounds to zero rupees, never "₹0 more sent"', async () => {
+    mockApi.get.mockResolvedValue([
+      { id: 'p4', name: 'Tiny', upi: 'tiny', relationship: null, stats: { matched: 2, sent: 100, received: 99.7, net: -0.3 } },
+      { id: 'p5', name: 'Flat', upi: 'flat', relationship: null, stats: { matched: 2, sent: 100, received: 100, net: 0 } },
+    ])
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Tiny')).toBeInTheDocument())
+    expect(screen.getAllByText('Even')).toHaveLength(2)
+    expect(screen.queryByText(/more sent/)).not.toBeInTheDocument()
+  })
+
+  it('uses plain hyphens, not em dashes, for empty cells', async () => {
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('NoMatch')).toBeInTheDocument())
+    expect(document.body.textContent).not.toContain('\u2014')
+  })
+
   it('counts contacts with the right plural', async () => {
     mockApi.get.mockResolvedValue([PEOPLE[0]])
     renderPeople()

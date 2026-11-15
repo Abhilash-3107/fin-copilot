@@ -76,7 +76,6 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
     # Same rollup the list serves, so the open card's header refreshes from the
     # server after every membership change instead of keeping the list's copy.
     group["summary"] = summarize_groups(conn, [group_id]).get(group_id, empty_summary())
-    group["settle_up"] = group["summary"]["settle_up"]
     return group
 
 

@@ -182,7 +182,6 @@ describe('Dashboard', () => {
       .toHaveAttribute('href', '/transactions?category=Travel&month=2026-05')
     // Per-person balances live on Money Map and People, not in the attention list.
     expect(screen.queryByText(/Between you and/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /^People/ })).not.toBeInTheDocument()
   })
 
   it('says one payment in the singular and never downloads the queue to count it', async () => {

@@ -90,7 +90,7 @@ function TypeSelect({ member, onChange }) {
       aria-label={`Type for ${member.raw_description}`}
       className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
     >
-      <option value="">—</option>
+      <option value="">-</option>
       {TXN_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
     </select>
   )
@@ -109,27 +109,36 @@ function RemoveMemberButton({ member, onRemove }) {
   )
 }
 
-// What is still owed, as the header's second line. Reads the same settle-up
-// list the card body shows. Several balances collapse into one net sum.
+function Money({ value }) {
+  return <Amount value={value} decimals={Number.isInteger(value) ? 0 : 2} />
+}
+
+// What is still owed, as the header's second line. Balances with opposite signs
+// belong to different people, so the two sides are totalled separately and never
+// cancel against each other.
 function OwedLine({ summary }) {
-  const list = summary.settle_up ?? []
-  if (list.length === 0) {
+  const owedToYou = summary.owed_to_you ?? { count: 0 }
+  const youOwe = summary.you_owe ?? { count: 0 }
+  if (owedToYou.count === 0 && youOwe.count === 0) {
     // Nobody tagged means there is nothing to settle, which is not the same as settled.
     return summary.has_people ? <span className="text-green-400">Settled</span> : null
   }
-  if (list.length === 1) {
-    const [s] = list
-    const name = s.name ?? s.person
-    const amount = <Amount value={Math.abs(s.net)} decimals={Number.isInteger(s.net) ? 0 : 2} />
-    return s.net > 0
-      ? <span className="text-green-400">{name} owes you {amount}</span>
-      : <span className="text-red-400">You owe {name} {amount}</span>
-  }
-  const total = list.reduce((sum, s) => sum + s.net, 0)
-  const amount = <Amount value={Math.abs(total)} decimals={Number.isInteger(total) ? 0 : 2} />
-  if (total > 0) return <span className="text-green-400">{list.length} people owe you {amount}</span>
-  if (total < 0) return <span className="text-red-400">You owe {list.length} people {amount}</span>
-  return <span className="text-[#94a3b8]">{list.length} balances to settle</span>
+  const mixed = owedToYou.count > 0 && youOwe.count > 0
+  return (
+    <>
+      {owedToYou.count > 0 && (
+        <span className="text-green-400">
+          {owedToYou.name ?? `${owedToYou.count} people`} {owedToYou.count === 1 ? 'owes' : 'owe'} you <Money value={owedToYou.total} />
+        </span>
+      )}
+      {mixed && <span className="text-[#475569]"> · </span>}
+      {youOwe.count > 0 && (
+        <span className="text-red-400">
+          {mixed ? 'you' : 'You'} owe {youOwe.name ?? `${youOwe.count} people`} <Money value={youOwe.total} />
+        </span>
+      )}
+    </>
+  )
 }
 
 function SettleUp({ settleUp, hasPeople }) {
@@ -159,7 +168,7 @@ function SettleUp({ settleUp, hasPeople }) {
             <div key={s.person} className="flex items-center gap-2 bg-[#13151f] border border-[#2d3148] rounded-md px-2.5 py-1">
               <span className="text-xs text-[#cbd5e1]">{s.name ?? s.person}</span>
               <span className={`text-xs tabular-nums ${owesYou ? 'text-green-400' : 'text-red-400'}`}>
-                {owesYou ? 'owes you ' : 'you owe '}<Amount value={Math.abs(s.net)} decimals={Number.isInteger(s.net) ? 0 : 2} />
+                {owesYou ? 'owes you ' : 'you owe '}<Money value={Math.abs(s.net)} />
               </span>
             </div>
           )
@@ -282,7 +291,7 @@ export default function GroupCard({ group, onDelete }) {
           <div className="text-right shrink-0">
             <div className="text-sm tabular-nums text-[#e2e8f0]">
               <span className="text-xs text-[#64748b]">Your share</span>{' '}
-              <span className="font-medium tabular-nums"><Amount value={summary.your_share} decimals={Number.isInteger(summary.your_share) ? 0 : 2} /></span>
+              <span className="font-medium tabular-nums"><Money value={summary.your_share} /></span>
             </div>
             <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
           </div>
@@ -386,8 +395,8 @@ export default function GroupCard({ group, onDelete }) {
 
               <AddTransactionSearch existingIds={existingIds} onAdd={addMember} />
               <SettleUp
-                settleUp={detail?.settle_up}
-                hasPeople={detail?.members?.some(m => m.people?.length) ?? false}
+                settleUp={summary.settle_up}
+                hasPeople={summary.has_people}
               />
             </>
           )}

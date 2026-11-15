@@ -1496,15 +1496,17 @@ class TestGroupHeaderRefresh:
 
         empty = client.get(f"/api/groups/{gid}").json()
         assert empty["summary"]["member_count"] == 0
-        assert empty["settle_up"] == []
+        assert "settle_up" not in empty
+        assert empty["summary"]["settle_up"] == []
 
         for txn_id in ("t1", "t2"):
             client.post(f"/api/groups/{gid}/members", json={"transaction_id": txn_id, "people": [neha]})
         detail = client.get(f"/api/groups/{gid}").json()
         assert detail["summary"]["member_count"] == 2
         assert detail["summary"]["your_share"] == 440.0
-        assert detail["settle_up"] == detail["summary"]["settle_up"]
-        assert detail["settle_up"][0]["net"] == 440.0
+        assert "settle_up" not in detail
+        assert detail["summary"]["settle_up"][0]["net"] == 440.0
+        assert detail["summary"]["owed_to_you"] == {"count": 1, "total": 440.0, "name": "Neha"}
         # The list serves the identical rollup.
         listed = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
         assert listed["summary"] == detail["summary"]

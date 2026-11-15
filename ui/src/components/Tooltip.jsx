@@ -55,7 +55,7 @@ export default function Tooltip({ content, position = 'top', delay = 300, classN
       {visible && rect && createPortal(
         <div
           className="fixed z-[9999] px-2.5 py-1.5 bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] text-xs rounded-md shadow-lg shadow-black/40 max-w-[250px] break-words whitespace-normal animate-tooltip-in pointer-events-none"
-          style={{ top: style.top, left: style.left, transform: TRANSFORM[position] }}
+          style={{ top: style.top, left: style.left, transform: TRANSFORM[position], width: 'max-content' }}
         >
           {content}
         </div>,

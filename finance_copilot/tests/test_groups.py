@@ -129,6 +129,84 @@ class TestShare:
         assert summarize_groups(conn, [g["id"]])[g["id"]]["your_share"] == 100.0
 
 
+class TestOwedTotals:
+    """The header totals: who owes you and whom you owe, never netted across people."""
+
+    def test_mixed_signs_are_reported_separately(self, conn):
+        # Neha paid you 5,600 inside the group (you owe her), you sent Rahul 4,206.
+        g = create_group(conn, "Mixed")
+        _txn(conn, "t1", "2026-01-05", 5600.0, "credit")
+        _txn(conn, "t2", "2026-01-06", 4206.0, "debit")
+        add_member(conn, g["id"], "t1", people=["Neha"])
+        add_member(conn, g["id"], "t2", people=["Rahul"], txn_type="transfer")
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["owed_to_you"] == {"count": 1, "total": 4206.0, "name": "Rahul"}
+        assert s["you_owe"] == {"count": 1, "total": 5600.0, "name": "Neha"}
+
+    def test_zero_sum_still_shows_both_sides(self, conn):
+        g = create_group(conn, "Zero")
+        _txn(conn, "t1", "2026-01-05", 100.0, "debit")
+        _txn(conn, "t2", "2026-01-06", 100.0, "credit")
+        add_member(conn, g["id"], "t1", people=["A"], txn_type="transfer")
+        add_member(conn, g["id"], "t2", people=["B"])
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["owed_to_you"]["total"] == 100.0
+        assert s["you_owe"]["total"] == 100.0
+
+    def test_one_direction_counts_people_and_drops_the_name(self, conn):
+        g = create_group(conn, "Dinner")
+        _txn(conn, "t1", "2026-01-05", 300.0, "debit")
+        add_member(conn, g["id"], "t1", people=["A", "B"])
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["owed_to_you"] == {"count": 2, "total": 200.0, "name": None}
+        assert s["you_owe"] == {"count": 0, "total": 0, "name": None}
+
+    def test_balance_under_half_a_rupee_is_ignored(self, conn):
+        # A float remainder (0.30) is not a balance to settle.
+        g = create_group(conn, "Remainder")
+        _txn(conn, "t1", "2026-01-05", 100.0, "debit")
+        _txn(conn, "t2", "2026-01-06", 49.7, "credit")
+        add_member(conn, g["id"], "t1", people=["A"])
+        add_member(conn, g["id"], "t2", people=["A"])
+        conn.commit()
+
+        s = summarize_groups(conn, [g["id"]])[g["id"]]
+        assert s["settle_up"] == []
+        assert s["has_people"] is True
+        assert s["owed_to_you"]["count"] == 0
+        assert s["you_owe"]["count"] == 0
+
+    def test_empty_group_has_zero_totals(self):
+        from finance_copilot.db.queries.groups import empty_summary
+
+        s = empty_summary()
+        assert s["owed_to_you"]["count"] == 0
+        assert s["you_owe"]["count"] == 0
+
+
+class TestQueryCount:
+    def test_summary_cost_does_not_grow_with_group_count(self, conn):
+        ids = []
+        for i in range(4):
+            g = create_group(conn, f"G{i}")
+            _txn(conn, f"t{i}", "2026-01-05", 100.0, "debit")
+            add_member(conn, g["id"], f"t{i}", people=["A"])
+            ids.append(g["id"])
+        conn.commit()
+
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        summarize_groups(conn, ids)
+        conn.set_trace_callback(None)
+        assert len([q for q in statements if q.lstrip().upper().startswith("SELECT")]) <= 2
+
+
 class TestSettleUp:
     def test_equal_split_user_paid(self, conn):
         # User pays 300 for a dinner split with Alice and Bob → 3 sharers of 100 each.

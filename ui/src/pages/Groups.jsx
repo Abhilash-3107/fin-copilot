@@ -104,7 +104,7 @@ export default function Groups() {
       ) : groups.length === 0 ? (
         <EmptyState
           title="No groups yet"
-          description="Create a group to organize related transactions — trips, shared expenses, recurring splits."
+          description="Create a group to organize related transactions: trips, shared expenses, recurring splits."
         />
       ) : (
         <div className="space-y-3">
