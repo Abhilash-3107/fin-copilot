@@ -6,9 +6,11 @@ const { mockApi } = vi.hoisted(() => ({
 }))
 vi.mock('../lib/api.js', () => ({ api: mockApi, downloadFile: vi.fn(), ApiError: class extends Error {} }))
 const toast = vi.fn()
+const reloadWithToast = vi.fn()
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => toast,
+  reloadWithToast: (...args) => reloadWithToast(...args),
 }))
 
 import DataSettings from './DataSettings.jsx'
@@ -37,8 +39,9 @@ describe('DataSettings restore', () => {
     fireEvent.click(screen.getByText('Replace and restore'))
     await waitFor(() => expect(mockApi.upload).toHaveBeenCalledWith('/data/restore', expect.any(FormData)))
     expect(mockApi.upload.mock.calls[0][1].get('file')).toBe(file)
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(
-      expect.stringContaining('pre-restore-20261101-050000.db'), 'success', 8000))
+    // The app reloads after a restore; the message is carried across it.
+    await waitFor(() => expect(reloadWithToast).toHaveBeenCalledWith(
+      expect.stringContaining('pre-restore-20261101-050000.db'), 'success'))
   })
 
   it('does nothing when cancelled', () => {
