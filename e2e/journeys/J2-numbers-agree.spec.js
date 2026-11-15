@@ -1,7 +1,7 @@
 // J2 - Numbers agree. The same fact must read the same on every screen, every
 // total must equal its parts, and a drill-through must total what was clicked.
 // Expected values come from the screen or the API, never from fixed rupees.
-import { test, expect, expectedFailure } from '../fixtures.js'
+import { test, expect } from '../fixtures.js'
 import {
   PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, visibleSpend, waitForRows,
 } from '../lib/ui.js'
@@ -146,14 +146,12 @@ test.describe('J2 numbers agree', () => {
   })
 
   test('People says what each per-person figure counts and over what period', async ({ page }) => {
-    expectedFailure('R1 item 9: Net is all transfers ever, and the page never says so')
     await open(page, '/people')
     await expect(page.getByRole('row').nth(1)).toBeVisible()
     await expect(page.getByRole('main')).toContainText(PERIOD_WORDS, { useInnerText: true })
   })
 
   test('a group says what its figure is, and does not call gross outflow "net"', async ({ page, app }) => {
-    expectedFailure('R1 item 9: the group header labels the money it paid out as "net"')
     const [group] = await app.api.get('/groups')
     await open(page, '/groups')
     const header = page.getByRole('button', { name: `Expand ${group.name}` }).locator('..')
