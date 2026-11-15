@@ -5,7 +5,7 @@ const PeriodContext = createContext(null)
 
 const STORAGE_KEY = 'fc_period_month'
 
-// Sentinel for "no month filter" — every ingested month, aggregated.
+// Sentinel for "no month filter" - every ingested month, aggregated.
 export const ALL_TIME = 'all'
 
 export function PeriodProvider({ children }) {

@@ -297,7 +297,7 @@ export default function Transactions() {
   // Seed filters from the /transactions deep-link convention (category,
   // merchant, source, q, month). Runs on mount and whenever a new deep link
   // lands here; a month param is pushed into the shared period. Our own
-  // writeback below also changes searchParams — the ref lets us tell the two
+  // writeback below also changes searchParams - the ref lets us tell the two
   // apart so a writeback never re-seeds (or clears the statement scope).
   const lastWrittenParams = useRef(null)
   useEffect(() => {
@@ -332,8 +332,8 @@ export default function Transactions() {
   // into the period and then dropped from the URL.
   const writebackArmed = useRef(false)
   useEffect(() => {
-    // On mount this still sees pre-seed (empty) state — the seed effect's
-    // setState hasn't rendered yet — so writing here would erase a deep link.
+    // On mount this still sees pre-seed (empty) state - the seed effect's
+    // setState hasn't rendered yet - so writing here would erase a deep link.
     // Skip once; the seeded state re-runs this effect with real values.
     if (!writebackArmed.current) {
       writebackArmed.current = true
@@ -445,7 +445,7 @@ export default function Transactions() {
   // Patch a saved annotation into the loaded rows in place. A full reload
   // would reset to page one and lose the scroll position, which punishes the
   // "walk down the list fixing categories" workflow. The edited row stays
-  // visible even if it no longer matches an active filter — it drops out on
+  // visible even if it no longer matches an active filter - it drops out on
   // the next natural reload, which reads as less jarring than vanishing rows.
   function applySavedAnnotation(txnId, saved) {
     const ann = {

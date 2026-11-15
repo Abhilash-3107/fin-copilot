@@ -47,6 +47,18 @@ describe('People', () => {
     expect(screen.getByText(/₹300/)).toBeInTheDocument()
   })
 
+  it('offers Landlord and shows a relationship the list does not know', async () => {
+    mockApi.get.mockResolvedValue([
+      { id: 'p5', name: 'Amit', upi: 'amit', relationship: 'landlord', stats: { matched: 1, sent: 100, received: 0, net: -100 } },
+      { id: 'p6', name: 'Zoya', upi: 'zoya', relationship: 'cousin', stats: { matched: 1, sent: 100, received: 0, net: -100 } },
+    ])
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Amit')).toBeInTheDocument())
+    const [amit, zoya] = screen.getAllByRole('combobox').filter(el => el.closest('tr'))
+    expect(amit).toHaveValue('landlord')
+    expect(zoya).toHaveValue('cousin')
+  })
+
   it('states what the figure counts and over what period', async () => {
     renderPeople()
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())

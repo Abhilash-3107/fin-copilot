@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
-import { formatRupees } from './Amount.jsx'
+import Amount from './Amount.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 // Static destinations, always searchable by label.
@@ -89,7 +89,7 @@ export default function CommandPalette() {
       key: `txn:${t.id}`,
       icon: Receipt,
       label: t.merchant || t.raw_description,
-      meta: `${dayjs(t.txn_date).format('DD MMM')} · ${formatRupees(t.amount, { decimals: 0, debitCredit: t.debit_credit })}`,
+      meta: <>{dayjs(t.txn_date).format('DD MMM')} · <Amount value={t.amount} decimals={0} debitCredit={t.debit_credit} /></>,
       run: () => navigate(`/transactions?q=${encodeURIComponent(t.merchant || t.raw_description)}`),
     }))
 

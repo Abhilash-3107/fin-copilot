@@ -154,7 +154,7 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
             f"Opening balance ₹{statement.opening_balance:,.2f} doesn't match the "
-            f"{prev['statement_month']} closing balance ₹{prev['closing_balance']:,.2f} — "
+            f"{prev['statement_month']} closing balance ₹{prev['closing_balance']:,.2f} - "
             "a statement in between may be missing."
         )
 
@@ -168,7 +168,7 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
             f"Closing balance ₹{statement.closing_balance:,.2f} doesn't match the "
-            f"{nxt['statement_month']} opening balance ₹{nxt['opening_balance']:,.2f} — "
+            f"{nxt['statement_month']} opening balance ₹{nxt['opening_balance']:,.2f} - "
             "a statement in between may be missing."
         )
 

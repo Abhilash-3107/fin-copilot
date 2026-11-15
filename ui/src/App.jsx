@@ -28,9 +28,9 @@ function PageFallback() {
 export default function App() {
   return (
     <TokenGate>
+    <PrivacyProvider>
     <ToastProvider>
       <StatementProvider>
-      <PrivacyProvider>
       <PeriodProvider>
       <AnnotationJobProvider>
       <DemoDataProvider>
@@ -52,9 +52,9 @@ export default function App() {
       </DemoDataProvider>
       </AnnotationJobProvider>
       </PeriodProvider>
-      </PrivacyProvider>
       </StatementProvider>
     </ToastProvider>
+    </PrivacyProvider>
     </TokenGate>
   )
 }

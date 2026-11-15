@@ -27,8 +27,14 @@ vi.mock('../contexts/ToastContext.jsx', () => {
     useToast: () => noop,
   }
 })
+// The mock keeps the options the page hands the chart, so a test can call the
+// tooltip and axis callbacks that chart.js would run on a canvas.
+const chart = vi.hoisted(() => ({ options: null }))
 vi.mock('react-chartjs-2', () => ({
-  Line: () => <div data-testid="balance-sparkline" />,
+  Line: ({ options }) => {
+    chart.options = options
+    return <div data-testid="balance-sparkline" />
+  },
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
@@ -567,3 +573,30 @@ function dayjsNowMinusOne() {
   d.setMonth(d.getMonth() - 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
+
+describe('privacy mode', () => {
+  it('blurs the money percentage with the amounts', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderDashboard()
+    await screen.findByText('Needs your attention')
+    const rate = screen.getAllByText('10%')[0]
+    expect(rate).toHaveClass('blur-[5px]')
+    expect(rate).toHaveAttribute('aria-label', 'Percentage hidden')
+  })
+
+  it('keeps the balance chart tooltip and ticks free of amounts', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderDashboard()
+    await screen.findByTestId('balance-sparkline')
+    const { tooltip, } = chart.options.plugins
+    expect(tooltip.callbacks.label({ raw: 71000 })).not.toMatch(/\d/)
+    expect(chart.options.scales.y.ticks.callback(71000)).not.toMatch(/\d/)
+  })
+
+  it('shows both when amounts are shown', async () => {
+    renderDashboard()
+    await screen.findByTestId('balance-sparkline')
+    expect(chart.options.plugins.tooltip.callbacks.label({ raw: 71000 })).toBe('₹71,000')
+    expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
+  })
+})

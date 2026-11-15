@@ -3,12 +3,11 @@ import { Plus, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
+import { useMoney } from './Amount.jsx'
 
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
 const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
 const EMPTY = { max_amount: '500', category: '', subcategory: '' }
-
-const rupees = n => `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
 
 function sortedMessage(resolved) {
   return resolved
@@ -20,6 +19,7 @@ function sortedMessage(resolved) {
 // one kind today: small UPI payments to people who aren't on the People page.
 export default function ReviewPolicies() {
   const toast = useToast()
+  const { money } = useMoney()
   const [policies, setPolicies] = useState([])
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState(EMPTY)
@@ -74,7 +74,7 @@ export default function ReviewPolicies() {
     try {
       const updated = await api.patch(`/policies/${p.id}`, { max_amount: amount })
       setPolicies(ps => ps.map(x => (x.id === p.id ? updated : x)))
-      toast(`Limit set to ${rupees(amount)}.${sortedMessage(updated.resolved)}`, 'success')
+      toast(`Limit set to ${money(amount, { decimals: 0 })}.${sortedMessage(updated.resolved)}`, 'success')
     } catch (err) {
       toast(`Couldn't update policy - ${err.message}`, 'error')
     } finally {

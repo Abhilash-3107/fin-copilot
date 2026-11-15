@@ -13,13 +13,14 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
-import Amount, { formatRupees } from '../components/Amount.jsx'
+import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
 import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
+import { count } from '../lib/plural.js'
 import {
   FilePlus2, TrendingUp, HelpCircle,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
@@ -74,9 +75,7 @@ function VerdictHero({ verdict, period }) {
           {rate != null && (
             <>
               {' '}-{' '}
-              <span className="font-semibold" style={{ color: tone.color }}>
-                {Math.round(rate * 100)}%
-              </span>
+              <Percent value={rate} className="font-semibold" />
               {' of what came in'}
             </>
           )}
@@ -204,6 +203,7 @@ function AttentionList({ items }) {
 // one. The full multi-month view lives on Money Map.
 function BalanceCard({ balance, month }) {
   const { hidden } = usePrivacy()
+  const { money, tick } = useMoney()
   const start = dayjs(month).startOf('month').format('YYYY-MM-DD')
   const end = dayjs(month).endOf('month').format('YYYY-MM-DD')
   const points = balance.series.filter(p => p.date >= start && p.date <= end)
@@ -230,7 +230,7 @@ function BalanceCard({ balance, month }) {
         borderColor: '#2d3148', borderWidth: 1, displayColors: false,
         callbacks: {
           title: items => dayjs(items[0].label).format('D MMM YYYY'),
-          label: item => formatRupees(item.raw, { decimals: 0 }),
+          label: item => money(item.raw, { decimals: 0 }),
         },
       },
     },
@@ -247,7 +247,7 @@ function BalanceCard({ balance, month }) {
       y: {
         ticks: {
           color: '#64748b', font: { size: 11 }, maxTicksLimit: 5,
-          callback: v => hidden ? '••' : `₹${Math.round(v / 1000)}k`,
+          callback: tick,
         },
         grid: { color: '#1e2235' },
       },
@@ -514,7 +514,7 @@ export default function Dashboard() {
     setSeedingDemo(true)
     try {
       const s = await api.post('/data/demo')
-      toast(`Demo loaded: ${s.transactions} transactions across ${s.months} months`, 'success', 5000)
+      toast(`Demo loaded: ${count(s.transactions, 'transaction')} across ${count(s.months, 'month')}`, 'success', 5000)
       refreshDemoData()
       setReloadKey(k => k + 1)
     } catch (e) {

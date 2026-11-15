@@ -23,7 +23,7 @@ _FAMILY_RELATIONSHIPS = frozenset(
 # DB layer; this is just the curated set the picker offers.
 RELATIONSHIP_CHOICES = (
     "self", "dad", "mom", "sister", "brother", "wife", "husband",
-    "son", "daughter", "family", "friend", "roommate", "colleague", "other",
+    "son", "daughter", "family", "friend", "roommate", "landlord", "colleague", "other",
 )
 
 # The user's own other accounts: money moved to them is a Self Transfer, which

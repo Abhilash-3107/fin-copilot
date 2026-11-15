@@ -14,6 +14,7 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
   useToast: () => noopToast,
 }))
 
+import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
 import Settings from './Settings.jsx'
 
 function Where() {
@@ -24,7 +25,9 @@ function Where() {
 function renderSettings(entry = '/settings') {
   return render(
     <MemoryRouter initialEntries={[entry]}>
-      <Settings />
+      <PrivacyProvider>
+        <Settings />
+      </PrivacyProvider>
       <Where />
     </MemoryRouter>
   )

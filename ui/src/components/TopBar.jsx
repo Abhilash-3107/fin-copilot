@@ -15,7 +15,7 @@ export default function TopBar({ onMenu }) {
         <Menu size={20} strokeWidth={1.75} />
       </button>
       <div className="flex-1" />
-      <Tooltip content={`${hidden ? 'Show' : 'Hide'} all amounts (Shift+P)`}>
+      <Tooltip content={`${hidden ? 'Show' : 'Hide'} all amounts (Shift+P)`} position="bottom-end">
         <button
           onClick={toggle}
           aria-label={hidden ? 'Show amounts' : 'Hide amounts'}

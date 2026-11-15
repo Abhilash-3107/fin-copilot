@@ -99,11 +99,11 @@ async function renderQueue() {
 function renderPage() {
   render(
     <MemoryRouter>
-      <ToastProvider>
-        <PrivacyProvider>
+      <PrivacyProvider>
+        <ToastProvider>
           <ReviewQueue />
-        </PrivacyProvider>
-      </ToastProvider>
+        </ToastProvider>
+      </PrivacyProvider>
     </MemoryRouter>
   )
 }
@@ -735,14 +735,14 @@ describe('ReviewQueue wording and counts', () => {
     jobCtx.job = { status: 'running', kind: 'annotate' }
     stubGet(n => (n === 0 ? [makeCard()] : [makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })]))
     const { rerender } = render(
-      <MemoryRouter><ToastProvider><PrivacyProvider><ReviewQueue /></PrivacyProvider></ToastProvider></MemoryRouter>
+      <MemoryRouter><PrivacyProvider><ToastProvider><ReviewQueue /></ToastProvider></PrivacyProvider></MemoryRouter>
     )
     await screen.findByText('SWIGGY ORDER 8842')
     await act(async () => {})
 
     jobCtx.job = null
     rerender(
-      <MemoryRouter><ToastProvider><PrivacyProvider><ReviewQueue /></PrivacyProvider></ToastProvider></MemoryRouter>
+      <MemoryRouter><PrivacyProvider><ToastProvider><ReviewQueue /></ToastProvider></PrivacyProvider></MemoryRouter>
     )
     expect(await screen.findByText('UBER TRIP')).toBeInTheDocument()
   })
