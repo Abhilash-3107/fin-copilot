@@ -1,6 +1,31 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 
 const ToastCtx = createContext(null)
+
+// A toast that must outlive a hard reload (restore, delete-all) is parked in
+// sessionStorage and shown by the provider when the reloaded app mounts.
+const AFTER_RELOAD_KEY = 'fc_toast_after_reload'
+
+export function reloadWithToast(message, type = 'info', duration = 8000) {
+  try {
+    sessionStorage.setItem(AFTER_RELOAD_KEY, JSON.stringify({ message, type, duration }))
+  } catch {
+    // Storage unavailable: the reload still happens, the message is lost.
+  }
+  window.location.reload()
+}
+
+function takeToastAfterReload() {
+  try {
+    const raw = sessionStorage.getItem(AFTER_RELOAD_KEY)
+    if (!raw) return null
+    sessionStorage.removeItem(AFTER_RELOAD_KEY)
+    const parsed = JSON.parse(raw)
+    return typeof parsed?.message === 'string' ? parsed : null
+  } catch {
+    return null
+  }
+}
 
 const TYPE_STYLES = {
   success: 'border-green-800 text-green-300',
@@ -27,6 +52,11 @@ export function ToastProvider({ children }) {
     setToasts(prev => [...prev, { id, message, type }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
   }, [])
+
+  useEffect(() => {
+    const parked = takeToastAfterReload()
+    if (parked) toast(parked.message, parked.type, parked.duration)
+  }, [toast])
 
   return (
     <ToastCtx.Provider value={toast}>

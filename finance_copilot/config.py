@@ -21,7 +21,12 @@ def dotenv_file() -> Path | None:
     in whatever folder the user launches from (often some unrelated project)
     must not silently swap the database or AI endpoint. Real environment
     variables and --data-dir still apply.
+
+    FC_IGNORE_DOTENV=1 skips the file even in a checkout. The end-to-end suite
+    sets it so a developer's own .env cannot change what a journey sees.
     """
+    if os.getenv("FC_IGNORE_DOTENV", "").lower() in ("1", "true", "yes"):
+        return None
     repo_root = dev_checkout_root()
     return repo_root / ".env" if repo_root is not None else None
 

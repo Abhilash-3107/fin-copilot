@@ -51,8 +51,10 @@ _CHECKOUT_DIST = Path(__file__).parent.parent / "ui" / "dist"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Apply pending migrations once at startup; per-request connections skip this.
+    from finance_copilot.clock import today
     from finance_copilot.db.lifecycle import reconcile_database
 
+    today()  # a malformed FC_TODAY should stop the app here, not on the first demo load
     conn = get_connection()
     try:
         reconcile_database(conn)

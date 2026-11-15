@@ -42,6 +42,14 @@ class TestDefaultDataDir:
         monkeypatch.setattr(config, "__file__", str(tmp_path / "finance_copilot" / "config.py"))
         assert config.dotenv_file() == tmp_path / ".env"
 
+    def test_fc_ignore_dotenv_skips_the_checkout_dotenv(self, monkeypatch, tmp_path):
+        from finance_copilot import config
+
+        (tmp_path / "pyproject.toml").write_text("")
+        monkeypatch.setattr(config, "__file__", str(tmp_path / "finance_copilot" / "config.py"))
+        monkeypatch.setenv("FC_IGNORE_DOTENV", "1")
+        assert config.dotenv_file() is None
+
     def test_installed_copy_reads_no_dotenv(self, monkeypatch, tmp_path):
         from finance_copilot import config
 

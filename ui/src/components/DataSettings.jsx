@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { Download, Database, Trash2, Upload } from 'lucide-react'
 import { api, downloadFile } from '../lib/api.js'
-import { useToast } from '../contexts/ToastContext.jsx'
+import { reloadWithToast, useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 
 // Data management (4.14): export (CSV/JSON), full DB backup and restore, and an
@@ -40,14 +40,13 @@ export default function DataSettings() {
       const form = new FormData()
       form.append('file', file)
       const r = await api.upload('/data/restore', form)
-      toast(
+      // Hard reload so every page drops caches from the replaced ledger; the
+      // message is shown by the reloaded app.
+      reloadWithToast(
         `Restored ${r.transactions} transaction${r.transactions === 1 ? '' : 's'} from ${file.name}. `
           + `Your previous data was saved as ${r.safety_copy}.`,
         'success',
-        8000,
       )
-      // Hard reload so every page drops caches from the replaced ledger.
-      setTimeout(() => window.location.reload(), 1500)
     } catch (e) {
       toast(`Couldn't restore - ${e.message}`, 'error', 8000)
       setBusy(null)
@@ -59,9 +58,8 @@ export default function DataSettings() {
     setBusy('delete')
     try {
       await api.post('/data/delete-all', {})
-      toast('All data and settings deleted. Your categories are kept.', 'info')
       // Hard reload so every page drops its now-empty caches.
-      setTimeout(() => window.location.reload(), 600)
+      reloadWithToast('All data and settings deleted. Your categories are kept.', 'info')
     } catch (e) {
       toast(`Couldn't delete - ${e.message}`, 'error')
       setBusy(null)
