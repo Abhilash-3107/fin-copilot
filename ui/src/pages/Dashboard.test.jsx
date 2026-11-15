@@ -180,8 +180,8 @@ describe('Dashboard', () => {
     // Travel is 4.8x April: the spike item deep-links into filtered transactions.
     expect(screen.getByRole('link', { name: /Travel ran ₹11,249 above April/ }))
       .toHaveAttribute('href', '/transactions?category=Travel&month=2026-05')
-    // Four rows fit: unsorted, guesses, freshness, spike. The people item is fifth.
-    expect(screen.queryByText(/Between you and sanya/)).not.toBeInTheDocument()
+    // Per-person balances live on Money Map and People, not in the attention list.
+    expect(screen.queryByText(/Between you and/)).not.toBeInTheDocument()
   })
 
   it('says one payment in the singular and never downloads the queue to count it', async () => {

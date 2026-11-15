@@ -15,6 +15,8 @@ import Amount, { formatRupees } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import RecurringPanel from '../components/RecurringPanel.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
+import PersonNet from '../components/PersonNet.jsx'
+import { count } from '../lib/plural.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { coverageLabel, comparisonLabel } from '../lib/period.js'
 
@@ -337,14 +339,11 @@ function PeoplePanel({ people, monthName }) {
                   {p.relationship && <span className="ml-2 text-xs text-[#64748b]">{p.relationship}</span>}
                 </p>
                 <p className="text-xs text-[#64748b] tabular-nums">
-                  sent <Amount value={p.sent} decimals={0} /> · received <Amount value={p.received} decimals={0} /> · {p.count} {p.count === 1 ? 'transfer' : 'transfers'}
+                  sent <Amount value={p.sent} decimals={0} /> · received <Amount value={p.received} decimals={0} /> · {count(p.count, 'transfer')}
                 </p>
               </div>
-              <span
-                className={`tabular-nums whitespace-nowrap ${p.net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}
-                title={p.net >= 0 ? 'You received more than you sent' : 'You sent more than you received'}
-              >
-                {p.net >= 0 ? '+' : '−'}<Amount value={Math.abs(p.net)} decimals={0} />
+              <span className="tabular-nums whitespace-nowrap">
+                <PersonNet net={p.net} />
               </span>
             </li>
           ))}

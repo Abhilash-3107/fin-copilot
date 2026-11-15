@@ -20,7 +20,7 @@ import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
-  FilePlus2, TrendingUp, HelpCircle, Users,
+  FilePlus2, TrendingUp, HelpCircle,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
 } from 'lucide-react'
 
@@ -575,20 +575,6 @@ export default function Dashboard() {
           </>
         ),
         cta: 'Look closer',
-      })
-    }
-    const person = data.people.items.find(p => Math.abs(p.net) >= 500)
-    if (person) {
-      attention.push({
-        key: 'people', icon: Users, color: '#34d399', to: '/people',
-        text: (
-          <>
-            Between you and {person.name} in {dayjs(data.month).format('MMMM')}:{' '}
-            <Amount value={Math.abs(person.net)} decimals={0} />{' '}
-            {person.net >= 0 ? 'more received than sent' : 'more sent than received'}
-          </>
-        ),
-        cta: 'People',
       })
     }
   }

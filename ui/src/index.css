@@ -52,10 +52,11 @@ html, body {
   animation: slideIn 200ms ease forwards;
 }
 
-/* Tooltip scale-in */
+/* Tooltip fade-in. Opacity only: the tooltip is placed with an inline transform,
+   and an animated transform would replace it and push the tooltip off its anchor. */
 @keyframes tooltipIn {
-  from { opacity: 0; transform: scale(0.95); }
-  to   { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 .animate-tooltip-in {
   animation: tooltipIn 150ms ease forwards;

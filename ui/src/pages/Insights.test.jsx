@@ -172,6 +172,14 @@ describe('Insights (Money Map)', () => {
       screen.getByText((_, el) => el.tagName === 'P' && el.textContent.includes('sent ₹440 · received ₹0 · 1 transfer'))
     ).toBeInTheDocument()
     expect(screen.getByText('Sent and received in February')).toBeInTheDocument()
+    // Same neutral wording as the People page: no sign, no red.
+    const received = screen.getByText(/more received/)
+    expect(received).toHaveTextContent('₹3,782 more received')
+    const sent = screen.getByText(/more sent/)
+    expect(sent).toHaveTextContent('₹440 more sent')
+    expect(received.className).not.toMatch(/red|emerald|green/)
+    expect(sent.className).not.toMatch(/red|emerald|green/)
+    expect(screen.queryByText('−₹440')).not.toBeInTheDocument()
     expect(screen.getByText('Zomato')).toBeInTheDocument()
     expect(screen.getByText('10')).toBeInTheDocument() // order count
     expect(screen.getByText('₹447')).toBeInTheDocument() // avg ticket

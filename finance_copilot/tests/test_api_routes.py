@@ -1474,3 +1474,44 @@ class TestPeopleRelationship:
         # Clearing the relationship.
         cleared = client.patch(f"/api/people/{pid}", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": None})
         assert cleared.json()["relationship"] is None
+
+
+class TestGroupHeaderRefresh:
+    """B8: an open group's header must follow its members, from the server."""
+
+    def test_group_detail_carries_the_header_summary(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
+        )
+        for txn_id, amount in (("t1", 440.0), ("t2", 440.0)):
+            conn.execute(
+                """INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description)
+                   VALUES (?, 's1', '2026-01-10', ?, 'debit', 'STAY')""",
+                (txn_id, amount),
+            )
+        conn.commit()
+        neha = client.post("/api/people", json={"name": "Neha"}).json()["id"]
+        gid = client.post("/api/groups", json={"name": "Coorg weekend"}).json()["id"]
+
+        empty = client.get(f"/api/groups/{gid}").json()
+        assert empty["summary"]["member_count"] == 0
+        assert "settle_up" not in empty
+        assert empty["summary"]["settle_up"] == []
+
+        for txn_id in ("t1", "t2"):
+            client.post(f"/api/groups/{gid}/members", json={"transaction_id": txn_id, "people": [neha]})
+        detail = client.get(f"/api/groups/{gid}").json()
+        assert detail["summary"]["member_count"] == 2
+        assert detail["summary"]["your_share"] == 440.0
+        assert "settle_up" not in detail
+        assert detail["summary"]["settle_up"][0]["net"] == 440.0
+        assert detail["summary"]["owed_to_you"] == {"count": 1, "total": 440.0, "name": "Neha"}
+        # The list serves the identical rollup.
+        listed = next(g for g in client.get("/api/groups").json() if g["id"] == gid)
+        assert listed["summary"] == detail["summary"]
+
+        client.delete(f"/api/groups/{gid}/members/t2")
+        after = client.get(f"/api/groups/{gid}").json()
+        assert after["summary"]["member_count"] == 1
+        assert after["summary"]["your_share"] == 220.0

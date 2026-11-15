@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Search, HelpCircle } from 'lucide-react'
 import { api } from '../lib/api.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
-import Amount from '../components/Amount.jsx'
+import PersonNet from '../components/PersonNet.jsx'
 
 // Curated relationship choices. Family ones (dad/mom/…) make this person's
 // transfers land in Transfers › Family instead of the generic Peer Transfer;
@@ -132,7 +133,7 @@ export default function People() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">People</h1>
-        <span className="text-xs text-[#64748b]">{people.length} contacts</span>
+        <span className="text-xs text-[#64748b]">{count(people.length, 'contact')}</span>
       </div>
 
       {/* Search + add trigger */}
@@ -185,11 +186,14 @@ export default function People() {
                     </Tooltip>
                   </span>
                 </th>
-                <th className={`${th} text-right`}>Matched</th>
+                <th className={`${th} text-right`}>Payments</th>
                 <th className={`${th} text-right`}>
                   <span className="inline-flex items-center gap-1">
-                    Net
-                    <Tooltip content="Received from them minus sent to them, across matched transactions. Green = they sent you more; red = you sent more." position="bottom">
+                    <span className="flex flex-col items-end leading-tight">
+                      <span>Sent and received</span>
+                      <span className="font-normal normal-case tracking-normal text-[#475569]">all time</span>
+                    </span>
+                    <Tooltip content="Money you received from them minus money you sent them, across every payment in your statements that matches this person. It is not a group balance: Groups counts only the payments you put in a group. Money Map counts one month of payments labelled Transfers." position="left">
                       <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
@@ -218,7 +222,7 @@ export default function People() {
                         />
                       ) : (
                         <span className={`cursor-pointer hover:text-[#e2e8f0] transition-colors ${!p.upi ? 'text-[#475569]' : ''}`}>
-                          {p.upi ?? '— click to set'}
+                          {p.upi ?? '- click to set'}
                         </span>
                       )}
                     </td>
@@ -228,7 +232,7 @@ export default function People() {
                         onChange={e => commitRelationship(p, e.target.value)}
                         className={`bg-transparent border border-transparent hover:border-[#2d3148] focus:border-[#6366f1] px-2 py-1 rounded text-sm outline-none capitalize ${p.relationship ? 'text-[#94a3b8]' : 'text-[#475569]'}`}
                       >
-                        <option value="">— none</option>
+                        <option value="">- none</option>
                         {RELATIONSHIPS.map(r => (
                           <option key={r} value={r} className="text-[#e2e8f0] capitalize">{RELATIONSHIP_LABELS[r] ?? r}</option>
                         ))}
@@ -249,11 +253,9 @@ export default function People() {
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {stats.matched > 0 ? (
-                        <span className={stats.net > 0 ? 'text-green-400' : stats.net < 0 ? 'text-red-400' : 'text-[#94a3b8]'}>
-                          {stats.net > 0 ? '+' : ''}<Amount value={stats.net} decimals={0} />
-                        </span>
+                        <PersonNet net={stats.net} />
                       ) : (
-                        <span className="text-[#475569]">—</span>
+                        <span className="text-[#475569]">-</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
