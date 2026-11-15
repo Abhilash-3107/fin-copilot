@@ -5,17 +5,28 @@ import dayjs from 'dayjs'
 // same fact. The server decides the windows (insights `period` and
 // `comparison`); this only names them.
 
-// "1-15 Nov": the days of a month the ledger covers so far.
+// "1-15 Nov": the days of a month the ledger covers so far; "1 Nov" for one day.
 function dayRange(start, end) {
   const a = dayjs(start)
   const b = dayjs(end)
+  if (a.isSame(b, 'day')) return `${b.date()} ${b.format('MMM')}`
   return `${a.date()}-${b.date()} ${b.format('MMM')}`
 }
 
-// The in-progress note for a partial month ("1-15 Nov, in progress"), else null.
-export function inProgressLabel(period) {
+// A month the ledger covers only partway is "in progress" only while the
+// calendar (the browser's clock, `today`) has not passed its last day. Statement
+// periods end on the last transaction, so a finished month whose last
+// transaction was the 28th is partial in the data but no longer in progress.
+export function isInProgress(period, today = dayjs()) {
+  return Boolean(period?.partial) && !dayjs(today).isAfter(dayjs(period.end), 'day')
+}
+
+// The coverage note for a partial month: "1-15 Nov, in progress" while the
+// month is running, "1-28 Nov" once it has ended. Null for a fully covered month.
+export function coverageLabel(period, today) {
   if (!period?.partial) return null
-  return `${dayRange(period.start, period.covered_through)}, in progress`
+  const range = dayRange(period.start, period.covered_through)
+  return isInProgress(period, today) ? `${range}, in progress` : range
 }
 
 // What deltas are measured against: "October" for a whole month, "1-15 Oct"

@@ -12,10 +12,11 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
+import OtherInNote from '../components/OtherInNote.jsx'
 import RecurringPanel from '../components/RecurringPanel.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { inProgressLabel, comparisonLabel } from '../lib/period.js'
+import { coverageLabel, comparisonLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
@@ -31,7 +32,9 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
       </p>
       <div className="mt-1 flex flex-wrap items-center gap-x-2">
         <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
-        {sub && <span className="text-xs text-[#64748b]">{sub}</span>}
+        {sub && (typeof sub === 'string'
+          ? <span className="text-xs text-[#64748b]">{sub}</span>
+          : sub)}
       </div>
     </div>
   )
@@ -49,7 +52,7 @@ function VerdictStrip({ verdict, vs }) {
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
       <StatTile
         label="In" value={money_in} delta={tileDelta(verdict, 'money_in')} vs={vs}
-        sub={other_in > 0 ? `incl ${formatRupees(other_in, { decimals: 0 })} paid back or from people` : null}
+        sub={<OtherInNote amount={other_in} />}
       />
       <StatTile
         label="Out" value={money_out} delta={tileDelta(verdict, 'money_out')} vs={vs} goodWhenDown
@@ -190,7 +193,7 @@ function DeltaShort({ delta }) {
 // row carries the bar, the net amount, the delta against the comparison window,
 // and an expandable subcategory drill-down. Amounts are net of refunds and
 // shares friends paid back; where that netting applied, the gross is disclosed.
-// The reconciling rows (Transfers and cash, Paid back to you, other money out)
+// The reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other money out)
 // and the total follow, so the list always closes on Out.
 function CategoryBreakdown({ categories, breakdown, unexplained, month, heading, vs }) {
   const [expanded, setExpanded] = useState(null)
@@ -427,6 +430,7 @@ export default function Insights() {
   }, [requestMonth, toast])
 
   const vs = comparisonLabel(data?.comparison)
+  const coverage = coverageLabel(data?.period)
   const heading = data?.month ? dayjs(data.month).format('MMMM YYYY') : ''
 
   return (
@@ -437,13 +441,13 @@ export default function Insights() {
           {data?.month && (
             <span className="text-sm font-normal text-[#64748b]"> - {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
-          {inProgressLabel(data?.period) && (
+          {coverage && (
             <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
-              {inProgressLabel(data.period)}
+              {coverage}
             </span>
           )}
         </h1>
-        <PeriodPicker allowAll={false} />
+        <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
       </div>
 
       {loading ? (

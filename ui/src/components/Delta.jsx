@@ -5,14 +5,17 @@ import Amount from './Amount.jsx'
 // `label` is the shared comparison wording ("October", "1-15 Oct").
 export default function Delta({ delta, label, goodWhenDown = false, className = 'text-xs' }) {
   if (delta == null || !label) return null
-  if (delta === 0) {
+  // Decide on the whole-rupee value that is rendered, so float noise never
+  // draws a coloured "▲ ₹0".
+  const rupees = Math.round(delta)
+  if (rupees === 0) {
     return <span className={`${className} text-[#64748b]`}>same as {label}</span>
   }
-  const up = delta > 0
+  const up = rupees > 0
   const good = goodWhenDown ? !up : up
   return (
     <span className={`${className} tabular-nums ${good ? 'text-emerald-400' : 'text-red-400'}`}>
-      {up ? '▲' : '▼'} <Amount value={Math.abs(delta)} decimals={0} /> vs {label}
+      {up ? '▲' : '▼'} <Amount value={Math.abs(rupees)} decimals={0} /> vs {label}
     </span>
   )
 }

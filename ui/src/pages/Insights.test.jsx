@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -61,7 +61,7 @@ const SUMMARY = {
     total: 77763,
     extras: [
       { key: 'transfers', label: 'Transfers and cash', total: 7000, count: 2 },
-      { key: 'paid_back', label: 'Paid back to you', total: 34810, count: null },
+      { key: 'paid_back', label: 'Refunds and paybacks taken off the rows above', total: 34810, count: null },
       { key: 'other', label: 'Other money out', total: 700, count: 1 },
     ],
   },
@@ -126,7 +126,7 @@ describe('Insights (Money Map)', () => {
     expect(screen.getByText('Out').closest('div')).toHaveTextContent(/vs January/)
     expect(screen.getByText('Kept').closest('div')).toHaveTextContent(/vs January/)
     expect(screen.getByText('same as January')).toBeInTheDocument()
-    expect(screen.getByText(/incl ₹43,138 paid back or from people/)).toBeInTheDocument()
+    expect(screen.getByText(/in refunds and paybacks/)).toHaveTextContent('incl ₹43,138 in refunds and paybacks')
   })
 
   it('does not render the verdict arithmetic explainer', async () => {
@@ -181,7 +181,7 @@ describe('Insights (Money Map)', () => {
     renderInsights()
     const card = (await screen.findByText(/Where it went/)).closest('.overflow-hidden')
     expect(within(card).getByText('Transfers and cash')).toBeInTheDocument()
-    expect(within(card).getByText('Paid back to you')).toBeInTheDocument()
+    expect(within(card).getByText('Refunds and paybacks taken off the rows above')).toBeInTheDocument()
     expect(within(card).getByText('Other money out')).toBeInTheDocument()
     const total = within(card).getByText('Total out').closest('div')
     expect(total).toHaveTextContent('₹77,763')
@@ -227,7 +227,20 @@ describe('Insights (Money Map)', () => {
     await waitFor(() => expect(picker).toHaveValue('2026-02'))
   })
 
+  it('hides the In tile note amount in privacy mode', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderInsights()
+    const note = (await screen.findByText(/in refunds and paybacks/)).closest('span.text-xs')
+    expect(note.querySelector('[aria-label="Amount hidden"]')).toHaveTextContent('₹43,138')
+  })
+
   describe('a month in progress', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-11-15T12:00:00'))
+    })
+    afterEach(() => vi.useRealTimers())
+
     const PARTIAL = {
       ...SUMMARY,
       month: '2026-11',
@@ -244,6 +257,23 @@ describe('Insights (Money Map)', () => {
       expect(screen.getByText('What changed vs 1-15 Oct')).toBeInTheDocument()
       expect(screen.getAllByText(/vs 1-15 Oct/).length).toBeGreaterThan(3)
       expect(screen.queryByText(/last month/)).not.toBeInTheDocument()
+    })
+
+    it('says no "in progress" once the month has ended, keeping the covered days', async () => {
+      vi.setSystemTime(new Date('2026-12-02T12:00:00'))
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            period: { ...PARTIAL.period, covered_through: '2026-11-28' },
+            comparison: { month: '2026-10', start: '2026-10-01', end: '2026-10-28' },
+          })
+          : Promise.resolve([])
+      ))
+      renderInsights()
+      expect(await screen.findByText('1-28 Nov')).toBeInTheDocument()
+      expect(screen.getByText('What changed vs 1-28 Oct')).toBeInTheDocument()
+      expect(screen.queryByText(/in progress/)).not.toBeInTheDocument()
     })
 
     it('shows no delta anywhere without a comparison', async () => {

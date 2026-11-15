@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -58,7 +58,7 @@ const SUMMARY = {
     total: 50738,
     extras: [
       { key: 'transfers', label: 'Transfers and cash', total: 7000, count: 2 },
-      { key: 'paid_back', label: 'Paid back to you', total: 1031, count: null },
+      { key: 'paid_back', label: 'Refunds and paybacks taken off the rows above', total: 1031, count: null },
     ],
   },
   recurring_summary: { monthly_total: 26999, count: 2 },
@@ -321,6 +321,12 @@ describe('Dashboard', () => {
   })
 
   describe('a month in progress', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-11-15T12:00:00'))
+    })
+    afterEach(() => vi.useRealTimers())
+
     const PARTIAL = {
       ...SUMMARY,
       month: '2026-11',
@@ -342,6 +348,25 @@ describe('Dashboard', () => {
       expect(screen.getByText('same as 1-15 Oct')).toBeInTheDocument()
       expect(screen.queryByText(/last month/)).not.toBeInTheDocument()
       expect(screen.getByRole('link', { name: /Travel ran ₹11,249 above 1-15 Oct/ })).toBeInTheDocument()
+    })
+
+    it('says no "in progress" once the month has ended, keeping the covered days', async () => {
+      vi.setSystemTime(new Date('2026-12-02T12:00:00'))
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            period: { ...PARTIAL.period, covered_through: '2026-11-28' },
+            comparison: { month: '2026-10', start: '2026-10-01', end: '2026-10-28' },
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await screen.findByText('1-28 Nov')).toBeInTheDocument()
+      expect(screen.getByText((_, el) => el.tagName === 'P' && /^In November, you kept/.test(el.textContent)))
+        .toBeInTheDocument()
+      expect(screen.getAllByText(/vs 1-28 Oct/).length).toBe(3)
+      expect(screen.queryByText(/in progress|so far/)).not.toBeInTheDocument()
     })
 
     it('shows no delta at all when there is nothing to compare with', async () => {
@@ -371,19 +396,17 @@ describe('Dashboard', () => {
     })
   })
 
-  it('never raises Uncategorized as a spike (the unsorted item covers it)', async () => {
+  it('words the In tile note like Money Map and hides its amount in privacy mode', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
     mockApi.get.mockImplementation(path => (
       path.startsWith('/insights')
-        ? Promise.resolve({
-          ...SUMMARY,
-          what_changed: [{ category: 'Uncategorized', delta: 5005, current: 5005, previous: 0 }],
-        })
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 750 } })
         : Promise.resolve([])
     ))
     renderDashboard()
-    await screen.findByText('Needs your attention')
-    expect(screen.queryByText(/Uncategorized ran/)).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /has no category yet/ })).toBeInTheDocument()
+    const note = (await screen.findByText(/in refunds and paybacks/)).closest('p')
+    expect(note).toHaveTextContent('incl ₹750 in refunds and paybacks')
+    expect(note.querySelector('[aria-label="Amount hidden"]')).toHaveTextContent('₹750')
   })
 
   // Sum every rupee figure inside the given rows (the Indian grouping has commas only).
@@ -463,6 +486,25 @@ describe('Dashboard', () => {
     await waitFor(() => expect(picker).toHaveValue('2026-05'))
     // The server picks its latest month; no unhonoured month is requested.
     expect(mockApi.get).toHaveBeenCalledWith('/insights')
+  })
+
+  it('shows the month the server returned even when statements name a later one', async () => {
+    localStorage.setItem('fc_period_month', 'all')
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/statements') {
+        return Promise.resolve([
+          { id: 's6', bank_name: 'kotak', statement_month: '2026-06', uploaded_at: '2026-06-30' },
+          { id: 's5', bank_name: 'kotak', statement_month: '2026-05', uploaded_at: '2026-06-01' },
+        ])
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    await screen.findByText('Kept')
+    const picker = screen.getByRole('combobox', { name: 'Period' })
+    await waitFor(() => expect(picker).toHaveValue('2026-05'))
+    expect(within(picker).queryByRole('option', { name: 'Jun 2026' })).not.toBeInTheDocument()
   })
 
   it('requests the shared period month from the server', async () => {

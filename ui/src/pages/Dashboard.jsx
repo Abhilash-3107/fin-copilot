@@ -13,9 +13,10 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
+import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
-import { inProgressLabel, comparisonLabel } from '../lib/period.js'
+import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import {
@@ -41,7 +42,7 @@ function ordinal(n) {
 function VerdictHero({ verdict, period }) {
   const { kept, kept_rate: rate, invested } = verdict
   const monthName = dayjs(period.month).format('MMMM')
-  const when = period.partial ? `${monthName} so far` : monthName
+  const when = isInProgress(period) ? `${monthName} so far` : monthName
   const tone = rate == null
     ? { color: '#94a3b8' }
     : rate >= 0.2
@@ -519,6 +520,7 @@ export default function Dashboard() {
   }
 
   const vs = comparisonLabel(data?.comparison)
+  const coverage = coverageLabel(data?.period)
   const attention = []
   if (data?.month) {
     if (reviewCount > 0) {
@@ -540,9 +542,9 @@ export default function Dashboard() {
         cta: 'Add statement',
       })
     }
-    // Uncategorized is never a spike: the unsorted item below already covers it.
+    // The server leaves Uncategorized out of what_changed: the unsorted item below covers it.
     const spike = data.what_changed.find(
-      c => c.category !== 'Uncategorized' && c.delta >= 2000 && c.current > 1.75 * Math.max(c.previous, 1)
+      c => c.delta >= 2000 && c.current > 1.75 * Math.max(c.previous, 1)
     )
     if (spike) {
       attention.push({
@@ -593,14 +595,14 @@ export default function Dashboard() {
           {data?.month && (
             <span className="text-sm font-normal text-[#64748b]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
-          {inProgressLabel(data?.period) && (
+          {coverage && (
             <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
-              {inProgressLabel(data.period)}
+              {coverage}
             </span>
           )}
         </h1>
         <div className="flex items-center gap-3">
-          <PeriodPicker allowAll={false} />
+          <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
           <Link
             to="/upload"
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#7c3aed] px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9]"
@@ -654,7 +656,7 @@ export default function Dashboard() {
             <StatTile
               label="In" value={data.verdict.money_in}
               delta={tileDelta(data.verdict, 'money_in')} vs={vs}
-              sub={data.verdict.other_in > 0 ? `incl ${formatRupees(data.verdict.other_in, { decimals: 0 })} in reimbursements` : null}
+              sub={data.verdict.other_in > 0 ? <OtherInNote amount={data.verdict.other_in} className="" /> : null}
             />
             <StatTile
               label="Out" value={data.verdict.money_out} goodWhenDown

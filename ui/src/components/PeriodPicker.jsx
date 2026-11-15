@@ -7,13 +7,19 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 // Month screens (Dashboard, Money Map) pass allowAll={false}: they answer "how
 // was this month", so "All time" is not offered, and if the shared period is
 // All time when the user arrives they show the latest month and the picker
-// says so, never a value the data does not honour.
-export default function PeriodPicker({ className = '', allowAll = true }) {
-  const { month, setMonth, months } = usePeriod()
+// says so, never a value the data does not honour. They pass `shown` (the
+// month the page is displaying) and `months` (every month the server reports,
+// ascending) so the options and the value come from the data itself, not from
+// statement metadata that can disagree with it.
+export default function PeriodPicker({ className = '', allowAll = true, shown, months: dataMonths }) {
+  const { month, setMonth, months: statementMonths } = usePeriod()
+  const months = dataMonths ? [...dataMonths].reverse() : statementMonths
   const chosen = month && month !== ALL_TIME ? month : null
-  const value = allowAll
-    ? (month ?? ALL_TIME)
-    : (chosen && months.includes(chosen) ? chosen : (months[0] ?? ''))
+  let value
+  if (allowAll) value = month ?? ALL_TIME
+  else if (chosen && months.includes(chosen)) value = chosen
+  else if (shown && months.includes(shown)) value = shown
+  else value = months[0] ?? ''
 
   return (
     <select
