@@ -1,0 +1,12 @@
+{
+  "name": "finance-copilot-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser journeys that drive the real app. Not part of the wheel.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}
