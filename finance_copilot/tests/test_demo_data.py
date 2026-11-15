@@ -118,7 +118,7 @@ class TestSeededCategoryIds:
 
 
 class TestBackfillMigration:
-    MIGRATION = "035_backfill_annotation_category_ids.sql"
+    MIGRATION = "036_backfill_annotation_category_ids.sql"
 
     def _run(self, conn):
         conn.executescript((MIGRATIONS / self.MIGRATION).read_text())

@@ -1,4 +1,4 @@
--- Migration 035: fill annotation category ids that were written as names only.
+-- Migration 036: fill annotation category ids that were written as names only.
 -- The demo seeder (0.1.2 and earlier) inserted annotations with a category and
 -- subcategory name but no ids, so Settings > Categories reported every one of
 -- them as an orphan and its Move fix could not apply. Names stay as they are;
