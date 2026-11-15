@@ -1,6 +1,6 @@
 // J8 - Backup, delete, restore. The restored ledger must match the original.
 import { test, expect } from '../fixtures.js'
-import { storedFacts } from '../lib/snapshot.js'
+import { derivedFigures, storedFacts } from '../lib/snapshot.js'
 import { categorise, uploadFixture } from '../lib/statement.js'
 import { figureNear, open, openSettingsTab } from '../lib/ui.js'
 
@@ -42,12 +42,15 @@ test('a backup restores the ledger exactly after everything is deleted', async (
   await buildRichLedger(app.api)
 
   const original = await storedFacts(app.api)
+  // Figures computed from the stored facts, including who owes whom in each group.
+  const originalFigures = await derivedFigures(app.api)
   expect(original.transactions.length).toBeGreaterThan(5)
   // The facts being compared are rich enough for the comparison to mean something.
   expect(original.people).toHaveLength(1)
   expect(original.rules).toHaveLength(1)
   expect(original.groups[0].members).toHaveLength(2)
   expect(original.reviewCounts.set_aside).toBe(1)
+  expect(originalFigures.groups[0].settleUp).toBeTruthy()
   expect(original.transactions.some((t) => t.source === 'manual')).toBe(true)
   await open(page, '/dashboard')
   const keptBefore = await figureNear(page, 'Kept')
@@ -75,6 +78,7 @@ test('a backup restores the ledger exactly after everything is deleted', async (
   await expect(page.getByText(/^Restored \d+ transactions? from/)).toBeVisible()
 
   expect(await storedFacts(app.api)).toEqual(original)
+  expect(await derivedFigures(app.api)).toEqual(originalFigures)
   await open(page, '/dashboard')
   expect(await figureNear(page, 'Kept')).toBe(keptBefore)
 })
