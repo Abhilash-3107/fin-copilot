@@ -1,144 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CheckCircle, SkipForward, Tag, ChevronDown, ChevronUp, Undo2, Copy, Plus, Sparkles } from 'lucide-react'
+import { Copy, Sparkles, Undo2 } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { annotationSummary } from '../lib/annotationSummary.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
-import TagInput from '../components/TagInput.jsx'
-import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount, { formatRupees } from '../components/Amount.jsx'
-import Tooltip from '../components/Tooltip.jsx'
-import ReasoningPanel from '../components/ReasoningPanel.jsx'
+import SortCard from '../components/SortCard.jsx'
+import { groupName } from '../components/PayeeHeading.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
+import { labelOf } from '../lib/categoryOptions.js'
 import { count } from '../lib/plural.js'
 
 // Module-level category cache
 let _catCache = null
-
-function ConfidenceBar({ confidence }) {
-  const pct = Math.round((confidence ?? 0) * 100)
-  const color = confidence >= 0.85 ? 'bg-green-500' : confidence >= 0.6 ? 'bg-amber-500' : 'bg-red-500'
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-2 bg-[#1e2235] rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs tabular-nums text-[#94a3b8] w-8 text-right">{pct}%</span>
-    </div>
-  )
-}
-
-// Inline "name it" field for a new category or subcategory. Enter saves, Escape cancels.
-function NewNameInput({ placeholder, onSubmit, onCancel }) {
-  const [name, setName] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function submit() {
-    const value = name.trim()
-    if (!value || busy) return
-    setBusy(true)
-    const ok = await onSubmit(value)
-    if (!ok) setBusy(false)
-  }
-
-  return (
-    <input
-      autoFocus
-      value={name}
-      disabled={busy}
-      placeholder={placeholder}
-      aria-label={placeholder}
-      maxLength={60}
-      onChange={e => setName(e.target.value)}
-      onKeyDown={e => {
-        if (e.key === 'Enter') { e.preventDefault(); submit() }
-        if (e.key === 'Escape') { e.preventDefault(); onCancel() }
-      }}
-      onBlur={() => { if (!name.trim() && !busy) onCancel() }}
-      className="w-40 bg-[#0f1117] border border-[#6366f1] text-[#e2e8f0] px-2.5 py-1 rounded-full text-xs focus:outline-none placeholder:text-[#475569]"
-    />
-  )
-}
-
-const NEW_CHIP_CLASS =
-  'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border border-dashed border-[#3d4468] text-[#64748b] hover:border-[#6366f1] hover:text-[#a5b4fc] transition-colors'
-
-function CategoryChips({ tree, category, subcategory, onChange, onCreate }) {
-  const [adding, setAdding] = useState(null) // 'category' | 'subcategory' | null
-  const roots = useMemo(() => tree.filter(c => !c.parent_id), [tree])
-  const parent = useMemo(() => (category ? roots.find(r => r.name === category) : null), [roots, category])
-  const children = useMemo(() => (parent ? tree.filter(c => c.parent_id === parent.id) : []), [tree, parent])
-
-  async function create(kind, name) {
-    const created = await onCreate(kind === 'category' ? null : parent.id, name)
-    if (created) setAdding(null)
-    return !!created
-  }
-
-  return (
-    <div className="space-y-2.5">
-      {/* Category chips */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {roots.map(r => (
-          <button
-            key={r.id}
-            onClick={e => onChange({ category: r.name, subcategory: '' }, e)}
-            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-              category === r.name
-                ? 'bg-[#6366f1] text-white'
-                : 'bg-[#1e2235] text-[#94a3b8] hover:bg-[#2d3148] hover:text-[#e2e8f0]'
-            }`}
-          >
-            {r.name}
-          </button>
-        ))}
-        {adding === 'category' ? (
-          <NewNameInput
-            placeholder="New category name"
-            onSubmit={name => create('category', name)}
-            onCancel={() => setAdding(null)}
-          />
-        ) : (
-          <button onClick={() => setAdding('category')} className={NEW_CHIP_CLASS}>
-            <Plus size={11} /> New category
-          </button>
-        )}
-      </div>
-
-      {/* Subcategory chips - appear inline when a category is selected */}
-      {parent && (
-        <div className="flex flex-wrap items-center gap-1.5 pl-1 border-l-2 border-[#6366f1]/30">
-          {children.map(c => (
-            <button
-              key={c.id}
-              onClick={e => onChange({ category, subcategory: c.name }, e)}
-              className={`px-2 py-0.5 rounded-full text-xs transition-colors ${
-                subcategory === c.name
-                  ? 'bg-[#4f46e5] text-white'
-                  : 'bg-[#1e1b4b] text-[#818cf8] hover:bg-[#2d2b6b] hover:text-[#a5b4fc]'
-              }`}
-            >
-              {c.name}
-            </button>
-          ))}
-          {adding === 'subcategory' ? (
-            <NewNameInput
-              placeholder={`New subcategory in ${category}`}
-              onSubmit={name => create('subcategory', name)}
-              onCancel={() => setAdding(null)}
-            />
-          ) : (
-            <button onClick={() => setAdding('subcategory')} className={NEW_CHIP_CLASS}>
-              <Plus size={11} /> New subcategory
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
   const { label, items } = propagate
@@ -214,6 +90,8 @@ const POLICY_DEFAULT_MAX = 500
 // real category either).
 const NO_COUNTS = { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 }
 
+const UNDO_URL = '/annotations/review-queue/undo'
+
 function statsLine(stats) {
   return [
     `${stats.confirmed} confirmed`,
@@ -228,16 +106,36 @@ function isRealCategory(category) {
   return !!category && category !== 'Uncategorized'
 }
 
-function withResolved(message, sorted) {
-  if (!sorted) return message
-  return `${message} Also sorted ${sorted} similar transaction${sorted === 1 ? '' : 's'}.`
+const tagsOf = item => (Array.isArray(item.tags) ? item.tags : (item.tags ? item.tags.split(',').filter(Boolean) : []))
+const sameLabel = (category, subcategory, item) => category === (item.category ?? '') && (subcategory || '') === (item.subcategory ?? '')
+const ruleId = rule => `${rule.counterparty_key}|${rule.direction}`
+// Keys of an id-keyed map, minus these ids (ids are numbers or strings; object keys are always strings).
+function without(map, ids) {
+  const drop = new Set(ids.map(String))
+  return Object.fromEntries(Object.entries(map).filter(([id]) => !drop.has(id)))
+}
+
+// A key typed into a field is text, not a shortcut. The group checkbox is the
+// one field that leaves the shortcuts live.
+function isTyping(target) {
+  const tag = target.tagName
+  return (tag === 'INPUT' && target.type !== 'checkbox') || tag === 'SELECT' || tag === 'TEXTAREA' || target.isContentEditable
+}
+
+function sortedMessage(group, category, subcategory, alsoSorted) {
+  const where = labelOf({ category, subcategory })
+  const base = group.length > 1
+    ? `Sorted as ${where}, and ${group.length - 1} more from ${groupName(group[0])}`
+    : `Sorted as ${where}`
+  if (!alsoSorted) return base
+  return `${base}. ${count(alsoSorted, 'similar payment')} ${alsoSorted === 1 ? 'was' : 'were'} sorted too.`
 }
 
 export default function ReviewQueue() {
   const toast = useToast()
   const { job, startAnnotation } = useAnnotationJob()
+  // What is still waiting, first card first. Answered and skipped cards leave it.
   const [queue, setQueue] = useState([])
-  const [idx, setIdx] = useState(0)
   const [loading, setLoading] = useState(true)
   // True once the server has confirmed the queue is empty; the done states are
   // only shown then, never from the local list alone.
@@ -253,10 +151,9 @@ export default function ReviewQueue() {
   const [aiActive, setAiActive] = useState(false)
   const [tree, setTree] = useState(_catCache ?? [])
   const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
-  const [showTags, setShowTags] = useState(false)
   const [saving, setSaving] = useState(false)
   // The keyboard can fire again before `saving` re-renders (a quick double
-  // press of c or Enter), so the in-flight check reads a ref, not the state.
+  // press of Enter), so the in-flight check reads a ref, not the state.
   const savingRef = useRef(false)
   function beginSave() {
     if (savingRef.current) return false
@@ -268,40 +165,46 @@ export default function ReviewQueue() {
     savingRef.current = false
     setSaving(false)
   }
-  // Per-card outcome keyed by transaction_id ('confirmed' | 'edited' | 'skipped').
-  // Stats are derived from this, so going back to a card and changing your mind
-  // re-keys the same entry instead of double-counting - the server already
-  // no-ops a repeat confirm (source flips to 'manual', out of _MODEL_SOURCES),
-  // and the local counters must match that.
+  // Per-card outcome keyed by transaction_id ('confirmed' | 'edited' | 'sorted'
+  // | 'skipped'). Stats and progress are derived from this, so a payment answered
+  // twice (after an undo) is counted once, in its latest bucket.
   const [outcomes, setOutcomes] = useState({})
-  const [history, setHistory] = useState([]) // stack of visited idx values
+  // The answers that can still be taken back, latest last. A ref, because the
+  // toast's Undo button and the Z key must see the current stack, not the one
+  // from the render they were made in.
+  const undoRef = useRef([])
+  const [undoCount, setUndoCount] = useState(0)
   const [devMode, setDevMode] = useState(false)
   const [propagate, setPropagate] = useState(null) // {annotationId, label, items}
   const [applying, setApplying] = useState(false)
   const [counts, setCounts] = useState(NO_COUNTS)
   const snoozedCount = counts.set_aside
-  // One answer for every queued payment to the same payee (on by default).
+  // One answer for every queued payment to the same payee: on for businesses,
+  // off for people (a person is paid for different things).
   const [applyToGroup, setApplyToGroup] = useState(true)
+  // Learned rules when the page opened, so the finish line can say how many
+  // payees this session taught the app to sort on its own.
+  const baselineRules = useRef(null)
+  const [newRules, setNewRules] = useState(null)
   // Policy suggestion: after the user labels a few small payments to people the
   // same way, offer to make it a standing policy.
   const [hasPolicy, setHasPolicy] = useState(true)
   const [personalLabels, setPersonalLabels] = useState({})
   const [policySuggestion, setPolicySuggestion] = useState(null)
   const [policyDismissed, setPolicyDismissed] = useState(false)
-  const idxRef = useRef(0)
-  useEffect(() => { idxRef.current = idx }, [idx])
   const cardRef = useRef(null)
+  const typeaheadRef = useRef(null)
 
   // Skips are written in order and the done check waits for them, so a card
   // skipped a moment ago never comes back from the server's list.
   const writesRef = useRef(Promise.resolve())
 
+  const current = queue[0]
+
   // Everything the page shows about the queue comes from the server: the list,
   // how many payments are set aside, and whether there is anything to sort at
-  // all. A non-empty list starts the session over from its first card; an empty
-  // one keeps the cards already passed (keepCards) so the done screen can still
-  // go back and undo the last answer.
-  const refresh = useCallback(async ({ keepCards = false } = {}) => {
+  // all. `first` names payments to put at the front (the ones an undo brought back).
+  const refresh = useCallback(async ({ first } = {}) => {
     await writesRef.current
     try {
       const [data, nextCounts, anyTxn] = await Promise.all([
@@ -309,11 +212,8 @@ export default function ReviewQueue() {
         api.get('/annotations/review-queue/counts'),
         api.get('/transactions?limit=1'),
       ])
-      if (data.length > 0 || !keepCards) {
-        setQueue(data)
-        setIdx(0)
-        setHistory([])
-      }
+      const front = first ? new Set(first) : null
+      setQueue(front ? [...data.filter(it => front.has(it.transaction_id)), ...data.filter(it => !front.has(it.transaction_id))] : data)
       setCounts({ ...NO_COUNTS, ...nextCounts })
       setHasTransactions(!Array.isArray(anyTxn) || anyTxn.length > 0)
       setVerified(data.length === 0)
@@ -344,6 +244,10 @@ export default function ReviewQueue() {
     api.get('/policies')
       .then(ps => setHasPolicy(Array.isArray(ps) && ps.some(p => p.enabled)))
       .catch(() => {})
+
+    api.get('/annotations/learned-rules')
+      .then(rules => { if (Array.isArray(rules)) baselineRules.current = new Set(rules.map(ruleId)) })
+      .catch(() => {})
   }, [refresh])
 
   // The counts (set aside, still waiting) follow the server after every answer
@@ -357,11 +261,11 @@ export default function ReviewQueue() {
   // Out of cards locally: ask the server before saying so. Anything still
   // waiting there (new rows, a re-decided label, the next page of a long queue)
   // continues the session. A failed ask stops here instead of looping; Retry asks again.
-  const outOfCards = idx >= queue.length
+  const outOfCards = queue.length === 0
   useEffect(() => {
     if (loading) return
     if (!outOfCards) setVerified(false)
-    else if (!verified && !loadError) refresh({ keepCards: true })
+    else if (!verified && !loadError) refresh()
   }, [loading, outOfCards, verified, loadError, refresh])
 
   // A sorting run that finishes while this page is open (started here or on
@@ -373,29 +277,25 @@ export default function ReviewQueue() {
     if (!jobWasRunning.current) return
     jobWasRunning.current = false
     setSortRan(true)
-    refresh({ keepCards: true })
+    refresh()
   }, [jobRunning, refresh])
 
-  const current = queue[idx]
-
-  // Sync form when card changes
+  // Sync the form when the card changes, and decide whether an answer covers
+  // the whole payee: yes for a business, no for a person.
   useEffect(() => {
     if (!current) return
     setForm({
       category: current.category ?? '',
       subcategory: current.subcategory ?? '',
       merchant: current.merchant ?? '',
-      tags: Array.isArray(current.tags)
-        ? current.tags
-        : (current.tags ? current.tags.split(',').filter(Boolean) : []),
+      tags: tagsOf(current),
     })
-    setShowTags(false)
-    setApplyToGroup(true)
+    setApplyToGroup(current.payee_kind !== 'person')
     // Re-sync the form only when the card identity changes, not on every render
     // where `current` is a fresh object from a new queue array - otherwise an
     // in-progress edit would be clobbered mid-keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, current?.transaction_id])
+  }, [current?.transaction_id])
 
   // A new card takes the keyboard: no chip or button keeps focus from the last
   // card, so Enter cannot activate something the user never chose.
@@ -403,62 +303,65 @@ export default function ReviewQueue() {
     if (!loading) cardRef.current?.focus({ preventScroll: true })
   }, [loading, current?.transaction_id])
 
-  // Single source of truth for "has the user changed this card?"
-  // Used by both the keyboard handler and the render body so Enter/c never
-  // disagree with the buttons (a merchant- or tags-only edit still counts).
   // Confirm vouches for the machine's label, so it needs a real one. Anything
-  // else (no guess, Uncategorized) must be answered by picking a category.
+  // else (no guess, Uncategorized) must be answered by choosing a category.
   const needsPick = !isRealCategory(form.category)
+  const chosen = needsPick ? null : { category: form.category, subcategory: form.subcategory || null }
+  // Single source of truth for "has the user changed this card?", for the
+  // keyboard and the button alike (a merchant- or tags-only edit still counts).
   const isDirty = useMemo(() => {
     if (!current) return false
     return (
       form.category !== (current.category ?? '') ||
       form.subcategory !== (current.subcategory ?? '') ||
       form.merchant !== (current.merchant ?? '') ||
-      JSON.stringify(form.tags) !== JSON.stringify(
-        Array.isArray(current.tags) ? current.tags : (current.tags ? current.tags.split(',').filter(Boolean) : [])
-      )
+      JSON.stringify(form.tags) !== JSON.stringify(tagsOf(current))
     )
   }, [current, form])
 
-  // Derived stats: one tally per resolved card, so a card revisited via "go
-  // back" and re-decided moves between buckets instead of being counted twice.
+  // One tally per resolved card: a card re-decided after an undo moves between
+  // buckets instead of being counted twice.
   const stats = useMemo(() => {
     const s = { confirmed: 0, edited: 0, sorted: 0, skipped: 0 }
     for (const outcome of Object.values(outcomes)) s[outcome] += 1
     return s
   }, [outcomes])
+  const handled = Object.keys(outcomes).length
 
   // 'edited' corrected a guess; 'sorted' answered a payment that had no real guess.
   function answeredAs(item) {
     return isRealCategory(item.category) ? 'edited' : 'sorted'
   }
 
-  function record(transactionId, outcome) {
-    setOutcomes(o => ({ ...o, [transactionId]: outcome }))
+  function record(group, outcomeOf) {
+    setOutcomes(o => ({ ...o, ...Object.fromEntries(group.map(it => [it.transaction_id, outcomeOf(it)])) }))
   }
 
-  function pushHistory() {
-    setHistory(h => [...h, idx])
+  function pushUndo(entry) {
+    undoRef.current = [...undoRef.current, entry]
+    setUndoCount(undoRef.current.length)
   }
 
-  function advance() {
-    setIdx(i => i + 1)
+  function popUndo() {
+    undoRef.current = undoRef.current.slice(0, -1)
+    setUndoCount(undoRef.current.length)
   }
 
-  // After an answer, cards ahead follow the server: the rest of the answered
-  // group leaves, and every machine label the server re-decided (same payee,
-  // near neighbours) leaves when resolved or shows its new label otherwise, so
-  // a later confirm vouches for what is actually stored. Cards already passed
-  // stay put so the back button keeps working. Returns how many re-decided
-  // cards left (the answered group isn't counted).
+  // The toast that follows an answer: what happened, and a way to take it back.
+  function announce(message, res) {
+    toast(message, 'success', res.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined)
+  }
+
+  // After an answer, cards ahead follow the server: the answered group leaves,
+  // and every machine label the server re-decided (same payee, near
+  // neighbours) leaves when resolved or shows its new label otherwise, so a
+  // later confirm vouches for what is actually stored. Returns how many
+  // re-decided cards left (the answered group isn't counted).
   function settle(answered, reevaluated) {
     const done = new Set(answered.map(it => it.transaction_id))
-    const byId = new Map(reevaluated.map(r => [r.transaction_id, r]))
-    const here = idxRef.current
+    const byId = new Map((reevaluated ?? []).map(r => [r.transaction_id, r]))
     let left = 0
-    const next = queue.flatMap((it, i) => {
-      if (i <= here) return [it]
+    const next = queue.flatMap(it => {
       if (done.has(it.transaction_id)) return []
       const r = byId.get(it.transaction_id)
       if (!r) return [it]
@@ -472,7 +375,7 @@ export default function ReviewQueue() {
 
   // The current card plus every later queued payment to the same payee.
   function groupFromHere() {
-    return queue.filter((it, i) => i >= idx && it.group_key === current.group_key)
+    return queue.filter(it => it.group_key === current.group_key)
   }
 
   // Count the distinct people whose small payments the user labels the same
@@ -511,28 +414,52 @@ export default function ReviewQueue() {
     }
   }
 
-  function goBack() {
-    // Moving while a save is in flight would let its advance() land on a card
-    // the user never saw.
-    if (history.length === 0 || savingRef.current) return
-    const prevIdx = history[history.length - 1]
-    setHistory(h => h.slice(0, -1))
-    setIdx(prevIdx)
-  }
-
   function skip() {
     if (!current || savingRef.current) return
-    const transactionId = current.transaction_id
-    pushHistory()
-    record(transactionId, 'skipped')
-    advance()
+    const item = current
+    record([item], () => 'skipped')
+    setQueue(q => q.filter(it => it.transaction_id !== item.transaction_id))
     // Persist the snooze so the skip sticks across sessions (4.15), then take
-    // the set-aside count from the server. Best-effort: the card has already
-    // advanced; a failure just means it reappears next load.
+    // the set-aside count from the server. The card has already left the list;
+    // if the write fails it goes back.
     writesRef.current = writesRef.current
-      .then(() => api.post('/annotations/review-queue/skip', { transaction_id: transactionId }))
-      .catch(() => {})
+      .then(() => api.post('/annotations/review-queue/skip', { transaction_id: item.transaction_id }))
+      .then(res => {
+        if (res?.undo_token) pushUndo({ token: res.undo_token, ids: [item.transaction_id] })
+        toast('Set aside for later', 'info', res?.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined)
+      })
+      .catch(e => {
+        toast(`Couldn't set that aside - ${e.message}`, 'error')
+        setOutcomes(o => without(o, [item.transaction_id]))
+        setQueue(q => [item, ...q])
+      })
       .then(syncCounts)
+  }
+
+  // Take back the latest answer on the server. The card (or cards) come back
+  // first, exactly as they were; the progress tally forgets them.
+  async function undoLast() {
+    if (!beginSave()) return
+    try {
+      await writesRef.current
+      const entry = undoRef.current.at(-1)
+      if (!entry) return
+      try {
+        await api.post(UNDO_URL, { token: entry.token })
+      } catch (e) {
+        // Too old, or the payments changed since: this answer is final now.
+        popUndo()
+        toast(e.message, 'error')
+        return
+      }
+      popUndo()
+      setOutcomes(o => without(o, entry.ids))
+      setPropagate(null)
+      await refresh({ first: entry.ids })
+      toast('Undone', 'info')
+    } finally {
+      endSave()
+    }
   }
 
   async function restoreSnoozed() {
@@ -556,13 +483,11 @@ export default function ReviewQueue() {
         // One answer for the whole group: the label on this card, as seen.
         ? await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
         : await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
-      pushHistory()
-      group.forEach(it => record(it.transaction_id, 'confirmed'))
-      const sorted = settle(group, res.reevaluated)
-      const message = group.length > 1 ? `Got it, all ${group.length} from ${current.payee_all ?? current.payee} confirmed.` : 'Got it, thanks!'
-      toast(withResolved(message, sorted), 'success')
-      notePersonalLabel(group, current.category, current.subcategory)
-      advance()
+      record(group, () => 'confirmed')
+      if (res.undo_token) pushUndo({ token: res.undo_token, ids: group.map(it => it.transaction_id) })
+      const alsoSorted = settle(group, res.reevaluated)
+      announce(sortedMessage(group, label.category, label.subcategory, alsoSorted), res)
+      notePersonalLabel(group, label.category, label.subcategory)
       syncCounts()
     } catch (e) {
       if (e.status === 409) {
@@ -578,35 +503,27 @@ export default function ReviewQueue() {
     }
   }
 
-  async function saveEdit(overrides = {}) {
-    const payload = { ...form, ...overrides }
-    if (!isRealCategory(payload.category)) { toast('Pick a category first', 'error'); return }
+  async function saveEdit() {
+    if (needsPick) { toast('Pick a category first', 'error'); return }
     if (!beginSave()) return
     try {
       const label = {
-        category: payload.category,
-        subcategory: payload.subcategory || null,
-        merchant: payload.merchant?.trim() || null,
-        tags: payload.tags,
+        category: form.category,
+        subcategory: form.subcategory || null,
+        merchant: form.merchant?.trim() || null,
+        tags: form.tags,
       }
       const group = applyToGroup ? groupFromHere() : [current]
-      let res
-      if (group.length > 1 || !current.annotation_id) {
-        // The server decides how each payment is labelled: a plain manual label
-        // where nothing has labelled it, a correction where a sorting run got
-        // there first. So a bare card never trips over an annotation that
-        // appeared since the list loaded.
-        res = await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
-      } else {
-        res = await api.patch(`/annotations/${current.annotation_id}`, label)
-      }
-      pushHistory()
-      group.forEach(it => record(it.transaction_id, answeredAs(it)))
-      const sorted = settle(group, res.reevaluated)
-      const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee_all ?? current.payee} updated.` : "Noted, I'll remember that."
-      toast(withResolved(message, sorted), 'success')
-      notePersonalLabel(group, payload.category, payload.subcategory)
-      advance()
+      // The server decides how each payment is labelled: a plain manual label
+      // where nothing has labelled it, a correction where a sorting run got
+      // there first. So a bare card never trips over an annotation that
+      // appeared since the list loaded.
+      const res = await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
+      record(group, answeredAs)
+      if (res.undo_token) pushUndo({ token: res.undo_token, ids: group.map(it => it.transaction_id) })
+      const alsoSorted = settle(group, res.reevaluated)
+      announce(sortedMessage(group, label.category, label.subcategory, alsoSorted), res)
+      notePersonalLabel(group, label.category, label.subcategory)
       syncCounts()
       // One correction can fix many: offer the same label for similar
       // machine-annotated transactions (best-effort; never blocks the save).
@@ -619,7 +536,7 @@ export default function ReviewQueue() {
         if (fixable.length > 0) {
           setPropagate({
             annotationId: current.annotation_id,
-            label: payload.subcategory ? `${payload.category} > ${payload.subcategory}` : payload.category,
+            label: labelOf({ category: label.category, subcategory: label.subcategory }),
             items: fixable,
           })
         }
@@ -631,8 +548,17 @@ export default function ReviewQueue() {
     }
   }
 
+  // Choose a category for the current card: a suggestion, or a typed pick. The
+  // keyboard is handed back to the card so Enter answers it.
+  function choose({ category, subcategory }, event) {
+    if (!current) return
+    const own = sameLabel(category, subcategory, current)
+    setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: own ? tagsOf(current) : [] }))
+    if (event?.detail > 0) cardRef.current?.focus({ preventScroll: true })
+  }
+
   // Create a category (parentId null) or subcategory, add it to the shared
-  // trees, and select it on the current card. Returns the node, or null on failure.
+  // trees, and choose it for the current card. Returns the node, or null on failure.
   async function handleCreateCategory(parentId, name) {
     try {
       const created = parentId
@@ -643,7 +569,7 @@ export default function ReviewQueue() {
       resetCategoryPickerCache()
       setTree(next)
       const parentName = parentId ? next.find(c => c.id === parentId)?.name : created.name
-      handleCategoryChange({ category: parentName, subcategory: parentId ? created.name : '' })
+      choose({ category: parentName, subcategory: parentId ? created.name : '' })
       return created
     } catch (e) {
       toast(`Couldn't add "${name}" - ${e.message}`, 'error')
@@ -651,35 +577,35 @@ export default function ReviewQueue() {
     }
   }
 
-  function handleCategoryChange({ category, subcategory }, event) {
-    setForm(f => ({ ...f, category, subcategory, tags: [] }))
-    // After a mouse pick, hand the keyboard back to the card so Enter saves the
-    // pick. (A keyboard pick keeps its focus on the chip, so tabbing on to a
-    // subcategory still works.)
-    if (event?.detail > 0) cardRef.current?.focus({ preventScroll: true })
-  }
-
-  // Keyboard shortcuts. The handler closes over queue/form/idx state, so instead
+  // Keyboard shortcuts. The handler closes over queue/form state, so instead
   // of a hand-maintained dep list (which has silently gone stale in this file
   // before) keep the latest action in a ref and bind the listener exactly once.
   const keyActionRef = useRef(null)
   keyActionRef.current = e => {
-    // Shortcuts stay live on the group checkbox; text fields keep their keys.
-    if ((e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+    if (isTyping(e.target)) return
     if (e.ctrlKey || e.metaKey || e.altKey) return
-    // Enter on a focused button or chip is that control's own activation: the
+    // A held key must not skip, sort or undo a card a repeat at a time.
+    if (e.repeat) return
+    // Enter on a focused button or link is that control's own activation: the
     // browser clicks it, so the shortcut must not also act (AUDIT B13).
     if (e.key === 'Enter' && e.target.closest?.('button, a')) return
     if (propagate) return // dialog owns the keyboard
-    if (e.key === 'b') goBack()
-    // Both c and Enter save when the card is dirty; confirming a stale
-    // machine label would discard the edit and poison calibration.
-    else if (e.key === 's') skip()
-    else if (e.key === 'a') setApplyToGroup(v => !v)
-    else if (e.key === 'c' || e.key === 'Enter') {
+    const key = e.key.toLowerCase()
+    if (key === 'z') { undoLast(); return }
+    if (!current) return
+    if (key === 's') skip()
+    else if (key === 'a') setApplyToGroup(v => !v)
+    else if (e.key === '/') { e.preventDefault(); typeaheadRef.current?.focus() }
+    else if (['1', '2', '3'].includes(e.key)) {
+      const suggestion = current.suggestions?.[Number(e.key) - 1]
+      if (suggestion && !savingRef.current) choose(suggestion)
+    } else if (e.key === 'Enter') {
       // With no real category on the card there is nothing to confirm or save.
       if (needsPick) return
       isDirty ? saveEdit() : confirm()
+    } else if (!e.shiftKey && /^[a-z]$/.test(key)) {
+      // Starting to type goes to the category filter, which takes the letter.
+      typeaheadRef.current?.focus()
     }
   }
   useEffect(() => {
@@ -687,6 +613,19 @@ export default function ReviewQueue() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
+
+  // How many payees this session taught the app to sort on its own: the
+  // learned rules there are now that there were not when the page opened.
+  useEffect(() => {
+    if (!verified || handled === 0 || !baselineRules.current) return undefined
+    let stale = false
+    api.get('/annotations/learned-rules')
+      .then(rules => {
+        if (!stale && Array.isArray(rules)) setNewRules(rules.filter(r => !baselineRules.current.has(ruleId(r))).length)
+      })
+      .catch(() => {})
+    return () => { stale = true }
+  }, [verified, handled])
 
   // Payments no sorting run has touched yet (a statement added since, or a run
   // that failed): they are in the queue and can be sorted by hand, or the
@@ -715,7 +654,7 @@ export default function ReviewQueue() {
       toast(`Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`, 'success')
       // Applied rows are now human-labeled - drop any still ahead in the queue.
       const appliedSet = new Set(transactionIds)
-      setQueue(q => q.filter((it, i) => i < idxRef.current || !appliedSet.has(it.transaction_id)))
+      setQueue(q => q.filter(it => !appliedSet.has(it.transaction_id)))
     } catch (e) {
       toast(`Couldn't apply - ${e.message}`, 'error')
     } finally {
@@ -728,9 +667,6 @@ export default function ReviewQueue() {
     return <div className="flex items-center justify-center h-full text-[#475569]">Getting your review list ready…</div>
   }
 
-  const total = queue.length
-  const done = idx >= total
-
   const propagateDialog = propagate && (
     <PropagateDialog
       propagate={propagate}
@@ -740,7 +676,7 @@ export default function ReviewQueue() {
     />
   )
 
-  if (done && loadError) {
+  if (outOfCards && loadError) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6" role="alert">
         <h2 className="text-lg font-semibold text-[#e2e8f0]">Couldn't load your review list</h2>
@@ -749,7 +685,7 @@ export default function ReviewQueue() {
           disabled={retrying}
           onClick={async () => {
             setRetrying(true)
-            await refresh({ keepCards: true })
+            await refresh()
             setRetrying(false)
           }}
           className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
@@ -760,7 +696,7 @@ export default function ReviewQueue() {
     )
   }
 
-  if (done && !verified) {
+  if (outOfCards && !verified) {
     return (
       <div className="flex items-center justify-center h-full text-[#475569]">
         {propagateDialog}
@@ -769,8 +705,8 @@ export default function ReviewQueue() {
     )
   }
 
-  if (done) {
-    const learned = stats.confirmed + stats.edited + stats.sorted
+  if (outOfCards) {
+    const sortedCount = stats.confirmed + stats.edited + stats.sorted
     const awayUnsorted = counts.set_aside_unsorted
     const awayAll = snoozedCount
     const setAside = (
@@ -818,62 +754,76 @@ export default function ReviewQueue() {
             <div className="text-4xl">✓</div>
             <h2 className="text-lg font-semibold text-[#e2e8f0]">You're all done!</h2>
             <p className="text-sm text-[#94a3b8]">
-              {learned > 0
-                ? `Thanks! I learned from ${learned} transaction${learned !== 1 ? 's' : ''}.`
+              {sortedCount > 0
+                ? `You sorted ${count(sortedCount, 'payment')}.`
                 : 'Everything is sorted. Nothing to review right now.'}
             </p>
+            {newRules > 0 && (
+              <p className="text-sm text-[#94a3b8]">
+                {count(newRules, 'payee')} will now be sorted {newRules === 1 ? 'on its own' : 'on their own'} from here.
+              </p>
+            )}
           </>
         )}
-        {(stats.confirmed + stats.edited + stats.sorted + stats.skipped > 0) && (
-          <p className="text-xs text-[#64748b] mt-1">{statsLine(stats)}</p>
-        )}
-        {history.length > 0 && (
-          <button
-            onClick={goBack}
-            className="mt-2 flex items-center gap-2 text-sm text-[#94a3b8] hover:text-[#e2e8f0] border border-[#2d3148] px-4 py-2 rounded-lg transition-colors"
-          >
-            <Undo2 size={15} /> Go back
-          </button>
-        )}
+        {handled > 0 && <p className="text-xs text-[#64748b] mt-1">{statsLine(stats)}</p>}
+        <div className="mt-2 flex items-center gap-3">
+          {hasTransactions && (
+            <Link
+              to="/dashboard"
+              className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            >
+              Back to the Dashboard
+            </Link>
+          )}
+          {undoCount > 0 && (
+            <button
+              onClick={undoLast}
+              disabled={saving}
+              className="flex items-center gap-2 text-sm text-[#94a3b8] hover:text-[#e2e8f0] border border-[#2d3148] px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+            >
+              <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">Z</kbd>
+            </button>
+          )}
+        </div>
       </div>
     )
   }
 
-  const item = current
-  const src = item.source
+  const total = handled + queue.length
   const groupSize = groupFromHere().length
-  const payeesLeft = new Set(queue.slice(idx).map(it => it.group_key)).size
-  const unannotatedLeft = queue.slice(idx).filter(it => !it.annotation_id).length
+  const payeesLeft = new Set(queue.map(it => it.group_key)).size
+  const unannotatedLeft = queue.filter(it => !it.annotation_id).length
   // The server's count of everything waiting; the list it sent may be shorter.
   const waiting = counts.unsorted + counts.guesses
   // The run can only help when a model is there to ask, and not after one has
   // already left these payments bare.
   const canSort = aiActive && !sortRan
+  const suggestionKeys = Math.min(current.suggestions?.length ?? 0, 3)
 
   return (
     <div className="flex flex-col h-full px-4 py-5">
       {propagateDialog}
       {/* Progress */}
-      <div className="max-w-2xl mx-auto w-full mb-5">
+      <div className="max-w-3xl mx-auto w-full mb-5">
         <div className="flex justify-between text-xs text-[#64748b] mb-1.5">
           <span>Teach Me</span>
-          <span>{idx} / {total}</span>
+          <span>{handled} / {total}</span>
         </div>
         <div className="h-1.5 bg-[#1e2235] rounded-full overflow-hidden">
           <div
             className="h-full bg-[#6366f1] rounded-full transition-all"
-            style={{ width: `${(idx / total) * 100}%` }}
+            style={{ width: `${(handled / total) * 100}%` }}
           />
         </div>
-        <p className="text-[10px] text-[#475569] mt-1">
+        <p className="text-[11px] text-[#64748b] mt-1">
           {statsLine(stats)}
           {payeesLeft > 0 && ` · ${payeesLeft} payee${payeesLeft === 1 ? '' : 's'} left`}
-          {waiting > total && ` · showing the first ${total} of ${waiting} waiting`}
+          {waiting > queue.length && ` · showing the first ${queue.length} of ${waiting} waiting`}
         </p>
       </div>
 
       {unannotatedLeft > 0 && (
-        <div className="max-w-2xl mx-auto w-full mb-4 flex items-center gap-4 rounded-xl border border-[#2d3148] bg-[#13151f] px-5 py-3">
+        <div className="max-w-3xl mx-auto w-full mb-4 flex items-center gap-4 rounded-xl border border-[#2d3148] bg-[#13151f] px-5 py-3">
           <p className="flex-1 text-sm text-[#cbd5e1]">
             {job != null || sorting
               ? 'Automatic sorting is running. Payments it settles will leave this list.'
@@ -891,7 +841,7 @@ export default function ReviewQueue() {
       )}
 
       {policySuggestion && (
-        <div className="max-w-2xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
+        <div className="max-w-3xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
           <p className="flex-1 text-sm text-[#c7d2fe]">
             Sort small payments (up to {formatRupees(POLICY_DEFAULT_MAX, { decimals: 0 })}) to people who aren't in your People list as{' '}
             <span className="font-semibold text-[#e0e7ff]">
@@ -919,199 +869,48 @@ export default function ReviewQueue() {
         </div>
       )}
 
-      {/* Card */}
-      <div
-        ref={cardRef}
-        tabIndex={-1}
-        role="group"
-        aria-label={`Payment to review: ${item.payee}`}
-        className="max-w-2xl mx-auto w-full bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden focus:outline-none"
-      >
-        {/* Transaction header */}
-        <div className="px-6 py-5 border-b border-[#2d3148]">
-          <div className="flex items-start justify-between gap-4 mb-2">
-            <span className="text-sm text-[#64748b]">{dayjs(item.txn_date).format('DD MMM YYYY')}</span>
-            <Amount value={item.amount} debitCredit={item.debit_credit} className="text-xl font-bold tabular-nums" />
-          </div>
-          <p className="text-sm font-medium text-[#e2e8f0] leading-relaxed">{item.payee}</p>
-          {item.payee !== item.raw_description && (
-            <p className="text-xs text-[#94a3b8] leading-relaxed">{item.raw_description}</p>
-          )}
-          {groupSize > 1 && (
-            <label className="mt-3 flex items-center gap-2 text-xs text-[#94a3b8] cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={applyToGroup}
-                onChange={e => setApplyToGroup(e.target.checked)}
-                className="accent-[#6366f1]"
-              />
-              <span>
-                Apply my answer to all {count(groupSize, 'payment')} to{' '}
-                <span className="text-[#cbd5e1]">{item.payee}</span>
-              </span>
-              <kbd className="text-[10px] text-[#64748b] bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd>
-            </label>
-          )}
-        </div>
+      <SortCard
+        item={current}
+        form={form}
+        setForm={setForm}
+        tree={tree}
+        chosen={chosen}
+        needsPick={needsPick}
+        saving={saving}
+        canUndo={undoCount > 0}
+        devMode={devMode}
+        groupSize={groupSize}
+        applyToGroup={applyToGroup}
+        onApplyToGroup={setApplyToGroup}
+        onChoose={choose}
+        onCreateCategory={handleCreateCategory}
+        onConfirm={() => (isDirty ? saveEdit() : confirm())}
+        onSkip={skip}
+        onUndo={undoLast}
+        cardRef={cardRef}
+        typeaheadRef={typeaheadRef}
+      />
 
-        {/* Model's guess + confidence */}
-        <div className="px-6 py-4 border-b border-[#2d3148]">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">My best guess</p>
-          <div className="flex items-center gap-3 flex-wrap mb-3">
-            {item.category ? (
-              <span className="bg-[#1e1b4b] text-[#a5b4fc] text-sm px-3 py-1 rounded-full">{item.category}</span>
-            ) : (
-              <span className="text-sm text-[#94a3b8]">No guess yet</span>
-            )}
-            {item.subcategory && (
-              <span className="bg-[#1e1b4b] text-[#818cf8] text-xs px-2.5 py-1 rounded-full">{item.subcategory}</span>
-            )}
-            {item.merchant && (
-              <span className="text-sm text-[#94a3b8]">{item.merchant}</span>
-            )}
-            {src && (
-              <span className={`text-xs px-2 py-0.5 rounded-full ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
-                {/* Review-card voice: two contextual overrides, shared labels otherwise */}
-                {src === 'manual' ? 'you set this' : src === 'rule' ? 'rule match' : sourceLabel(src)}
-              </span>
-            )}
-          </div>
-          {item.annotation_id && (
-            <>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Confidence</span>
-              </div>
-              <Tooltip
-                content="How sure the AI is about this guess. Below 60% means it's mostly guessing."
-                position="bottom"
-                className="block"
-              >
-                <ConfidenceBar confidence={item.confidence} />
-              </Tooltip>
-            </>
-          )}
-        </div>
-
-        {/* Dev mode: collapsible reasoning trace */}
-        {devMode && <ReasoningPanel reasoning={item.reasoning} />}
-
-        {/* Inline category picker - always visible */}
-        <div className="px-6 py-4 border-b border-[#2d3148]">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">
-            {item.category
-              ? <>Correct it <span className="normal-case font-normal text-[#475569]">- click to change</span></>
-              : 'Pick a category'}
-          </p>
-          <CategoryChips
-            tree={tree}
-            category={form.category}
-            subcategory={form.subcategory}
-            onChange={handleCategoryChange}
-            onCreate={handleCreateCategory}
-          />
-
-          {/* Optional: merchant + tags collapsible */}
-          <button
-            onClick={() => setShowTags(v => !v)}
-            className="mt-3 flex items-center gap-1 text-[10px] text-[#475569] hover:text-[#94a3b8] transition-colors"
-          >
-            <Tag size={11} />
-            {showTags ? 'Hide' : 'Edit'} merchant & tags
-            {showTags ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-          </button>
-
-          {showTags && (
-            <div className="mt-3 space-y-3">
-              <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">Merchant</label>
-                <input
-                  value={form.merchant}
-                  onChange={e => setForm(f => ({ ...f, merchant: e.target.value }))}
-                  className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">Tags</label>
-                <TagInput tags={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="px-6 py-4 flex gap-3">
-          <button
-            onClick={goBack}
-            disabled={history.length === 0}
-            className="flex items-center justify-center gap-1.5 bg-[#13151f] border border-[#2d3148] text-[#64748b] px-3 py-2.5 rounded-lg text-sm hover:text-[#94a3b8] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            title="Go back [b]"
-          >
-            <Undo2 size={15} /> <span className="text-xs opacity-60">[b]</span>
-          </button>
-          {needsPick ? (
-            <>
-              <button
-                type="button"
-                aria-disabled="true"
-                onClick={() => toast('Pick a category below first', 'info')}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg border border-[#2d3148] bg-[#1e2235] text-sm font-medium text-[#94a3b8] cursor-not-allowed"
-              >
-                Pick a category
-              </button>
-              <button
-                onClick={skip}
-                className="flex items-center justify-center gap-2 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-2.5 rounded-lg text-sm hover:text-[#e2e8f0] transition-colors"
-              >
-                <SkipForward size={16} /> <span className="text-xs opacity-60">[s]</span>
-              </button>
-            </>
-          ) : isDirty ? (
-            <>
-              <button
-                onClick={() => saveEdit()}
-                disabled={saving}
-                className="flex-1 py-2.5 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-              >
-                {saving ? 'Saving…' : 'Save & Next'} <span className="text-xs opacity-60">[↵]</span>
-              </button>
-              <button
-                onClick={skip}
-                className="flex items-center justify-center gap-2 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-2.5 rounded-lg text-sm hover:text-[#e2e8f0] transition-colors"
-              >
-                <SkipForward size={16} /> <span className="text-xs opacity-60">[s]</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={confirm}
-                disabled={saving}
-                className="flex-1 flex items-center justify-center gap-2 bg-green-800/50 border border-green-700 text-green-300 py-2.5 rounded-lg text-sm font-medium hover:bg-green-800 disabled:opacity-50 transition-colors"
-              >
-                <CheckCircle size={16} /> Confirm <span className="text-xs opacity-60">[c] or [↵]</span>
-              </button>
-              <button
-                onClick={skip}
-                className="flex items-center justify-center gap-2 bg-[#13151f] border border-[#2d3148] text-[#94a3b8] px-4 py-2.5 rounded-lg text-sm hover:text-[#e2e8f0] transition-colors"
-              >
-                <SkipForward size={16} /> <span className="text-xs opacity-60">[s]</span>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <p className="text-center text-xs text-[#475569] mt-4">
-        Keyboard: <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">b</kbd> back ·
-        {!needsPick && (
+      <p className="text-center text-xs text-[#64748b] mt-4">
+        Keyboard:
+        {suggestionKeys > 0 && (
           <>
-            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">c</kbd> {isDirty ? 'save' : 'confirm'} ·
-            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> {isDirty ? 'save' : 'confirm'} ·
+            {' '}{Array.from({ length: suggestionKeys }, (_, i) => (
+              <kbd key={i} className="bg-[#1e2235] px-1.5 py-0.5 rounded mr-1">{i + 1}</kbd>
+            ))}
+            choose ·
           </>
         )}
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">s</kbd> skip
+        {!needsPick && (
+          <>
+            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> confirm ·
+          </>
+        )}
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">S</kbd> skip ·
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">Z</kbd> undo ·
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">/</kbd> another category
         {groupSize > 1 && (
-          <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd> all from this payee</>
+          <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">A</kbd> all from this payee</>
         )}
       </p>
     </div>

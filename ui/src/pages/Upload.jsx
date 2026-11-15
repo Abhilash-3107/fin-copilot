@@ -107,7 +107,8 @@ export default function Upload() {
       if (password) form.append('password', password)
       const result = await api.upload('/statements/upload', form)
       toast(`Uploaded: ${result.bank_name} - ${formatMonth(result.statement_month)}`, 'success')
-      for (const w of result.warnings ?? []) toast(w, 'error', 8000)
+      // One toast at a time: the warnings share it, and it replaces the upload notice.
+      if (result.warnings?.length) toast(result.warnings.join(' '), 'error', 8000)
       setFile(null)
       setPassword('')
       loadStatements()
