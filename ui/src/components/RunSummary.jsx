@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { count } from '../lib/plural.js'
 
-// Per-stage accent colours — one hue per pipeline stage, reused across the funnel
+// Per-stage accent colours - one hue per pipeline stage, reused across the funnel
 // and any stage tags so a stage reads the same everywhere.
 const STAGE_COLOR = {
   user_rule: '#34d399',
@@ -24,7 +25,7 @@ const STAGE_LABEL = {
 }
 
 function pct(x) {
-  return x == null ? '—' : `${Math.round(x * 100)}%`
+  return x == null ? '-' : `${Math.round(x * 100)}%`
 }
 
 // A stacked bar per stage: auto-accepted vs routed-to-review, widths proportional
@@ -113,7 +114,7 @@ function ThresholdHistogram({ hist, markers, accent = '#a5b4fc' }) {
           </span>
         ))}
       </div>
-      <p className="text-[10px] text-[#475569] mt-1">{hist.n} annotations with this signal</p>
+      <p className="text-[10px] text-[#475569] mt-1">{count(hist.n, 'annotation')} with this signal</p>
     </div>
   )
 }
@@ -126,7 +127,7 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
         {title} ({items.length})
       </p>
       <p className="text-[11px] text-[#64748b] mb-2 leading-relaxed">
-        Within {band.toFixed(2)} of {gateLabel} ({gate.toFixed(2)}) — lowering that
+        Within {band.toFixed(2)} of {gateLabel} ({gate.toFixed(2)}) - lowering that
         threshold slightly would flip these.
       </p>
       <div className="space-y-1">
@@ -147,7 +148,7 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
 
 // Dev-mode only: run-level aggregation over stored reasoning traces. Shows where
 // the corpus sits relative to the pipeline's thresholds (stage mix, similarity /
-// confidence distributions, near-miss candidates) — the view that informs how the
+// confidence distributions, near-miss candidates) - the view that informs how the
 // knobs might be set, complementing the per-annotation "Why this annotation?" panel.
 // `threshold` (optional) previews a candidate review bar: it's passed to the
 // endpoint so the review rate, confidence histogram marker, and near-miss lists
@@ -163,7 +164,7 @@ export default function RunSummary({ threshold }) {
       .then(setData)
       .catch(e => {
         // 404 = dev mode off; the section just won't render (parent gates it too).
-        if (e.status !== 404) toast(`Couldn't load run summary — ${e.message}`, 'error')
+        if (e.status !== 404) toast(`Couldn't load run summary - ${e.message}`, 'error')
       })
       .finally(() => setLoading(false))
   }, [toast, threshold])

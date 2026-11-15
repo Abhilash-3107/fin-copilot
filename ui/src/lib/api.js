@@ -79,7 +79,7 @@ export const api = {
   put:    (path, json)     => apiFetch(path, { method: 'PUT',    json }),
   patch:  (path, json)     => apiFetch(path, { method: 'PATCH',  json }),
   delete: (path)           => apiFetch(path, { method: 'DELETE' }),
-  // For multipart/form-data — do NOT set Content-Type; browser sets boundary automatically
+  // For multipart/form-data - do NOT set Content-Type; browser sets boundary automatically
   upload: (path, formData) => apiFetch(path, { method: 'POST', body: formData }),
 }
 

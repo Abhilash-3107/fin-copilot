@@ -984,7 +984,7 @@ def _try_rag_annotation(
             txn["id"], best_similarity, settings.rag_similarity_floor,
         )
         skips.append(
-            f"rag: novelty gate — best similarity {best_similarity:.4f} < "
+            f"rag: novelty gate - best similarity {best_similarity:.4f} < "
             f"rag_similarity_floor {settings.rag_similarity_floor}"
         )
         return None, None

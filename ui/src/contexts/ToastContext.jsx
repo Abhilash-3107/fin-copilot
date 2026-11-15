@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { maskRupees } from '../components/Amount.jsx'
+import { usePrivacy } from './PrivacyContext.jsx'
 
 const ToastCtx = createContext(null)
 
@@ -33,12 +35,18 @@ const TYPE_STYLES = {
   info:    'border-[#2d3148] text-[#e2e8f0]',
 }
 
+// A message stays as written until it is shown, so hiding amounts also hides
+// the ones in a toast that is already on screen. Messages the app builds from
+// a figure use useMoney(); this covers text that comes from the server. A
+// message that is not a string (a fragment) is shown as written, for a figure
+// that must stay visible, such as a policy limit.
 function Toast({ message, type }) {
+  const { hidden } = usePrivacy()
   return (
     <div
       className={`animate-fade-in bg-[#1e2235] border rounded-lg px-5 py-2.5 text-sm shadow-xl pointer-events-auto ${TYPE_STYLES[type] ?? TYPE_STYLES.info}`}
     >
-      {message}
+      {hidden && typeof message === 'string' ? maskRupees(message) : message}
     </div>
   )
 }

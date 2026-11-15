@@ -19,8 +19,14 @@ vi.mock('../contexts/ToastContext.jsx', () => {
     useToast: () => noop,
   }
 })
+// The mock keeps the options the page hands the chart, so a test can call the
+// tooltip and axis callbacks that chart.js would run on a canvas.
+const chart = vi.hoisted(() => ({ options: null }))
 vi.mock('react-chartjs-2', () => ({
-  Line: () => <div data-testid="balance-chart" />,
+  Line: ({ options }) => {
+    chart.options = options
+    return <div data-testid="balance-chart" />
+  },
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
@@ -121,7 +127,7 @@ describe('Insights (Money Map)', () => {
     expect(await screen.findByText('Kept')).toBeInTheDocument()
     expect(screen.getAllByText('₹1,00,646').length).toBeGreaterThan(0) // In: all cash that arrived
     expect(screen.getAllByText('₹77,763').length).toBeGreaterThan(0) // Out: gross, nothing netted
-    expect(screen.getByText('-7% of money in')).toBeInTheDocument()
+    expect(screen.getByText('-7%').parentElement).toHaveTextContent('-7% of money in')
     // Every tile words its delta against the same window (Invested is unchanged).
     expect(screen.getByText('Out').closest('div')).toHaveTextContent(/vs January/)
     expect(screen.getByText('Kept').closest('div')).toHaveTextContent(/vs January/)
@@ -239,7 +245,7 @@ describe('Insights (Money Map)', () => {
     localStorage.setItem('fc_privacy_hidden', '1')
     renderInsights()
     const note = (await screen.findByText(/in refunds and paybacks/)).closest('span.text-xs')
-    expect(note.querySelector('[aria-label="Amount hidden"]')).toHaveTextContent('₹43,138')
+    expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹43,138')
   })
 
   describe('a month in progress', () => {
@@ -310,5 +316,32 @@ describe('Insights (Money Map)', () => {
     renderInsights()
     await screen.findByText('Kept')
     expect(mockApi.get).toHaveBeenCalledWith('/insights?month=2026-01')
+  })
+})
+
+describe('privacy mode', () => {
+  it('blurs the money percentage with the amounts', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderInsights()
+    await screen.findByText('Kept')
+    const rate = screen.getAllByText('-7%')[0]
+    expect(rate).toHaveClass('blur-[5px]')
+    expect(rate).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps the balance chart tooltip and ticks free of amounts', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderInsights()
+    await screen.findByTestId('balance-chart')
+    const { tooltip, } = chart.options.plugins
+    expect(tooltip.callbacks.label({ raw: 71000 })).not.toMatch(/\d/)
+    expect(chart.options.scales.y.ticks.callback(71000)).not.toMatch(/\d/)
+  })
+
+  it('shows both when amounts are shown', async () => {
+    renderInsights()
+    await screen.findByTestId('balance-chart')
+    expect(chart.options.plugins.tooltip.callbacks.label({ raw: 71000 })).toBe('₹71,000')
+    expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
   })
 })

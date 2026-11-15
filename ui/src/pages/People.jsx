@@ -17,7 +17,7 @@ import PersonNet from '../components/PersonNet.jsx'
 // mapping lives server-side (people.relationship_category).
 const RELATIONSHIPS = [
   'self', 'dad', 'mom', 'sister', 'brother', 'wife', 'husband',
-  'son', 'daughter', 'family', 'friend', 'roommate', 'colleague', 'other',
+  'son', 'daughter', 'family', 'friend', 'roommate', 'landlord', 'colleague', 'other',
 ]
 const RELATIONSHIP_LABELS = { self: 'Me (my other account)' }
 
@@ -233,7 +233,8 @@ export default function People() {
                         className={`bg-transparent border border-transparent hover:border-[#2d3148] focus:border-[#6366f1] px-2 py-1 rounded text-sm outline-none capitalize ${p.relationship ? 'text-[#94a3b8]' : 'text-[#475569]'}`}
                       >
                         <option value="">- none</option>
-                        {RELATIONSHIPS.map(r => (
+                        {/* The API takes any text, so a value outside the curated list still shows. */}
+                        {[...(p.relationship && !RELATIONSHIPS.includes(p.relationship) ? [p.relationship] : []), ...RELATIONSHIPS].map(r => (
                           <option key={r} value={r} className="text-[#e2e8f0] capitalize">{RELATIONSHIP_LABELS[r] ?? r}</option>
                         ))}
                       </select>

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, renderHook, screen, fireEvent } from '@testing-library/react'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import Amount, { formatRupees } from './Amount.jsx'
+import Amount, { Percent, formatRupees, maskRupees, useMoney, HIDDEN_FIGURE } from './Amount.jsx'
 
 function renderWithPrivacy(ui) {
   return render(<PrivacyProvider>{ui}</PrivacyProvider>)
@@ -51,7 +51,40 @@ describe('<Amount>', () => {
     const el = screen.getByText('₹2,500')
     expect(el).toHaveClass('blur-[5px]')
     expect(el).toHaveClass('select-none')
-    expect(el).toHaveAttribute('aria-label', 'Amount hidden')
+  })
+
+  it('tells a screen reader the amount is hidden and never reads the figure', () => {
+    // An aria-label on a plain span is ignored, so the blurred text is
+    // aria-hidden and a visually hidden phrase stands in for it.
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const { container } = renderWithPrivacy(<Amount value={2500} decimals={0} />)
+
+    expect(screen.getByText('₹2,500')).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('₹2,500')).toHaveAttribute('data-privacy-mask')
+    expect(screen.getByText('Amount hidden')).toHaveClass('sr-only')
+    // The text a screen reader would reach: everything outside aria-hidden.
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+    let readable = ''
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (!n.parentElement.closest('[aria-hidden="true"]')) readable += n.nodeValue
+    }
+    expect(readable).not.toMatch(/₹|2,500/)
+  })
+
+  it('passes className and style through, hidden or not', () => {
+    const { container, unmount } = renderWithPrivacy(
+      <Amount value={2500} decimals={0} className="font-semibold" style={{ color: 'rgb(52, 211, 153)' }} />,
+    )
+    expect(container.firstChild).toHaveClass('font-semibold')
+    expect(container.firstChild).toHaveStyle({ color: 'rgb(52, 211, 153)' })
+    unmount()
+
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const hidden = renderWithPrivacy(
+      <Amount value={2500} decimals={0} className="font-semibold" style={{ color: 'rgb(52, 211, 153)' }} />,
+    )
+    expect(hidden.container.firstChild).toHaveClass('font-semibold')
+    expect(hidden.container.firstChild).toHaveStyle({ color: 'rgb(52, 211, 153)' })
   })
 
   it('toggles blur when the Shift+P shortcut fires', () => {
@@ -64,5 +97,75 @@ describe('<Amount>', () => {
 
     fireEvent.keyDown(window, { key: 'P', shiftKey: true })
     expect(screen.getByText('₹2,500')).not.toHaveClass('blur-[5px]')
+  })
+})
+
+describe('<Percent>', () => {
+  it('renders a fraction as a whole percentage when privacy mode is off', () => {
+    renderWithPrivacy(<Percent value={0.314} />)
+    expect(screen.getByText('31%')).not.toHaveClass('blur-[5px]')
+  })
+
+  it('blurs and labels the percentage when privacy mode is on', () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderWithPrivacy(<Percent value={0.314} />)
+
+    const el = screen.getByText('31%')
+    expect(el).toHaveClass('blur-[5px]')
+    expect(el).toHaveClass('select-none')
+    expect(el).toHaveAttribute('aria-hidden', 'true')
+    expect(el).toHaveAttribute('data-privacy-mask')
+    expect(screen.getByText('Percentage hidden')).toHaveClass('sr-only')
+  })
+
+  it('passes className and style through, hidden or not', () => {
+    const style = { color: 'rgb(52, 211, 153)' }
+    const { container, unmount } = renderWithPrivacy(<Percent value={0.3} className="font-semibold" style={style} />)
+    expect(container.firstChild).toHaveClass('font-semibold')
+    expect(container.firstChild).toHaveStyle(style)
+    unmount()
+
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const hidden = renderWithPrivacy(<Percent value={0.3} className="font-semibold" style={style} />)
+    expect(hidden.container.firstChild).toHaveClass('font-semibold')
+    expect(hidden.container.firstChild).toHaveStyle(style)
+  })
+
+  it('follows the Shift+P shortcut like an amount does', () => {
+    renderWithPrivacy(<Percent value={0.5} />)
+    fireEvent.keyDown(window, { key: 'P', shiftKey: true })
+    expect(screen.getByText('50%')).toHaveClass('blur-[5px]')
+  })
+})
+
+describe('useMoney', () => {
+  const wrapper = ({ children }) => <PrivacyProvider>{children}</PrivacyProvider>
+
+  it('formats amounts and chart ticks while amounts are shown', () => {
+    const { result } = renderHook(() => useMoney(), { wrapper })
+    expect(result.current.money(2500, { decimals: 0 })).toBe('₹2,500')
+    expect(result.current.tick(12000)).toBe('₹12k')
+  })
+
+  it('returns a mask and no digits while amounts are hidden', () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const { result } = renderHook(() => useMoney(), { wrapper })
+    expect(result.current.money(2500, { decimals: 0 })).toBe(HIDDEN_FIGURE)
+    expect(result.current.tick(12000)).toBe(HIDDEN_FIGURE)
+  })
+})
+
+describe('maskRupees', () => {
+  it('masks every amount in a sentence, with or without a sign or decimals', () => {
+    expect(maskRupees('Opening balance ₹12,000.50 does not match the closing balance −₹1,00,000.'))
+      .toBe(`Opening balance ${HIDDEN_FIGURE} does not match the closing balance ${HIDDEN_FIGURE}.`)
+  })
+
+  it('masks a minus written after the rupee sign, as Python formats a negative', () => {
+    expect(maskRupees('Closing balance ₹-1,234.00 is short.')).toBe(`Closing balance ${HIDDEN_FIGURE} is short.`)
+  })
+
+  it('leaves text with no amount alone', () => {
+    expect(maskRupees('Policy added.')).toBe('Policy added.')
   })
 })

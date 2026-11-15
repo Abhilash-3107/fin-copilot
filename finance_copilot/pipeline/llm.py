@@ -778,7 +778,7 @@ def test_connection(timeout: float = 10.0) -> dict:
         models = [m.get("name") for m in data.get("models", []) if m.get("name")]
         detail = f"Connected to Ollama. {len(models)} model(s) pulled."
         if settings.ollama_model and models and settings.ollama_model not in models:
-            detail += f" Warning: '{settings.ollama_model}' is not pulled — run `ollama pull {settings.ollama_model}`."
+            detail += f" Warning: '{settings.ollama_model}' is not pulled - run `ollama pull {settings.ollama_model}`."
         return {"ok": True, "detail": detail, "models": models}
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}

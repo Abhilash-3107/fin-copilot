@@ -68,3 +68,34 @@ describe('CommandPalette', () => {
     expect(screen.queryByPlaceholderText(/Search transactions/)).not.toBeInTheDocument()
   })
 })
+
+describe('CommandPalette and privacy mode', () => {
+  function search() {
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    fireEvent.change(screen.getByPlaceholderText(/Search transactions/), { target: { value: 'swiggy' } })
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    mockApi.get.mockImplementation(path => Promise.resolve(path.startsWith('/transactions')
+      ? [{ id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'SWIGGY', merchant: 'Swiggy' }]
+      : []))
+  })
+
+  it('shows the amount of a payment it finds', async () => {
+    renderPalette()
+    search()
+    const amount = await screen.findByText('−₹1,200')
+    expect(amount).not.toHaveClass('blur-[5px]')
+  })
+
+  it('blurs and labels that amount when privacy mode is on', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    renderPalette()
+    search()
+    const amount = await screen.findByText('−₹1,200')
+    expect(amount).toHaveClass('blur-[5px]')
+    expect(amount).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('Amount hidden')).toBeInTheDocument()
+  })
+})

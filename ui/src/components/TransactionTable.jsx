@@ -64,7 +64,7 @@ export default function TransactionTable({
           let upiNote = null
           try {
             const meta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-            // Only show a note that adds information — bank descriptions often
+            // Only show a note that adds information - bank descriptions often
             // already embed it ("UPI/Blinkit/…/Blinkit Payment"), and repeating
             // it as a second line is pure noise.
             if (
@@ -119,7 +119,7 @@ export default function TransactionTable({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-[#475569]">—</span>
+                  <span className="text-[#475569]">-</span>
                 )}
               </td>
               <td className="px-3 py-2.5">
@@ -130,10 +130,10 @@ export default function TransactionTable({
               <td className="px-3 py-2.5 whitespace-nowrap">
                 {/* Manual annotations are human truth: a stale model confidence
                     next to a "manual" pill reads as a contradiction, so show
-                    nothing. High confidence is the norm — plain muted text —
+                    nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
                 {ann?.confidence == null || src === 'manual' ? (
-                  <span className="text-[#475569]">—</span>
+                  <span className="text-[#475569]">-</span>
                 ) : ann.confidence >= 0.8 ? (
                   <span className="text-xs tabular-nums text-[#64748b]">
                     {Math.round(ann.confidence * 100)}%

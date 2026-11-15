@@ -1,8 +1,8 @@
 function pct(x) {
-  return x == null ? '—' : `${Math.round(x * 100)}%`
+  return x == null ? '-' : `${Math.round(x * 100)}%`
 }
 function num(x, d = 3) {
-  return x == null ? '—' : Number(x).toFixed(d)
+  return x == null ? '-' : Number(x).toFixed(d)
 }
 
 // A measured value with the threshold it was gated against, e.g. "0.893 (≥ 0.92)".
@@ -34,7 +34,7 @@ function Row({ label, children }) {
   )
 }
 
-// Dev-mode only: shows why the pipeline chose this category — the routing path,
+// Dev-mode only: shows why the pipeline chose this category - the routing path,
 // the RAG neighbours, the similarity/vote math with the thresholds each value was
 // gated against (snapshotted at annotation time), the few-shot prompt content, the
 // counterparty prior, and the LLM call telemetry. Traces are always captured; the
@@ -80,7 +80,7 @@ export default function ReasoningPanel({ reasoning }) {
               {r.neighbours.map(n => (
                 <div key={n.transaction_id} className="flex items-center justify-between gap-3">
                   <span className="truncate">
-                    <span className="text-[#a5b4fc]">{n.category ?? '—'}</span>
+                    <span className="text-[#a5b4fc]">{n.category ?? '-'}</span>
                     {n.source && <span className="text-[#475569]"> · {n.source}</span>}
                     {n.raw_description && (
                       <span className="text-[#64748b]"> · {n.raw_description.slice(0, 40)}</span>
@@ -95,7 +95,7 @@ export default function ReasoningPanel({ reasoning }) {
           </div>
         )}
 
-        {/* Math — each value next to the threshold it was gated against */}
+        {/* Math - each value next to the threshold it was gated against */}
         <div>
           <SectionLabel>Math</SectionLabel>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1 tabular-nums">
@@ -192,7 +192,7 @@ export default function ReasoningPanel({ reasoning }) {
             <div className="space-y-1">
               {r.prompt_examples.map((e, i) => (
                 <div key={i} className="flex items-center justify-between gap-3">
-                  <span className="truncate text-[#64748b]">{e.raw_description?.slice(0, 48) ?? '—'}</span>
+                  <span className="truncate text-[#64748b]">{e.raw_description?.slice(0, 48) ?? '-'}</span>
                   <span className="shrink-0">
                     <span className="text-[#a5b4fc]">{e.category}{e.subcategory ? ` > ${e.subcategory}` : ''}</span>
                     {e.source && <span className="text-[#475569]"> · {e.source}</span>}
@@ -220,7 +220,7 @@ export default function ReasoningPanel({ reasoning }) {
               {r.prompt_tokens != null && (
                 <Row label="prompt tokens">
                   <span className={r.prompt_truncated ? 'text-[#f87171]' : 'text-[#cbd5e1]'}>
-                    {r.prompt_tokens}{r.prompt_truncated && ' — likely truncated'}
+                    {r.prompt_tokens}{r.prompt_truncated && ' - likely truncated'}
                   </span>
                 </Row>
               )}

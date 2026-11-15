@@ -8,10 +8,11 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import TagInput from '../components/TagInput.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
-import Amount from '../components/Amount.jsx'
+import Amount, { formatRupees } from '../components/Amount.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import ReasoningPanel from '../components/ReasoningPanel.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
+import { count } from '../lib/plural.js'
 
 // Module-level category cache
 let _catCache = null
@@ -106,7 +107,7 @@ function CategoryChips({ tree, category, subcategory, onChange, onCreate }) {
         )}
       </div>
 
-      {/* Subcategory chips — appear inline when a category is selected */}
+      {/* Subcategory chips - appear inline when a category is selected */}
       {parent && (
         <div className="flex flex-wrap items-center gap-1.5 pl-1 border-l-2 border-[#6366f1]/30">
           {children.map(c => (
@@ -269,7 +270,7 @@ export default function ReviewQueue() {
   }
   // Per-card outcome keyed by transaction_id ('confirmed' | 'edited' | 'skipped').
   // Stats are derived from this, so going back to a card and changing your mind
-  // re-keys the same entry instead of double-counting — the server already
+  // re-keys the same entry instead of double-counting - the server already
   // no-ops a repeat confirm (source flips to 'manual', out of _MODEL_SOURCES),
   // and the local counters must match that.
   const [outcomes, setOutcomes] = useState({})
@@ -391,7 +392,7 @@ export default function ReviewQueue() {
     setShowTags(false)
     setApplyToGroup(true)
     // Re-sync the form only when the card identity changes, not on every render
-    // where `current` is a fresh object from a new queue array — otherwise an
+    // where `current` is a fresh object from a new queue array - otherwise an
     // in-progress edit would be clobbered mid-keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, current?.transaction_id])
@@ -571,7 +572,7 @@ export default function ReviewQueue() {
         await refresh()
         return
       }
-      toast(`Something went wrong — ${e.message}`, 'error')
+      toast(`Something went wrong - ${e.message}`, 'error')
     } finally {
       endSave()
     }
@@ -624,7 +625,7 @@ export default function ReviewQueue() {
         }
       } catch { /* similar lookup is optional */ }
     } catch (e) {
-      toast(`Something went wrong — ${e.message}`, 'error')
+      toast(`Something went wrong - ${e.message}`, 'error')
     } finally {
       endSave()
     }
@@ -712,11 +713,11 @@ export default function ReviewQueue() {
         transaction_ids: transactionIds,
       })
       toast(`Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`, 'success')
-      // Applied rows are now human-labeled — drop any still ahead in the queue.
+      // Applied rows are now human-labeled - drop any still ahead in the queue.
       const appliedSet = new Set(transactionIds)
       setQueue(q => q.filter((it, i) => i < idxRef.current || !appliedSet.has(it.transaction_id)))
     } catch (e) {
-      toast(`Couldn't apply — ${e.message}`, 'error')
+      toast(`Couldn't apply - ${e.message}`, 'error')
     } finally {
       setApplying(false)
       setPropagate(null)
@@ -893,7 +894,7 @@ export default function ReviewQueue() {
       {policySuggestion && (
         <div className="max-w-2xl mx-auto w-full mb-4 bg-[#1e1b4b]/60 border border-[#4f46e5]/40 rounded-xl px-5 py-3.5 flex items-center gap-4">
           <p className="flex-1 text-sm text-[#c7d2fe]">
-            Sort small payments (up to ₹{POLICY_DEFAULT_MAX}) to people who aren't in your People list as{' '}
+            Sort small payments (up to {formatRupees(POLICY_DEFAULT_MAX, { decimals: 0 })}) to people who aren't in your People list as{' '}
             <span className="font-semibold text-[#e0e7ff]">
               {policySuggestion.subcategory ? `${policySuggestion.category} › ${policySuggestion.subcategory}` : policySuggestion.category}
             </span>{' '}
@@ -943,7 +944,7 @@ export default function ReviewQueue() {
                 className="accent-[#6366f1]"
               />
               <span>
-                Apply my answer to all {groupSize} payments to{' '}
+                Apply my answer to all {count(groupSize, 'payment')} to{' '}
                 <span className="text-[#cbd5e1]">{item.payee}</span>
               </span>
               <kbd className="text-[10px] text-[#64748b] bg-[#1e2235] px-1.5 py-0.5 rounded">a</kbd>
@@ -992,7 +993,7 @@ export default function ReviewQueue() {
         {/* Dev mode: collapsible reasoning trace */}
         {devMode && <ReasoningPanel reasoning={item.reasoning} />}
 
-        {/* Inline category picker — always visible */}
+        {/* Inline category picker - always visible */}
         <div className="px-6 py-4 border-b border-[#2d3148]">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-3">
             {item.category

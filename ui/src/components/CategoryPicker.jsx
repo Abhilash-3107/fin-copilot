@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../lib/api.js'
 
-// Module-level cache — avoids refetching on every panel open within a session
+// Module-level cache - avoids refetching on every panel open within a session
 let _cache = null
 
 // Drop the cache when another screen adds a category, so the next picker refetches.
@@ -50,7 +50,7 @@ export default function CategoryPicker({ category, subcategory, onChange }) {
           Category <span className="text-red-400">*</span>
         </label>
         <select value={category} onChange={handleCategoryChange} className={SELECT_CLASS}>
-          <option value="">— select category —</option>
+          <option value="">Select a category</option>
           {roots.map(r => (
             <option key={r.id} value={r.name}>{r.name}</option>
           ))}
@@ -64,7 +64,7 @@ export default function CategoryPicker({ category, subcategory, onChange }) {
           className={SELECT_CLASS}
           disabled={!category || children.length === 0}
         >
-          <option value="">— none —</option>
+          <option value="">None</option>
           {children.map(c => (
             <option key={c.id} value={c.name}>{c.name}</option>
           ))}

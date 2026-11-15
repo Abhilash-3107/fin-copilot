@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
+import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
@@ -9,10 +10,6 @@ import CategoryPicker from './CategoryPicker.jsx'
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
 const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
 const EMPTY = { pattern: '', category: '', subcategory: '', merchant: '' }
-
-function plural(n, word, many = `${word}s`) {
-  return `${n} ${n === 1 ? word : many}`
-}
 
 // What saving + applying this rule would do, from POST /rules/preview.
 function PreviewSummary({ preview }) {
@@ -28,7 +25,7 @@ function PreviewSummary({ preview }) {
   return (
     <div>
       <p className="text-xs text-[#94a3b8]">
-        Matches {plural(preview.matches, 'transaction')}: {parts.join(' · ')}
+        Matches {count(preview.matches, 'transaction')}: {parts.join(' · ')}
       </p>
       <ul className="mt-2 space-y-1">
         {preview.sample.map(t => (
@@ -96,7 +93,7 @@ export default function UserRules() {
       let msg = `Rule added: "${rule.pattern}" → ${rule.category}${rule.subcategory ? ` › ${rule.subcategory}` : ''}`
       if (applyNow && applicable > 0) {
         const r = await api.post(`/rules/${rule.id}/apply`)
-        msg += `. Categorized ${plural(r.relabeled + r.labeled, 'existing transaction')}`
+        msg += `. Categorized ${count(r.relabeled + r.labeled, 'existing transaction')}`
       }
       toast(msg, 'success')
       setDraft(EMPTY)
@@ -125,7 +122,7 @@ export default function UserRules() {
     try {
       const r = await api.post(`/rules/${rule.id}/apply`)
       const n = r.relabeled + r.labeled
-      toast(n ? `Categorized ${plural(n, 'transaction')} with "${rule.pattern}"` : 'Nothing to change - matching transactions already agree', n ? 'success' : 'info')
+      toast(n ? `Categorized ${count(n, 'transaction')} with "${rule.pattern}"` : 'Nothing to change - matching transactions already agree', n ? 'success' : 'info')
     } catch (err) {
       toast(`Couldn't apply rule - ${err.message}`, 'error')
     } finally {
@@ -199,7 +196,7 @@ export default function UserRules() {
                 onChange={e => setApplyNow(e.target.checked)}
                 className="accent-[#6366f1]"
               />
-              Also categorize the {plural(applicable, 'existing match', 'existing matches')} now
+              Also categorize the {count(applicable, 'existing match', 'existing matches')} now
             </label>
           )}
           <button

@@ -99,11 +99,11 @@ async function renderQueue() {
 function renderPage() {
   render(
     <MemoryRouter>
-      <ToastProvider>
-        <PrivacyProvider>
+      <PrivacyProvider>
+        <ToastProvider>
           <ReviewQueue />
-        </PrivacyProvider>
-      </ToastProvider>
+        </ToastProvider>
+      </PrivacyProvider>
     </MemoryRouter>
   )
 }
@@ -302,6 +302,22 @@ describe('ReviewQueue payee groups', () => {
   })
 
   it('offers a policy after three small payments to people get the same label', async () => {
+    await offerPolicy()
+    fireEvent.click(await screen.findByRole('button', { name: 'Yes, always' }))
+    await act(async () => {})
+    expect(mockApi.post).toHaveBeenCalledWith('/policies', {
+      max_amount: 500, category: 'Transport', subcategory: 'Cab & Auto',
+    })
+  })
+
+  it('keeps the suggested limit readable while amounts are hidden', async () => {
+    // A policy limit is a rule setting, not a money figure.
+    localStorage.setItem('fc_privacy_hidden', '1')
+    await offerPolicy()
+    expect(await screen.findByText(/Sort small payments \(up to ₹500\)/)).toBeInTheDocument()
+  })
+
+  async function offerPolicy() {
     const person = (id, desc) => makeCard({
       annotation_id: id, transaction_id: 100 + id, raw_description: desc, amount: 40,
       category: 'Transport', subcategory: 'Cab & Auto', payee_kind: 'person',
@@ -317,13 +333,7 @@ describe('ReviewQueue payee groups', () => {
       fireEvent.keyDown(window, { key: 'Enter' })
       await screen.findByText(next)
     }
-    const yes = await screen.findByRole('button', { name: 'Yes, always' })
-    fireEvent.click(yes)
-    await act(async () => {})
-    expect(mockApi.post).toHaveBeenCalledWith('/policies', {
-      max_amount: 500, category: 'Transport', subcategory: 'Cab & Auto',
-    })
-  })
+  }
 })
 
 describe('ReviewQueue custom categories', () => {
@@ -735,14 +745,14 @@ describe('ReviewQueue wording and counts', () => {
     jobCtx.job = { status: 'running', kind: 'annotate' }
     stubGet(n => (n === 0 ? [makeCard()] : [makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })]))
     const { rerender } = render(
-      <MemoryRouter><ToastProvider><PrivacyProvider><ReviewQueue /></PrivacyProvider></ToastProvider></MemoryRouter>
+      <MemoryRouter><PrivacyProvider><ToastProvider><ReviewQueue /></ToastProvider></PrivacyProvider></MemoryRouter>
     )
     await screen.findByText('SWIGGY ORDER 8842')
     await act(async () => {})
 
     jobCtx.job = null
     rerender(
-      <MemoryRouter><ToastProvider><PrivacyProvider><ReviewQueue /></PrivacyProvider></ToastProvider></MemoryRouter>
+      <MemoryRouter><PrivacyProvider><ToastProvider><ReviewQueue /></ToastProvider></PrivacyProvider></MemoryRouter>
     )
     expect(await screen.findByText('UBER TRIP')).toBeInTheDocument()
   })

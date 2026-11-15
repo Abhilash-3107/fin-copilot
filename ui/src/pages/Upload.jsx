@@ -10,12 +10,13 @@ import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
+import { count } from '../lib/plural.js'
 
 // Running-balance reconciliation badge (4.20): turns the parser's balance-chain
 // rigor into visible trust. Green check when every consecutive pair reconciles,
 // amber warning when any break is found; nothing when there's no chain to check.
 function BalancedBadge({ check }) {
-  if (!check || check.checked === 0) return <span className="text-xs text-[#475569]">—</span>
+  if (!check || check.checked === 0) return <span className="text-xs text-[#475569]">-</span>
   const ok = check.balanced
   return (
     <Tooltip content={ok
@@ -33,7 +34,7 @@ function BalancedBadge({ check }) {
 
 // Coverage badge: full (green), partial (amber), none (grey).
 function CoverageBadge({ done, total }) {
-  if (!total) return <span className="text-xs text-[#475569]">—</span>
+  if (!total) return <span className="text-xs text-[#475569]">-</span>
   const full = done >= total
   const none = done === 0
   const cls = full
@@ -202,7 +203,7 @@ export default function Upload() {
     setEmbeddingId(s.id)
     try {
       const result = await api.post('/embeddings/generate', { statement_id: s.id })
-      toast(`Added ${result.embedded} transactions to memory`, 'success')
+      toast(`Added ${count(result.embedded, 'transaction')} to memory`, 'success')
       loadStatements()
     } catch (e) {
       toast(`Couldn't build memory - ${e.message}`, 'error')
