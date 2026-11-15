@@ -34,13 +34,15 @@ import calendar
 import hashlib
 import json
 import random
+import sqlite3
 from datetime import date
 from pathlib import Path
 
 from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
-from finance_copilot.db.queries.common import dump_string_list
+from finance_copilot.db.queries.categories import resolve_category_ids
+from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
 
@@ -417,27 +419,85 @@ def build_ledger(today: date) -> Ledger:
     return led
 
 
-def wipe(conn) -> None:
+# Everything the seeder writes carries a "demo_" id, and every demo transaction
+# belongs to a "demo_stmt" statement. GLOB, unlike LIKE, reads "_" literally.
+DEMO_STATEMENTS = "SELECT id FROM statements WHERE id GLOB 'demo_stmt*'"
+DEMO_TRANSACTIONS = f"SELECT id FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})"
+
+
+DEMO_PEOPLE = "SELECT id FROM people WHERE id GLOB 'demo_p[0-9]*'"
+
+
+def has_demo_data(conn) -> bool:
+    """True while anything the seeder wrote is still there: statements, but also
+    the people, groups and rule that outlive their statements when those are
+    deleted one by one, so the way to remove them never disappears early."""
+    return conn.execute(
+        f"""SELECT EXISTS ({DEMO_STATEMENTS})
+                OR EXISTS ({DEMO_PEOPLE})
+                OR EXISTS (SELECT 1 FROM transaction_groups WHERE id GLOB 'demo_grp*')
+                OR EXISTS (SELECT 1 FROM user_rules WHERE id GLOB 'demo_rule*')"""
+    ).fetchone()[0] == 1
+
+
+def wipe(conn) -> int:
+    """Remove the demo ledger and what using it produced; returns how many
+    transactions went. Rows the user added themselves, even on a ledger that
+    mixes the two, are left alone."""
+    removed = conn.execute(f"SELECT COUNT(*) FROM ({DEMO_TRANSACTIONS})").fetchone()[0]
+    demo_people = {r[0] for r in conn.execute(DEMO_PEOPLE)}
+    # User groups that hold sample transactions: any that end up empty go too.
+    touched_groups = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT group_id FROM transaction_group_members "
+        f"WHERE transaction_id IN ({DEMO_TRANSACTIONS}) AND group_id NOT GLOB 'demo_grp*'")]
     conn.execute(
-        "DELETE FROM transaction_links WHERE txn_a LIKE 'demo_%' OR txn_b LIKE 'demo_%'")
+        f"DELETE FROM transaction_links WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
+        f"OR txn_b IN ({DEMO_TRANSACTIONS})")
     conn.execute(
-        "DELETE FROM transaction_group_members WHERE group_id LIKE 'demo_grp%'")
-    conn.execute("DELETE FROM transaction_groups WHERE id LIKE 'demo_grp%'")
-    conn.execute(
-        "DELETE FROM annotations WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute(
-        "DELETE FROM embedding_meta WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute(
-        "DELETE FROM vec_items WHERE transaction_id IN "
-        "(SELECT id FROM transactions WHERE statement_id LIKE 'demo_stmt%')")
-    conn.execute("DELETE FROM transactions WHERE statement_id LIKE 'demo_stmt%'")
-    conn.execute("DELETE FROM statements WHERE id LIKE 'demo_stmt%'")
-    conn.execute("DELETE FROM people WHERE id LIKE 'demo_p%'")
-    conn.execute("DELETE FROM user_rules WHERE id LIKE 'demo_rule%'")
+        f"DELETE FROM transaction_group_members WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    conn.execute("DELETE FROM transaction_group_members WHERE group_id GLOB 'demo_grp*'")
+    conn.execute("DELETE FROM transaction_groups WHERE id GLOB 'demo_grp*'")
+    for group_id in touched_groups:
+        conn.execute(
+            "DELETE FROM transaction_groups WHERE id = ? AND NOT EXISTS "
+            "(SELECT 1 FROM transaction_group_members WHERE group_id = ?)", (group_id, group_id))
+    _untag_people(conn, demo_people)
+    conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    conn.execute(f"DELETE FROM embedding_meta WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    try:
+        conn.execute(f"DELETE FROM vec_items WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
+    except sqlite3.OperationalError:
+        pass  # the vector table only exists where sqlite-vec loaded
+    conn.execute("DELETE FROM annotation_jobs WHERE statement_id GLOB 'demo_stmt*'")
+    conn.execute(f"DELETE FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})")
+    conn.execute("DELETE FROM statements WHERE id GLOB 'demo_stmt*'")
+    conn.execute("DELETE FROM people WHERE id GLOB 'demo_p[0-9]*'")
+    conn.execute("DELETE FROM user_rules WHERE id GLOB 'demo_rule*'")
+    # Review feedback and dismissed learned rules are aggregated per category
+    # and counterparty, so they cannot be split into sample and real. With no
+    # real statement left they can only have come from the sample: clear them,
+    # so accuracy and calibration don't keep figures from rows that are gone.
+    # On a mixed ledger they stay, as they are.
+    if not conn.execute("SELECT EXISTS (SELECT 1 FROM statements)").fetchone()[0]:
+        conn.execute("DELETE FROM feedback_stats")
+        conn.execute("DELETE FROM learned_rule_suppressions")
     conn.commit()
-    print("Wiped existing demo data.")
+    return removed
+
+
+def _untag_people(conn, demo_people: set[str]) -> None:
+    """Drop sample person ids from the people tags of rows that stay (a user's
+    own group member that tagged a sample person), so none dangles."""
+    if not demo_people:
+        return
+    rows = conn.execute(
+        "SELECT group_id, transaction_id, people FROM transaction_group_members "
+        "WHERE people GLOB '*demo_p[0-9]*'").fetchall()
+    for group_id, txn_id, people in rows:
+        kept = [p for p in parse_string_list(people) if p not in demo_people]
+        conn.execute(
+            "UPDATE transaction_group_members SET people = ? WHERE group_id = ? AND transaction_id = ?",
+            (dump_string_list(kept) if kept else None, group_id, txn_id))
 
 
 def seed(conn, today: date) -> dict:
@@ -477,11 +537,16 @@ def seed(conn, today: date) -> dict:
             continue
         merchant, category, sub, tags, source, confidence = t["ann"]
         tags_json = json.dumps([tag for tag in tags.split(",") if tag]) if tags else "[]"
+        # Names are for display, ids are what Settings > Categories checks, so
+        # write both the way every other annotation writer does.
+        category_id, subcategory_id = resolve_category_ids(conn, category, sub)
         conn.execute(
             """INSERT INTO annotations
-               (id, transaction_id, merchant, category, subcategory, tags, confidence, source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f"ann_{t['id']}", t["id"], merchant, category, sub, tags_json, confidence, source))
+               (id, transaction_id, merchant, category, category_id, subcategory,
+                subcategory_id, tags, confidence, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"ann_{t['id']}", t["id"], merchant, category, category_id, sub, subcategory_id,
+             tags_json, confidence, source))
         ann_inserted += 1
 
     for pid, name, upi, relationship in PEOPLE:
@@ -491,8 +556,6 @@ def seed(conn, today: date) -> dict:
 
     # One user-authored rule, matching a merchant in the unannotated batch, so a
     # live auto-annotate shows the "Your rule" stage deciding before anything else.
-    from finance_copilot.db.queries.categories import resolve_category_ids
-
     category_id, subcategory_id = resolve_category_ids(conn, *DEMO_RULE[1:3])
     conn.execute(
         "INSERT OR IGNORE INTO user_rules (id, pattern, category_id, subcategory_id, merchant) "

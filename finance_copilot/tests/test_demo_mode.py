@@ -34,6 +34,7 @@ class TestDemoModeBlocks:
             ("DELETE", "/api/statements/some-id"),
             ("GET", "/api/data/backup"),
             ("POST", "/api/data/delete-all"),
+            ("DELETE", "/api/data/demo"),
             ("PUT", "/api/config/llm"),
             ("POST", "/api/config/llm/test"),
         ],

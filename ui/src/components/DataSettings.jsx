@@ -3,12 +3,15 @@ import { Download, Database, Trash2, Upload } from 'lucide-react'
 import { api, downloadFile } from '../lib/api.js'
 import { reloadWithToast, useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
+import RemoveSampleData from './RemoveSampleData.jsx'
+import { useDemoData } from '../contexts/DemoDataContext.jsx'
 
 // Data management (4.14): export (CSV/JSON), full DB backup and restore, and an
 // irreversible delete-everything. Downloads go through the token-aware client so they work
 // under API-token auth.
 export default function DataSettings() {
   const toast = useToast()
+  const { removable, mixed } = useDemoData()
   const [busy, setBusy] = useState(null) // 'csv' | 'json' | 'backup' | 'restore' | 'delete'
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [restoreFile, setRestoreFile] = useState(null)
@@ -70,6 +73,20 @@ export default function DataSettings() {
 
   return (
     <div className="space-y-6">
+      {removable && (
+        <div>
+          <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Sample data</h2>
+          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+            {mixed
+              ? 'Your ledger still holds the bundled sample transactions next to your own statements. '
+              : 'Your ledger holds the bundled sample data, not your own. '}
+            Removing it deletes the sample transactions, people, groups and rule and
+            nothing else.
+          </p>
+          <RemoveSampleData className={btn} />
+        </div>
+      )}
+
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Export</h2>
         <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">

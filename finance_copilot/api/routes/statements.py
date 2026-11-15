@@ -14,6 +14,7 @@ from finance_copilot.api.deps import get_db
 from finance_copilot.config import settings
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
+from finance_copilot.demo_seed import has_demo_data
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
     check_continuity,
@@ -36,6 +37,14 @@ def upload_statement(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Upload a PDF, run the parser, persist statement + transactions, return the Statement."""
+    # Sample data is never mixed with a real statement: its fake rent and
+    # salary would sit in every total.
+    if has_demo_data(conn):
+        raise HTTPException(
+            status_code=409,
+            detail="Your ledger still has sample data. Remove it first (Settings > Data), "
+            "then upload your statement so the two don't mix.",
+        )
     contents = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(

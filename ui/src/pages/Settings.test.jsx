@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -16,10 +16,16 @@ vi.mock('../contexts/ToastContext.jsx', () => ({
 
 import Settings from './Settings.jsx'
 
-function renderSettings() {
+function Where() {
+  const { pathname, search } = useLocation()
+  return <p data-testid="where">{pathname + search}</p>
+}
+
+function renderSettings(entry = '/settings') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[entry]}>
       <Settings />
+      <Where />
     </MemoryRouter>
   )
 }
@@ -83,5 +89,25 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('RAVI KUMAR')).toBeInTheDocument())
     expect(screen.getAllByText('money in')).toHaveLength(1)
     expect(screen.getByText('Practo')).toBeInTheDocument()
+  })
+
+  it('opens the tab named in the URL, so a link or a reload lands where it should', async () => {
+    renderSettings('/settings?tab=ai')
+    await waitFor(() => expect(screen.getByText('AI provider')).toBeInTheDocument())
+    expect(screen.queryByText('Developer mode')).not.toBeInTheDocument()
+  })
+
+  it('writes the tab into the URL when you pick one, and leaves General bare', async () => {
+    renderSettings()
+    await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Data/ }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=data')
+    fireEvent.click(screen.getByRole('button', { name: /General/ }))
+    expect(screen.getByTestId('where').textContent).toBe('/settings')
+  })
+
+  it('falls back to General for a tab that does not exist', async () => {
+    renderSettings('/settings?tab=nope')
+    await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
   })
 })

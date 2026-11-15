@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X, AlertTriangle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
@@ -49,6 +51,7 @@ function CoverageBadge({ done, total }) {
 
 export default function Upload() {
   const toast = useToast()
+  const { removable, refresh: refreshDemoData } = useDemoData()
   // job is non-null while any run is tracked (here, another page, or
   // re-attached after a reload): one run at a time, so every Categorize waits.
   const { job, startAnnotation } = useAnnotationJob()
@@ -121,6 +124,7 @@ export default function Upload() {
       toast(`Deleted ${deleteTarget.bank_name}`, 'info')
       setDeleteTarget(null)
       loadStatements()
+      refreshDemoData()
     } catch (e) {
       toast(`Delete failed: ${e.message}`, 'error')
     }
@@ -133,6 +137,7 @@ export default function Upload() {
       toast(`Reset ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
       setResetTarget(null)
       loadStatements()
+      refreshDemoData()
     } catch (e) {
       toast(`Reset failed: ${e.message}`, 'error')
     }
@@ -210,6 +215,15 @@ export default function Upload() {
     <div className="px-6 py-5 space-y-6 max-w-5xl">
       <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
 
+      {removable && (
+        <div className="rounded-xl border border-[#451a03] bg-[#1c1208] px-4 py-3">
+          <p className="text-sm text-[#fdba74]">
+            Your ledger still has sample data. Use Remove sample data in the bar above first, so it
+            doesn&apos;t mix with your own statement.
+          </p>
+        </div>
+      )}
+
       {/* Drop zone */}
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true) }}
@@ -217,6 +231,8 @@ export default function Upload() {
         onDrop={onDrop}
         onClick={() => fileRef.current?.click()}
         className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
+          removable ? 'pointer-events-none opacity-40' : ''
+        } ${
           dragOver ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] hover:border-[#3d4158] hover:bg-[#13151f]'
         }`}
       >
@@ -287,14 +303,14 @@ export default function Upload() {
             <p className="text-xs text-[#fca5a5] mt-3">
               The AI model isn&apos;t available ({lastResult.llm_error}), so this run stopped using it.
               Check it in{' '}
-              <a href="/settings" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</a>{' '}
+              <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
               and run again to categorize what&apos;s left.
             </p>
           )}
           {lastResult.ai_active === false && (
             <p className="text-xs text-[#64748b] mt-3">
               AI is off - your rules and history did the work above. Add a provider in{' '}
-              <a href="/settings" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</a>{' '}
+              <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
               to categorize the rest automatically.
             </p>
           )}
