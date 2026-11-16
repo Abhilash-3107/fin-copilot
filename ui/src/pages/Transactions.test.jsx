@@ -235,12 +235,12 @@ describe('Transactions when the API fails', () => {
       return base(path)
     })
     renderPage()
-    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }))
-    const alert = await screen.findByRole('alert')
+    fireEvent.click(await screen.findByText('Load more'))
+    const alert = await screen.findByRole('alert') // role queries over 500 rows are slow, so the Retry lookup stays inside the alert
     expect(alert).toHaveTextContent("Couldn't load more transactions.")
     expect(screen.getAllByText('Mystery').length).toBeGreaterThan(100)
     failMore = false
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
     expect(screen.getAllByText('Refund').length).toBeGreaterThan(0)
   })
