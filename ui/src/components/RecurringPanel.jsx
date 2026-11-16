@@ -53,7 +53,8 @@ function Subheading({ children }) {
 // own headings and are not in it.
 export default function RecurringPanel({ items = [], summary = { monthly_total: 0, count: 0 } }) {
   const navigate = useNavigate()
-  const open = item => navigate(txnFilterPath({ merchant: item.name }))
+  // By the key the row was grouped on, never by its name: a name is only a label.
+  const open = item => navigate(txnFilterPath({ payeeKeys: item.keys }), { state: { payeeName: item.name } })
 
   const monthly = items.filter(i => i.active && i.cadence === 'monthly')
   const irregular = items.filter(i => i.active && i.cadence !== 'monthly')
@@ -80,17 +81,17 @@ export default function RecurringPanel({ items = [], summary = { monthly_total: 
       ) : (
         <table className="w-full text-sm">
           <tbody>
-            {monthly.map(item => <Row key={`${item.name}-${item.amount}`} item={item} onOpen={open} />)}
+            {monthly.map(item => <Row key={`${item.keys[0]}-${item.amount}`} item={item} onOpen={open} />)}
             {irregular.length > 0 && (
               <>
                 <Subheading>Regular but not monthly - not in the monthly total</Subheading>
-                {irregular.map(item => <Row key={`${item.name}-${item.amount}`} item={item} onOpen={open} />)}
+                {irregular.map(item => <Row key={`${item.keys[0]}-${item.amount}`} item={item} onOpen={open} />)}
               </>
             )}
             {stopped.length > 0 && (
               <>
                 <Subheading>Stopped</Subheading>
-                {stopped.map(item => <Row key={`${item.name}-${item.amount}`} item={item} onOpen={open} />)}
+                {stopped.map(item => <Row key={`${item.keys[0]}-${item.amount}`} item={item} onOpen={open} />)}
               </>
             )}
           </tbody>

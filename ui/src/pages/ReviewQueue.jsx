@@ -559,7 +559,7 @@ export default function ReviewQueue() {
       pushHistory()
       group.forEach(it => record(it.transaction_id, 'confirmed'))
       const sorted = settle(group, res.reevaluated)
-      const message = group.length > 1 ? `Got it, all ${group.length} from ${current.payee} confirmed.` : 'Got it, thanks!'
+      const message = group.length > 1 ? `Got it, all ${group.length} from ${current.payee_all ?? current.payee} confirmed.` : 'Got it, thanks!'
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, current.category, current.subcategory)
       advance()
@@ -603,7 +603,7 @@ export default function ReviewQueue() {
       pushHistory()
       group.forEach(it => record(it.transaction_id, answeredAs(it)))
       const sorted = settle(group, res.reevaluated)
-      const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee} updated.` : "Noted, I'll remember that."
+      const message = group.length > 1 ? `Noted, all ${group.length} from ${current.payee_all ?? current.payee} updated.` : "Noted, I'll remember that."
       toast(withResolved(message, sorted), 'success')
       notePersonalLabel(group, payload.category, payload.subcategory)
       advance()
@@ -924,7 +924,7 @@ export default function ReviewQueue() {
         ref={cardRef}
         tabIndex={-1}
         role="group"
-        aria-label={`Payment to review: ${item.raw_description}`}
+        aria-label={`Payment to review: ${item.payee}`}
         className="max-w-2xl mx-auto w-full bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden focus:outline-none"
       >
         {/* Transaction header */}

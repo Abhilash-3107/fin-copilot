@@ -105,19 +105,27 @@ describe('AnnotationPanel', () => {
       annotation: { id: 5, category: 'Food', subcategory: '', merchant: 'Swiggy', tags: [], source: 'llm', confidence: 0.5 },
     })
 
-    const merchant = screen.getByPlaceholderText('e.g. Swiggy')
-    await user.clear(merchant)
-    await user.type(merchant, 'Zomato')
-
     await user.click(screen.getByRole('button', { name: 'Update annotation' }))
 
     await vi.waitFor(() =>
-      expect(mockApi.patch).toHaveBeenCalledWith(
-        '/annotations/5',
-        expect.objectContaining({ category: 'Food', merchant: 'Zomato' })
-      )
+      expect(mockApi.patch).toHaveBeenCalledWith('/annotations/5', expect.objectContaining({ category: 'Food' }))
     )
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations', expect.anything())
+  })
+
+  it('has no merchant field: Rename is the only naming control, and a save leaves the machine merchant alone', async () => {
+    const user = userEvent.setup()
+    renderPanel({
+      annotation: { id: 5, category: 'Food', subcategory: '', merchant: 'Swiggy', tags: ['x'], source: 'llm', confidence: 0.5 },
+    })
+    expect(screen.queryByPlaceholderText('e.g. Swiggy')).not.toBeInTheDocument()
+    expect(screen.queryByText('Merchant')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Update annotation' }))
+
+    await vi.waitFor(() => expect(mockApi.patch).toHaveBeenCalled())
+    expect(mockApi.patch.mock.calls[0][1]).not.toHaveProperty('merchant')
+    expect(mockApi.patch.mock.calls[0][1].tags).toEqual(['x'])
   })
 })
 
@@ -147,7 +155,7 @@ describe('AnnotationPanel naming', () => {
     await user.click(screen.getByRole('button', { name: 'Save name' }))
 
     expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/payee-name', { name: 'Rent' })
-    expect(onRenamed).toHaveBeenCalledWith(RENAMED)
+    expect(onRenamed).toHaveBeenCalledWith(RENAMED, 'payee')
     expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument()
   })
 
@@ -172,6 +180,53 @@ describe('AnnotationPanel naming', () => {
     await user.click(screen.getByRole('button', { name: 'Rename' }))
     expect(screen.queryByRole('radio', { name: /Every payment/ })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Just this payment' })).toBeChecked()
+  })
+
+  it('says the note is the user\'s own for money out and just a note for money in', () => {
+    const { unmount } = renderPanel({ annotation: null })
+    expect(screen.getByText('Your note')).toBeInTheDocument()
+    unmount()
+    renderPanel({ annotation: null, txn: { ...TXN, debit_credit: 'credit' } })
+    expect(screen.queryByText('Your note')).not.toBeInTheDocument()
+    expect(screen.getByText('Note')).toBeInTheDocument()
+  })
+
+  it('says when this payment keeps its own name under a payee rename, and clears just that name', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(TXN)
+    renderPanel({ annotation: null, txn: { ...TXN, payee: 'Deposit', display_name: 'Deposit' } })
+
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.queryByText(/keeps its own name/)).not.toBeInTheDocument() // the payment scope is the default
+    await user.click(screen.getByRole('radio', { name: 'Every payment to Swiggy' }))
+    expect(screen.getByText('This payment keeps its own name, Deposit')).toBeInTheDocument()
+    // The name field offers the payee's name, not this payment's own.
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Swiggy')
+
+    await user.click(screen.getByRole('button', { name: 'Clear name' }))
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/name', { name: null })
+  })
+
+  it('does not mention an own name that is not there', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.queryByText(/keeps its own name/)).not.toBeInTheDocument()
+  })
+
+  it('puts focus back on Rename when the form closes', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(TXN)
+    renderPanel({ annotation: null })
+
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.click(screen.getAllByRole('button', { name: 'Cancel' })[0]) // the form's, before the panel footer's
+    expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus()
+
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'x')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
   })
 
   it('clears a name so the next level down shows again', async () => {

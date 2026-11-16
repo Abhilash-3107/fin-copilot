@@ -382,10 +382,11 @@ function MerchantsPanel({ merchants, heading, month }) {
           </thead>
           <tbody>
             {merchants.map(m => (
-              <tr key={m.name} className="border-b border-[#1a1d27] last:border-0">
+              <tr key={m.keys.join(',')} className="border-b border-[#1a1d27] last:border-0">
                 <td className="px-4 py-2">
                   <Link
-                    to={txnFilterPath({ merchant: m.name, month })}
+                    to={txnFilterPath({ payeeKeys: m.keys, month })}
+                    state={{ payeeName: m.name }}
                     className="text-[#e2e8f0] hover:text-[#a5b4fc]"
                   >
                     {m.name}

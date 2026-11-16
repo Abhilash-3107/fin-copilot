@@ -19,6 +19,13 @@ async function readRow(item) {
   return { label: lines[0].replace(/^[▸▾]\s*/, ''), amount: amount === undefined ? null : firstRupees(amount) }
 }
 
+/**
+ * The Ledger rows whose payee cell reads `name`. A row's accessible name holds every cell,
+ * so a name like "Rent" would also match the "Housing > Rent" subcategory of other rows.
+ */
+const rowsPaidTo = (page, name) =>
+  page.getByRole('row').filter({ has: page.getByRole('cell', { name: new RegExp(`^${name}(\\s|$)`) }) })
+
 /** The Money Map breakdown card and its top-level rows, one per category or reconciling line. */
 async function breakdownRows(page) {
   const card = sectionOf(page, /^Where it went/)
@@ -202,9 +209,9 @@ test.describe('J2 renaming', () => {
     await expect(page.getByRole('heading', { name: 'Rent' })).toBeVisible()
     await page.keyboard.press('Escape')
 
-    await expect(page.getByRole('row', { name: /Rent/ }).first()).toBeVisible()
-    await expect(page.getByRole('row', { name: /Amit Kumar/ })).toHaveCount(0)
-    await expect(page.getByRole('row', { name: /Rent/ }).first()).toContainText('November rent')
+    await expect(rowsPaidTo(page, 'Rent').first()).toBeVisible()
+    await expect(rowsPaidTo(page, 'Amit Kumar')).toHaveCount(0)
+    await expect(rowsPaidTo(page, 'Rent').first()).toContainText('November rent')
 
     // Every payment to the payee, past ones too, and nothing else changed.
     const payments = (await app.api.get('/transactions?include=annotation')).filter((t) => t.counterparty_key === 'AMIT.LANDLORD@OKSBI')
@@ -227,12 +234,34 @@ test.describe('J2 renaming', () => {
     await expect(page.getByRole('main')).toContainText('Rent')
     await expect(page.getByRole('main')).not.toContainText('Amit Kumar')
 
-    // The name is searchable: every row the search finds is a Rent payment (the header row is the one extra).
+    // The name is searchable: every row the search finds is paid to Rent (the header row is the one extra).
     await open(page, '/transactions?q=Rent')
     await waitForRows(page)
     const found = await page.getByRole('row').count()
     expect(found).toBeGreaterThan(1)
-    await expect(page.getByRole('row', { name: /Rent/ })).toHaveCount(found - 1)
+    await expect(rowsPaidTo(page, 'Rent')).toHaveCount(found - 1)
+  })
+
+  test('the Rent row on Money Map opens exactly the landlord\'s payments, even when another payment is also called Rent', async ({ page, app }) => {
+    const all = await app.api.get('/transactions?include=annotation')
+    const landlord = all.filter((t) => t.counterparty_key === 'AMIT.LANDLORD@OKSBI')
+    const swiggy = all.find((t) => t.payee === 'Swiggy')
+    await app.api.put(`/transactions/${landlord[0].id}/payee-name`, { name: 'Rent' })
+    await app.api.put(`/transactions/${swiggy.id}/name`, { name: 'Rent' })
+
+    // A recurring row spans months, so look at all of them rather than the one the period picks.
+    await page.addInitScript(() => localStorage.setItem('fc_period_month', 'all'))
+    await open(page, '/insights')
+    const card = sectionOf(page, /Recurring & Subscriptions/)
+    await card.getByRole('row', { name: /Rent/ }).first().click()
+
+    await expect(page).toHaveURL(/payee_key=AMIT\.LANDLORD%40OKSBI/)
+    await waitForRows(page)
+    await expect(page.getByRole('button', { name: /Payee: Rent/ })).toBeVisible()
+    await expect(page.getByRole('row')).toHaveCount(landlord.length + 1)
+    await expect(rowsPaidTo(page, 'Rent')).toHaveCount(landlord.length)
+    // The one count the page states agrees with the rows the API says were paid to the landlord.
+    await expect(page.getByText(new RegExp(`${landlord.length} transactions?`)).first()).toBeVisible()
   })
 
   test('a single payment renamed changes that payment and no other', async ({ page, app }) => {

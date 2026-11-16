@@ -165,16 +165,26 @@ function RenameForm({ txn, onRenamed, onCancel }) {
   const toast = useToast()
   const canRenamePayee = Boolean(txn.counterparty_key)
   const [scope, setScope] = useState(canRenamePayee && !txn.display_name ? 'payee' : 'payment')
-  const [name, setName] = useState(txn.payee ?? '')
+  // What the field starts with: the payment's current name, or for the payee
+  // the name every payment to it goes by (not this payment's own).
+  const prefill = s => (s === 'payee' ? txn.payee_all : txn.payee) ?? ''
+  const [name, setName] = useState(prefill(scope))
   const [saving, setSaving] = useState(false)
+  // A payee name never clears a payment's own name, so say when this one keeps its.
+  const keepsOwnName = scope === 'payee' && Boolean(txn.display_name)
   const hasName = scope === 'payee' ? Boolean(txn.payee_name) : Boolean(txn.display_name)
 
-  async function save(value) {
+  function pick(next) {
+    if (name === prefill(scope)) setName(prefill(next))
+    setScope(next)
+  }
+
+  async function save(value, to = scope) {
     setSaving(true)
     try {
-      const path = scope === 'payee' ? 'payee-name' : 'name'
+      const path = to === 'payee' ? 'payee-name' : 'name'
       const updated = await api.put(`/transactions/${txn.id}/${path}`, { name: value })
-      onRenamed(updated)
+      onRenamed(updated, to)
     } catch (e) {
       toast(`Rename failed: ${e.message}`, 'error')
     } finally {
@@ -200,15 +210,23 @@ function RenameForm({ txn, onRenamed, onCancel }) {
       <div className="flex flex-col gap-1.5 text-sm text-[#cbd5e1]">
         {canRenamePayee && (
           <label className="flex items-center gap-2">
-            <input type="radio" name="rename-scope" checked={scope === 'payee'} onChange={() => setScope('payee')} className="accent-[#6366f1]" />
+            <input type="radio" name="rename-scope" checked={scope === 'payee'} onChange={() => pick('payee')} className="accent-[#6366f1]" />
             Every payment to {txn.payee_all}
           </label>
         )}
         <label className="flex items-center gap-2">
-          <input type="radio" name="rename-scope" checked={scope === 'payment'} onChange={() => setScope('payment')} className="accent-[#6366f1]" />
+          <input type="radio" name="rename-scope" checked={scope === 'payment'} onChange={() => pick('payment')} className="accent-[#6366f1]" />
           Just this payment
         </label>
       </div>
+      {keepsOwnName && (
+        <p className="text-xs text-[#94a3b8] flex items-center gap-2">
+          <span>This payment keeps its own name, {txn.display_name}</span>
+          <button type="button" disabled={saving} onClick={() => save(null, 'payment')} className="text-[#a5b4fc] hover:text-[#e2e8f0] underline">
+            Clear name
+          </button>
+        </p>
+      )}
       <div className="flex items-center gap-2">
         <button
           type="submit"
@@ -222,7 +240,7 @@ function RenameForm({ txn, onRenamed, onCancel }) {
         </button>
         {hasName && (
           <button type="button" disabled={saving} onClick={() => save(null)} className="ml-auto text-xs text-[#94a3b8] hover:text-[#e2e8f0] underline">
-            Clear name
+            {keepsOwnName ? 'Clear payee name' : 'Clear name'}
           </button>
         )}
       </div>
@@ -250,7 +268,16 @@ function ConfidenceBar({ confidence }) {
 export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
-  const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
+  const renameButton = useRef(null)
+  const wasRenaming = useRef(false)
+
+  // The form takes the Rename button's place while open; when it closes, focus
+  // goes back to the button so a keyboard user is not left at the top of the page.
+  useEffect(() => {
+    if (wasRenaming.current && !renaming) renameButton.current?.focus()
+    wasRenaming.current = renaming
+  }, [renaming])
+  const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
   // Reset form when transaction or annotation changes.
@@ -263,7 +290,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
     setForm({
       category:    annotation?.category    ?? '',
       subcategory: annotation?.subcategory ?? '',
-      merchant:    annotation?.merchant    ?? '',
       tags: annotation?.tags
         ? (Array.isArray(annotation.tags) ? annotation.tags : annotation.tags.split(',').filter(Boolean))
         : [],
@@ -283,7 +309,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
       const payload = {
         category:    form.category,
         subcategory: form.subcategory || null,
-        merchant:    form.merchant.trim() || null,
         tags:        form.tags,
       }
       let saved
@@ -338,6 +363,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
             {!renaming && (
               <button
                 type="button"
+                ref={renameButton}
                 onClick={() => setRenaming(true)}
                 className="shrink-0 inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
               >
@@ -348,13 +374,13 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
           {renaming && (
             <RenameForm
               txn={txn}
-              onRenamed={updated => { setRenaming(false); onRenamed?.(updated) }}
+              onRenamed={(updated, scope) => { setRenaming(false); onRenamed?.(updated, scope) }}
               onCancel={() => setRenaming(false)}
             />
           )}
           {txn.note && (
             <div className="mt-2 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc]">
-              <span className="text-[#94a3b8] mr-1.5">Your note</span>{txn.note}
+              <span className="text-[#94a3b8] mr-1.5">{txn.debit_credit === 'credit' ? 'Note' : 'Your note'}</span>{txn.note}
             </div>
           )}
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">As printed on the statement</p>
@@ -385,18 +411,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
             subcategory={form.subcategory}
             onChange={vals => setForm(f => ({ ...f, ...vals }))}
           />
-
-          <div>
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">
-              Merchant
-            </label>
-            <input
-              value={form.merchant}
-              onChange={e => setForm(f => ({ ...f, merchant: e.target.value }))}
-              placeholder="e.g. Swiggy"
-              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] transition-colors placeholder:text-[#475569]"
-            />
-          </div>
 
           <div>
             <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">

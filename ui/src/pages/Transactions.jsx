@@ -123,6 +123,8 @@ export default function Transactions() {
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
+  // A Money Map row's payee: the grouping keys drive the query, name labels the chip.
+  const [payeeFilter, setPayeeFilter] = useState(null)
   // Person filter carries {token, name}: token drives the query, name labels the chip.
   const [personFilter, setPersonFilter] = useState(null)
   const [minAmount, setMinAmount] = useState('')
@@ -169,11 +171,12 @@ export default function Transactions() {
     if (categoryCsv) params.set('category', categoryCsv)
     if (sourceCsv) params.set('source', sourceCsv)
     if (merchantFilter) params.set('merchant', merchantFilter)
+    for (const key of payeeFilter?.keys ?? []) params.append('payee_key', key)
     if (personFilter?.token) params.set('person', personFilter.token)
     if (minAmount !== '' && !Number.isNaN(Number(minAmount))) params.set('min_amount', minAmount)
     if (maxAmount !== '' && !Number.isNaN(Number(maxAmount))) params.set('max_amount', maxAmount)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter, minAmount, maxAmount])
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, minAmount, maxAmount])
 
   const buildFilterParams = useCallback(() => {
     const params = buildScopeParams()
@@ -313,12 +316,16 @@ export default function Transactions() {
     const category = searchParams.get('category')
     const source = searchParams.get('source')
     const merchant = searchParams.get('merchant')
+    const payeeKeys = searchParams.getAll('payee_key')
     const person = searchParams.get('person')
     const q = searchParams.get('q')
     const m = searchParams.get('month')
     setCategoryFilter(category ? new Set(category.split(',')) : new Set())
     setSourceFilter(source ? new Set(source.split(',')) : new Set())
     setMerchantFilter(merchant ?? '')
+    // The payee's name rides along in navigation state, like a person's; on a
+    // cold link the chip reads what the server calls the payee once rows load.
+    setPayeeFilter(payeeKeys.length ? { keys: payeeKeys, name: location.state?.payeeName ?? null } : null)
     // A person label may ride along in navigation state so the chip reads as a
     // name; on a cold link we only have the token, which is a fine chip label.
     setPersonFilter(person ? { token: person, name: location.state?.personName ?? person } : null)
@@ -327,7 +334,7 @@ export default function Transactions() {
     if (m && m !== periodMonth) setMonth(m)
     // A deep link means "this slice of everything": a lingering statement
     // selection would AND with the link's month and silently empty the list.
-    if (category || source || merchant || person || q || m) clearStatementForDeepLink.current = true
+    if (category || source || merchant || payeeKeys.length || person || q || m) clearStatementForDeepLink.current = true
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -351,6 +358,7 @@ export default function Transactions() {
     if (categoryCsv) next.set('category', categoryCsv)
     if (sourceCsv) next.set('source', sourceCsv)
     if (merchantFilter) next.set('merchant', merchantFilter)
+    for (const key of payeeFilter?.keys ?? []) next.append('payee_key', key)
     if (personFilter?.token) next.set('person', personFilter.token)
     if (search) next.set('q', search)
     const s = next.toString()
@@ -358,7 +366,7 @@ export default function Transactions() {
     lastWrittenParams.current = s
     setSearchParams(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryCsv, sourceCsv, merchantFilter, personFilter, search])
+  }, [categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, search])
 
   // The statement scope may already be set (in-session navigation) or arrive
   // later (hard load: StatementContext defaults to the latest statement once
@@ -483,19 +491,31 @@ export default function Transactions() {
     }
   }
 
-  // A payee name reaches every payment to it, so reload the rows (they stay on
-  // screen while it loads); a payment's own name changes only its row.
-  function applyRename(updated) {
-    setActiveTxn(prev => ({ ...prev, ...nameFields(updated) }))
-    setTransactions(prev => prev.map(t => (t.id === updated.id ? { ...t, ...nameFields(updated) } : t)))
-    loadTransactions()
+  // A rename changes names and nothing else, so the rows are updated where
+  // they stand: the page keeps its place, its selection and the open payment.
+  // A payee name reaches every payment to the payee, so the loaded ones of that
+  // payee are re-read together; a payment's own name changes only its row.
+  async function applyRename(updated, scope) {
+    const fields = nameFields(updated)
+    setActiveTxn(prev => ({ ...prev, ...fields }))
+    setTransactions(prev => prev.map(t => (t.id === updated.id ? { ...t, ...fields } : t)))
+    if (scope !== 'payee' || !updated.counterparty_key) return
+    try {
+      const rows = await api.get(`/transactions?${new URLSearchParams({
+        payee_key: updated.counterparty_key, include: 'annotation', limit: 1000,
+      })}`)
+      const byId = new Map(rows.map(r => [r.id, nameFields(r)]))
+      setTransactions(prev => prev.map(t => (byId.has(t.id) ? { ...t, ...byId.get(t.id) } : t)))
+    } catch (_) {
+      // The rows keep their old names until the next load.
+    }
   }
 
   const sourceOptions = sourceFilterOptions(facets.sources)
   const categoryOptions = facets.categories.map(c => ({ value: c, label: c }))
 
   const filtersActive = Boolean(
-    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter || personFilter
+    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter || payeeFilter || personFilter
   )
 
   return (
@@ -527,7 +547,7 @@ export default function Transactions() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search payee, note or amount…"
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
+          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-64 placeholder:text-[#475569]"
         />
 
         <div className="flex items-center gap-1">
@@ -568,6 +588,16 @@ export default function Transactions() {
             className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
           >
             <span>{merchantFilter}</span>
+            <X size={12} className="opacity-60 hover:opacity-100" />
+          </button>
+        )}
+
+        {payeeFilter && (
+          <button
+            onClick={() => setPayeeFilter(null)}
+            className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
+          >
+            <span>Payee: {payeeFilter.name ?? transactions.find(t => t.payee_all)?.payee_all ?? payeeFilter.keys[0]}</span>
             <X size={12} className="opacity-60 hover:opacity-100" />
           </button>
         )}

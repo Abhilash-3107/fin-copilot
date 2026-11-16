@@ -123,21 +123,75 @@ describe('Transactions', () => {
     expect(screen.queryByText(/UPI\/MYSTERY/)).not.toBeInTheDocument()
   })
 
-  it('reloads the rows after a payee is renamed, so every payment to it shows the new name', async () => {
+  it('updates the rows in place after a payee is renamed, without a reload or losing the open payment', async () => {
     const user = userEvent.setup()
-    mockApi.put.mockResolvedValue({ ...TXNS[0], payee: 'Rent', payee_name: 'Rent' })
+    const sameKey = { ...TXNS[0], id: 't3', txn_date: '2026-11-02', raw_description: 'UPI/MYSTERY/503/z', note: null }
+    mockApi.get.mockImplementation(path => {
+      if (path === '/statements') return Promise.resolve(STATEMENTS)
+      if (path.startsWith('/transactions/summary')) return Promise.resolve({ count: 3, money_out: 600, money_in: 250 })
+      if (path.startsWith('/transactions/facets')) return Promise.resolve({ categories: [], sources: [] })
+      if (/^\/transactions\/t\d/.test(path)) return Promise.resolve(TXNS.find(t => path.endsWith(t.id)))
+      // Every payment to the payee, as the server names them after the rename.
+      if (path.includes('payee_key=MYSTERY')) {
+        return Promise.resolve([{ ...TXNS[0], payee: 'Rent', payee_all: 'Rent' }, { ...sameKey, payee: 'Rent', payee_all: 'Rent' }])
+      }
+      if (path.startsWith('/transactions')) return Promise.resolve([...TXNS, sameKey])
+      return Promise.resolve([])
+    })
+    mockApi.put.mockResolvedValue({ ...TXNS[0], payee: 'Rent', payee_all: 'Rent', payee_name: 'Rent' })
     renderPage()
     await user.click((await screen.findAllByText('Mystery'))[0])
     expect(await screen.findByText('As printed on the statement')).toBeInTheDocument()
     expect(screen.getByText('UPI/MYSTERY/501/x')).toBeInTheDocument()
 
-    const before = callsTo('/transactions?').length
+    const lists = () => callsTo('/transactions?').filter(p => p.includes('sort=')).length
+    const before = lists()
     await user.click(screen.getByRole('button', { name: 'Rename' }))
     await user.clear(screen.getByRole('textbox', { name: 'Name' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Rent')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
 
     expect(mockApi.put).toHaveBeenCalledWith('/transactions/t1/payee-name', { name: 'Rent' })
-    await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(before))
+    // Both rows of the payee, one of them not the open payment, now read Rent.
+    await waitFor(() => expect(screen.getAllByText('Rent').length).toBeGreaterThanOrEqual(3)) // two rows + the panel
+    expect(screen.queryByText('Mystery')).not.toBeInTheDocument()
+    // Other payees are untouched, the list was not reloaded, and the panel stays open.
+    expect(screen.getAllByText('Refund').length).toBeGreaterThan(0)
+    expect(lists()).toBe(before)
+    expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
+  })
+
+  it('updates only the one row after a single payment is renamed', async () => {
+    const user = userEvent.setup()
+    mockApi.put.mockResolvedValue({ ...TXNS[0], payee: 'Deposit', display_name: 'Deposit' })
+    renderPage()
+    await user.click((await screen.findAllByText('Mystery'))[0])
+    await screen.findByText('As printed on the statement')
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.click(screen.getByRole('radio', { name: 'Just this payment' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Deposit')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+
+    await waitFor(() => expect(screen.getAllByText('Deposit').length).toBeGreaterThan(0))
+    expect(callsTo('/transactions?').some(p => p.includes('payee_key='))).toBe(false)
+  })
+
+  it('drills by payee key: the list and the summary both get it, and the chip is named', async () => {
+    renderPage(['/transactions?payee_key=AMIT.LANDLORD%40OKSBI&payee_key=OTHER'])
+    await screen.findByText(/2 transactions/)
+    const list = new URLSearchParams(callsTo('/transactions?').at(-1).split('?')[1])
+    const summary = new URLSearchParams(callsTo('/transactions/summary').at(-1).split('?')[1])
+    expect(list.getAll('payee_key')).toEqual(['AMIT.LANDLORD@OKSBI', 'OTHER'])
+    expect(summary.getAll('payee_key')).toEqual(['AMIT.LANDLORD@OKSBI', 'OTHER'])
+    // A cold link has no name to show, so the chip reads what the server calls the payee.
+    expect(await screen.findByRole('button', { name: /Payee: Mystery/ })).toBeInTheDocument()
+  })
+
+  it('has a search box wide enough to read its prompt', () => {
+    renderPage()
+    const box = screen.getByRole('searchbox')
+    expect(box).toHaveAttribute('placeholder', 'Search payee, note or amount…')
+    expect(box.className).toMatch(/w-(64|72|80)\b/)
   })
 })

@@ -12,13 +12,13 @@ vi.mock('../lib/api.js', () => ({
   ApiError: class ApiError extends Error {},
 }))
 
-// Stub toasts to a noop: the real provider schedules a setTimeout to auto-dismiss,
-// which fires after the test ends and trips React's act() warning. These specs
+// Stub toasts to a spy: the real provider schedules a setTimeout to auto-dismiss,
+// which fires after the test ends and trips React's act() warning. Most specs
 // assert behavior, not toast copy.
-const noopToast = () => {}
+const { toastSpy } = vi.hoisted(() => ({ toastSpy: vi.fn() }))
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
-  useToast: () => noopToast,
+  useToast: () => toastSpy,
 }))
 
 // The page reads the single job slot for the "haven't been sorted yet" line.
@@ -276,6 +276,19 @@ describe('ReviewQueue payee groups', () => {
       transaction_ids: [110, 111], label: { category: 'Food', subcategory: null },
     })
     expect(screen.queryByText('OBEROIFC SECOND 1')).not.toBeInTheDocument()
+  })
+
+  it('names the payee, not this payment\'s own name, when a group is confirmed', async () => {
+    stubGet([
+      group(10, 'SWIGGY ORDER 8842', { payee: 'March rent', payee_all: 'Rent' }),
+      group(11, 'OBEROIFC SECOND 1', { payee: 'Rent', payee_all: 'Rent' }),
+    ])
+    mockApi.post.mockResolvedValue({ updated: 2, reevaluated: [] })
+    await renderQueue()
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await vi.waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('all 2 from Rent confirmed'), 'success'))
   })
 
   it('"a" turns the group off so only this card is confirmed', async () => {
@@ -645,13 +658,13 @@ describe('ReviewQueue keyboard focus', () => {
   })
 
   it('moves focus to the labelled card when the card changes', async () => {
-    stubGet([makeCard(), makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP' })])
+    stubGet([makeCard(), makeCard({ annotation_id: 11, transaction_id: 101, raw_description: 'UBER TRIP', payee: 'Uber' })])
     await renderQueue()
-    const first = screen.getByRole('group', { name: 'Payment to review: SWIGGY ORDER 8842' })
+    const first = screen.getByRole('group', { name: 'Payment to review: SWIGGY' })
     expect(first).toHaveFocus()
 
     fireEvent.keyDown(window, { key: 's' })
-    const second = await screen.findByRole('group', { name: 'Payment to review: UBER TRIP' })
+    const second = await screen.findByRole('group', { name: 'Payment to review: Uber' })
     expect(second).toHaveFocus()
   })
 
