@@ -33,4 +33,25 @@ describe('AnnotationProgress', () => {
     expect(screen.getByRole('link', { name: /refreshing ai memory/i })).toHaveAttribute('href', '/settings')
     expect(screen.queryByText(/sorting/i)).not.toBeInTheDocument()
   })
+
+  it('names a model download, in megabytes of the whole file, and leads to the AI settings', () => {
+    render(
+      <MemoryRouter>
+        <AnnotationProgress job={{ kind: 'model_download', status: 'running', processed: 1288490189, total: 2899102925 }} />
+      </MemoryRouter>
+    )
+    expect(screen.getByRole('link', { name: /downloading the ai model/i })).toHaveAttribute('href', '/settings?tab=ai')
+    expect(screen.getByText('1.2 GB of 2.7 GB')).toBeInTheDocument()
+    expect(screen.queryByText(/sorting/i)).not.toBeInTheDocument()
+  })
+
+  it('does not crash the app for a job kind it has never heard of', () => {
+    render(
+      <MemoryRouter>
+        <AnnotationProgress job={{ kind: 'something_new', status: 'running', processed: 1, total: 4 }} />
+      </MemoryRouter>
+    )
+    expect(screen.getByRole('link', { name: /working in the background/i })).toBeInTheDocument()
+    expect(screen.getByText('1 of 4')).toBeInTheDocument()
+  })
 })
