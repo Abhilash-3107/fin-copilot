@@ -2,7 +2,7 @@
 // sort must still reach the user, and no screen may say "all done" while rows
 // are unsorted or before anything has been uploaded.
 import { test, expect } from '../fixtures.js'
-import { open } from '../lib/ui.js'
+import { open, openSettingsTab } from '../lib/ui.js'
 import { sortedByServer, uploadFixture } from '../lib/statement.js'
 
 test.use({ modelMode: 'none' })
@@ -16,6 +16,11 @@ test.describe('J5 no model connected', () => {
   test("a fresh install's Teach Me does not say all done before anything is uploaded", async ({ page }) => {
     await openTeachMe(page)
     await expect(page.getByText(/all done|all caught up/i)).toHaveCount(0)
+  })
+
+  test('Settings says plainly that sorting uses your rules and remembered payees only', async ({ page }) => {
+    await openSettingsTab(page, 'AI & Model')
+    await expect(page.getByRole('status').filter({ hasText: /^Sorting is using/ })).toContainText('rules and remembered payees only')
   })
 
   test.describe('after a statement is sorted without a model', () => {

@@ -39,7 +39,7 @@ async function breakdownRows(page) {
 
 /** The Money Map recurring card: its header total and its rows in the order shown. */
 async function recurringPanel(page) {
-  const card = sectionOf(page, /Recurring & Subscriptions/)
+  const card = sectionOf(page, /Recurring and subscriptions/)
   await expect(card).toBeVisible()
   const header = firstRupees(await card.getByText(/\/mo across/).locator('..').innerText())
   const rows = []
@@ -117,13 +117,13 @@ test.describe('J2 numbers agree', () => {
     const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
     expect(row, 'an Uncategorized row on Money Map').toBeDefined()
     await row.item.getByRole('button').click()
-    await row.item.getByRole('link', { name: /View transactions/ }).click()
+    await row.item.getByRole('link', { name: /View payments/ }).click()
 
     await expect(page).toHaveURL(/#\/transactions/)
     await waitForRows(page)
     const listed = await visibleSpend(page)
     // The Transactions summary line states money out when the page has one.
-    const summary = page.getByText(/transactions? · ₹[\d,]+ out/)
+    const summary = page.getByText(/payments? · ₹[\d,]+ out/)
     const summaryOut = (await summary.count()) > 0 ? rupeeFigures(await summary.first().innerText())[0] : listed
 
     expect({ dashboard, moneyMap: row.amount, summaryOut }).toEqual({ dashboard: listed, moneyMap: listed, summaryOut: listed })
@@ -134,7 +134,7 @@ test.describe('J2 numbers agree', () => {
     const row = page.getByRole('button', { name: /Food & Dining/ })
     const claimed = firstRupees(await row.locator('..').innerText())
     await row.click()
-    await page.getByRole('link', { name: /View transactions/ }).first().click()
+    await page.getByRole('link', { name: /View payments/ }).first().click()
 
     await expect(page).toHaveURL(/#\/transactions/)
     await waitForRows(page)
@@ -252,7 +252,7 @@ test.describe('J2 renaming', () => {
     // A recurring row spans months, so look at all of them rather than the one the period picks.
     await page.addInitScript(() => localStorage.setItem('fc_period_month', 'all'))
     await open(page, '/insights')
-    const card = sectionOf(page, /Recurring & Subscriptions/)
+    const card = sectionOf(page, /Recurring and subscriptions/)
     await card.getByRole('row', { name: /Rent/ }).first().click()
 
     await expect(page).toHaveURL(/payee_key=AMIT\.LANDLORD%40OKSBI/)
@@ -261,7 +261,7 @@ test.describe('J2 renaming', () => {
     await expect(page.getByRole('row')).toHaveCount(landlord.length + 1)
     await expect(rowsPaidTo(page, 'Rent')).toHaveCount(landlord.length)
     // The one count the page states agrees with the rows the API says were paid to the landlord.
-    await expect(page.getByText(new RegExp(`${landlord.length} transactions?`)).first()).toBeVisible()
+    await expect(page.getByText(new RegExp(`${landlord.length} payments?`)).first()).toBeVisible()
   })
 
   test('a single payment renamed changes that payment and no other', async ({ page, app }) => {

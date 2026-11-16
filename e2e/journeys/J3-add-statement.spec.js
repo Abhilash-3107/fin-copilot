@@ -8,7 +8,7 @@ import { FIXTURE_PDF, FIXTURE_PDF_NOV } from '../lib/statement.js'
 async function drop(page, files) {
   await open(page, '/upload')
   await page.locator('input[type=file]').setInputFiles(files)
-  await page.getByRole('button', { name: 'Upload', exact: true }).click()
+  await page.getByRole('button', { name: /^Add (\d+ statements|statement)$/ }).click()
 }
 
 const asUpload = (name, path) => ({ name, mimeType: 'application/pdf', buffer: readFileSync(path) })
@@ -40,6 +40,20 @@ test.describe('J3 add a statement', () => {
     expect(statement.balance_check.checked).toBeGreaterThan(0)
     const { consistent, checked } = statement.balance_check
     await expect(statementRows(page)).toContainText(`${consistent}/${checked}`)
+  })
+
+  test('a statement row keeps Sort again and a menu, and none of the memory controls', async ({ page }) => {
+    await drop(page, asUpload('sample_statement.pdf', FIXTURE_PDF))
+    await expect(summaryOf(page)).toBeVisible()
+    const row = statementRows(page).first()
+    await expect(row.getByRole('button', { name: /Sort again/ })).toBeVisible()
+    await expect(page.getByText(/memory|rebuild/i)).toHaveCount(0)
+    await row.getByRole('button', { name: /^More for / }).click()
+    await expect(page.getByRole('menuitem')).toHaveText(['Rename', 'Start over', 'Delete'])
+    // The keys work: Escape closes the menu and puts focus back on its button.
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await expect(row.getByRole('button', { name: /^More for / })).toBeFocused()
   })
 
   test('sorting starts by itself when the statement lands', async ({ page, app }) => {
@@ -169,7 +183,7 @@ test.describe('J3 add a statement', () => {
     await expect(page.getByRole('alert').filter({ hasText: 'notes.txt' })).toContainText("notes.txt isn't a PDF")
     await expect(fileRow(page, 'notes.txt')).toHaveCount(0)
 
-    await page.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('button', { name: /^Add (\d+ statements|statement)$/ }).click()
     await expect(fileRow(page, 'sample_statement.pdf')).toContainText('8 payments added')
     expect(await app.api.get('/statements')).toHaveLength(1)
   })
@@ -180,10 +194,10 @@ test.describe('J3 add a statement', () => {
     const blank = { name: 'blank.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n') }
     await open(page, '/upload')
     await page.locator('input[type=file]').setInputFiles([blank, asUpload('sample_statement.pdf', FIXTURE_PDF)])
-    await page.getByRole('button', { name: 'Upload', exact: true }).click()
+    await page.getByRole('button', { name: /^Add (\d+ statements|statement)$/ }).click()
 
     await expect(fileRow(page, 'sample_statement.pdf')).toContainText('8 payments added')
-    await expect(fileRow(page, 'blank.pdf')).toContainText("couldn't find a transaction table")
+    await expect(fileRow(page, 'blank.pdf')).toContainText("no table of payments that Finance Copilot can read")
     expect(await app.api.get('/statements')).toHaveLength(1)
   })
 })

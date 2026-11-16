@@ -75,7 +75,7 @@ test('a backup restores the ledger exactly after everything is deleted', async (
   await page.getByRole('button', { name: 'Replace and restore' }).click()
   expect((await restored).ok(), 'restore request succeeded').toBe(true)
   // The app reloads after a restore and says what it did once it is back.
-  await expect(page.getByText(/^Restored \d+ transactions? from/)).toBeVisible()
+  await expect(page.getByText(/^Restored \d+ payments? from/)).toBeVisible()
 
   expect(await storedFacts(app.api)).toEqual(original)
   expect(await derivedFigures(app.api)).toEqual(originalFigures)

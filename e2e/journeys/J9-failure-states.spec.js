@@ -52,14 +52,14 @@ test.describe('J9 failure states', () => {
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(failures(page)).toHaveCount(0)
-    await expect(page.getByText('Where I need your help most')).toBeVisible()
+    await expect(page.getByText('Where your help matters most')).toBeVisible()
   })
 
-  test('Transactions says the list could not load, never "No transactions", and recovers', async ({ page, tolerate }) => {
+  test('Transactions says the list could not load, never "No payments", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/transactions(\?|$)/)
     await page.goto('/#/transactions')
-    await expect(alertWith(page, "Couldn't load your transactions.")).toBeVisible()
-    await expect(page.getByText('No transactions')).toHaveCount(0)
+    await expect(alertWith(page, "Couldn't load your payments.")).toBeVisible()
+    await expect(page.getByText('No payments')).toHaveCount(0)
 
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()

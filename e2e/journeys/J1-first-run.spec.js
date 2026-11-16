@@ -88,7 +88,7 @@ test.describe('J1 first run', () => {
 
     await expect(page.getByRole('button', { name: /Person: Neha Gupta/ })).toBeVisible()
     await expect(page.getByRole('row').nth(1)).toBeVisible()
-    await expect(page.getByText('No transactions')).toHaveCount(0)
+    await expect(page.getByText('No payments')).toHaveCount(0)
     await expect(page.locator('select').filter({ has: page.locator('option[value="all"]') })).toHaveValue('all')
   })
 
@@ -103,4 +103,57 @@ test.describe('J1 first run', () => {
     await expect(page.getByRole('button', { name: /Payee: Swiggy/i })).toBeVisible()
     await expect(page.getByRole('row').nth(1)).toBeVisible()
   })
+
+  // One vocabulary: outside developer mode no screen speaks the machine room's
+  // words. This reads what a person can see or hear on every screen, tooltips
+  // and labels included, which the source guard cannot see for text the server sends.
+  test('no screen speaks the machine room\'s words', async ({ page, app }) => {
+    await app.loadDemo()
+    const banned = /annotat|\b(re-?)?categori[sz]|counterpart|embedding|\bRAG\b|\bkNN\b|pipeline|threshold|\bmerchants?\b|\btxns?\b|\buploa|\bmemory\b|\blearn|\bconfidence\b|your copilot|\bI'll\b/i
+    const spoken = () => page.evaluate(() => {
+      const text = [document.body.innerText]
+      for (const el of document.querySelectorAll('[title],[aria-label],[placeholder],[alt]')) {
+        text.push(el.getAttribute('title'), el.getAttribute('aria-label'), el.getAttribute('placeholder'), el.getAttribute('alt'))
+      }
+      return text.filter(Boolean).join('\n')
+    })
+    const seen = {}
+    const check = async (where) => {
+      await page.waitForLoadState('networkidle')
+      const found = (await spoken()).split('\n').filter((line) => banned.test(line))
+      if (found.length) seen[where] = found.slice(0, 3)
+    }
+
+    for (const route of ['/dashboard', '/transactions', '/review', '/groups', '/people', '/upload', '/insights']) {
+      await open(page, route)
+      await check(route)
+    }
+    // A payment open in its panel.
+    await open(page, '/transactions')
+    await page.getByRole('row').nth(1).click()
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    await check('a payment panel')
+    for (const tab of ['General', 'AI & Model', 'Teach Me', 'Categories', 'Rules', 'Data']) {
+      await openSettingsTab(page, tab)
+      if (tab === 'AI & Model') await page.getByRole('button', { name: 'Advanced' }).click()
+      await check(`Settings > ${tab}`)
+    }
+    expect(seen, 'lines that use a word from the machine room').toEqual({})
+  })
+
+  test('Settings opens the Teach Me tab from an old Insights link, and keeps the machine room behind Advanced', async ({ page }) => {
+    await page.goto('/#/settings?tab=insights')
+    await expect(page.getByRole('heading', { name: 'When to ask you' })).toBeVisible()
+    await expect(page).toHaveURL(/#\/settings\?tab=teach$/)
+
+    await openSettingsTab(page, 'AI & Model')
+    // Plain status first, in the app's own words.
+    await expect(page.getByRole('status').filter({ hasText: /Sorting uses/ })).toContainText(/through Ollama on your computer/)
+    await expect(page.getByRole('heading', { name: 'Remembered payees' })).toHaveCount(0)
+    const advanced = page.getByRole('button', { name: 'Advanced' })
+    await expect(advanced).toHaveAttribute('aria-expanded', 'false')
+    await advanced.click()
+    await expect(page.getByRole('heading', { name: 'Remembered payees' })).toBeVisible()
+  })
 })
+

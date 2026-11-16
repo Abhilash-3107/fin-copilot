@@ -49,7 +49,7 @@ const ARRIVED = {
   '/groups': (page) => page.getByRole('heading', { name: 'Groups', exact: true }),
   '/upload': (page) => page.getByRole('heading', { name: 'Add Statement' }),
   '/settings': (page) => page.getByRole('heading', { name: 'Settings', exact: true }),
-  '/transactions': (page) => page.getByRole('button', { name: 'Auto-annotate' }),
+  '/transactions': (page) => page.getByRole('button', { name: 'Sort again' }),
   // Teach Me has no fixed text: its empty and finished states are what some journeys judge.
   '/review': null,
 }
@@ -84,8 +84,13 @@ export async function visibleSpend(page) {
   return Math.round(out * 100) / 100
 }
 
-/** Wait until a Transactions list has finished loading its rows. */
+/**
+ * Wait until a Transactions list has finished loading its rows. The Ledger's own
+ * button comes first: a navigation keeps the page it left on screen until the
+ * next one is ready, and that page has rows too.
+ */
 export async function waitForRows(page) {
+  await ARRIVED['/transactions'](page).waitFor()
   await expect(page.getByRole('row').nth(1)).toBeVisible()
 }
 
