@@ -92,7 +92,7 @@ export default function People() {
     const val = editValue.trim() || null
     if (val === (p.upi ?? null)) { setEditingId(null); return }
     try {
-      const updated = await api.patch(`/people/${p.id}`, { name: p.name, upi: val })
+      const updated = await api.patch(`/people/${p.id}`, { upi: val })
       setPeople(ps => ps.map(x => x.id === p.id ? { ...updated, stats: x.stats } : x))
       toast('Saved', 'success')
     } catch (e) {
@@ -106,7 +106,7 @@ export default function People() {
     const val = relationship || null
     if (val === (p.relationship ?? null)) return
     try {
-      const updated = await api.patch(`/people/${p.id}`, { name: p.name, upi: p.upi ?? null, relationship: val })
+      const updated = await api.patch(`/people/${p.id}`, { relationship: val })
       setPeople(ps => ps.map(x => x.id === p.id ? { ...updated, stats: x.stats } : x))
     } catch (e) {
       toast(`Failed: ${e.message}`, 'error')

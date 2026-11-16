@@ -1498,6 +1498,152 @@ class TestPeopleRelationship:
         assert cleared.json()["relationship"] is None
 
 
+class TestPeoplePatchLeavesOmittedFieldsAlone:
+    """A PATCH changes what it names. The People page used to send {name, upi}
+    and the relationship was written back as NULL ("dad" became nothing)."""
+
+    def _person(self, client):
+        return client.post(
+            "/api/people", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": "dad"}
+        ).json()["id"]
+
+    def test_editing_the_match_keeps_the_relationship(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        resp = client.patch(f"/api/people/{pid}", json={"upi": "ananta2@oksbi"})
+        assert resp.status_code == 200
+        assert resp.json()["upi"] == "ananta2@oksbi"
+        assert resp.json()["relationship"] == "dad"
+        assert resp.json()["name"] == "Ananta"
+
+    def test_editing_the_relationship_keeps_name_and_match(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        resp = client.patch(f"/api/people/{pid}", json={"relationship": "father"})
+        assert (resp.json()["name"], resp.json()["upi"], resp.json()["relationship"]) == (
+            "Ananta", "ananta@oksbi", "father",
+        )
+
+    def test_an_explicit_null_still_clears(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        assert client.patch(f"/api/people/{pid}", json={"relationship": None}).json()["relationship"] is None
+        assert client.patch(f"/api/people/{pid}", json={"upi": None}).json()["upi"] is None
+
+    def test_a_blank_name_is_still_refused_and_an_unknown_person_is_404(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        assert client.patch(f"/api/people/{pid}", json={"name": "  "}).status_code == 422
+        assert client.patch("/api/people/nope", json={"relationship": "x"}).status_code == 404
+
+    def test_a_legacy_short_match_does_not_block_editing_another_field(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT INTO people (id, name, upi) VALUES ('old', 'Old Friend', 'ab')")
+        conn.commit()
+        assert client.patch("/api/people/old", json={"relationship": "friend"}).status_code == 200
+        assert client.patch("/api/people/old", json={"upi": "ab"}).status_code == 422
+
+
+class TestSimultaneousCreates:
+    """Two requests at once must not both pass the duplicate check and both insert."""
+
+    @pytest.fixture
+    def file_db(self, tmp_path, monkeypatch):
+        from finance_copilot.api.deps import get_db as api_get_db
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.main import app
+
+        db_path = str(tmp_path / "race.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        conn = dbc.get_migrated_db(db_path)
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield app, conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    @staticmethod
+    def _slow(monkeypatch, module, name):
+        """Hold the duplicate check open after it answered, so a second request
+        that is not locked out gets through the same check before the first inserts."""
+        import time
+
+        real = getattr(module, name)
+
+        def slow(*args, **kwargs):
+            found = real(*args, **kwargs)
+            time.sleep(0.3)
+            return found
+
+        monkeypatch.setattr(module, name, slow)
+
+    @staticmethod
+    def _fire(app, calls):
+        import threading
+
+        results = [None] * len(calls)
+
+        def run(i, call):
+            results[i] = call(TestClient(app)).status_code
+
+        threads = [threading.Thread(target=run, args=(i, c)) for i, c in enumerate(calls)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return sorted(results)
+
+    def test_two_creates_of_one_group_make_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import groups as groups_routes
+
+        app, conn = file_db
+        self._slow(monkeypatch, groups_routes, "find_group_by_name")
+        post = lambda c: c.post("/api/groups", json={"name": "Goa"})  # noqa: E731
+        assert self._fire(app, [post, post]) == [201, 409]
+        assert conn.execute("SELECT COUNT(*) FROM transaction_groups").fetchone()[0] == 1
+
+    def test_two_creates_of_one_person_make_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import people as people_routes
+
+        app, conn = file_db
+        self._slow(monkeypatch, people_routes, "find_duplicate_person")
+        post = lambda c: c.post("/api/people", json={"name": "Neha", "upi": "neha@paytm"})  # noqa: E731
+        assert self._fire(app, [post, post]) == [201, 409]
+        assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 1
+
+    def test_two_renames_to_one_group_name_leave_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import groups as groups_routes
+
+        app, conn = file_db
+        client = TestClient(app)
+        a = client.post("/api/groups", json={"name": "A"}).json()["id"]
+        b = client.post("/api/groups", json={"name": "B"}).json()["id"]
+        self._slow(monkeypatch, groups_routes, "find_group_by_name")
+        rename = lambda gid: (lambda c: c.patch(f"/api/groups/{gid}", json={"name": "Same"}))  # noqa: E731
+        assert self._fire(app, [rename(a), rename(b)]) == [200, 409]
+        assert conn.execute("SELECT COUNT(*) FROM transaction_groups WHERE name = 'Same'").fetchone()[0] == 1
+
+    def test_two_edits_to_one_person_identity_leave_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import people as people_routes
+
+        app, conn = file_db
+        client = TestClient(app)
+        a = client.post("/api/people", json={"name": "Neha", "upi": "a@paytm"}).json()["id"]
+        b = client.post("/api/people", json={"name": "Neha", "upi": "b@paytm"}).json()["id"]
+        self._slow(monkeypatch, people_routes, "find_duplicate_person")
+        edit = lambda pid: (lambda c: c.patch(f"/api/people/{pid}", json={"upi": "same@paytm"}))  # noqa: E731
+        assert self._fire(app, [edit(a), edit(b)]) == [200, 409]
+        assert conn.execute("SELECT COUNT(*) FROM people WHERE upi = 'same@paytm'").fetchone()[0] == 1
+
+
 class TestGroupHeaderRefresh:
     """B8: an open group's header must follow its members, from the server."""
 

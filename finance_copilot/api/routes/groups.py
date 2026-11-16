@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.connection import write_transaction
 from finance_copilot.db.queries.groups import (
     add_member,
     create_group,
@@ -65,10 +66,9 @@ def _clean_group_name(conn: sqlite3.Connection, name: str, exclude_id: str | Non
 
 @router.post("", status_code=201)
 def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
-    name = _clean_group_name(conn, body.name)
-    group = create_group(conn, name, (body.note or "").strip() or None, body.labels or None)
-    conn.commit()
-    return group
+    with write_transaction(conn):
+        name = _clean_group_name(conn, body.name)
+        return create_group(conn, name, (body.note or "").strip() or None, body.labels or None)
 
 
 @router.get("")
@@ -104,27 +104,27 @@ class GroupPatch(BaseModel):
 
 @router.patch("/{group_id}")
 def patch(group_id: str, body: GroupPatch, conn: sqlite3.Connection = Depends(get_db)):
-    if not get_group(conn, group_id):
-        raise HTTPException(status_code=404, detail="Group not found")
-    if body.name is not None:
-        conn.execute(
-            "UPDATE transaction_groups SET name = ? WHERE id = ?",
-            (_clean_group_name(conn, body.name, exclude_id=group_id), group_id),
-        )
-    if "note" in body.model_fields_set:
-        conn.execute(
-            "UPDATE transaction_groups SET note = ? WHERE id = ?",
-            ((body.note or "").strip() or None, group_id),
-        )
-    if body.labels is not None:
-        from finance_copilot.db.queries.common import dump_string_list
+    from finance_copilot.db.queries.common import dump_string_list
 
-        conn.execute(
-            "UPDATE transaction_groups SET labels = ? WHERE id = ?",
-            (dump_string_list(body.labels) if body.labels else None, group_id),
-        )
-    conn.commit()
-    return get_group(conn, group_id)
+    with write_transaction(conn):
+        if not get_group(conn, group_id):
+            raise HTTPException(status_code=404, detail="Group not found")
+        if body.name is not None:
+            conn.execute(
+                "UPDATE transaction_groups SET name = ? WHERE id = ?",
+                (_clean_group_name(conn, body.name, exclude_id=group_id), group_id),
+            )
+        if "note" in body.model_fields_set:
+            conn.execute(
+                "UPDATE transaction_groups SET note = ? WHERE id = ?",
+                ((body.note or "").strip() or None, group_id),
+            )
+        if body.labels is not None:
+            conn.execute(
+                "UPDATE transaction_groups SET labels = ? WHERE id = ?",
+                (dump_string_list(body.labels) if body.labels else None, group_id),
+            )
+        return get_group(conn, group_id)
 
 
 @router.delete("/{group_id}", status_code=204)

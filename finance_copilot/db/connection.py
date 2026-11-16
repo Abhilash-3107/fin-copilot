@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -45,6 +47,27 @@ def get_connection(db_path: str | None = None) -> sqlite3.Connection:
         pass  # sqlite-vec unavailable (e.g. unit test environments without the extension)
 
     return conn
+
+
+@contextmanager
+def write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """Hold the write lock from before a check until the write is committed.
+
+    SQLite serialises writes, not a read followed by a write across two
+    connections: two requests can both see "no duplicate" and both insert.
+    BEGIN IMMEDIATE takes the lock first, so the second request waits
+    (busy_timeout) and then sees the first one's row. Commits on success and
+    rolls back if the block raises (a refused duplicate, say).
+    """
+    if conn.in_transaction:
+        conn.commit()  # BEGIN IMMEDIATE has to be the first statement of its transaction
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _strip_comments(stmt: str) -> str:

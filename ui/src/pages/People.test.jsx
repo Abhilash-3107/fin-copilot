@@ -59,6 +59,26 @@ describe('People', () => {
     expect(zoya).toHaveValue('cousin')
   })
 
+  it('editing the match sends only the match, so the relationship is left alone', async () => {
+    mockApi.patch.mockResolvedValue({ ...PEOPLE[0], upi: 'karabi.b' })
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('karabi'))
+    const box = screen.getByPlaceholderText('To help us better match')
+    fireEvent.change(box, { target: { value: 'karabi.b' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/people/p1', { upi: 'karabi.b' }))
+  })
+
+  it('changing the relationship sends only the relationship', async () => {
+    mockApi.patch.mockResolvedValue({ ...PEOPLE[0], relationship: 'friend' })
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    const [select] = screen.getAllByRole('combobox').filter(el => el.closest('tr'))
+    fireEvent.change(select, { target: { value: 'friend' } })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/people/p1', { relationship: 'friend' }))
+  })
+
   it('states what the figure counts and over what period', async () => {
     renderPeople()
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
