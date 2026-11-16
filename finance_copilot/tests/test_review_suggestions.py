@@ -31,9 +31,9 @@ def client(conn):
 
 def _pay(conn, txn_id, payee="CHAI WALA", label=None, *, sub=None, source="manual", confidence=1.0, dc="debit", day=1):
     conn.execute(
-        "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
-        "VALUES (?, 's', ?, 100, ?, ?, ?)",
-        (txn_id, f"2026-06-{day:02d}", dc, f"UPI/{payee}/12345678{day:04d}/Tea money", payee),
+        "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key, upi_meta) "
+        "VALUES (?, 's', ?, 100, ?, ?, ?, ?)",
+        (txn_id, f"2026-06-{day:02d}", dc, f"UPI/{payee}/12345678{day:04d}/Tea money", payee, '{"note": "Tea money"}'),
     )
     if label is not None:
         conn.execute(

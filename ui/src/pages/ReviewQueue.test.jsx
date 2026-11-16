@@ -625,11 +625,11 @@ describe('ReviewQueue payee groups', () => {
       group(11, 'OBEROIFC SECOND 1', { payee: 'Rent', payee_all: 'Rent' }),
     ])
     mockApi.post.mockResolvedValue({ updated: 2, reevaluated: [] })
-    await renderQueue()
+    await renderQueue('March rent')
 
-    fireEvent.keyDown(window, { key: 'Enter' })
+    key('Enter')
 
-    await vi.waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('all 2 from Rent confirmed'), 'success'))
+    await vi.waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('and 1 more from Rent'), 'success', undefined))
   })
 
   it('"a" turns the group off so only this card is confirmed', async () => {
