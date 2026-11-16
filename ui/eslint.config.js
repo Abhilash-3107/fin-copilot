@@ -48,5 +48,14 @@ export default [
     languageOptions: {
       globals: { ...globals.node, ...globals.vitest },
     },
+    rules: {
+      // vi.waitFor polls outside act(), so a state update it waits on logs an
+      // "not wrapped in act" warning. Testing Library's waitFor wraps it.
+      'no-restricted-properties': ['error', {
+        object: 'vi',
+        property: 'waitFor',
+        message: "Use waitFor from '@testing-library/react': vi.waitFor polls outside act().",
+      }],
+    },
   },
 ]

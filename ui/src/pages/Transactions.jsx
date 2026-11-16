@@ -154,7 +154,7 @@ export default function Transactions() {
   const [facetsError, setFacetsError] = useState(null)
   const [categoriesError, setCategoriesError] = useState(null)
   const [detailError, setDetailError] = useState(null)
-  const [linkError, setLinkError] = useState(false)
+  const [linkError, setLinkError] = useState(null) // {id, status} of a linked payment that could not open
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   // Any tracked run holds the single job slot, so Auto-annotate waits for it.
@@ -463,7 +463,7 @@ export default function Transactions() {
     setActiveTxn(txn)
     setActiveAnnotation(undefined) // sentinel: loading
     setDetailError(null)
-    setLinkError(false)
+    setLinkError(null)
     // Fetch full transaction to get annotation fields. When that fails the panel
     // must not pose as a new annotation for a payment that may already have one.
     try {
@@ -476,12 +476,9 @@ export default function Transactions() {
   // A link to one payment (the palette): show the month it is in, drop a statement
   // scope that would hide it, and open it. Waits for the statements so the month
   // can be matched against the ones the period picker knows.
-  useEffect(() => {
-    const id = pendingPayment.current
-    if (!id || statementsLoading) return
-    pendingPayment.current = null
-    setLinkError(false)
-    api.get(`/transactions/${id}`)
+  function openLinkedPayment(id) {
+    setLinkError(null)
+    return api.get(`/transactions/${id}`)
       .then(full => {
         const m = String(full.txn_date).slice(0, 7)
         setMonth(months.includes(m) ? m : ALL_TIME)
@@ -491,7 +488,7 @@ export default function Transactions() {
         setActiveTxn(full)
         showRecord(full)
       })
-      .catch(() => setLinkError(true))
+      .catch(e => setLinkError({ id, status: e?.status }))
       .finally(() => {
         setSearchParams(prev => {
           const next = new URLSearchParams(prev)
@@ -499,6 +496,13 @@ export default function Transactions() {
           return next
         }, { replace: true })
       })
+  }
+
+  useEffect(() => {
+    const id = pendingPayment.current
+    if (!id || statementsLoading) return
+    pendingPayment.current = null
+    openLinkedPayment(id)
     // showRecord and the setters are stable in effect: only a new link or the
     // statements finishing their load should run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -763,8 +767,21 @@ export default function Transactions() {
       {/* Table */}
       <div className="flex-1 overflow-auto">
         {linkError && (
-          <p role="alert" className="m-4 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
-            Couldn't find that payment. It may have been removed.
+          <p role="alert" className="m-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
+            {linkError.status === 404 ? (
+              <span>Couldn't find that payment. It may have been removed.</span>
+            ) : (
+              <>
+                <span>Couldn't open this payment.</span>
+                <button
+                  type="button"
+                  onClick={() => openLinkedPayment(linkError.id)}
+                  className="shrink-0 rounded-md border border-[#7f1d1d] px-3 py-1.5 text-xs font-medium text-[#fecaca] transition-colors hover:bg-[#3b1a1e]"
+                >
+                  Retry
+                </button>
+              </>
+            )}
           </p>
         )}
         {loadError ? (

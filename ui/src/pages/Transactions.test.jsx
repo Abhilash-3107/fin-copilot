@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -188,8 +188,9 @@ describe('Transactions', () => {
     expect(await screen.findByRole('button', { name: /Payee: Mystery/ })).toBeInTheDocument()
   })
 
-  it('has a search box wide enough to read its prompt', () => {
+  it('has a search box wide enough to read its prompt', async () => {
     renderPage()
+    await screen.findAllByText('Mystery') // let the page settle before the test ends
     const box = screen.getByRole('searchbox')
     expect(box).toHaveAttribute('placeholder', 'Search payee, note or amount…')
     expect(box.className).toMatch(/w-(64|72|80)\b/)
@@ -270,11 +271,15 @@ describe('Transactions when the API fails', () => {
     await user.click((await screen.findAllByText('Mystery'))[0])
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't load this payment's details.")
-    expect(screen.getByRole('button', { name: 'Save annotation' })).toBeDisabled()
+    // A failed payment never poses as one to annotate: no such header, no save button.
+    expect(screen.getByRole('heading', { name: "Couldn't load this payment" })).toBeInTheDocument()
+    expect(screen.queryByText('Annotate transaction')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Save annotation|Update annotation/ })).not.toBeInTheDocument()
     failing = false
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Save annotation' })).toBeEnabled()
+    expect(screen.getByRole('heading', { name: 'Annotate transaction' })).toBeInTheDocument()
   })
 })
 
@@ -310,6 +315,26 @@ describe('Transactions opened for one payment', () => {
     renderPage(['/transactions?txn=missing'])
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't find that payment.")
     expect((await screen.findAllByText('Mystery')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('Transactions opened for one payment that fails to load', () => {
+  it('offers Retry for a server or network failure, and only a 404 says it may be gone', async () => {
+    const OCT = { id: 't9', statement_id: 's1', txn_date: '2026-10-05', amount: 90, debit_credit: 'debit', raw_description: 'UPI/OLDSHOP/509/q', counterparty_key: 'OLDSHOP', payee: 'Old Shop', payee_all: 'Old Shop', note: null, channel: 'UPI', annotation_id: null }
+    const base = mockApi.get.getMockImplementation()
+    let failing = true
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/t9') return failing ? Promise.reject(new TypeError('Failed to fetch')) : Promise.resolve(OCT)
+      return base(path)
+    })
+    renderPage(['/transactions?txn=t9'])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't open this payment.")
+    expect(alert).not.toHaveTextContent('removed')
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('UPI/OLDSHOP/509/q')).toBeInTheDocument()
+    expect(screen.queryByText(/Couldn't open this payment/)).not.toBeInTheDocument()
   })
 })
 

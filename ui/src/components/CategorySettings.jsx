@@ -88,6 +88,9 @@ export default function CategorySettings() {
         </p>
       </div>
 
+      {/* A reload that failed (after a merge, say) leaves the list as it was, which may be out of date: say so. */}
+      {loadError && <InlineError what="your categories" error={loadError} onRetry={load} />}
+
       <TaxonomyHealth health={health} categories={cats} onChanged={load} />
 
       <div className="space-y-3">

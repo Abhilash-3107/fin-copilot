@@ -154,7 +154,7 @@ test.describe('J9 failure states', () => {
     await expect(page.getByText('Developer mode')).toBeVisible()
   })
 
-  test('the search says it could not search, quietly, and Try again works', async ({ page, tolerate }) => {
+  test('the search says it could not search, quietly, and Retry works', async ({ page, tolerate }) => {
     await open(page, '/dashboard')
     const api = await breakApi(page, tolerate, /\/api\/transactions\?q=/)
     await page.getByRole('button', { name: 'Search' }).click()
@@ -163,7 +163,7 @@ test.describe('J9 failure states', () => {
     await expect(page.getByText('No matches.')).toHaveCount(0)
 
     api.heal()
-    await page.getByRole('button', { name: 'Try again' }).click()
+    await page.getByRole('button', { name: 'Retry' }).click()
     await expect(page.getByRole('option', { name: /Swiggy/ }).first()).toBeVisible()
   })
 

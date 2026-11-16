@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const { mockApi, toastSpy } = vi.hoisted(() => ({
@@ -85,7 +85,7 @@ describe('AnnotationPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Save annotation' }))
 
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(mockApi.post).toHaveBeenCalledWith(
         '/annotations',
         expect.objectContaining({
@@ -107,7 +107,7 @@ describe('AnnotationPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Update annotation' }))
 
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith('/annotations/5', expect.objectContaining({ category: 'Food' }))
     )
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations', expect.anything())
@@ -123,7 +123,7 @@ describe('AnnotationPanel', () => {
 
     await user.click(screen.getByRole('button', { name: 'Update annotation' }))
 
-    await vi.waitFor(() => expect(mockApi.patch).toHaveBeenCalled())
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalled())
     expect(mockApi.patch.mock.calls[0][1]).not.toHaveProperty('merchant')
     expect(mockApi.patch.mock.calls[0][1].tags).toEqual(['x'])
   })
@@ -132,8 +132,9 @@ describe('AnnotationPanel', () => {
 describe('AnnotationPanel naming', () => {
   const RENAMED = { ...TXN, payee: 'Rent', payee_name: 'Rent' }
 
-  it('leads with the payee and keeps the bank line under its own label', () => {
+  it('leads with the payee and keeps the bank line under its own label', async () => {
     renderPanel({ annotation: null })
+    await act(async () => {}) // the groups section loads its own list
     expect(screen.getByRole('heading', { name: 'Swiggy' })).toBeInTheDocument()
     expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
     expect(screen.getByText('SWIGGY ORDER 8842')).toBeInTheDocument()
@@ -182,11 +183,13 @@ describe('AnnotationPanel naming', () => {
     expect(screen.getByRole('radio', { name: 'Just this payment' })).toBeChecked()
   })
 
-  it('says the note is the user\'s own for money out and just a note for money in', () => {
+  it('says the note is the user\'s own for money out and just a note for money in', async () => {
     const { unmount } = renderPanel({ annotation: null })
+    await act(async () => {})
     expect(screen.getByText('Your note')).toBeInTheDocument()
     unmount()
     renderPanel({ annotation: null, txn: { ...TXN, debit_credit: 'credit' } })
+    await act(async () => {})
     expect(screen.queryByText('Your note')).not.toBeInTheDocument()
     expect(screen.getByText('Note')).toBeInTheDocument()
   })
@@ -226,7 +229,7 @@ describe('AnnotationPanel naming', () => {
     await user.click(screen.getByRole('button', { name: 'Rename' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'x')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
-    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
   })
 
   it('clears a name so the next level down shows again', async () => {

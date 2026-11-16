@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
 const { mockApi } = vi.hoisted(() => ({
@@ -178,10 +178,10 @@ describe('CommandPalette results', () => {
     expect(second).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('opens from the top bar event too', () => {
+  it('opens from the top bar event too', async () => {
     renderWithLocation()
-    window.dispatchEvent(new Event('fc:open-palette'))
-    return screen.findByRole('dialog', { name: 'Search' })
+    act(() => { window.dispatchEvent(new Event('fc:open-palette')) })
+    expect(await screen.findByRole('dialog', { name: 'Search' })).toBeInTheDocument()
   })
 
   it('opens the exact payment, not a text search', async () => {
@@ -195,7 +195,7 @@ describe('CommandPalette results', () => {
   it('shows repeated payees once, as a result that filters to the payee across all months', async () => {
     renderWithLocation()
     await search('swiggy')
-    const payee = screen.getByRole('option', { name: /Swiggy - 3 payments/ })
+    const payee = screen.getByRole('option', { name: /Swiggy - all payments/ })
     fireEvent.click(payee)
     const where = screen.getByTestId('where').textContent
     expect(where).toMatch(/^\/transactions\?/)
@@ -229,7 +229,7 @@ describe('CommandPalette results', () => {
     expect(await screen.findByText(/Couldn't search just now/)).toBeInTheDocument()
     expect(screen.queryByText('No matches.')).not.toBeInTheDocument()
     mockApi.get.mockImplementation(() => Promise.resolve([]))
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('No matches.')).toBeInTheDocument()
   })
 

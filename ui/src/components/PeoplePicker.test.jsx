@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import PeoplePicker from './PeoplePicker.jsx'
 
 const PEOPLE = [
@@ -66,7 +66,7 @@ describe('PeoplePicker', () => {
     expect(onCreatePerson).not.toHaveBeenCalled()
     fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(['new']))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(['new']))
     expect(onCreatePerson).toHaveBeenCalledWith('Zoya')
   })
 

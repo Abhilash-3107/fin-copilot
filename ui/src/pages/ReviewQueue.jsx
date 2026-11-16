@@ -12,7 +12,7 @@ import InlineError from '../components/InlineError.jsx'
 import { groupName } from '../components/PayeeHeading.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
 import { labelOf } from '../lib/categoryOptions.js'
-import { count } from '../lib/plural.js'
+import { count, joinWords } from '../lib/plural.js'
 import { isDialogOpen, useDialog } from '../lib/useDialog.js'
 import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
 
@@ -865,7 +865,7 @@ export default function ReviewQueue() {
       {sideFailures.length > 0 && (
         <div className="max-w-3xl mx-auto w-full mb-4">
           <InlineError
-            what={sideFailures.map(f => f.what).join(' and ')}
+            what={joinWords(sideFailures.map(f => f.what))}
             error={sideFailures[0].error}
             onRetry={loadSide}
           />

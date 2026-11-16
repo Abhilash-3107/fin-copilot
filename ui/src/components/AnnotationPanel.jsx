@@ -349,7 +349,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#2d3148] flex items-center justify-between shrink-0">
           <h2 className="text-sm font-semibold text-[#a5b4fc]">
-            {annotation ? 'Edit annotation' : 'Annotate transaction'}
+            {loadError ? "Couldn't load this payment" : annotation ? 'Edit annotation' : 'Annotate transaction'}
           </h2>
           <button onClick={onClose} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
             <X size={17} />
@@ -438,15 +438,17 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
             onClick={onClose}
             className="px-4 py-2 rounded-md bg-[#1e2235] text-[#94a3b8] text-sm hover:text-[#e2e8f0] transition-colors"
           >
-            Cancel
+            {loadError ? 'Close' : 'Cancel'}
           </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || !!loadError}
-            className="flex-1 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {saving ? 'Saving…' : annotation ? 'Update annotation' : 'Save annotation'}
-          </button>
+          {!loadError && (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              {saving ? 'Saving…' : annotation ? 'Update annotation' : 'Save annotation'}
+            </button>
+          )}
         </div>
       </aside>
     </>

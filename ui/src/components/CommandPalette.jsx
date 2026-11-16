@@ -24,14 +24,14 @@ const PAGES = [
   { to: '/settings', icon: SettingsIcon, label: 'Settings' },
 ]
 
-// Payments fetched per search. A few are listed; the rest only feed the "N payments" count of a repeated payee.
+// Payments fetched per search. A few are listed; the rest only show that a payee repeats.
 const FETCH_LIMIT = 20
 const LISTED_PAYMENTS = 6
 
 // A payee that shows up in two or more results becomes one result that filters
 // to all of its payments, so "Swiggy" is not six identical rows. Needs the
 // payee's key: a payment without one has nothing to filter by.
-export function payeeSummaries(rows, limit = FETCH_LIMIT) {
+export function payeeSummaries(rows) {
   const byKey = new Map()
   for (const t of rows) {
     if (!t.counterparty_key) continue
@@ -39,8 +39,7 @@ export function payeeSummaries(rows, limit = FETCH_LIMIT) {
     entry.count += 1
     byKey.set(t.counterparty_key, entry)
   }
-  const more = rows.length >= limit ? '+' : ''
-  return [...byKey.values()].filter(e => e.count > 1).map(e => ({ ...e, more }))
+  return [...byKey.values()].filter(e => e.count > 1)
 }
 
 // Global search over payments / people / groups, plus jump-to-page. Opened with
@@ -115,7 +114,7 @@ function Palette({ onClose }) {
       kind: 'payee',
       key: `payee:${e.key}`,
       icon: Receipt,
-      label: `${e.name} - ${e.count}${e.more} payments`,
+      label: `${e.name} - all payments`,
       meta: 'all months',
       run: () => navigate(
         txnFilterPath({ payeeKeys: [e.key], month: ALL_TIME }),
@@ -213,7 +212,7 @@ function Palette({ onClose }) {
                 onClick={() => setAttempt(n => n + 1)}
                 className="underline underline-offset-2 hover:text-white"
               >
-                Try again
+                Retry
               </button>
             </p>
           )}

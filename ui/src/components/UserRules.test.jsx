@@ -67,6 +67,12 @@ describe('UserRules', () => {
     expect(mockApi.post).not.toHaveBeenCalledWith('/rules/r1/apply')
     expect(await screen.findByText('"zepto"')).toBeInTheDocument()
 
+    // The server gives the second rule an id of its own (a repeated id is a React key clash).
+    mockApi.post.mockImplementation(path => (
+      path === '/rules' ? Promise.resolve({ ...RULE, id: 'r2' })
+        : path === '/rules/preview' ? Promise.resolve(PREVIEW)
+          : Promise.resolve({ relabeled: 1, labeled: 1, protected: 1, unchanged: 0 })
+    ))
     await fillDraft()
     await screen.findByRole('checkbox')
     fireEvent.click(screen.getByRole('checkbox'))

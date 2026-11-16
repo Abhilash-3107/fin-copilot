@@ -91,7 +91,7 @@ test.describe('J1 first run', () => {
     await open(page, '/dashboard')
     await page.keyboard.press('Control+K')
     await page.getByRole('combobox', { name: 'Search' }).fill('swiggy')
-    const payee = page.getByRole('option', { name: /Swiggy - \d+\+? payments/i })
+    const payee = page.getByRole('option', { name: /Swiggy - all payments/i })
     await expect(payee).toHaveCount(1)
     await payee.click()
     await expect(page.getByRole('button', { name: /Payee: Swiggy/i })).toBeVisible()
