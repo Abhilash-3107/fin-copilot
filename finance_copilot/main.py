@@ -55,20 +55,32 @@ async def lifespan(app: FastAPI):
     from finance_copilot.db.lifecycle import reconcile_database
 
     today()  # a malformed FC_TODAY should stop the app here, not on the first demo load
-    conn = get_connection()
-    try:
-        reconcile_database(conn)
-    finally:
-        conn.close()
-    # Sorting jobs wait in the database; this one thread runs them in turn,
-    # starting with any a previous run left queued.
-    from finance_copilot.api.routes.annotations import runner
+    # Before anything touches the ledger or its jobs: a second copy on this
+    # folder must stop here, not reap and run the first copy's work.
+    from pathlib import Path
 
-    runner.start()
+    from finance_copilot.db.folder_lock import lock_data_folder, unlock_data_folder
+
+    folder = Path(settings.db_path).parent
+    took_lock = lock_data_folder(folder)
     try:
-        yield
+        conn = get_connection()
+        try:
+            reconcile_database(conn)
+        finally:
+            conn.close()
+        # Sorting jobs wait in the database; this one thread runs them in turn,
+        # starting with any a previous run left queued.
+        from finance_copilot.api.routes.annotations import runner
+
+        runner.start()
+        try:
+            yield
+        finally:
+            runner.stop()
     finally:
-        runner.stop()
+        if took_lock:
+            unlock_data_folder(folder)
 
 
 app = FastAPI(title="Finance Copilot", lifespan=lifespan)

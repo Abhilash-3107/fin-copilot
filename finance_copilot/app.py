@@ -110,6 +110,18 @@ def main(argv: list[str] | None = None) -> int:
             webbrowser.open(url)
         return 0
 
+    # The runtime check above can race (two launches at once) and cannot see a
+    # copy started some other way. The folder lock is the real guard: take it
+    # before touching runtime.json, so a copy that loses never overwrites or
+    # clears the winner's file.
+    from finance_copilot.db.folder_lock import DataFolderInUse, lock_data_folder, unlock_data_folder
+
+    try:
+        lock_data_folder(data_dir)
+    except DataFolderInUse as busy:
+        print(busy, file=sys.stderr, flush=True)
+        return 1
+
     port = args.port or _free_port()
 
     import uvicorn
@@ -124,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         _clear_runtime(data_dir)
+        unlock_data_folder(data_dir)
     return 0
 
 
