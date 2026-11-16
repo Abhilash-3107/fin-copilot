@@ -390,17 +390,26 @@ def _patch_from_body(conn: sqlite3.Connection, existing: dict, body: AnnotationP
     return patch
 
 
-def _apply_correction(conn: sqlite3.Connection, existing: dict, patch: dict) -> None:
+def _record(conn: sqlite3.Connection, capture: UndoCapture | None, source: str, category: str, feedback_type: str) -> None:
+    """Calibration feedback; through the answer's undo capture when it has one,
+    so the undo takes back exactly what this answer counted."""
+    if capture is None:
+        record_feedback(conn, source, category, feedback_type)
+    else:
+        capture.feedback(conn, source, category, feedback_type)
+
+
+def _apply_correction(conn: sqlite3.Connection, existing: dict, patch: dict, capture: UndoCapture | None = None) -> None:
     """Record calibration feedback against the machine label, then apply. Caller commits."""
     if existing["source"] in _MODEL_SOURCES:
-        record_feedback(conn, existing["source"], existing["category"], _classify_feedback(existing, patch))
+        _record(conn, capture, existing["source"], existing["category"], _classify_feedback(existing, patch))
     update_annotation(conn, existing["id"], patch)
 
 
-def _apply_confirmation(conn: sqlite3.Connection, existing: dict) -> None:
+def _apply_confirmation(conn: sqlite3.Connection, existing: dict, capture: UndoCapture | None = None) -> None:
     """A human vouches for the label as is. Caller commits."""
     if existing["source"] in _MODEL_SOURCES:
-        record_feedback(conn, existing["source"], existing["category"], "confirmed")
+        _record(conn, capture, existing["source"], existing["category"], "confirmed")
     update_annotation(conn, existing["id"], {"confidence": 1.0})
 
 
@@ -452,13 +461,16 @@ def confirm_annotation(
         raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
 
     taught = [existing["transaction_id"]]
-    candidates = reevaluation_candidates(conn, taught)
-    capture = UndoCapture(conn, taught, candidates)
-    _apply_confirmation(conn, existing)
+    capture = UndoCapture(conn, taught)
+    _apply_confirmation(conn, existing, capture)
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
+    # Only now: the neighbours of a payment that was never embedded are found by
+    # the vector the line above just stored.
+    candidates = reevaluation_candidates(conn, taught)
+    capture.include(conn, candidates)
     updated["reevaluated"] = reevaluate_after_teaching(conn, taught, candidates)
     updated["undo_token"] = capture.finish(conn)
     return updated
@@ -520,8 +532,7 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     if "tags" in body.label.model_fields_set:
         patch["tags"] = dump_string_list(body.label.tags)
     answered = list(dict.fromkeys(body.transaction_ids))
-    candidates = reevaluation_candidates(conn, answered)
-    capture = UndoCapture(conn, answered, candidates)
+    capture = UndoCapture(conn, answered)
     taught = []
     for transaction_id in answered:
         existing = get_annotation_by_transaction(conn, transaction_id)
@@ -531,10 +542,13 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
         existing = existing or get_annotation_by_transaction(conn, transaction_id)
         if existing is None:
             continue  # the payment is gone
-        _apply_correction(conn, existing, patch)
+        _apply_correction(conn, existing, patch, capture)
         taught.append(transaction_id)
     conn.commit()
     embed_transactions(conn, taught)
+    # After the embed: a payment that was never embedded has no neighbours until it has a vector.
+    candidates = reevaluation_candidates(conn, taught)
+    capture.include(conn, candidates)
     reevaluated = reevaluate_after_teaching(conn, taught, candidates)
     return {"updated": len(taught), "reevaluated": reevaluated, "undo_token": capture.finish(conn)}
 
@@ -699,11 +713,13 @@ def apply_to_similar(
     Each target is treated as a human decision (the user explicitly selected it):
     feedback is recorded against the target's machine source, source flips to
     manual (original_source preserved by update_annotation), confidence 1.0.
+    The response carries an undo_token for POST /review-queue/undo.
     """
     donor = get_annotation(conn, annotation_id)
     if donor is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
 
+    capture = UndoCapture(conn, list(dict.fromkeys(body.transaction_ids)))
     applied = 0
     skipped = 0
     for txn_id in body.transaction_ids:
@@ -719,12 +735,12 @@ def apply_to_similar(
             "confidence": 1.0,
         }
         feedback_type = _classify_feedback(target, patch)
-        record_feedback(conn, target["source"], target["category"], feedback_type)
+        capture.feedback(conn, target["source"], target["category"], feedback_type)
         update_annotation(conn, target["id"], patch)
         applied += 1
     conn.commit()
     background_tasks.add_task(_embed_in_background, list(body.transaction_ids))
-    return {"applied": applied, "skipped": skipped}
+    return {"applied": applied, "skipped": skipped, "undo_token": capture.finish(conn)}
 
 
 @router.get("/run-summary")

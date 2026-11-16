@@ -7,6 +7,11 @@ restores them too. `UndoCapture` snapshots that state before an answer and, once
 the answer (and the re-decisions it caused) is done, stores what changed under a
 token. `undo` restores it exactly, or refuses when a payment has changed since.
 
+Counters are recorded from the answer's own feedback calls (`capture.feedback`),
+never by diffing the table, so an answer another request lands meanwhile is not
+swept into this record. Embeddings (vec_items, embedding_meta) are not restored:
+they describe the payment's text, not its label, so a stale one is harmless.
+
 This is the small precursor of R7's change sets: it is isolated here so that
 work can replace it. Only the last day and the last RETAIN_ANSWERS answers are kept.
 """
@@ -17,9 +22,12 @@ import sqlite3
 
 import ulid
 
+from finance_copilot.db.queries.feedback_stats import record_feedback
+
 RETAIN_ANSWERS = 50
 RETAIN_DAYS = 1
 _CHUNK = 500
+_FEEDBACK_COLUMNS = ["confirmed", "refined", "corrected"]
 
 
 class UndoError(Exception):
@@ -44,25 +52,40 @@ def _snapshot(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str,
     return out
 
 
-def _feedback(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[int, int, int]]:
-    """The whole counter table (one row per source and category: it stays small)."""
-    return {
-        (r["source"], r["category"]): (r["confirmed"], r["refined"], r["corrected"])
-        for r in conn.execute("SELECT source, category, confirmed, refined, corrected FROM feedback_stats")
-    }
-
-
 class UndoCapture:
     """Snapshot before an answer; `finish` stores the record and returns its token.
 
-    `transaction_ids` are the payments the answer is about, `reevaluated` the
-    ones it may cause to be re-decided (they are only recorded if they changed).
+    `transaction_ids` are the payments the answer is about. The ones it may
+    cause to be re-decided are added with `include`, once they are known and
+    before anything re-decides them (they are only recorded if they changed).
+    The answer's calibration counters go through `feedback`.
     """
 
-    def __init__(self, conn: sqlite3.Connection, transaction_ids: list[str], reevaluated: list[str] = ()):
-        self._ids = list(dict.fromkeys([*transaction_ids, *reevaluated]))
+    def __init__(self, conn: sqlite3.Connection, transaction_ids: list[str]):
+        self._ids = list(dict.fromkeys(transaction_ids))
         self._before = _snapshot(conn, self._ids)
-        self._feedback_before = _feedback(conn)
+        # (source, category) -> what this answer added, and the row as it was
+        self._counters: dict[tuple[str, str], dict] = {}
+
+    def include(self, conn: sqlite3.Connection, transaction_ids: list[str]) -> None:
+        """Also watch these payments: snapshot them now, as they are before any change."""
+        new = [t for t in dict.fromkeys(transaction_ids) if t not in self._before]
+        self._ids.extend(new)
+        self._before.update(_snapshot(conn, new))
+
+    def feedback(self, conn: sqlite3.Connection, source: str, category: str, feedback_type: str) -> None:
+        """record_feedback, noting that this answer is what added the count."""
+        key = (source, category)
+        if key not in self._counters:
+            row = conn.execute(
+                "SELECT updated_at FROM feedback_stats WHERE source = ? AND category = ?", key
+            ).fetchone()
+            self._counters[key] = {
+                "delta": [0, 0, 0], "existed": row is not None,
+                "updated_at": row["updated_at"] if row else None,
+            }
+        self._counters[key]["delta"][_FEEDBACK_COLUMNS.index(feedback_type)] += 1
+        record_feedback(conn, source, category, feedback_type)
 
     def finish(self, conn: sqlite3.Connection) -> str:
         """Record what changed since the snapshot. Commits."""
@@ -72,16 +95,15 @@ class UndoCapture:
             for tid in self._before
             if self._before[tid] != after.get(tid)
         ]
-        feedback_after = _feedback(conn)
         feedback = []
-        for key, now in feedback_after.items():
-            was = self._feedback_before.get(key)
-            if now != (was or (0, 0, 0)):
-                feedback.append({
-                    "source": key[0], "category": key[1],
-                    "delta": [n - w for n, w in zip(now, was or (0, 0, 0), strict=True)],
-                    "existed": was is not None,
-                })
+        for (source, category), counter in self._counters.items():
+            row = conn.execute(
+                "SELECT updated_at FROM feedback_stats WHERE source = ? AND category = ?", (source, category)
+            ).fetchone()
+            feedback.append({
+                "source": source, "category": category, **counter,
+                "updated_after": row["updated_at"] if row else None,
+            })
         token = str(ulid.ULID())
         conn.execute(
             "INSERT INTO review_undo (token, changes) VALUES (?, ?)",
@@ -115,19 +137,23 @@ def _write_annotation(conn: sqlite3.Connection, transaction_id: str, row: dict |
 def undo(conn: sqlite3.Connection, token: str) -> list[str]:
     """Restore the state an answer changed; returns the payments put back.
     Raises UndoError when the token is unknown, expired, already used, or a
-    payment it covers has changed since (nothing is then restored). Commits."""
-    record = conn.execute("SELECT undone_at, changes FROM review_undo WHERE token = ?", (token,)).fetchone()
-    if record is None:
-        raise UndoError("That answer can no longer be undone.")
-    if record["undone_at"] is not None:
-        raise UndoError("That answer was already undone.")
-    changes = json.loads(record["changes"])
-
-    now = _snapshot(conn, [row["transaction_id"] for row in changes["rows"]])
-    if any(now.get(row["transaction_id"]) != row["after"] for row in changes["rows"]):
-        raise UndoError("Those payments have changed since, so this answer can't be undone.")
-
+    payment it covers has changed since (nothing is then restored). The check
+    and the restore are one transaction under the write lock, so nothing can
+    change a payment between them. Commits."""
+    conn.commit()  # no read transaction left open: BEGIN IMMEDIATE must be the first
+    conn.execute("BEGIN IMMEDIATE")
     try:
+        record = conn.execute("SELECT undone_at, changes FROM review_undo WHERE token = ?", (token,)).fetchone()
+        if record is None:
+            raise UndoError("That answer can no longer be undone.")
+        if record["undone_at"] is not None:
+            raise UndoError("That answer was already undone.")
+        changes = json.loads(record["changes"])
+
+        now = _snapshot(conn, [row["transaction_id"] for row in changes["rows"]])
+        if any(now.get(row["transaction_id"]) != row["after"] for row in changes["rows"]):
+            raise UndoError("Those payments have changed since, so this answer can't be undone.")
+
         for row in changes["rows"]:
             tid, before = row["transaction_id"], row["before"]
             _write_annotation(conn, tid, before["annotation"])
@@ -136,7 +162,7 @@ def undo(conn: sqlite3.Connection, token: str) -> list[str]:
             _subtract_feedback(conn, entry)
         conn.execute("UPDATE review_undo SET undone_at = datetime('now') WHERE token = ?", (token,))
         conn.commit()
-    except Exception:
+    except BaseException:
         conn.rollback()
         raise
     return [row["transaction_id"] for row in changes["rows"]]
@@ -151,6 +177,12 @@ def _subtract_feedback(conn: sqlite3.Connection, entry: dict) -> None:
         "corrected = MAX(corrected - ?, 0) WHERE source = ? AND category = ?",
         (confirmed, refined, corrected, entry["source"], entry["category"]),
     )
+    # Put the timestamp back too, unless another answer touched the row since.
+    if entry.get("updated_at"):
+        conn.execute(
+            "UPDATE feedback_stats SET updated_at = ? WHERE source = ? AND category = ? AND updated_at = ?",
+            (entry["updated_at"], entry["source"], entry["category"], entry["updated_after"]),
+        )
     if not entry["existed"]:
         conn.execute(
             "DELETE FROM feedback_stats WHERE source = ? AND category = ? "

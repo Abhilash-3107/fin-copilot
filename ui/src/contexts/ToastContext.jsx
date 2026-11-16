@@ -44,7 +44,6 @@ function Toast({ message, type, action, onAction }) {
   const { hidden } = usePrivacy()
   return (
     <div
-      role={type === 'error' ? 'alert' : 'status'}
       className={`animate-fade-in flex items-center gap-4 bg-[#1e2235] border rounded-lg px-5 py-2.5 text-sm shadow-xl pointer-events-auto ${TYPE_STYLES[type] ?? TYPE_STYLES.info}`}
     >
       <span>{hidden && typeof message === 'string' ? maskRupees(message) : message}</span>
@@ -99,10 +98,15 @@ export function ToastProvider({ children }) {
   return (
     <ToastCtx.Provider value={toast}>
       {children}
+      {/* The live regions stay mounted: a screen reader announces what is put into
+          one, which it does not for a region that appears together with its text. */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 items-center pointer-events-none">
-        {current && (
-          <Toast key={current.id} message={current.message} type={current.type} action={current.action} onAction={runAction} />
-        )}
+        <div role="status" className="flex flex-col items-center">
+          {current && current.type !== 'error' && <Toast key={current.id} {...current} onAction={runAction} />}
+        </div>
+        <div role="alert" className="flex flex-col items-center">
+          {current && current.type === 'error' && <Toast key={current.id} {...current} onAction={runAction} />}
+        </div>
       </div>
     </ToastCtx.Provider>
   )

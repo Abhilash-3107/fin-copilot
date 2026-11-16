@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CategoryTypeahead from './CategoryTypeahead.jsx'
 
@@ -18,6 +18,15 @@ function setup(props = {}) {
 }
 
 describe('CategoryTypeahead', () => {
+  it('ignores the Enter that confirms an input-method composition', async () => {
+    const { user, box, onPick } = setup()
+    await user.type(box, 'gro')
+    fireEvent.keyDown(box, { key: 'Enter', isComposing: true })
+    expect(onPick).not.toHaveBeenCalled()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onPick).toHaveBeenCalled()
+  })
+
   it('shows nothing until something is typed', () => {
     setup()
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()

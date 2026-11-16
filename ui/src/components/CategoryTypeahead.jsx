@@ -54,6 +54,8 @@ export default function CategoryTypeahead({ tree, chosenCategory, onPick, onCrea
       e.preventDefault()
       if (choices.length) setActive((current + (e.key === 'ArrowDown' ? 1 : choices.length - 1)) % choices.length)
     } else if (e.key === 'Enter') {
+      // The Enter that confirms an input-method composition is not a pick.
+      if (e.nativeEvent?.isComposing || e.isComposing) return
       e.preventDefault()
       choose(choices[current])
     } else if (e.key === 'Escape') {

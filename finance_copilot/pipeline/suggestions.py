@@ -71,9 +71,11 @@ def _verified_history(conn: sqlite3.Connection, items: list[dict]) -> dict[tuple
 
 def _guess_reason(item: dict) -> str:
     source = item["source"]
-    if source in ("llm", "model"):
+    if source in ("llm", "model", "rag_prompted"):
+        # rag_prompted is a model's answer given similar payments as context: still a guess.
         return f"AI guess, {round((item['confidence'] or 0) * 100)}% sure"
-    if source in ("rag_prompted", "rag_direct"):
+    if source == "rag_direct":
+        # The number of payments it copied from is only kept in the dev-mode trace.
         return "Similar to past payments"
     if source == "learned_rule":
         return "Remembered payee"
@@ -81,7 +83,9 @@ def _guess_reason(item: dict) -> str:
         return "Your rule for small payments"
     if source == "user_rule":
         return "Your rule"
-    return "Recognised payee"
+    if source == "imported":
+        return "Imported label"
+    return "Current label"
 
 
 def _similar_labels(conn: sqlite3.Connection, items: list[dict]) -> dict[str, list[tuple[Label, str]]]:
@@ -100,8 +104,14 @@ def _similar_labels(conn: sqlite3.Connection, items: list[dict]) -> dict[str, li
             ]
             for it in items if it["transaction_id"] in vectors
         }
+    except sqlite3.OperationalError as e:
+        if "no such" not in str(e):  # anything but "no embeddings here" is worth a look
+            logger.warning("suggestions | similar payments unavailable | %s", e)
+        else:
+            logger.debug("suggestions | no embeddings | %s", e)
+        return {}
     except Exception as e:
-        logger.debug("suggestions | similar payments unavailable | %s", e)
+        logger.warning("suggestions | similar payments unavailable | %s", e)
         return {}
 
     neighbour_ids = sorted({n for ids in found.values() for n in ids})

@@ -150,7 +150,7 @@ export default function ReviewQueue() {
   const [sortRan, setSortRan] = useState(false)
   const [aiActive, setAiActive] = useState(false)
   const [tree, setTree] = useState(_catCache ?? [])
-  const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
+  const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
   // The keyboard can fire again before `saving` re-renders (a quick double
   // press of Enter), so the in-flight check reads a ref, not the state.
@@ -204,6 +204,8 @@ export default function ReviewQueue() {
   // Everything the page shows about the queue comes from the server: the list,
   // how many payments are set aside, and whether there is anything to sort at
   // all. `first` names payments to put at the front (the ones an undo brought back).
+  // Resolves to null when the server answered, or to the error message when it
+  // did not, so a caller never reports success over a list that did not reload.
   const refresh = useCallback(async ({ first } = {}) => {
     await writesRef.current
     try {
@@ -218,10 +220,12 @@ export default function ReviewQueue() {
       setHasTransactions(!Array.isArray(anyTxn) || anyTxn.length > 0)
       setVerified(data.length === 0)
       setLoadError(null)
+      return null
     } catch (e) {
       // Never "done": the server was not asked successfully, so nothing is known.
       toast(`Couldn't load the review list - ${e.message}`, 'error')
       setLoadError(e.message || 'Something went wrong')
+      return e.message || 'Something went wrong'
     }
   }, [toast])
 
@@ -287,7 +291,6 @@ export default function ReviewQueue() {
     setForm({
       category: current.category ?? '',
       subcategory: current.subcategory ?? '',
-      merchant: current.merchant ?? '',
       tags: tagsOf(current),
     })
     setApplyToGroup(current.payee_kind !== 'person')
@@ -308,13 +311,12 @@ export default function ReviewQueue() {
   const needsPick = !isRealCategory(form.category)
   const chosen = needsPick ? null : { category: form.category, subcategory: form.subcategory || null }
   // Single source of truth for "has the user changed this card?", for the
-  // keyboard and the button alike (a merchant- or tags-only edit still counts).
+  // keyboard and the button alike (a tags-only edit still counts).
   const isDirty = useMemo(() => {
     if (!current) return false
     return (
       form.category !== (current.category ?? '') ||
       form.subcategory !== (current.subcategory ?? '') ||
-      form.merchant !== (current.merchant ?? '') ||
       JSON.stringify(form.tags) !== JSON.stringify(tagsOf(current))
     )
   }, [current, form])
@@ -402,7 +404,11 @@ export default function ReviewQueue() {
       const res = await api.post('/policies', draft)
       setHasPolicy(true)
       setPolicySuggestion(null)
-      await refresh()
+      const reloadError = await refresh()
+      if (reloadError) {
+        toast(`Policy saved, but the list could not be reloaded - ${reloadError}`, 'error')
+        return
+      }
       toast(
         res.resolved
           ? `Policy saved. It sorted ${res.resolved} waiting transaction${res.resolved === 1 ? '' : 's'}.`
@@ -425,7 +431,7 @@ export default function ReviewQueue() {
     writesRef.current = writesRef.current
       .then(() => api.post('/annotations/review-queue/skip', { transaction_id: item.transaction_id }))
       .then(res => {
-        if (res?.undo_token) pushUndo({ token: res.undo_token, ids: [item.transaction_id] })
+        if (res?.undo_token) pushUndo({ tokens: [res.undo_token], ids: [item.transaction_id] })
         toast('Set aside for later', 'info', res?.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined)
       })
       .catch(e => {
@@ -436,27 +442,40 @@ export default function ReviewQueue() {
       .then(syncCounts)
   }
 
-  // Take back the latest answer on the server. The card (or cards) come back
-  // first, exactly as they were; the progress tally forgets them.
+  // Take back the latest step on the server. A step is one answer, or an answer
+  // and the similar payments it was applied to (undone last to first). The card
+  // (or cards) come back first, exactly as they were; the progress tally forgets
+  // them. When a part is refused the step is final, and the message says what
+  // was and was not undone instead of "Undone".
   async function undoLast() {
     if (!beginSave()) return
     try {
       await writesRef.current
       const entry = undoRef.current.at(-1)
       if (!entry) return
-      try {
-        await api.post(UNDO_URL, { token: entry.token })
-      } catch (e) {
-        // Too old, or the payments changed since: this answer is final now.
-        popUndo()
-        toast(e.message, 'error')
-        return
+      let undone = 0
+      let refusal = null
+      for (const token of [...entry.tokens].reverse()) {
+        try {
+          await api.post(UNDO_URL, { token })
+          undone += 1
+        } catch (e) {
+          // Too old, or the payments changed since: this answer is final now.
+          refusal = e.message
+          break
+        }
       }
       popUndo()
+      if (undone === 0) {
+        toast(refusal, 'error')
+        return
+      }
       setOutcomes(o => without(o, entry.ids))
       setPropagate(null)
-      await refresh({ first: entry.ids })
-      toast('Undone', 'info')
+      const reloadError = await refresh({ first: entry.ids })
+      if (refusal) toast(`Only part of that was undone - ${refusal}`, 'error')
+      else if (reloadError) toast(`Undone, but the list could not be reloaded - ${reloadError}`, 'error')
+      else toast('Undone', 'info')
     } finally {
       endSave()
     }
@@ -477,6 +496,7 @@ export default function ReviewQueue() {
   async function confirm() {
     if (!current || !isRealCategory(current.category) || !beginSave()) return
     try {
+      await writesRef.current // a skip still being written is part of the order of events
       const group = applyToGroup ? groupFromHere() : [current]
       const label = { category: current.category, subcategory: current.subcategory || null }
       const res = group.length > 1
@@ -484,7 +504,7 @@ export default function ReviewQueue() {
         ? await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
         : await api.post(`/annotations/${current.annotation_id}/confirm`, { category: current.category })
       record(group, () => 'confirmed')
-      if (res.undo_token) pushUndo({ token: res.undo_token, ids: group.map(it => it.transaction_id) })
+      if (res.undo_token) pushUndo({ tokens: [res.undo_token], ids: group.map(it => it.transaction_id) })
       const alsoSorted = settle(group, res.reevaluated)
       announce(sortedMessage(group, label.category, label.subcategory, alsoSorted), res)
       notePersonalLabel(group, label.category, label.subcategory)
@@ -507,10 +527,10 @@ export default function ReviewQueue() {
     if (needsPick) { toast('Pick a category first', 'error'); return }
     if (!beginSave()) return
     try {
+      await writesRef.current
       const label = {
         category: form.category,
         subcategory: form.subcategory || null,
-        merchant: form.merchant?.trim() || null,
         tags: form.tags,
       }
       const group = applyToGroup ? groupFromHere() : [current]
@@ -520,7 +540,7 @@ export default function ReviewQueue() {
       // appeared since the list loaded.
       const res = await api.post('/annotations/bulk-label', { transaction_ids: group.map(it => it.transaction_id), label })
       record(group, answeredAs)
-      if (res.undo_token) pushUndo({ token: res.undo_token, ids: group.map(it => it.transaction_id) })
+      if (res.undo_token) pushUndo({ tokens: [res.undo_token], ids: group.map(it => it.transaction_id) })
       const alsoSorted = settle(group, res.reevaluated)
       announce(sortedMessage(group, label.category, label.subcategory, alsoSorted), res)
       notePersonalLabel(group, label.category, label.subcategory)
@@ -535,6 +555,7 @@ export default function ReviewQueue() {
         const fixable = similar.filter(s => s.differs)
         if (fixable.length > 0) {
           setPropagate({
+            answerToken: res.undo_token ?? null,
             annotationId: current.annotation_id,
             label: labelOf({ category: label.category, subcategory: label.subcategory }),
             items: fixable,
@@ -582,8 +603,10 @@ export default function ReviewQueue() {
   // before) keep the latest action in a ref and bind the listener exactly once.
   const keyActionRef = useRef(null)
   keyActionRef.current = e => {
+    // Letters typed into the category filter or any other field are text.
     if (isTyping(e.target)) return
-    if (e.ctrlKey || e.metaKey || e.altKey) return
+    // "/" is the one key some layouts type with Shift; every other shortcut is a bare key.
+    if (e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.key !== '/')) return
     // A held key must not skip, sort or undo a card a repeat at a time.
     if (e.repeat) return
     // Enter on a focused button or link is that control's own activation: the
@@ -603,9 +626,6 @@ export default function ReviewQueue() {
       // With no real category on the card there is nothing to confirm or save.
       if (needsPick) return
       isDirty ? saveEdit() : confirm()
-    } else if (!e.shiftKey && /^[a-z]$/.test(key)) {
-      // Starting to type goes to the category filter, which takes the letter.
-      typeaheadRef.current?.focus()
     }
   }
   useEffect(() => {
@@ -651,7 +671,23 @@ export default function ReviewQueue() {
       const res = await api.post(`/annotations/${propagate.annotationId}/apply-to-similar`, {
         transaction_ids: transactionIds,
       })
-      toast(`Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`, 'success')
+      // Z undoes the answer and these together: one step, not two.
+      if (res.undo_token) {
+        const last = undoRef.current.at(-1)
+        if (propagate.answerToken && last?.tokens.includes(propagate.answerToken)) {
+          undoRef.current = [...undoRef.current.slice(0, -1), {
+            tokens: [...last.tokens, res.undo_token], ids: [...new Set([...last.ids, ...transactionIds])],
+          }]
+          setUndoCount(undoRef.current.length)
+        } else {
+          pushUndo({ tokens: [res.undo_token], ids: [...transactionIds] })
+        }
+      }
+      toast(
+        `Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`,
+        'success',
+        res.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined,
+      )
       // Applied rows are now human-labeled - drop any still ahead in the queue.
       const appliedSet = new Set(transactionIds)
       setQueue(q => q.filter(it => !appliedSet.has(it.transaction_id)))

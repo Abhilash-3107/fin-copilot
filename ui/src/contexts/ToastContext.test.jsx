@@ -141,6 +141,22 @@ describe('one toast at a time', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Fine')
   })
 
+  it('keeps one live region mounted, so a replacement is announced rather than swapped out of the page', () => {
+    renderRaiser([['one', 'First message'], ['two', 'Second message'], ['bad', 'Broke', 'error']])
+    const status = screen.getByRole('status')
+    const alert = screen.getByRole('alert')
+    expect(status).toBeEmptyDOMElement()
+    expect(alert).toBeEmptyDOMElement()
+    fireEvent.click(screen.getByText('one'))
+    fireEvent.click(screen.getByText('two'))
+    expect(screen.getByRole('status')).toBe(status)
+    expect(status).toHaveTextContent('Second message')
+    fireEvent.click(screen.getByText('bad'))
+    expect(screen.getByRole('alert')).toBe(alert)
+    expect(alert).toHaveTextContent('Broke')
+    expect(status).toBeEmptyDOMElement()
+  })
+
   it('still takes a duration as the third argument', () => {
     renderRaiser([['timed', 'Timed message', 'info', 1000]])
     fireEvent.click(screen.getByText('timed'))

@@ -147,6 +147,32 @@ test.describe('J4 sort from the keyboard', () => {
     expect(posted).toHaveLength(1)
   })
 
+  test('typing a category that starts with S, Z or A sorts that card and does nothing else', async ({ page, app }) => {
+    const queue = await app.api.get('/annotations/review-queue')
+    const waiting = queue.length
+    const [first] = queue
+
+    await open(page, '/review')
+    await expect(card(page)).toHaveAttribute('aria-label', `Payment to ${first.payee ?? first.raw_description}`)
+    await page.keyboard.press('/')
+    await page.keyboard.type('shop') // S is a shortcut on the card, and plain text in the filter
+    await expect(page.getByRole('combobox', { name: 'Another category' })).toHaveValue('shop')
+    await page.getByRole('option').first().waitFor()
+    const picked = await page.getByRole('option').first().innerText()
+    expect(picked).toMatch(/^Shopping/)
+    await page.keyboard.press('Enter')
+    await expect(page.getByLabel('Your pick')).toContainText(picked)
+    // Nothing was skipped by the S, and the card is still the one that was on screen.
+    await expect(card(page)).toHaveAttribute('aria-label', `Payment to ${first.payee ?? first.raw_description}`)
+    expect((await app.api.get('/annotations/review-queue/counts')).set_aside).toBe(0)
+
+    await page.keyboard.press('Enter')
+    await expect(progress(page)).toHaveText(`1 / ${waiting}`)
+    const row = (await app.api.get('/transactions?limit=500&include=annotation')).find((t) => t.id === first.transaction_id)
+    expect(row.category).toBe('Shopping')
+    expect((await app.api.get('/annotations/review-queue/counts')).set_aside).toBe(0)
+  })
+
   test('Z restores the payment exactly as it was', async ({ page, app }) => {
     const [bare] = (await app.api.get('/annotations/review-queue')).filter((i) => !i.annotation_id)
     const rowOf = async () => (await app.api.get('/transactions?include=annotation')).find((t) => t.id === bare.transaction_id)
@@ -162,7 +188,7 @@ test.describe('J4 sort from the keyboard', () => {
     await expect(page.getByText('Sorted as Food & Dining > Groceries')).toBeVisible()
     expect((await rowOf()).category).toBe('Food & Dining')
 
-    await page.getByRole('button', { name: 'Undo', exact: true }).first().click()
+    await page.keyboard.press('z')
     await expect(card(page)).toHaveAttribute('aria-label', `Payment to ${bare.payee ?? bare.raw_description}`)
     expect(await rowOf()).toEqual(before)
   })

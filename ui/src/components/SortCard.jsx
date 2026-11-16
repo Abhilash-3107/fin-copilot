@@ -125,20 +125,11 @@ export default function SortCard({
           className="mt-3 flex items-center gap-1 text-[11px] text-[#64748b] hover:text-[#94a3b8] transition-colors"
         >
           <Tag size={11} />
-          {showTags ? 'Hide' : 'Edit'} merchant and tags
+          {showTags ? 'Hide' : 'Edit'} tags
           {showTags ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
         </button>
         {showTags && (
-          <div className="mt-3 space-y-3">
-            <div>
-              <label htmlFor="sort-merchant" className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">Merchant</label>
-              <input
-                id="sort-merchant"
-                value={form.merchant}
-                onChange={e => setForm(f => ({ ...f, merchant: e.target.value }))}
-                className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-              />
-            </div>
+          <div className="mt-3">
             <div>
               <span className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">Tags</span>
               <TagInput tags={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} />

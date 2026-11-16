@@ -88,7 +88,7 @@ class TestMachineGuess:
         [
             ("llm", "AI guess, 68% sure"),
             ("model", "AI guess, 68% sure"),
-            ("rag_prompted", "Similar to past payments"),
+            ("rag_prompted", "AI guess, 68% sure"),
             ("rag_direct", "Similar to past payments"),
             ("learned_rule", "Remembered payee"),
             ("policy", "Your rule for small payments"),
@@ -97,6 +97,15 @@ class TestMachineGuess:
     def test_the_guess_says_where_it_came_from(self, client, conn, source, reason):
         _pay(conn, "q", "CHAI WALA", "Shopping", source=source, confidence=0.68)
         assert _suggestions(client) == [{"category": "Shopping", "subcategory": None, "reason": reason}]
+
+    @pytest.mark.parametrize(
+        ("source", "reason"),
+        [("user_rule", "Your rule"), ("imported", "Imported label"), ("something_new", "Current label")],
+    )
+    def test_every_source_has_a_neutral_reason_not_a_wrong_one(self, source, reason):
+        from finance_copilot.pipeline.suggestions import _guess_reason
+
+        assert _guess_reason({"source": source, "confidence": 0.68}) == reason
 
     def test_a_guess_of_uncategorized_is_not_offered(self, client, conn):
         _pay(conn, "q", "CHAI WALA", "Uncategorized", source="llm", confidence=0.9)
@@ -166,31 +175,70 @@ class TestSimilarPayments:
         with a, b:
             assert _suggestions(client) == []
 
-    def test_without_embeddings_the_queue_still_loads(self, client, conn):
+    def test_without_embeddings_the_queue_still_loads(self, client, conn, caplog):
         _pay(conn, "q", "CHAI WALA", "Shopping", source="llm", confidence=0.7)
-        with patch("finance_copilot.pipeline.suggestions.stored_embeddings", side_effect=Exception("no vec")):
+        import sqlite3
+
+        with patch("finance_copilot.pipeline.suggestions.stored_embeddings",
+                   side_effect=sqlite3.OperationalError("no such table: vec_items")), \
+                caplog.at_level("WARNING", logger="finance_copilot.pipeline.suggestions"):
             assert _ranked(_suggestions(client)) == [("Shopping", None)]
+        assert not caplog.records, "no embeddings is the quiet path"
 
 
 class TestBoundedQueries:
     def test_the_query_count_does_not_grow_with_the_queue(self, client, conn):
-        def queries_for(n: int) -> int:
+        """Every item has a stored vector and a verified neighbour, so the whole
+        similar-payments path runs for each one. The vector searches are one per
+        item by design; everything else (history, neighbour labels, payee names)
+        is read once for the page, so the count grows by those two per item and no more."""
+        from finance_copilot.config import current_embedding_model
+        from finance_copilot.db.queries.embeddings import ensure_vec_dimension, upsert_embedding
+
+        ensure_vec_dimension(conn)
+
+        def vec(axis):
+            """One payee's payments share a direction; payees are orthogonal."""
+            from finance_copilot.config import current_embedding_dim
+
+            v = [0.0] * current_embedding_dim()
+            v[axis] = 1.0
+            return v
+
+        def statements_for(n: int) -> list[str]:
+            conn.execute("DELETE FROM vec_items")
+            conn.execute("DELETE FROM embedding_meta")
             conn.execute("DELETE FROM annotations")
             conn.execute("DELETE FROM transactions")
             for i in range(n):
                 payee = f"PAYEE {i}"
-                _history(conn, payee, "Shopping", 2)
+                _pay(conn, f"near{i}", f"NEAR {i}", "Shopping", day=2)
                 _pay(conn, f"q{i}", payee, "Entertainment", source="llm", confidence=0.5, day=30)
+                upsert_embedding(conn, f"near{i}", vec(i), current_embedding_model(), "h")
+                upsert_embedding(conn, f"q{i}", vec(i), current_embedding_model(), "h")
+            conn.commit()
             seen: list[str] = []
             conn.set_trace_callback(seen.append)
             try:
-                assert client.get("/api/annotations/review-queue").status_code == 200
+                items = client.get("/api/annotations/review-queue").json()
             finally:
                 conn.set_trace_callback(None)
-            return len(seen)
+            # The vector path really ran: a neighbour's label is offered.
+            assert all(any(s["category"] == "Shopping" for s in it["suggestions"]) for it in items), items[:1]
+            # sqlite-vec reports its own bookkeeping as "-- ..." statements; they are not ours.
+            return [sql for sql in seen if not sql.startswith("--")]
 
-        small, large = queries_for(5), queries_for(60)
-        assert large <= small + 2, f"{small} statements for 5 payees but {large} for 60"
+        small, large = statements_for(5), statements_for(60)
+        assert any("vec_items" in sql for sql in large), "the vector path did not run"
+        # find_similar is two statements (the index search, then its filter) per item.
+        assert len(large) <= len(small) + 2 * (60 - 5) + 2, f"{len(small)} statements for 5 payees but {len(large)} for 60"
+
+    def test_unexpected_errors_in_the_similar_search_are_logged(self, client, conn, caplog):
+        _pay(conn, "q", "CHAI WALA", "Shopping", source="llm", confidence=0.7)
+        with patch("finance_copilot.pipeline.suggestions.stored_embeddings", side_effect=RuntimeError("boom")), \
+                caplog.at_level("WARNING", logger="finance_copilot.pipeline.suggestions"):
+            assert _ranked(_suggestions(client)) == [("Shopping", None)]
+        assert any("boom" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
 
 
 class TestPayeeAndNote:

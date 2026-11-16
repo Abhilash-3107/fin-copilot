@@ -211,13 +211,13 @@ describe('ReviewQueue keyboard shortcuts', () => {
     expect(mockApi.patch).not.toHaveBeenCalled()
   })
 
-  it('no longer confirms on "c": typing a letter opens the category filter instead', async () => {
+  it('no longer confirms on "c", and a letter does not open the category filter', async () => {
     stubGet([makeCard()])
     await renderQueue()
     key('c')
     await act(async () => {})
     expect(mockApi.post).not.toHaveBeenCalled()
-    expect(screen.getByRole('combobox', { name: 'Another category' })).toHaveFocus()
+    expect(screen.getByRole('combobox', { name: 'Another category' })).not.toHaveFocus()
   })
 
   it('1, 2 and 3 choose a suggestion, and Enter then saves that one', async () => {
@@ -236,7 +236,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100],
-      label: { category: 'Transport', subcategory: null, merchant: 'Swiggy', tags: [] },
+      label: { category: 'Transport', subcategory: null, tags: [] },
     })
     // A correction is not a confirm: the stale confirm endpoint is never used.
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/10/confirm', expect.anything())
@@ -271,21 +271,41 @@ describe('ReviewQueue keyboard shortcuts', () => {
     expect(box).toHaveValue('')
   })
 
-  it('starting to type goes to the filter and keeps the letters', async () => {
+  it('after "/" every letter is text: a name starting with S, Z or A skips, undoes and unticks nothing', async () => {
     const user = userEvent.setup()
-    stubGet([makeCard()])
-    await renderQueue()
-    await user.keyboard('tra')
-    expect(screen.getByRole('combobox', { name: 'Another category' })).toHaveValue('tra')
-    expect(screen.getByRole('option', { name: 'Transport' })).toBeInTheDocument()
+    const member = (id, extra = {}) => makeCard({
+      annotation_id: id, transaction_id: 100 + id, group_key: 'OBEROI|debit', group_size: 2, payee: 'OBEROI', ...extra,
+    })
+    stubGet([member(10), member(11)])
+    await renderQueue('OBEROI')
+    await user.keyboard('/saz')
+    expect(screen.getByRole('combobox', { name: 'Another category' })).toHaveValue('saz')
+    expect(screen.getByRole('checkbox')).toBeChecked() // "a" did not untick the group
+    expect(mockApi.post).not.toHaveBeenCalled() // "s" did not skip, "z" did not undo
+    expect(screen.getByRole('heading', { name: 'OBEROI' })).toBeInTheDocument()
   })
 
-  it('S, Z and A stay shortcuts instead of starting the filter', async () => {
-    stubGet([makeCard(), uber()])
+  it('shortcuts do not fire with Shift held', async () => {
+    const member = (id, extra = {}) => makeCard({
+      annotation_id: id, transaction_id: 100 + id, group_key: 'OBEROI|debit', group_size: 2, payee: 'OBEROI', ...extra,
+    })
+    mockApi.post.mockResolvedValue({ reevaluated: [], undo_token: 'tok-1' })
+    stubGet([member(10), member(11), uber()])
+    await renderQueue('OBEROI')
+    key('S', { shiftKey: true })
+    key('Z', { shiftKey: true })
+    key('A', { shiftKey: true })
+    key('1', { shiftKey: true })
+    await act(async () => {})
+    expect(mockApi.post).not.toHaveBeenCalled()
+    expect(screen.getByRole('checkbox')).toBeChecked()
+  })
+
+  it('"/" still opens the filter on a layout where it needs Shift', async () => {
+    stubGet([makeCard()])
     await renderQueue()
-    key('s')
-    await heading('UBER')
-    expect(screen.getByRole('combobox', { name: 'Another category' })).not.toHaveFocus()
+    key('/', { shiftKey: true })
+    expect(screen.getByRole('combobox', { name: 'Another category' })).toHaveFocus()
   })
 
   it('finds any category by typing, picks it with arrows and Enter, then Enter answers', async () => {
@@ -305,7 +325,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100],
-      label: { category: 'Food', subcategory: 'Groceries', merchant: 'Swiggy', tags: [] },
+      label: { category: 'Food', subcategory: 'Groceries', tags: [] },
     })
   })
 
@@ -351,6 +371,7 @@ describe('ReviewQueue keyboard shortcuts', () => {
     key('Enter')
     key('s')
     key('z')
+    await act(async () => {}) // the answer is sent once the skip writes before it have settled
     await act(async () => finish({ reevaluated: [] }))
 
     // One request, and the queue moved exactly one card: nothing skipped unseen.
@@ -363,28 +384,37 @@ describe('ReviewQueue keyboard shortcuts', () => {
     stubGet([makeCard()])
     await renderQueue()
 
-    // Reveal the merchant field and type into it; "s" and "z" here are text, not shortcuts.
-    await user.click(screen.getByText(/Edit merchant and tags/))
-    const merchant = screen.getByLabelText('Merchant')
-    await user.click(merchant)
+    // Open the tags field and type into it; "s" and "z" here are text, not shortcuts.
+    await user.click(screen.getByText(/Edit tags/))
+    const tags = screen.getByPlaceholderText(/type and press enter/i)
+    await user.click(tags)
     await user.keyboard('sz1')
 
     expect(mockApi.post).not.toHaveBeenCalled()
-    expect(merchant).toHaveValue('Swiggysz1')
+    expect(tags).toHaveValue('sz1')
   })
 
-  it('a merchant edit alone makes the card a save, not a confirm', async () => {
+  it('has no merchant field: naming a payee is Rename, in the Ledger', async () => {
     const user = userEvent.setup()
     stubGet([makeCard()])
     await renderQueue()
-    await user.click(screen.getByText(/Edit merchant and tags/))
-    await user.type(screen.getByLabelText('Merchant'), ' Instamart')
+    expect(screen.queryByText(/merchant/i)).not.toBeInTheDocument()
+    await user.click(screen.getByText(/Edit tags/))
+    expect(screen.queryByLabelText('Merchant')).not.toBeInTheDocument()
+  })
+
+  it('a tags edit alone makes the card a save, not a confirm, and sends no merchant', async () => {
+    const user = userEvent.setup()
+    stubGet([makeCard()])
+    await renderQueue()
+    await user.click(screen.getByText(/Edit tags/))
+    await user.type(screen.getByPlaceholderText(/type and press enter/i), 'lunch{Enter}')
     await user.click(screen.getByRole('group', { name: 'Payment to SWIGGY' }))
     key('Enter')
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100],
-      label: { category: 'Food', subcategory: null, merchant: 'Swiggy Instamart', tags: [] },
+      label: { category: 'Food', subcategory: null, tags: ['lunch'] },
     })
   })
 })
@@ -501,6 +531,47 @@ describe('answering and undoing', () => {
     expect(mockApi.post).not.toHaveBeenCalled()
   })
 
+  it('an answer straight after a skip waits for the skip to be written', async () => {
+    let finishSkip
+    mockApi.post.mockImplementation(path => (
+      path === '/annotations/review-queue/skip'
+        ? new Promise(resolve => { finishSkip = () => resolve({ snoozed: true, undo_token: 'tok-s' }) })
+        : Promise.resolve({ reevaluated: [], undo_token: 'tok-a' })
+    ))
+    stubGet(() => [makeCard(), uber(), makeCard({ transaction_id: 102, annotation_id: 12, payee: 'LAST' })])
+    await renderQueue()
+
+    key('s')
+    await heading('UBER')
+    key('Enter')
+    await act(async () => {})
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/11/confirm', expect.anything()) // the skip is not written yet
+    await act(async () => finishSkip())
+    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/annotations/11/confirm', { category: 'Food' }))
+  })
+
+  it('does not say Undone when the list could not be reloaded afterwards', async () => {
+    mockApi.post.mockResolvedValue({ reevaluated: [], undo_token: 'tok-1' })
+    let loads = 0
+    stubGet(() => { loads += 1; return [makeCard(), uber()] })
+    await renderQueue()
+    key('Enter')
+    await heading('UBER')
+
+    mockApi.post.mockResolvedValue({ restored: [100] })
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/review-queue' ? Promise.reject(new Error('offline')) : base(path)
+    ))
+    key('z')
+    await vi.waitFor(() => expect(mockApi.post).toHaveBeenLastCalledWith(UNDO, { token: 'tok-1' }))
+    await act(async () => {})
+    expect(loads).toBeGreaterThan(0)
+    expect(toastSpy).not.toHaveBeenCalledWith('Undone', expect.anything())
+    expect(lastToast()[0]).toMatch(/offline/)
+    expect(lastToast()[1]).toBe('error')
+  })
+
   it('Z with nothing to undo does nothing', async () => {
     stubGet([makeCard()])
     await renderQueue()
@@ -531,6 +602,69 @@ describe('answering and undoing', () => {
     key('Enter')
     await heading('LAST')
     expect(lastToast()[0]).toBe('Sorted as Food. 2 similar payments were sorted too.')
+  })
+})
+
+describe('undoing a correction and the similar payments it fixed', () => {
+  async function correctAndApply() {
+    const user = userEvent.setup()
+    stubGet(() => [makeCard(), uber()])
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/10/similar'
+        ? Promise.resolve([{
+          transaction_id: 200, payee: 'SWIGGY BLR', txn_date: '2026-01-02', amount: 90, debit_credit: 'debit',
+          category: 'Food', differs: true, similarity: 0.9,
+        }])
+        : base(path)
+    ))
+    mockApi.post.mockImplementation(path => Promise.resolve(
+      path.endsWith('/apply-to-similar') ? { applied: 1, skipped: 0, undo_token: 'tok-sim' }
+        : path === '/annotations/bulk-label' ? { updated: 1, reevaluated: [], undo_token: 'tok-ans' }
+          : { restored: [] }
+    ))
+    await renderQueue()
+    key('1')
+    await user.keyboard('/trans')
+    await user.keyboard('{Enter}')
+    key('Enter')
+    fireEvent.click(await screen.findByRole('button', { name: /Apply to 1 transaction/ }))
+    await heading('UBER')
+    await act(async () => {})
+  }
+
+  it('Z takes back the similar payments first, then the answer, as one step', async () => {
+    await correctAndApply()
+    expect(lastToast()[2].action.label).toBe('Undo')
+    mockApi.post.mockClear()
+    key('z')
+    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
+    expect(mockApi.post.mock.calls).toEqual([[UNDO, { token: 'tok-sim' }], [UNDO, { token: 'tok-ans' }]])
+    await vi.waitFor(() => expect(lastToast().slice(0, 2)).toEqual(['Undone', 'info']))
+    // One step: a second Z has nothing left.
+    mockApi.post.mockClear()
+    key('z')
+    await act(async () => {})
+    expect(mockApi.post).not.toHaveBeenCalled()
+  })
+
+  it('says plainly when only part of it could be undone', async () => {
+    const { ApiError } = await import('../lib/api.js')
+    await correctAndApply()
+    mockApi.post.mockClear()
+    mockApi.post.mockImplementation((path, body) => (
+      body?.token === 'tok-ans'
+        ? Promise.reject(Object.assign(new ApiError("Those payments have changed since, so this answer can't be undone."), { status: 409 }))
+        : Promise.resolve({ restored: [100] })
+    ))
+    key('z')
+    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
+    await act(async () => {})
+    const [message, type] = lastToast()
+    expect(type).toBe('error')
+    expect(message).toMatch(/Only part of that was undone/)
+    expect(message).toMatch(/changed since/)
+    expect(toastSpy).not.toHaveBeenCalledWith('Undone', expect.anything())
   })
 })
 
@@ -665,6 +799,20 @@ describe('ReviewQueue payee groups', () => {
     })
   })
 
+  it('does not claim the policy sorted anything when the list could not be reloaded', async () => {
+    await offerPolicy()
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/review-queue' ? Promise.reject(new Error('offline')) : base(path)
+    ))
+    fireEvent.click(await screen.findByRole('button', { name: 'Yes, always' }))
+    await act(async () => {})
+    await act(async () => {})
+    expect(lastToast()[1]).toBe('error')
+    expect(lastToast()[0]).toMatch(/Policy saved, but/)
+    expect(lastToast()[0]).toMatch(/offline/)
+  })
+
   it('keeps the suggested limit readable while amounts are hidden', async () => {
     // A policy limit is a rule setting, not a money figure.
     localStorage.setItem('fc_privacy_hidden', '1')
@@ -711,7 +859,7 @@ describe('ReviewQueue custom categories', () => {
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100],
-      label: { category: 'Pet Care', subcategory: null, merchant: 'Swiggy', tags: [] },
+      label: { category: 'Pet Care', subcategory: null, tags: [] },
     })
   })
 
@@ -850,7 +998,7 @@ describe('ReviewQueue unsorted payments', () => {
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100],
-      label: { category: 'Transport', subcategory: null, merchant: null, tags: [] },
+      label: { category: 'Transport', subcategory: null, tags: [] },
     })
     // No similar lookup for a payment with no annotation.
     expect(mockApi.get.mock.calls.some(([p]) => p.endsWith('/similar'))).toBe(false)
@@ -875,7 +1023,7 @@ describe('ReviewQueue unsorted payments', () => {
     await screen.findByText("You're all done!")
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', {
       transaction_ids: [100, 101],
-      label: { category: 'Transport', subcategory: null, merchant: null, tags: [] },
+      label: { category: 'Transport', subcategory: null, tags: [] },
     })
   })
 

@@ -1405,7 +1405,7 @@ class TestApplyToSimilar:
         _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="llm", category="Miscellaneous")
         resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
         assert resp.status_code == 200
-        assert resp.json() == {"applied": 1, "skipped": 0}
+        assert {k: v for k, v in resp.json().items() if k != "undo_token"} == {"applied": 1, "skipped": 0}
         row = conn.execute("SELECT * FROM annotations WHERE id='a2'").fetchone()
         assert row["category"] == "Entertainment"
         assert row["source"] == "manual"
@@ -1421,7 +1421,7 @@ class TestApplyToSimilar:
         _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
         _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="manual", category="Transfers")
         resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
-        assert resp.json() == {"applied": 0, "skipped": 1}
+        assert {k: v for k, v in resp.json().items() if k != "undo_token"} == {"applied": 0, "skipped": 1}
         row = conn.execute("SELECT category FROM annotations WHERE id='a2'").fetchone()
         assert row["category"] == "Transfers"
 
