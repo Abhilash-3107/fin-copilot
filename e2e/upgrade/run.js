@@ -13,9 +13,10 @@ import { fileURLToPath } from 'node:url'
 import { TEMP_PREFIX, installWheel, wheelPath } from '../global-setup.js'
 import { killTree, makeApi, startServer } from '../lib/server.js'
 import { derivedFigures, storedFacts } from '../lib/snapshot.js'
-import { categorise, uploadFixture } from '../lib/statement.js'
+import { uploadFixture } from '../lib/statement.js'
 import { compareSnapshots } from './compare.js'
 import { plantLegacyRows, storedColumns } from './db.js'
+import { categorise } from './previous-release.js'
 import { baseVersion } from './version.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -110,7 +111,7 @@ async function snapshot(api, version) {
   return { facts, figures }
 }
 
-async function main() {
+export async function main() {
   const expected = JSON.parse(readFileSync(expectedFile, 'utf8'))
   const wheel = wheelPath(process.env.FC_E2E_WHEEL ?? path.join(here, '..', '..', 'dist'))
   const wheelVersion = path.basename(wheel).split('-')[1]
@@ -197,6 +198,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  fail(error.stack ?? String(error))
-})
+// Only when run as the journey: the tests load this file to check its imports.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    fail(error.stack ?? String(error))
+  })
+}
