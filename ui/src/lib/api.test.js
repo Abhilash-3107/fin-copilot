@@ -49,7 +49,7 @@ describe('runAnnotationJob', () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'reembed', statement_id: null })))
     const run = runAnnotationJob({ statement_id: 's1' }, null, 0)
     await expect(run).rejects.toBeInstanceOf(JobBusyError)
-    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("Remembered payees are being updated")
+    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("Matching is being updated")
     expect(fetch).toHaveBeenCalledTimes(2) // never polled the other job
   })
 

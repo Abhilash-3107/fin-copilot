@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as espree from 'espree'
+import words from './bannedWords.json'
 
 // One vocabulary (design direction 8). The words below belong to the machine
 // room: a person reading the app never meets them. This reads every string a
@@ -13,37 +14,19 @@ const DEVELOPER_MODE_ONLY = [
   '../components/RunSummary.jsx',
 ]
 
-// [pattern, what to say instead]
-const BANNED = [
-  [/annotat\w*/i, 'Sort ("Sort", "Sort again", "Sorted 41 payments")'],
-  [/embedding\w*/i, 'remembered payees'],
-  [/counterpart\w*/i, 'payee'],
-  [/\bRAG\b/, 'matched from history'],
-  [/\bkNN\b/i, 'matched from history'],
-  [/pipeline/i, 'say what it does, not how'],
-  [/threshold/i, '"When to ask you"'],
-  [/\b(re-?)?categori[sz]\w*/i, 'sort / sorted'],
-  [/\bmerchants?\b/i, 'payee'],
-  [/\btxns?\b/i, 'payments'],
-  [/\bupload\w*/i, 'statement ("Add statement", "Adding...")'],
-  [/\bmemor(y|ies|iz\w*)\b/i, 'remembered payees'],
-  [/\blearn\w*/i, 'remembered payees'],
-  [/\bconfidence\b/i, 'a guess, "68% sure"'],
-  [/\bAI guess\b/i, 'a guess, "68% sure"'],
-  [/\b(your|the|my) copilot\b/i, 'you (second person)'],
-  [/\bI\b/, 'you (second person)'],  // also I'll, I'm
-  [/\bmy\b/i, 'you (second person)'],
-  [/\bfailed\b|Something went wrong/i, `"Couldn't X." then the reason`],
-]
-
-// "Transactions" is a page name and may stand alone; in running text it is "payments".
-const TRANSACTION = /\btransactions?\b/i
+// One list for the interface and the server (finance_copilot/tests/test_server_words.py):
+// [pattern, what to say instead].
+const BANNED = words.banned.map(w => [new RegExp(w.pattern, w.flags), w.use])
 
 const modules = import.meta.glob(['../**/*.{js,jsx}', '!../**/*.test.{js,jsx}', '!../test/**'], {
   query: '?raw',
   import: 'default',
   eager: true,
 })
+
+// An object of display labels, like SOURCE_LABEL in lib/sources.js: each value
+// is a word a person reads even when it is one lowercase word ('manual').
+const LABEL_MAP_NAME = /(LABEL|TITLE|NAME|COPY)S?$/
 
 const WORD_ATTRIBUTES = ['title', 'placeholder', 'aria-label', 'alt', 'aria-description', 'label']
 
@@ -53,7 +36,7 @@ export function userStrings(source) {
     ecmaVersion: 2022, sourceType: 'module', ecmaFeatures: { jsx: true }, loc: true,
   })
   const found = []
-  function visit(node, parent, key) {
+  function visit(node, parent, key, inLabelMap = false) {
     if (!node || typeof node.type !== 'string') return
     let text = null
     let isWord = false // text a person reads even when it is one lowercase word
@@ -69,6 +52,7 @@ export function userStrings(source) {
       // title="payment", count(n, 'payment'): a word by position.
       isWord = (parent?.type === 'JSXAttribute' && WORD_ATTRIBUTES.includes(parent.name.name))
         || (parent?.type === 'CallExpression' && ['count', 'plural'].includes(parent.callee.name))
+        || (inLabelMap && parent?.type === 'Property' && key === 'value')
     }
     // Otherwise a single token that is not capitalised is an identifier, a
     // route or a class name ('annotate', '/transactions', 'learned_rule'),
@@ -76,11 +60,13 @@ export function userStrings(source) {
     if (text && text.trim() && (isWord || !(/^\S+$/.test(text) && !/^[A-Z]/.test(text)))) {
       found.push({ line: node.loc.start.line, text: text.replace(/\s+/g, ' ').trim() })
     }
+    const labels = inLabelMap
+      || (node.type === 'VariableDeclarator' && LABEL_MAP_NAME.test(node.id?.name ?? '') && node.init?.type === 'ObjectExpression')
     for (const k of Object.keys(node)) {
       if (k === 'loc') continue
       const child = node[k]
-      if (Array.isArray(child)) child.forEach(c => visit(c, node, k))
-      else if (child && typeof child === 'object') visit(child, node, k)
+      if (Array.isArray(child)) child.forEach(c => visit(c, node, k, labels))
+      else if (child && typeof child === 'object') visit(child, node, k, labels)
     }
   }
   visit(ast, null, null)
@@ -89,8 +75,9 @@ export function userStrings(source) {
 
 export function problems(strings) {
   return strings.flatMap(({ line, text }) => {
+    // "Transactions" is a page name and may stand alone; in running text it is "payments".
+    if (words.wholeStringsAllowed.includes(text)) return []
     const hits = BANNED.filter(([re]) => re.test(text)).map(([re, use]) => `"${text.match(re)[0]}": use ${use}`)
-    if (TRANSACTION.test(text) && text !== 'Transactions') hits.push('"transaction": use "payment" (only the page name is "Transactions")')
     return hits.map(h => `line ${line}: ${h} in "${text.slice(0, 80)}"`)
   })
 }
@@ -113,6 +100,20 @@ describe('user-facing vocabulary', () => {
     `))
     expect(bad.length).toBeGreaterThanOrEqual(4)
     expect(problems(userStrings(`const ok = { source: 'annotate', url: '/annotations/jobs', name: 'Transactions' }`))).toEqual([])
+  })
+
+  it('reads the single lowercase words in a label map', () => {
+    const bad = problems(userStrings(`
+      const SOURCE_LABEL = { rag: 'annotated', manual: 'manual' }
+      const route = { source: 'annotate' }
+    `))
+    expect(bad).toHaveLength(1)
+    expect(bad[0]).toContain('annotat')
+  })
+
+  it('flags first person ("I\'ll", "my") in text', () => {
+    const bad = problems(userStrings(`const a = <p>I'll remember that</p>; const b = 'My best guess'`))
+    expect(bad).toHaveLength(2)
   })
 
   it('finds the sources it is meant to check', () => {

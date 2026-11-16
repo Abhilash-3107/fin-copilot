@@ -40,6 +40,7 @@ describe('Settings', () => {
     mockApi.get.mockImplementation(path => {
       if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
       if (path === '/annotations/learned-rules') return Promise.resolve([])
+      if (path === '/embeddings/coverage') return Promise.resolve({ ready: 36, total: 44, unavailable: null })
       if (path === '/config/llm') return Promise.resolve({ llm_provider: 'ollama', ollama_url: 'http://localhost:11434', ollama_model: 'qwen3.5:4b', llm_base_url: '', llm_model: '', llm_api_key_set: false })
       return Promise.resolve([])
     })
@@ -66,6 +67,14 @@ describe('Settings', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=teach')
   })
 
+  it('words the slider and the unsaved hint for a person, with no preview outside developer mode', async () => {
+    renderSettings('/settings?tab=teach')
+    const slider = await screen.findByRole('slider', { name: 'Ask you about guesses less sure than this' })
+    fireEvent.change(slider, { target: { value: '0.7' } })
+    expect(screen.getByText('Not saved yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/Preview below/)).not.toBeInTheDocument()
+  })
+
   it('still opens the tab from an old ?tab=insights link, and rewrites the address', async () => {
     renderSettings('/settings?tab=insights')
     expect(await screen.findByText('When to ask you')).toBeInTheDocument()
@@ -79,10 +88,10 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('AI model')).toBeInTheDocument())
     // The machinery sits behind Advanced: Ollama is only the AI provider until it opens.
     expect(screen.getAllByText('Ollama')).toHaveLength(1)
-    expect(screen.queryByText('Remembered payees')).not.toBeInTheDocument()
+    expect(screen.queryByText('Matching similar payments')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-    expect(await screen.findByText('Remembered payees')).toBeInTheDocument()
-    await screen.findByText(/Nothing is remembered yet/)
+    expect(await screen.findByText('Matching similar payments')).toBeInTheDocument()
+    await screen.findByText('36 of 44 payments ready to match')
     // "Ollama" now also appears as the matching provider.
     expect(screen.getAllByText('Ollama')).toHaveLength(2)
     expect(screen.getByRole('button', { name: /Test connection/ })).toBeInTheDocument()
@@ -105,6 +114,10 @@ describe('Settings', () => {
     fireEvent.click(screen.getByRole('button', { name: /Rules/ }))
     await waitFor(() => expect(screen.getByText('Ravi Kumar')).toBeInTheDocument())
     expect(screen.getAllByText('money in')).toHaveLength(1)
+    // One name for this list, and the count reads as a sentence.
+    expect(screen.getByRole('heading', { name: 'Remembered payees' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Sorted this way' })).toBeInTheDocument()
+    expect(screen.getAllByText('3 of 3 times')).toHaveLength(2)
     expect(screen.getByText('Practo')).toBeInTheDocument()
     expect(screen.queryByText('RAVI KUMAR')).not.toBeInTheDocument()
     expect(screen.queryByText('PRACTO TECHNOLO')).not.toBeInTheDocument()
@@ -175,11 +188,11 @@ describe('Settings when the API fails', () => {
     expect(text).toContain("Couldn't load your rules.")
     expect(text).toContain("Couldn't load your policies.")
     expect(text).toContain("Couldn't load your remembered payees.")
-    expect(screen.queryByText(/No payees yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No remembered payees yet/)).not.toBeInTheDocument()
     expect(screen.queryByText(/No policies yet/)).not.toBeInTheDocument()
     failing = false
     for (const retry of screen.getAllByRole('button', { name: 'Retry' })) fireEvent.click(retry)
-    expect(await screen.findByText(/No payees yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/No remembered payees yet/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

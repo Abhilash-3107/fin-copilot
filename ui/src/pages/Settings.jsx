@@ -63,7 +63,7 @@ function RememberedPayees() {
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Payees sorted on their own</h2>
+      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Remembered payees</h2>
       <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
         When you sort a payee the same way enough times, Finance Copilot sorts its
         payments for you, no AI needed. This list follows your sorting: sort a payee
@@ -78,16 +78,16 @@ function RememberedPayees() {
           <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading…</p>
         ) : rules.length === 0 ? (
           <p className="px-5 py-4 text-sm text-[#94a3b8]">
-            No payees yet. As you sort payments in Teach Me, payees you sort the same way
-            again and again will show up here.
+            No remembered payees yet. As you sort payments in Teach Me, payees you sort
+            the same way again and again will show up here.
           </p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-[#94a3b8] border-b border-[#2d3148]">
                 <th className="font-medium px-5 py-2.5">Payee</th>
-                <th className="font-medium px-5 py-2.5">Sorted as</th>
-                <th className="font-medium px-5 py-2.5 text-right">Your sorts that agree</th>
+                <th className="font-medium px-5 py-2.5">Category</th>
+                <th className="font-medium px-5 py-2.5 text-right">Sorted this way</th>
                 <th className="font-medium px-5 py-2.5 w-10"><span className="sr-only">Remove</span></th>
               </tr>
             </thead>
@@ -110,7 +110,7 @@ function RememberedPayees() {
                     {r.subcategory && <span className="text-[#94a3b8]"> › {r.subcategory}</span>}
                   </td>
                   <td className="px-5 py-3 text-right text-[#94a3b8] tabular-nums whitespace-nowrap">
-                    {r.support} of {r.total}
+                    {r.support} of {r.total} {r.total === 1 ? 'time' : 'times'}
                   </td>
                   <td className="px-2 py-3 text-right">
                     <button
@@ -171,7 +171,7 @@ function WhenToAskYou({ devMode, threshold, onSave }) {
               min="0.5" max="0.99" step="0.01"
               value={value}
               onChange={e => setValue(parseFloat(e.target.value))}
-              aria-label="Ask me below this sureness"
+              aria-label="Ask you about guesses less sure than this"
               className="flex-1 accent-[#6366f1]"
             />
             <span className="w-24 text-right tabular-nums text-lg font-semibold text-[#e2e8f0]">
@@ -187,7 +187,7 @@ function WhenToAskYou({ devMode, threshold, onSave }) {
           </div>
           {dirty && (
             <p className="text-[11px] text-[#f59e0b] mt-2">
-              Preview below reflects {Math.round(value * 100)}% - not saved yet.
+              {devMode ? `Preview below reflects ${Math.round(value * 100)}% - not saved yet.` : 'Not saved yet.'}
             </p>
           )}
         </div>

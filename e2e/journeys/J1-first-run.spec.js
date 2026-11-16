@@ -1,6 +1,13 @@
 // J1 - First run, load demo data.
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { test, expect } from '../fixtures.js'
 import { figureNear, open, openSettingsTab } from '../lib/ui.js'
+
+// The words no screen may use: the list the UI and the server guards read too.
+const WORDS = JSON.parse(readFileSync(fileURLToPath(new URL('../../ui/src/lib/bannedWords.json', import.meta.url)), 'utf8'))
+const BANNED = WORDS.banned.map((w) => [new RegExp(w.pattern, w.flags), w.use])
+const machineWords = (line) => (WORDS.wholeStringsAllowed.includes(line.trim()) ? [] : BANNED.filter(([re]) => re.test(line)).map(([re]) => line.match(re)[0]))
 
 test.describe('J1 first run', () => {
   test('a fresh app offers to load demo data', async ({ page }) => {
@@ -107,9 +114,8 @@ test.describe('J1 first run', () => {
   // One vocabulary: outside developer mode no screen speaks the machine room's
   // words. This reads what a person can see or hear on every screen, tooltips
   // and labels included, which the source guard cannot see for text the server sends.
-  test('no screen speaks the machine room\'s words', async ({ page, app }) => {
+  test('no screen speaks the machine room\'s words', async ({ page, app, tolerate }) => {
     await app.loadDemo()
-    const banned = /annotat|\b(re-?)?categori[sz]|counterpart|embedding|\bRAG\b|\bkNN\b|pipeline|threshold|\bmerchants?\b|\btxns?\b|\buploa|\bmemory\b|\blearn|\bconfidence\b|your copilot|\bI'll\b/i
     const spoken = () => page.evaluate(() => {
       const text = [document.body.innerText]
       for (const el of document.querySelectorAll('[title],[aria-label],[placeholder],[alt]')) {
@@ -120,7 +126,7 @@ test.describe('J1 first run', () => {
     const seen = {}
     const check = async (where) => {
       await page.waitForLoadState('networkidle')
-      const found = (await spoken()).split('\n').filter((line) => banned.test(line))
+      const found = (await spoken()).split('\n').filter((line) => machineWords(line).length)
       if (found.length) seen[where] = found.slice(0, 3)
     }
 
@@ -138,6 +144,35 @@ test.describe('J1 first run', () => {
       if (tab === 'AI & Model') await page.getByRole('button', { name: 'Advanced' }).click()
       await check(`Settings > ${tab}`)
     }
+
+    // A toast: turning developer mode on says so, then off again.
+    await openSettingsTab(page, 'General')
+    const developer = page.getByRole('switch')
+    await developer.click()
+    await expect(page.getByText('Developer mode on')).toBeVisible()
+    await check('a toast')
+    await developer.click()
+    await expect(page.getByText('Developer mode off')).toBeVisible()
+
+    // The statement menu and a dialog it opens.
+    await open(page, '/upload')
+    await page.getByRole('button', { name: /^More for / }).first().click()
+    await expect(page.getByRole('menu')).toBeVisible()
+    await check('the statement menu')
+    await page.getByRole('menuitem', { name: 'Start over' }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await check('a dialog')
+    await page.getByRole('button', { name: 'Cancel' }).click()
+
+    // An error state: the accuracy block when its request fails.
+    tolerate(/\/api\/annotations\/accuracy/, 503)
+    await page.route(/\/api\/annotations\/accuracy/, (route) => route.fulfill({
+      status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'down for the test' }),
+    }))
+    await open(page, '/dashboard')
+    await expect(page.getByRole('alert').filter({ hasText: "Couldn't load the accuracy figures." })).toBeVisible()
+    await check('an error state')
+
     expect(seen, 'lines that use a word from the machine room').toEqual({})
   })
 
@@ -149,11 +184,30 @@ test.describe('J1 first run', () => {
     await openSettingsTab(page, 'AI & Model')
     // Plain status first, in the app's own words.
     await expect(page.getByRole('status').filter({ hasText: /Sorting uses/ })).toContainText(/through Ollama on your computer/)
-    await expect(page.getByRole('heading', { name: 'Remembered payees' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Matching similar payments' })).toHaveCount(0)
     const advanced = page.getByRole('button', { name: 'Advanced' })
     await expect(advanced).toHaveAttribute('aria-expanded', 'false')
     await advanced.click()
-    await expect(page.getByRole('heading', { name: 'Remembered payees' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Matching similar payments' })).toBeVisible()
+  })
+
+  test('Advanced says how many payments are ready to match, and Update now gets the rest ready', async ({ page, app }) => {
+    await app.loadDemo()
+    await openSettingsTab(page, 'AI & Model')
+    await page.getByRole('button', { name: 'Advanced' }).click()
+    const line = page.getByText(/\d+ of \d+ payments? ready to match/)
+    await expect(line).toBeVisible()
+    await expect(page.getByRole('button', { name: /Forget/ })).toHaveCount(0)
+
+    const { ready, total } = await app.api.get('/embeddings/coverage')
+    const update = page.getByRole('button', { name: 'Update now' })
+    if (ready === total) {
+      await expect(update).toHaveCount(0)
+      return
+    }
+    await expect(line).toContainText(`${ready} of ${total} payments`)
+    await update.click()
+    await expect(line).toContainText(`${total} of ${total} payments ready to match`)
+    await expect(update).toHaveCount(0)
   })
 })
-

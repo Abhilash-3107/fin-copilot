@@ -3,10 +3,9 @@ import { CheckCircle2, XCircle, Loader2, Plug, ChevronDown } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import InlineError from './InlineError.jsx'
-import ConfirmDialog from './ConfirmDialog.jsx'
 import { count } from '../lib/plural.js'
-import { formatMonth } from '../lib/dates.js'
 import { couldnt } from '../lib/errors.js'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 
 const PROVIDERS = [
   { id: 'ollama', label: 'Ollama', hint: 'Models running on your computer through Ollama. Private, no key needed.' },
@@ -166,96 +165,65 @@ function AiStatus({ saved, health, localReady }) {
   )
 }
 
-// What Finance Copilot remembers from each statement, so it can sort similar
-// payments on its own. Update remembers what is missing; Forget drops what was
-// remembered from one statement (its payments and categories stay).
-function RememberedStatements() {
+// How many sorted payments are ready to match against, and the one way to get
+// the rest ready. Only sorted payments count: they are the ones that serve as
+// examples. Update now is there only when something is missing, and says why
+// when it can't run (matching off or unreachable, or a job holding the line).
+function MatchingCoverage({ health, reloadKey }) {
   const toast = useToast()
-  const [statements, setStatements] = useState(null)
+  const jobActive = !!useAnnotationJob()?.job
+  const [coverage, setCoverage] = useState(null)
   const [error, setError] = useState(null)
-  const [busy, setBusy] = useState(null)
-  const [forgetting, setForgetting] = useState(null)
+  const [busy, setBusy] = useState(false)
 
   const load = useCallback(() => {
     setError(null)
-    return api.get('/statements').then(setStatements).catch(setError)
+    return api.get('/embeddings/coverage').then(setCoverage).catch(setError)
   }, [])
-  useEffect(() => { load() }, [load])
+  // Again whenever the provider is saved or a job ends: both change the numbers.
+  useEffect(() => { load() }, [load, reloadKey, jobActive])
 
-  const name = s => `${s.bank_name} - ${formatMonth(s.statement_month)}`
-
-  async function update(s) {
-    setBusy(s.id)
+  async function update() {
+    setBusy(true)
     try {
-      const result = await api.post('/embeddings/generate', { statement_id: s.id })
-      toast(result.embedded ? `Remembered ${count(result.embedded, 'more payment')}` : 'Nothing new to remember', 'success')
-      await load()
+      const result = await api.post('/embeddings/generate', {})
+      toast(result.embedded ? `${count(result.embedded, 'more payment')} ready to match` : 'Nothing new to match', 'success')
     } catch (e) {
-      toast(couldnt('update remembered payees', e), 'error')
+      toast(couldnt('update matching', e), 'error')
     } finally {
-      setBusy(null)
+      setBusy(false)
+      await load()
     }
   }
 
-  async function forget() {
-    const s = forgetting
-    setForgetting(null)
-    setBusy(s.id)
-    try {
-      await api.delete(`/embeddings/statement/${s.id}`)
-      toast(`Forgot what was remembered from ${name(s)}`, 'info')
-      await load()
-    } catch (e) {
-      toast(couldnt('forget them', e), 'error')
-    } finally {
-      setBusy(null)
-    }
-  }
+  if (error) return <InlineError what="the matching status" error={error} onRetry={load} compact />
+  if (coverage == null) return <p className="text-xs text-[#94a3b8]">Loading…</p>
+  if (coverage.total === 0) return <p className="text-xs text-[#94a3b8]">No sorted payments to match yet. Add a statement first.</p>
 
-  if (error) return <InlineError what="your statements" error={error} onRetry={load} compact />
-  if (statements == null) return <p className="text-xs text-[#94a3b8]">Loading…</p>
-  if (statements.length === 0) return <p className="text-xs text-[#94a3b8]">Nothing is remembered yet. Add a statement first.</p>
-
+  const missing = coverage.ready < coverage.total
+  const blocked = coverage.unavailable
+    || (health?.embeddings === 'unavailable' ? "Ollama isn't reachable right now." : null)
+    || (jobActive ? 'Finance Copilot is busy sorting. Try again when it finishes.' : null)
   return (
-    <>
-      <ul className="divide-y divide-[#2d3148] rounded-lg border border-[#2d3148] bg-[#13151f]">
-        {statements.map(s => (
-          <li key={s.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-sm">
-            <span className="min-w-0 flex-1 text-[#e2e8f0]">{name(s)}</span>
-            <span className="text-xs tabular-nums text-[#94a3b8]">
-              {s.embedded_count} of {count(s.txn_count, 'payment')} remembered
-            </span>
-            <span className="flex items-center gap-3 text-xs">
-              <button
-                onClick={() => update(s)}
-                disabled={busy === s.id || s.embedded_count >= s.txn_count}
-                aria-label={`Update remembered payees for ${name(s)}`}
-                className="text-[#818cf8] hover:text-[#a5b4fc] disabled:opacity-40"
-              >
-                {busy === s.id ? 'Working…' : 'Update'}
-              </button>
-              <button
-                onClick={() => setForgetting(s)}
-                disabled={busy === s.id || s.embedded_count === 0}
-                aria-label={`Forget remembered payees for ${name(s)}`}
-                className="text-[#f87171] hover:opacity-80 disabled:opacity-40"
-              >
-                Forget
-              </button>
-            </span>
-          </li>
-        ))}
-      </ul>
-      <ConfirmDialog
-        open={!!forgetting}
-        danger
-        title="Forget what was remembered?"
-        description={`Finance Copilot will stop using the ${count(forgetting?.embedded_count ?? 0, 'payment')} remembered from "${forgetting ? name(forgetting) : ''}" to sort similar payments. Your payments and categories are kept. Use Update to remember them again.`}
-        confirmLabel="Forget"
-        onConfirm={forget}
-        onCancel={() => setForgetting(null)}
-      />
-    </>
+    <div>
+      <p className="text-sm tabular-nums text-[#e2e8f0]">
+        {coverage.ready} of {count(coverage.total, 'payment')} ready to match
+      </p>
+      {missing && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            onClick={update}
+            disabled={busy || !!blocked}
+            aria-describedby={blocked ? 'update-now-reason' : undefined}
+            className="rounded-md bg-[#4f46e5] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            {busy ? 'Updating…' : 'Update now'}
+          </button>
+          {blocked && <span id="update-now-reason" className="text-xs text-[#94a3b8]">{blocked}</span>}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -321,15 +289,15 @@ export default function ModelSettings() {
       setSaved(updated)
       api.get('/health').then(setHealth).catch(() => {})
       toast('AI settings saved', 'success')
-      // Matching payments a different way means everything remembered must be
-      // rebuilt before matching works again. Start it right away, in the
+      // Matching payments a different way means every payment must be
+      // matched again before matching works. Start it right away, in the
       // background; matching (not the app) is paused while it runs.
       if (updated.embedding_model_changed) {
         try {
           await api.post('/embeddings/reembed')
-          toast('Updating remembered payees in the background - matching from history resumes when it finishes', 'info', 8000)
+          toast('Updating matching in the background. Similar payments can be matched again when it finishes.', 'info', 8000)
         } catch (e) {
-          toast(couldnt('start updating remembered payees', e), 'error')
+          toast(couldnt('start updating matching', e), 'error')
         }
       }
       return true
@@ -453,10 +421,10 @@ export default function ModelSettings() {
         {advanced && (
           <div id="advanced-model-settings" className="space-y-5 border-t border-[#2d3148] px-4 py-4">
             <div>
-              <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Remembered payees</h2>
+              <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Matching similar payments</h2>
               <p className="text-xs text-[#94a3b8] leading-relaxed">
-                Finance Copilot remembers how you sorted past payments, so it can sort
-                similar ones on its own. All of it stays on your computer.
+                Finance Copilot compares a new payment with ones you already sorted, so it
+                can sort similar ones on its own. All of it stays on your computer.
               </p>
             </div>
 
@@ -476,8 +444,8 @@ export default function ModelSettings() {
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">How payments are matched</h3>
               <p className="text-xs text-[#94a3b8] mb-2 leading-relaxed">
-                Changing this rebuilds what is remembered. It runs in the background and
-                matching pauses until it's done.
+                Changing this updates matching for every payment. It runs in the background
+                and matching pauses until it's done.
               </p>
               <div className="space-y-2">
                 {MATCH_PROVIDERS.map(p => {
@@ -516,8 +484,8 @@ export default function ModelSettings() {
             </div>
 
             <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">By statement</h3>
-              <RememberedStatements />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">Ready to match</h3>
+              <MatchingCoverage health={health} reloadKey={saved?.embedding_provider} />
             </div>
           </div>
         )}

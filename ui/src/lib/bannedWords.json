@@ -22,7 +22,7 @@
     { "pattern": "\\bmy\\b", "flags": "i", "use": "you (second person)" },
     { "pattern": "\\bfailed\\b|Something went wrong", "flags": "i", "use": "\"Couldn't X.\" then the reason" },
     { "pattern": "\\btransactions?\\b", "flags": "i", "use": "payment (only the page name is \"Transactions\")" },
-    { "pattern": "\\bannotation\\b|\\bPATCH\\b|\\bworker\\b|\\bstale\\b|\\bExceptions?\\b|\\bprovider\\b", "flags": "i", "use": "plain words for what happened" },
+    { "pattern": "\\bworker\\b|\\bstale\\b|\\bExceptions?\\b", "flags": "i", "use": "plain words for what happened" },
     { "pattern": "\\bReset\\b", "flags": "", "use": "Start over" }
   ]
 }

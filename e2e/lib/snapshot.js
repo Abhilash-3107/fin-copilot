@@ -12,7 +12,6 @@
 export const VOLATILE = [
   'updated_at', // rewritten whenever a row is edited
   'annotated_at', // rewritten whenever a row is re-annotated
-  'embedded_count', // the vector store is rebuilt on demand
   'stats', // per-person totals are computed from transactions
   'summary', // per-group totals are computed from members
   'settle_up', // who owes whom is computed from members; derivedFigures() reads it

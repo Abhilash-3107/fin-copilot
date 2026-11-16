@@ -275,7 +275,7 @@ def _stories(led: Ledger, months: list[tuple[int, int]]) -> None:
     led.groups.append({
         "id": "demo_grp_goa",
         "name": "Goa trip with Rahul & Neha",
-        "note": "Long weekend in Goa; I paid, both settled their shares.",
+        "note": "Long weekend in Goa; you paid, both settled their shares.",
         "members": [
             (flight, "split", friends),
             (hotel, "split", friends),

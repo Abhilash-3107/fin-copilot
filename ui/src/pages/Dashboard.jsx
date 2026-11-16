@@ -423,8 +423,8 @@ function AccuracyCard({ rows, error, onRetry }) {
         <InlineError what="the accuracy figures" error={error} onRetry={onRetry} className="m-3" />
       ) : weak.length === 0 ? (
         <p className="px-4 py-4 text-sm text-[#94a3b8] leading-relaxed">
-          Not enough corrections yet to spot weak categories. Verify a few in Teach Me
-          and the shakiest ones will surface here.
+          Not enough answers yet to spot weak categories. Answer a few in Teach Me
+          and the ones that need your help most will show up here.
         </p>
       ) : (
         <ul className="px-4 py-2">
@@ -446,7 +446,7 @@ function AccuracyCard({ rows, error, onRetry }) {
                   </span>
                   <span className="text-right tabular-nums text-[#94a3b8]">
                     {pct}%
-                    <span className="block text-[10px] text-[#94a3b8]">n={r.reviewed}</span>
+                    <span className="block text-[10px] text-[#94a3b8]">{count(r.reviewed, 'answer')}</span>
                   </span>
                 </Link>
               </li>

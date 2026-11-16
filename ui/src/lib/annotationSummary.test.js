@@ -30,11 +30,11 @@ describe('annotationSummary', () => {
     expect(summaryDuration(s)).toBe(9000)
   })
 
-  it('notes when matching from history dropped out mid-run, without the raw error', () => {
+  it('notes when matching similar payments dropped out mid-run, without the raw error', () => {
     const s = annotationSummary({ ...base, embed_error: 'ReadTimeout: hung' })
     expect(s.type).toBe('info')
     expect(s.message).toBe(
-      'Sorted 11 payments: 4 by rules, 3 from history, 4 by AI. Matching from history was unavailable for part of this run.'
+      'Sorted 11 payments: 4 by rules, 3 from history, 4 by AI. Matching similar payments was unavailable for part of this run.'
     )
     expect(s.message).not.toContain('ReadTimeout')
   })

@@ -16,7 +16,7 @@ export default function DemoBanner() {
     return (
       <div className={strip}>
         <Sparkles size={13} className="shrink-0 text-[#818cf8]" />
-        <span>Sample data. Yours never comes here - this demo can't take statements.</span>
+        <span>Sample data. You can't add your own statements to this demo.</span>
         <a
           href="https://github.com/Abhilash-3107/fin-copilot#finance-copilot"
           target="_blank"

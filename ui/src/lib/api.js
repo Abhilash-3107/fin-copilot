@@ -135,7 +135,7 @@ export class JobBusyError extends Error {
   constructor(kind) {
     const what = {
       annotate: 'Another sort is already running',
-      reembed: 'Remembered payees are being updated',
+      reembed: 'Matching is being updated',
       model_download: 'A model download is in progress',
     }[kind] ?? 'Another background job is running'
     super(`${what} - try again when it finishes`)

@@ -125,10 +125,10 @@ def upload_statement(
 
 @router.get("")
 def list_statements(conn: sqlite3.Connection = Depends(get_db)):
-    """List statements, each enriched with payment, sorted and embedding counts.
+    """List statements, each enriched with payment and sorted counts.
 
     Counts are computed in grouped queries (no N+1) so the UI can show sorting
-    and vector-DB coverage per statement. sorted_count means what Teach Me
+    progress per statement. sorted_count means what Teach Me
     means: payments it is not waiting on, so a guess below the review bar is
     not counted.
     """
@@ -136,11 +136,9 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         """
         SELECT
             s.*,
-            COUNT(DISTINCT t.id)              AS txn_count,
-            COUNT(DISTINCT em.transaction_id) AS embedded_count
+            COUNT(DISTINCT t.id) AS txn_count
         FROM statements s
-        LEFT JOIN transactions t   ON t.statement_id = s.id
-        LEFT JOIN embedding_meta em ON em.transaction_id = t.id
+        LEFT JOIN transactions t ON t.statement_id = s.id
         GROUP BY s.id
         ORDER BY s.uploaded_at DESC
         """

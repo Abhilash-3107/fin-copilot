@@ -37,7 +37,7 @@ export function annotationSummary(result) {
   // success, but part of the run got less help from your history (much less
   // accurate), so say so.
   if (result.embed_error) {
-    return { type: 'info', message: `${done}. Matching from history was unavailable for part of this run.` }
+    return { type: 'info', message: `${done}. Matching similar payments was unavailable for part of this run.` }
   }
   if (result.rag_prompted_error) {
     return { type: 'info', message: `${done}. The AI stopped using your past answers as examples part-way through.` }

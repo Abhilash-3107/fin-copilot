@@ -47,7 +47,7 @@ test.describe('J9 failure states', () => {
     await open(page, '/dashboard')
     await expect(alertWith(page, "Couldn't load the accuracy figures.")).toBeVisible()
     await expect(page.getByText('Needs your attention')).toBeVisible()
-    await expect(page.getByText(/Not enough corrections yet/)).toHaveCount(0)
+    await expect(page.getByText(/Not enough answers yet/)).toHaveCount(0)
 
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()

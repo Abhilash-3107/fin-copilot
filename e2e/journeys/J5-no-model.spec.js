@@ -23,6 +23,23 @@ test.describe('J5 no model connected', () => {
     await expect(page.getByRole('status').filter({ hasText: /^Sorting is using/ })).toContainText('rules and remembered payees only')
   })
 
+  test('Update now is disabled, with the reason, when matching is off', async ({ page, app }) => {
+    await app.loadDemo()
+    const { unavailable, ready, total } = await app.api.get('/embeddings/coverage')
+    expect(unavailable).toContain('turned off')
+    expect(ready, 'payments ready to match with matching off').toBeLessThan(total)
+    await openSettingsTab(page, 'AI & Model')
+    await page.getByRole('button', { name: 'Advanced' }).click()
+    const update = page.getByRole('button', { name: 'Update now' })
+    await expect(update).toBeDisabled()
+    await expect(page.getByText(/Matching similar payments is turned off/)).toBeVisible()
+    // And the server agrees: it refuses with that reason instead of failing.
+    const refused = await fetch(`${app.url}/api/embeddings/generate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    expect(refused.status).toBe(409)
+  })
+
   test.describe('after a statement is sorted without a model', () => {
     let unsorted
     test.beforeEach(async ({ app }) => {

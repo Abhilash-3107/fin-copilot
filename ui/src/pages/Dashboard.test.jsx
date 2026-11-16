@@ -649,6 +649,26 @@ describe('privacy mode', () => {
   })
 })
 
+describe('Dashboard help card', () => {
+  it('speaks of answers, not corrections or sample sizes', async () => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/accuracy'
+        ? Promise.resolve([{ category: 'Food', accuracy: 0.4, confirmed: 2, changed: 3, reviewed: 5 }])
+        : base(path)
+    ))
+    renderDashboard()
+    expect(await screen.findByText('5 answers')).toBeInTheDocument()
+    expect(screen.queryByText(/n=5/)).not.toBeInTheDocument()
+  })
+
+  it('invites you to answer a few in Teach Me when there is little to go on', async () => {
+    renderDashboard()
+    expect(await screen.findByText(/Answer a few in Teach Me/)).toBeInTheDocument()
+    expect(screen.queryByText(/corrections|Verify|shakiest/)).not.toBeInTheDocument()
+  })
+})
+
 describe('Dashboard when the API fails', () => {
   const failOn = (prefix, fixed) => {
     let failing = true
@@ -684,7 +704,7 @@ describe('Dashboard when the API fails', () => {
     failing = false
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
-    expect(screen.getByText(/Not enough corrections yet/)).toBeInTheDocument()
+    expect(screen.getByText(/Not enough answers yet/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
@@ -694,10 +714,10 @@ describe('Dashboard when the API fails', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't load the accuracy figures.")
     expect(screen.getByText('Balance over time')).toBeInTheDocument()
-    expect(screen.queryByText(/Not enough corrections yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Not enough answers yet/)).not.toBeInTheDocument()
     heal()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(await screen.findByText(/Not enough corrections yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/Not enough answers yet/)).toBeInTheDocument()
   })
 
   it('says so when the count of guesses waiting could not load', async () => {

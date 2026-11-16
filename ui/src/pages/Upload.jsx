@@ -136,6 +136,8 @@ export default function Upload() {
   const [lastResult, setLastResult] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editingName, setEditingName] = useState('')
+  // Each row's More button, to hand focus back to after a rename.
+  const moreButtons = useRef({})
   const fileRef = useRef(null)
 
   const loadStatements = useCallback(async () => {
@@ -250,7 +252,7 @@ export default function Upload() {
       loadStatements()
       refreshDemoData()
     } catch (e) {
-      toast(couldnt('reset', e), 'error')
+      toast(couldnt('start over', e), 'error')
     }
   }
 
@@ -277,9 +279,16 @@ export default function Upload() {
     setEditingName(s.bank_name)
   }
 
-  function cancelEditName() {
+  // The rename ended (saved or cancelled): the menu that started it gets focus
+  // back, so the keyboard picks up where it left off.
+  function endEditName(id) {
     setEditingId(null)
     setEditingName('')
+    moreButtons.current[id]?.focus()
+  }
+
+  function cancelEditName() {
+    endEditName(editingId)
   }
 
   async function saveEditName(id) {
@@ -287,8 +296,7 @@ export default function Upload() {
     if (!name) return
     try {
       await api.patch(`/statements/${id}`, { bank_name: name })
-      setEditingId(null)
-      setEditingName('')
+      endEditName(id)
       loadStatements()
     } catch (e) {
       toast(couldnt('rename', e), 'error')
@@ -325,14 +333,19 @@ export default function Upload() {
 
       {/* Drop zone */}
       <div
-        onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+        // While sample data is in the ledger a statement can't be added. The
+        // frame goes quiet but the words stay readable, so it can still say why.
+        aria-disabled={removable || undefined}
+        onDragOver={e => { e.preventDefault(); if (!removable) setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-        onClick={() => fileRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
-          removable ? 'pointer-events-none opacity-40' : ''
-        } ${
-          dragOver ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] hover:border-[#3d4158] hover:bg-[#13151f]'
+        onDrop={e => { if (removable) e.preventDefault(); else onDrop(e) }}
+        onClick={() => { if (!removable) fileRef.current?.click() }}
+        className={`border-2 border-dashed rounded-xl p-10 text-center transition-colors ${
+          removable
+            ? 'cursor-not-allowed border-[#1e2235]'
+            : dragOver
+              ? 'cursor-pointer border-[#6366f1] bg-[#1e2440]'
+              : 'cursor-pointer border-[#2d3148] hover:border-[#3d4158] hover:bg-[#13151f]'
         }`}
       >
         <UploadIcon size={32} className="mx-auto mb-3 text-[#94a3b8]" />
@@ -344,6 +357,7 @@ export default function Upload() {
           accept=".pdf,application/pdf"
           multiple
           onChange={onFileChange}
+          disabled={removable}
           className="hidden"
         />
       </div>
@@ -557,6 +571,7 @@ export default function Upload() {
                       </Tooltip>
                       <ActionMenu
                         label={`More for ${s.bank_name} - ${formatMonth(s.statement_month)}`}
+                        triggerRef={node => { moreButtons.current[s.id] = node }}
                         items={[
                           { label: 'Rename', onSelect: () => startEditName(s) },
                           { label: 'Start over', onSelect: () => setResetTarget(s) },
@@ -575,7 +590,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This removes every category on "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}" and the payees remembered from it. Your payments stay, and you can sort them again any time. This can't be undone.`}
+        description={`This removes every category and tag on "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}". Your payments stay, and you can sort them again any time. This can't be undone.`}
         confirmLabel="Start over"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}

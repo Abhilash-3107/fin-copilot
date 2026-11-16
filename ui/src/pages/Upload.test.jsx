@@ -24,7 +24,7 @@ vi.mock('../contexts/DemoDataContext.jsx', () => ({
 
 const stmt = {
   id: 's1', bank_name: 'kotak', statement_month: '2026-07', balance_check: null,
-  txn_count: 10, sorted_count: 2, embedded_count: 10, uploaded_at: '2026-07-01T10:00:00',
+  txn_count: 10, sorted_count: 2, uploaded_at: '2026-07-01T10:00:00',
 }
 
 const uploaded = (id, extra = {}) => ({
@@ -171,7 +171,17 @@ describe('Upload', () => {
     expect(await screen.findByText(/still has sample data/)).toBeInTheDocument()
     // One remove action per screen: the bar's. The notice only explains.
     expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
-    expect(container.querySelector('.pointer-events-none')).not.toBeNull()
+    // The dropzone is disabled for assistive tech, and its words are not dimmed
+    // (a faded line fails contrast): only the frame goes quiet.
+    const zone = screen.getByText(/Drop your bank statements here/).closest('[aria-disabled]')
+    expect(zone).toHaveAttribute('aria-disabled', 'true')
+    expect(zone.className).not.toMatch(/opacity-/)
+    expect(zone.querySelector('p').className).not.toMatch(/opacity-/)
+    const picker = container.querySelector('input[type="file"]')
+    expect(picker).toBeDisabled()
+    const open = vi.spyOn(picker, 'click')
+    fireEvent.click(zone)
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('shows no sample-data notice on a ledger without it', async () => {
@@ -211,6 +221,45 @@ describe('Upload', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
     await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
     await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
+  })
+
+  describe('renaming from the menu', () => {
+    const rename = async () => {
+      mockApi.get.mockResolvedValue([stmt])
+      renderUpload()
+      await screen.findByText('kotak')
+      fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+      return screen.getByDisplayValue('kotak')
+    }
+
+    it('returns focus to the More button after a save', async () => {
+      mockApi.patch.mockResolvedValue({})
+      const input = await rename()
+      expect(input).toHaveFocus()
+      fireEvent.change(input, { target: { value: 'HDFC' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { bank_name: 'HDFC' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'More for kotak - Jul 2026' })).toHaveFocus())
+    })
+
+    it('returns focus to the More button after Escape', async () => {
+      const input = await rename()
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(screen.getByRole('button', { name: 'More for kotak - Jul 2026' })).toHaveFocus()
+    })
+  })
+
+  it('says tags go too before starting a statement over', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.delete.mockRejectedValue(Object.assign(new Error('Start over once sorting finishes.'), { status: 409 }))
+    renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Start over' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('every category and tag on "kotak - Jul 2026"')
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
+    await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
   })
 
   it('keeps only Sort again on the row, with rename, start over and delete in a menu, and no memory controls', async () => {

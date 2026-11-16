@@ -54,7 +54,7 @@ describe('DemoBanner', () => {
   it('keeps the hosted demo message, with no remove action', async () => {
     serve({ demoMode: true, loaded: true })
     renderBanner()
-    expect(await screen.findByText(/this demo can't take statements/)).toBeInTheDocument()
+    expect(await screen.findByText(/You can't add your own statements to this demo/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
   })
 
@@ -70,7 +70,7 @@ describe('DemoBanner', () => {
       ? Promise.resolve({ demo_mode: true })
       : Promise.reject(new Error('boom'))))
     renderBanner()
-    expect(await screen.findByText(/this demo can't take statements/)).toBeInTheDocument()
+    expect(await screen.findByText(/You can't add your own statements to this demo/)).toBeInTheDocument()
   })
 
   it('still offers removal when the health read fails but the sample status loads', async () => {

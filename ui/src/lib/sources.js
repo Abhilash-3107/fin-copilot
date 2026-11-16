@@ -1,4 +1,4 @@
-// Single vocabulary for annotation sources: pill colors and display labels.
+// Single vocabulary for where a payment's category came from: pill colors and display labels.
 // Every surface (transactions table, filter dropdown, annotation panel, review
 // queue) renders sources through this module so the same source never shows
 // up under two different names.
@@ -26,12 +26,13 @@ const SOURCE_LABEL = {
   rule:         'rule',
   user_rule:    'your rule',
   policy:       'your policy',
-  manual:       'manual',
+  manual:       'you',
   imported:     'imported',
+  pending:      'not sorted',
 }
 
 export function sourceLabel(src) {
-  return SOURCE_LABEL[src] ?? src ?? 'pending'
+  return SOURCE_LABEL[src] ?? src ?? SOURCE_LABEL.pending
 }
 
 // Group raw source values that share a display label (rag_direct and

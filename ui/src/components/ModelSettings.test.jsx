@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -10,6 +10,12 @@ const noopToast = () => {}
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => noopToast,
+}))
+
+// The running job, as the app-wide tracker reports it.
+const jobState = vi.hoisted(() => ({ job: null }))
+vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
+  useAnnotationJob: () => ({ job: jobState.job }),
 }))
 
 import ModelSettings from './ModelSettings.jsx'
@@ -25,14 +31,16 @@ const CONFIG = {
 }
 
 // Every route the screen reads; a test overrides the ones it cares about.
-const serve = ({ cfg = CONFIG, health = { ollama: 'ok' }, statements = [] } = {}) =>
+const READY = { ready: 36, total: 44, unavailable: null }
+const serve = ({ cfg = CONFIG, health = { ollama: 'ok' }, coverage = READY } = {}) =>
   mockApi.get.mockImplementation(path => Promise.resolve(
-    path === '/config/llm' ? cfg : path === '/health' ? health : path === '/statements' ? statements : {}
+    path === '/config/llm' ? cfg : path === '/health' ? health : path === '/embeddings/coverage' ? coverage : {}
   ))
 
 describe('ModelSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    jobState.job = null
     serve()
   })
 
@@ -58,10 +66,10 @@ describe('ModelSettings', () => {
   })
 
   const builtinRadio = () => screen.getByText('Built-in').closest('label').querySelector('input')
-  // Opening it starts the statement list loading: wait for that, so no update lands after the test.
+  // Opening it starts the coverage loading: wait for that, so no update lands after the test.
   const openAdvanced = async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
-    await screen.findAllByText(/Nothing is remembered yet|payments? remembered/)
+    await screen.findByText(/payments? ready to match|No sorted payments/)
   }
 
   it('disables Built-in matching where the server cannot run it', async () => {
@@ -98,13 +106,15 @@ describe('ModelSettings', () => {
   it('keeps the machinery behind Advanced, in plain words', async () => {
     render(<ModelSettings />)
     await screen.findByText('AI model')
-    expect(screen.queryByText('Remembered payees')).not.toBeInTheDocument()
+    expect(screen.queryByText('Matching similar payments')).not.toBeInTheDocument()
     expect(screen.queryByText(/chat\/completions|vLLM|embedding/i)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute('aria-expanded', 'false')
     await openAdvanced()
     expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('Remembered payees')).toBeInTheDocument()
+    expect(screen.getByText('Matching similar payments')).toBeInTheDocument()
     expect(screen.getByText(/sort similar ones on its own/)).toBeInTheDocument()
+    // Remembered payees are the rules list in Settings > Rules, a different thing.
+    expect(screen.queryByText(/Remembered payees/)).not.toBeInTheDocument()
   })
 
   describe('status', () => {
@@ -134,43 +144,54 @@ describe('ModelSettings', () => {
     })
   })
 
-  describe('remembered payees by statement', () => {
-    const STATEMENTS = [
-      { id: 's1', bank_name: 'Kotak', statement_month: '2026-10', txn_count: 40, embedded_count: 25 },
-      { id: 's2', bank_name: 'Kotak', statement_month: '2026-09', txn_count: 30, embedded_count: 0 },
-    ]
-    beforeEach(() => serve({ statements: STATEMENTS }))
-
-    it('updates one statement, and only offers it where something is missing', async () => {
-      mockApi.post.mockResolvedValue({ embedded: 15 })
+  describe('ready to match', () => {
+    const open = async (opts) => {
+      serve(opts)
       render(<ModelSettings />)
       await screen.findByText('AI model')
       await openAdvanced()
-      expect(await screen.findByText('25 of 40 payments remembered')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Forget remembered payees for Kotak - Sep 2026' })).toBeDisabled()
-      fireEvent.click(screen.getByRole('button', { name: 'Update remembered payees for Kotak - Oct 2026' }))
-      await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/embeddings/generate', { statement_id: 's1' }))
+    }
+    const update = () => screen.queryByRole('button', { name: 'Update now' })
+
+    it('says how many sorted payments are ready, with one Update now when some are missing', async () => {
+      mockApi.post.mockResolvedValue({ embedded: 8 })
+      await open()
+      expect(screen.getByText('36 of 44 payments ready to match')).toBeInTheDocument()
+      expect(screen.queryByText(/Forget/)).not.toBeInTheDocument()
+      fireEvent.click(update())
+      await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/embeddings/generate', {}))
+      await waitFor(() => expect(update()).toBeEnabled())
     })
 
-    it('names what is lost before it forgets, and does nothing on Cancel', async () => {
-      render(<ModelSettings />)
-      await screen.findByText('AI model')
-      await openAdvanced()
-      fireEvent.click(await screen.findByRole('button', { name: 'Forget remembered payees for Kotak - Oct 2026' }))
-      expect(screen.getByRole('dialog')).toHaveTextContent('Your payments and categories are kept')
-      expect(screen.getByRole('dialog')).toHaveTextContent('25 payments remembered from "Kotak - Oct 2026"')
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-      expect(mockApi.delete).not.toHaveBeenCalled()
+    it('has no Update now when everything sortable is ready', async () => {
+      await open({ coverage: { ready: 44, total: 44, unavailable: null } })
+      expect(screen.getByText('44 of 44 payments ready to match')).toBeInTheDocument()
+      expect(update()).not.toBeInTheDocument()
     })
 
-    it('forgets one statement after the dialog is confirmed', async () => {
-      mockApi.delete.mockResolvedValue({ cleared: 25 })
-      render(<ModelSettings />)
-      await screen.findByText('AI model')
-      await openAdvanced()
-      fireEvent.click(await screen.findByRole('button', { name: 'Forget remembered payees for Kotak - Oct 2026' }))
-      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Forget' }))
-      await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/embeddings/statement/s1'))
+    it('is disabled with the reason when matching is off', async () => {
+      await open({ coverage: { ready: 0, total: 44, unavailable: 'Matching similar payments is turned off. Turn it on under Advanced in Settings > AI & Model.' } })
+      expect(update()).toBeDisabled()
+      expect(update()).toHaveAccessibleDescription(/turned off/)
+    })
+
+    it('is disabled with the reason when Ollama cannot be reached', async () => {
+      await open({ health: { ollama: 'unavailable', embeddings: 'unavailable', embedding_provider: 'ollama' } })
+      expect(update()).toBeDisabled()
+      expect(update()).toHaveAccessibleDescription("Ollama isn't reachable right now.")
+    })
+
+    it('is disabled while a job runs, and says why', async () => {
+      jobState.job = { id: 'j', status: 'running', kind: 'annotate' }
+      await open()
+      expect(update()).toBeDisabled()
+      expect(update()).toHaveAccessibleDescription('Finance Copilot is busy sorting. Try again when it finishes.')
+    })
+
+    it('says so when there is nothing sorted to match yet', async () => {
+      await open({ coverage: { ready: 0, total: 0, unavailable: null } })
+      expect(screen.getByText(/No sorted payments to match yet/)).toBeInTheDocument()
+      expect(update()).not.toBeInTheDocument()
     })
   })
 })

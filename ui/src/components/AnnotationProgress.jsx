@@ -4,12 +4,12 @@ import { Sparkles, ArrowRight } from 'lucide-react'
 
 // What each background job kind is doing, in the user's words, and where the
 // card leads. A re-embed (model switch, or an embed-format upgrade on launch)
-// rebuilds the remembered payees; it sorts nothing, so it must not say it does. A
+// updates how payments are matched; it sorts nothing, so it must not say it does. A
 // model download blocks sorting on this computer, so it shows here too: its
 // numbers are bytes. A kind this list has not met still gets a plain card.
 const KINDS = {
   annotate: { title: 'Sorting your payments', to: '/transactions' },
-  reembed: { title: 'Updating remembered payees', to: '/settings?tab=ai' },
+  reembed: { title: 'Updating matching', to: '/settings?tab=ai' },
   model_download: { title: 'Downloading the AI model', to: '/settings?tab=ai', bytes: true },
 }
 const UNKNOWN_KIND = { title: 'Working in the background', to: '/settings' }

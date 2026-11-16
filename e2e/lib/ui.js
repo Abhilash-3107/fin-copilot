@@ -86,8 +86,8 @@ export async function visibleSpend(page) {
 
 /**
  * Wait until a Transactions list has finished loading its rows. The Ledger's own
- * button comes first: a navigation keeps the page it left on screen until the
- * next one is ready, and that page has rows too.
+ * button comes first, so a row of another page, or of this one still loading,
+ * cannot satisfy the wait.
  */
 export async function waitForRows(page) {
   await ARRIVED['/transactions'](page).waitFor()

@@ -318,7 +318,7 @@ describe('Transactions opened for one payment', () => {
     const base = mockApi.get.getMockImplementation()
     mockApi.get.mockImplementation(path => (
       path === '/transactions/missing'
-        ? Promise.reject(Object.assign(new Error('Transaction not found'), { status: 404 }))
+        ? Promise.reject(Object.assign(new Error('Payment not found'), { status: 404 }))
         : base(path)
     ))
     renderPage(['/transactions?txn=missing'])
