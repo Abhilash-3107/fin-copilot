@@ -13,6 +13,8 @@ async function drop(page, files) {
 
 const asUpload = (name, path) => ({ name, mimeType: 'application/pdf', buffer: readFileSync(path) })
 const fileRow = (page, name) => page.getByRole('listitem').filter({ hasText: name })
+// The toast live region is also a status, so pick the drop's own summary.
+const summaryOf = (page) => page.getByRole('status').filter({ hasText: 'Finished:' })
 const statementRows = (page) => page.getByRole('row').filter({ hasText: 'generic' })
 
 test.describe('J3 add a statement', () => {
@@ -41,7 +43,7 @@ test.describe('J3 add a statement', () => {
   test('sorting starts by itself when the statement lands', async ({ page, app }) => {
     await drop(page, FIXTURE_PDF)
     // No click on anything after Upload.
-    await expect(page.getByRole('status')).toContainText(/Finished: \d+ sorted/)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
 
     // The stub, not some other model, did the work.
     const chats = app.stub.requests.filter((r) => r.path === '/api/chat')
@@ -59,7 +61,7 @@ test.describe('J3 add a statement', () => {
 
   test('the page says what happened and leads to Teach Me, where the rest waits', async ({ page, app }) => {
     await drop(page, FIXTURE_PDF)
-    const summary = page.getByRole('status')
+    const summary = summaryOf(page)
     await expect(summary).toContainText(/Finished: \d+ sorted, \d+ needs? you/)
 
     // Whatever the model was not sure about waits for the user.
@@ -78,7 +80,7 @@ test.describe('J3 add a statement', () => {
       await expect(item).toContainText(/\d+ sorted, \d+ needs? you/)
     }
     await expect(statementRows(page)).toHaveCount(2)
-    await expect(page.getByRole('status')).toContainText(/Finished: \d+ sorted/)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
 
     // Each statement was sorted by a job of its own, one at a time.
     const statements = await app.api.get('/statements')
@@ -105,7 +107,7 @@ test.describe('J3 add a statement', () => {
 
     // However long it waits, it is waiting, not abandoned.
     app.stub.release()
-    await expect(page.getByRole('status')).toContainText(/Finished: \d+ sorted/)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
     const jobs = (await app.api.get('/annotations/jobs')).reverse()
     expect(jobs.map((j) => j.status)).toEqual(['completed', 'completed'])
     // Oldest statement first, each exactly once.
@@ -120,7 +122,7 @@ test.describe('J3 add a statement', () => {
       { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('not a statement') },
       asUpload('sample_statement.pdf', FIXTURE_PDF),
     ])
-    await expect(page.getByRole('alert')).toContainText("notes.txt isn't a PDF")
+    await expect(page.getByRole('alert').filter({ hasText: 'notes.txt' })).toContainText("notes.txt isn't a PDF")
     await expect(fileRow(page, 'notes.txt')).toHaveCount(0)
 
     await page.getByRole('button', { name: 'Upload', exact: true }).click()
@@ -147,7 +149,7 @@ test.describe('J3 with no model connected', () => {
 
   test('the statement is still sorted by rules and the rest is left for you, with the way to connect a model', async ({ page, app }) => {
     await drop(page, FIXTURE_PDF)
-    const summary = page.getByRole('status')
+    const summary = summaryOf(page)
     await expect(summary).toContainText(/Finished: \d+ sorted, [1-9]\d* needs? you/)
     await expect(summary).toContainText('No model is connected')
     await expect(summary.getByRole('link', { name: /Settings › AI & Model/ })).toBeVisible()

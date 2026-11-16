@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { HashRouter } from 'react-router-dom'
 
 const { mockApi } = vi.hoisted(() => ({
@@ -81,6 +81,15 @@ describe('Upload', () => {
     fireEvent.change(input, { target: { files: [pdf()] } })
     expect(writes).toEqual(['', ''])
     expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument()
+  })
+
+  it('shows a statement\'s warnings on its own row', async () => {
+    mockApi.upload.mockResolvedValueOnce(uploaded('s1', { warnings: ['2 rows had no date and were skipped.'] }))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+    const row = (await screen.findByText('statement.pdf')).closest('li')
+    expect(await within(row).findByText('2 rows had no date and were skipped.')).toBeInTheDocument()
   })
 
   it("Sort again runs through the job flow and shows that run's result", async () => {
