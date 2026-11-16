@@ -30,6 +30,17 @@ def create_group(
     return {"id": group_id, "name": name, "note": note, "labels": labels or []}
 
 
+def find_group_by_name(
+    conn: sqlite3.Connection, name: str, exclude_id: str | None = None
+) -> dict | None:
+    """The group already called this, ignoring case and surrounding spaces."""
+    wanted = name.strip().casefold()
+    for row in conn.execute("SELECT * FROM transaction_groups"):
+        if row["id"] != exclude_id and row["name"].strip().casefold() == wanted:
+            return dict(row)
+    return None
+
+
 def get_group(conn: sqlite3.Connection, group_id: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM transaction_groups WHERE id = ?", (group_id,)

@@ -57,6 +57,26 @@ def create_person(
     return {"id": person_id, "name": name, "upi": upi, "relationship": relationship}
 
 
+def find_duplicate_person(
+    conn: sqlite3.Connection, name: str, upi: str | None, exclude_id: str | None = None
+) -> dict | None:
+    """The person who already has this name and this match-token.
+
+    Two real people can share a name, so the token tells them apart; without
+    one on either side the name alone is the identity. Case and surrounding
+    spaces are ignored.
+    """
+    def norm(value: str | None) -> str:
+        return (value or "").strip().casefold()
+
+    for row in conn.execute("SELECT * FROM people"):
+        if row["id"] == exclude_id:
+            continue
+        if norm(row["name"]) == norm(name) and norm(row["upi"]) == norm(upi):
+            return dict(row)
+    return None
+
+
 def get_person(conn: sqlite3.Connection, person_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
     return dict(row) if row else None

@@ -1954,3 +1954,92 @@ class TestStatementListSortedCount:
             r = client.post("/api/statements/upload", files={"file": ("a.pdf", b"%PDF a", "application/pdf")})
         assert r.status_code == 200
         assert spy.call_args.kwargs.get("statement_id") == r.json()["id"]
+
+
+class TestGroupNames:
+    """R2 D: a group name is unique (case and spacing ignored) and a group can be edited."""
+
+    def test_duplicate_group_is_refused_with_a_plain_message(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/groups", json={"name": "Coorg weekend"}).status_code == 201
+        for again in ("Coorg weekend", "  coorg WEEKEND ", "COORG weekend"):
+            resp = client.post("/api/groups", json={"name": again})
+            assert resp.status_code == 409
+            assert resp.json()["detail"] == 'You already have a group called "Coorg weekend".'
+        assert len(client.get("/api/groups").json()) == 1
+
+    def test_name_is_trimmed_and_cannot_be_blank(self, client_conn):
+        client, _, _ = client_conn
+        made = client.post("/api/groups", json={"name": "  Goa  "})
+        assert made.status_code == 201
+        assert made.json()["name"] == "Goa"
+        assert client.post("/api/groups", json={"name": "   "}).status_code == 422
+
+    def test_patch_renames_and_edits_note_and_labels(self, client_conn):
+        client, _, _ = client_conn
+        gid = client.post("/api/groups", json={"name": "Trip", "note": "old"}).json()["id"]
+        resp = client.patch(f"/api/groups/{gid}", json={"name": " Goa trip ", "note": "Flights split", "labels": ["travel"]})
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Goa trip"
+        assert resp.json()["note"] == "Flights split"
+        assert resp.json()["labels"] == ["travel"]
+        # A field left out stays; a blank note clears it.
+        only_note = client.patch(f"/api/groups/{gid}", json={"note": ""}).json()
+        assert only_note["note"] is None
+        assert only_note["name"] == "Goa trip"
+        assert only_note["labels"] == ["travel"]
+
+    def test_patch_cannot_take_another_groups_name(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/groups", json={"name": "Flat"})
+        gid = client.post("/api/groups", json={"name": "Trip"}).json()["id"]
+        resp = client.patch(f"/api/groups/{gid}", json={"name": "flat"})
+        assert resp.status_code == 409
+        assert client.get(f"/api/groups/{gid}").json()["name"] == "Trip"
+        # Changing only its own capitalisation is fine.
+        assert client.patch(f"/api/groups/{gid}", json={"name": "TRIP"}).status_code == 200
+        assert client.patch(f"/api/groups/{gid}", json={"name": " "}).status_code == 422
+
+    def test_patch_unknown_group_is_404(self, client_conn):
+        client, _, _ = client_conn
+        assert client.patch("/api/groups/nope", json={"name": "x"}).status_code == 404
+
+
+class TestPeopleDuplicates:
+    """R2 D: two real people can share a name, so only the same name AND the
+    same match-token (or both without one) counts as the same person."""
+
+    def test_same_name_and_handle_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"}).status_code == 201
+        resp = client.post("/api/people", json={"name": " neha gupta ", "upi": "NEHA@paytm"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == 'You already have Neha Gupta with the match "neha@paytm".'
+        assert len(client.get("/api/people").json()) == 1
+
+    def test_same_name_without_handles_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta"})
+        resp = client.post("/api/people", json={"name": "Neha Gupta"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "You already have Neha Gupta."
+
+    def test_same_name_with_a_different_handle_is_allowed(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        assert client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha.g@okaxis"}).status_code == 201
+        assert client.post("/api/people", json={"name": "Neha Gupta"}).status_code == 201
+
+    def test_blank_name_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/people", json={"name": "  "}).status_code == 422
+
+    def test_edit_cannot_turn_one_person_into_another(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        other = client.post("/api/people", json={"name": "Neha Gupta", "upi": "n2@okaxis"}).json()["id"]
+        clash = client.patch(f"/api/people/{other}", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        assert clash.status_code == 409
+        # Saving a person unchanged, or changing only the relationship, is fine.
+        ok = client.patch(f"/api/people/{other}", json={"name": "Neha Gupta", "upi": "n2@okaxis", "relationship": "friend"})
+        assert ok.status_code == 200

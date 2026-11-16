@@ -13,6 +13,7 @@ from finance_copilot.db.queries.groups import (
     create_group,
     delete_group,
     empty_summary,
+    find_group_by_name,
     get_group,
     list_groups_for_transaction,
     list_members_for_group,
@@ -49,9 +50,23 @@ class MemberPatch(BaseModel):
     role: ROLES | None = None
 
 
+def _clean_group_name(conn: sqlite3.Connection, name: str, exclude_id: str | None = None) -> str:
+    """Trim the name, and refuse a blank one or one another group already has."""
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the group a name.")
+    clash = find_group_by_name(conn, name, exclude_id)
+    if clash:
+        raise HTTPException(
+            status_code=409, detail=f'You already have a group called "{clash["name"]}".'
+        )
+    return name
+
+
 @router.post("", status_code=201)
 def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
-    group = create_group(conn, body.name, body.note, body.labels or None)
+    name = _clean_group_name(conn, body.name)
+    group = create_group(conn, name, (body.note or "").strip() or None, body.labels or None)
     conn.commit()
     return group
 
@@ -81,6 +96,9 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 
 class GroupPatch(BaseModel):
+    """Every field is optional; one that is left out stays as it is."""
+    name: str | None = None
+    note: str | None = None
     labels: list[str] | None = None
 
 
@@ -88,6 +106,16 @@ class GroupPatch(BaseModel):
 def patch(group_id: str, body: GroupPatch, conn: sqlite3.Connection = Depends(get_db)):
     if not get_group(conn, group_id):
         raise HTTPException(status_code=404, detail="Group not found")
+    if body.name is not None:
+        conn.execute(
+            "UPDATE transaction_groups SET name = ? WHERE id = ?",
+            (_clean_group_name(conn, body.name, exclude_id=group_id), group_id),
+        )
+    if "note" in body.model_fields_set:
+        conn.execute(
+            "UPDATE transaction_groups SET note = ? WHERE id = ?",
+            ((body.note or "").strip() or None, group_id),
+        )
     if body.labels is not None:
         from finance_copilot.db.queries.common import dump_string_list
 
@@ -95,7 +123,7 @@ def patch(group_id: str, body: GroupPatch, conn: sqlite3.Connection = Depends(ge
             "UPDATE transaction_groups SET labels = ? WHERE id = ?",
             (dump_string_list(body.labels) if body.labels else None, group_id),
         )
-        conn.commit()
+    conn.commit()
     return get_group(conn, group_id)
 
 

@@ -10,6 +10,8 @@ from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.people import (
     create_person,
     delete_person,
+    find_duplicate_person,
+    get_person,
     list_people,
     people_transaction_stats,
     search_people,
@@ -31,6 +33,23 @@ def _validate_match_token(upi: str | None) -> None:
         )
 
 
+def _clean_person(conn: sqlite3.Connection, name: str, upi: str | None, exclude_id: str | None = None):
+    """Trim the name and token, and refuse a second copy of the same person."""
+    name = name.strip()
+    upi = (upi or "").strip() or None
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the person a name.")
+    _validate_match_token(upi)
+    clash = find_duplicate_person(conn, name, upi, exclude_id)
+    if clash:
+        have = f"You already have {clash['name']}"
+        raise HTTPException(
+            status_code=409,
+            detail=f'{have} with the match "{clash["upi"]}".' if clash["upi"] else f"{have}.",
+        )
+    return name, upi
+
+
 class PersonCreate(BaseModel):
     name: str
     upi: str | None = None
@@ -39,8 +58,8 @@ class PersonCreate(BaseModel):
 
 @router.post("", status_code=201)
 def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
-    _validate_match_token(body.upi)
-    person = create_person(conn, body.name, body.upi, body.relationship or None)
+    name, upi = _clean_person(conn, body.name, body.upi)
+    person = create_person(conn, name, upi, body.relationship or None)
     conn.commit()
     return person
 
@@ -65,10 +84,10 @@ class PersonUpdate(BaseModel):
 
 @router.patch("/{person_id}")
 def update(person_id: str, body: PersonUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    _validate_match_token(body.upi)
-    person = update_person(conn, person_id, body.name, body.upi or None, body.relationship or None)
-    if not person:
+    if not get_person(conn, person_id):
         raise HTTPException(status_code=404, detail="Person not found")
+    name, upi = _clean_person(conn, body.name, body.upi, exclude_id=person_id)
+    person = update_person(conn, person_id, name, upi, body.relationship or None)
     conn.commit()
     return person
 
