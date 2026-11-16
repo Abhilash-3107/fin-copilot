@@ -264,6 +264,25 @@ def queue_counts(conn: sqlite3.Connection, threshold: float) -> dict:
     return {key: row[key] for key in ("unsorted", "guesses", "set_aside", "set_aside_unsorted")}
 
 
+def sorted_counts_by_statement(conn: sqlite3.Connection, threshold: float) -> dict[str, int]:
+    """Per statement, how many payments count as sorted: the ones Teach Me is
+    not waiting on. The complement of _queue_condition, so "sorted" means the
+    same thing here as on the review queue - a guess below the review bar and a
+    payment with no real category are not sorted, and a skipped payment is
+    exactly as sorted as it was before it was skipped."""
+    condition, params = _queue_condition(threshold)
+    rows = conn.execute(
+        f"""
+        SELECT t.statement_id, COALESCE(SUM(NOT {condition}), 0) AS n
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        GROUP BY t.statement_id
+        """,
+        params,
+    ).fetchall()
+    return {row["statement_id"]: row["n"] for row in rows}
+
+
 def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
     """How many payments are set aside: snoozed and would otherwise be queued."""
     return queue_counts(conn, threshold)["set_aside"]

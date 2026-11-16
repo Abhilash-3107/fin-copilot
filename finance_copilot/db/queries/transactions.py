@@ -26,7 +26,7 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
 
 
 def statement_balance_checks(
-    conn: sqlite3.Connection, tolerance: float = 0.01
+    conn: sqlite3.Connection, tolerance: float = 0.01, statement_id: str | None = None
 ) -> dict[str, dict]:
     """Per-statement running-balance reconciliation, keyed by statement_id.
 
@@ -38,6 +38,7 @@ def statement_balance_checks(
     Returns {statement_id: {"checked": int, "consistent": int, "balanced": bool}}.
     A statement with no balance chain (checked == 0) is reported balanced=True
     (nothing to contradict), so the UI shows a check only when checked > 0.
+    With statement_id, only that statement is computed.
     """
     rows = conn.execute(
         """
@@ -51,7 +52,7 @@ def statement_balance_checks(
                     PARTITION BY statement_id ORDER BY rowid
                 ) AS prev_balance
             FROM transactions
-            WHERE running_balance IS NOT NULL
+            WHERE running_balance IS NOT NULL AND (? IS NULL OR statement_id = ?)
         )
         SELECT
             statement_id,
@@ -66,7 +67,7 @@ def statement_balance_checks(
         WHERE prev_balance IS NOT NULL AND debit_credit IS NOT NULL
         GROUP BY statement_id
         """,
-        (tolerance,),
+        (statement_id, statement_id, tolerance),
     ).fetchall()
     out: dict[str, dict] = {}
     for r in rows:

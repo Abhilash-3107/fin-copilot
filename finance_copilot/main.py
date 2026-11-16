@@ -60,7 +60,15 @@ async def lifespan(app: FastAPI):
         reconcile_database(conn)
     finally:
         conn.close()
-    yield
+    # Sorting jobs wait in the database; this one thread runs them in turn,
+    # starting with any a previous run left queued.
+    from finance_copilot.api.routes.annotations import runner
+
+    runner.start()
+    try:
+        yield
+    finally:
+        runner.stop()
 
 
 app = FastAPI(title="Finance Copilot", lifespan=lifespan)

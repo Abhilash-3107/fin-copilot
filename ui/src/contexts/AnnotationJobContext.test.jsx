@@ -72,4 +72,22 @@ describe('AnnotationJobProvider', () => {
     await act(async () => { finish.b({}) })
     await waitFor(() => expect(result.current.job).toBeNull())
   })
+  it('keeps the card for a queued upload job after a manual run ends', async () => {
+    let finish
+    api.runAnnotationJob.mockImplementation(() => new Promise(r => { finish = r }))
+    // The mount check finds nothing; once the manual run ends, an upload's job is waiting.
+    api.getActiveAnnotationJob
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'q', status: 'queued', kind: 'annotate' })
+      .mockResolvedValue(null)
+    api.pollAnnotationJob.mockReturnValue(new Promise(() => {}))
+    const { result } = renderHook(() => useAnnotationJob(), { wrapper })
+    await waitFor(() => expect(api.getActiveAnnotationJob).toHaveBeenCalledTimes(1))
+
+    let run
+    act(() => { run = result.current.startAnnotation({ statement_id: 's1' }) })
+    await act(async () => { finish({ total_processed: 1 }); await run })
+
+    await waitFor(() => expect(result.current.job?.id).toBe('q'))
+  })
 })

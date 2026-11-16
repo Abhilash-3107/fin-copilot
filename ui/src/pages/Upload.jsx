@@ -150,15 +150,16 @@ export default function Upload() {
     setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
   }, [])
 
-  // Take the PDFs, say which of the others were left out. Files from an earlier
-  // drop that are already in and sorted make way for the new ones.
+  // Take the PDFs, say which of the others were left out. Only files that are
+  // finished and sorted make way for the new ones: a file still being read or
+  // sorted belongs to a drop in progress and must stay on the page.
   function addFiles(files) {
     const picked = Array.from(files)
     const pdfs = picked.filter(isPdf)
     setRefused(picked.filter(f => !isPdf(f)).map(f => `${f.name} isn't a PDF. Only PDF statements can be added.`))
     if (pdfs.length === 0) return
     setEntries(list => [
-      ...list.filter(e => ['ready', 'failed'].includes(e.status)),
+      ...list.filter(e => e.status !== 'sorted'),
       ...pdfs.map(file => ({ id: nextId.current++, file, status: 'ready' })),
     ])
   }
@@ -373,8 +374,9 @@ export default function Upload() {
           </li>
           <li>Password-protected PDFs work: enter the password after you choose the file.</li>
           <li>
-            The file and everything in it stay on this computer, unless you connect an online
-            AI model in Settings.
+            Your statement stays on this computer. If you connect an online AI model in Settings,
+            each payment&apos;s date, amount, direction and description are sent to it for sorting,
+            along with a few similar payments you have already sorted.
           </li>
           <li>
             What happens next: the balance is checked, then sorting starts by itself. Whatever
@@ -549,8 +551,8 @@ export default function Upload() {
                     <BalancedBadge check={s.balance_check} />
                   </td>
                   <td className="px-4 py-3">
-                    <Tooltip content="Payments that have been sorted">
-                      <CoverageBadge done={s.annotated_count} total={s.txn_count} />
+                    <Tooltip content="Payments sorted with enough confidence. The rest are waiting for you in Teach Me.">
+                      <CoverageBadge done={s.sorted_count} total={s.txn_count} />
                     </Tooltip>
                   </td>
                   <td className="px-4 py-3">

@@ -21,7 +21,7 @@ test.describe('J3 add a statement', () => {
     await expect(page.getByText(/Works with Kotak statements/)).toBeVisible()
     await expect(page.getByText(/running-balance column/)).toBeVisible()
     await expect(page.getByText(/Password-protected PDFs work/)).toBeVisible()
-    await expect(page.getByText(/stay on this computer/)).toBeVisible()
+    await expect(page.getByText(/Your statement stays on this computer/)).toBeVisible()
     await expect(page.getByText(/sorting starts by itself/)).toBeVisible()
   })
 
@@ -41,7 +41,7 @@ test.describe('J3 add a statement', () => {
   test('sorting starts by itself when the statement lands', async ({ page, app }) => {
     await drop(page, FIXTURE_PDF)
     // No click on anything after Upload.
-    await expect(statementRows(page)).toContainText('Full')
+    await expect(page.getByRole('status')).toContainText(/Finished: \d+ sorted/)
 
     // The stub, not some other model, did the work.
     const chats = app.stub.requests.filter((r) => r.path === '/api/chat')
@@ -49,6 +49,12 @@ test.describe('J3 add a statement', () => {
     const [job] = await app.api.get('/annotations/jobs')
     expect(job.status).toBe('completed')
     expect(job.result.ai_active, 'the run reports the model as active').toBe(true)
+
+    // The table counts "sorted" the way Teach Me does: what it is not waiting on.
+    const [statement] = await app.api.get('/statements')
+    const queue = await app.api.get('/annotations/review-queue')
+    expect(statement.sorted_count + queue.length).toBe(statement.txn_count)
+    await expect(statementRows(page)).toContainText(`${statement.sorted_count}/${statement.txn_count}`)
   })
 
   test('the page says what happened and leads to Teach Me, where the rest waits', async ({ page, app }) => {
@@ -80,8 +86,32 @@ test.describe('J3 add a statement', () => {
     for (const statement of statements) {
       const job = jobs.find((j) => j.statement_id === statement.id)
       expect(job?.status, `the job for ${statement.statement_month}`).toBe('completed')
-      expect(statement.annotated_count).toBe(statement.txn_count - job.result.llm_failed)
+      // "Sorted" in the table is what Teach Me is not waiting on.
+      expect(statement.sorted_count).toBeLessThanOrEqual(statement.txn_count - job.result.llm_failed)
     }
+  })
+
+  test('a statement dropped while another is being sorted waits its turn, is not reaped, and then runs', async ({ page, app }) => {
+    app.stub.hold()
+    await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
+    const first = fileRow(page, 'sample_statement.pdf')
+    const second = fileRow(page, 'sample_statement_nov.pdf')
+
+    // The first job is stuck on the model; the second waits in line behind it.
+    await expect(second).toContainText('Waiting to sort')
+    await expect(first).toContainText(/Sorting \d+ of \d+|Sorting/)
+    const active = await app.api.get('/annotations/jobs?active=1')
+    expect(active.map((j) => j.status)).toEqual(['running', 'queued'])
+
+    // However long it waits, it is waiting, not abandoned.
+    app.stub.release()
+    await expect(page.getByRole('status')).toContainText(/Finished: \d+ sorted/)
+    const jobs = (await app.api.get('/annotations/jobs')).reverse()
+    expect(jobs.map((j) => j.status)).toEqual(['completed', 'completed'])
+    // Oldest statement first, each exactly once.
+    const statements = await app.api.get('/statements')
+    const month = (id) => statements.find((s) => s.id === id).statement_month
+    expect(jobs.map((j) => month(j.statement_id))).toEqual(['2026-10', '2026-11'])
   })
 
   test('a file that is not a PDF is refused up front and the PDF beside it still goes in', async ({ page, app }) => {

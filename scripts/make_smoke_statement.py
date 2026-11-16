@@ -17,10 +17,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reportlab import rl_config
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+# Without this reportlab stamps the creation time and a random document id into
+# every PDF, so each regeneration changed the committed bytes.
+rl_config.invariant = 1
 
 FIXTURES = Path(__file__).resolve().parent.parent / "finance_copilot" / "tests" / "fixtures"
 

@@ -1253,16 +1253,17 @@ class TestAnnotationJobs:
         assert zombie["status"] == "failed"
         assert "stale" in zombie["error"]
 
-    def test_startup_reaps_orphaned_jobs(self, file_db_client):
+    def test_startup_fails_what_was_running_and_keeps_what_was_waiting(self, file_db_client):
         """Restarting the server fails any job the previous process left
-        in-flight, even a fresh one - a single-process app can't have live
-        jobs at boot."""
+        running, even a fresh one - a single-process app can't have live jobs at
+        boot. A queued sorting job never started: it stays for the runner. A
+        queued re-embed or download lost its thread, so it fails."""
         from finance_copilot.api.routes.annotations import reap_interrupted_jobs
-        from finance_copilot.main import app
 
         client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q1','queued')")
         conn.execute("INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('r1','running',10,4)")
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('qe','queued','reembed')")
         conn.commit()
 
         assert reap_interrupted_jobs(conn) == 2
@@ -1270,15 +1271,31 @@ class TestAnnotationJobs:
             row["id"]: row["status"]
             for row in conn.execute("SELECT id, status FROM annotation_jobs").fetchall()
         }
-        assert statuses == {"q1": "failed", "r1": "failed"}
+        assert statuses == {"q1": "queued", "r1": "failed", "qe": "failed"}
+        assert "restart" in conn.execute("SELECT error FROM annotation_jobs WHERE id='r1'").fetchone()[0]
 
-        # And the lifespan actually invokes it: entering the client context
-        # runs startup against the same file-backed DB.
+    def test_startup_runs_the_sorting_jobs_left_queued(self, file_db_client):
+        """The lifespan starts the runner, which picks up a job queued before
+        the restart and runs it; the app stops it cleanly on shutdown."""
+        import time
+
+        from finance_copilot.api.routes.annotations import runner
+        from finance_copilot.main import app
+
+        client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q2','queued')")
+        conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('r2','running')")
         conn.commit()
         with TestClient(app):
-            pass
-        row = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='q2'").fetchone()
+            assert runner.alive
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if conn.execute("SELECT status FROM annotation_jobs WHERE id='q2'").fetchone()[0] != "queued":
+                    break
+                time.sleep(0.05)
+        assert not runner.alive
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='q2'").fetchone()[0] == "completed"
+        row = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='r2'").fetchone()
         assert row["status"] == "failed"
         assert "restart" in row["error"]
 
@@ -1632,7 +1649,8 @@ class TestUploadStartsSorting:
 
     def test_a_second_upload_while_a_job_runs_queues_behind_it(self, file_db_client):
         """Not attached to the running job (it covers another statement) and not
-        refused: its own job waits its turn."""
+        refused: its own job waits in line, and nothing runs beside the one
+        that is running."""
         client, conn = file_db_client
         conn.execute(
             "INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('busy','running',10,4)"
@@ -1644,7 +1662,7 @@ class TestUploadStartsSorting:
         assert resp.status_code == 200
         job_id = resp.json()["sorting_job_id"]
         assert job_id != "busy"
-        worker.assert_called_once()
+        worker.assert_not_called()
         row = conn.execute("SELECT status, statement_id FROM annotation_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row["status"] == "queued"
         assert row["statement_id"] == resp.json()["id"]
@@ -1659,35 +1677,6 @@ class TestUploadStartsSorting:
         assert resp.json()["sorting_job_id"] is None
         assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 1
 
-    def test_workers_run_one_at_a_time_in_the_order_they_arrived(self):
-        import threading
-
-        from finance_copilot.api.live_jobs import tracks_live_job
-
-        events = []
-        first_started = threading.Event()
-        release_first = threading.Event()
-
-        @tracks_live_job
-        def worker(job_id):
-            events.append(f"start {job_id}")
-            if job_id == "a":
-                first_started.set()
-                release_first.wait(5)
-            events.append(f"end {job_id}")
-
-        a = threading.Thread(target=worker, args=("a",))
-        a.start()
-        assert first_started.wait(5)
-        b = threading.Thread(target=worker, args=("b",))
-        b.start()
-        b.join(0.3)
-        assert events == ["start a"], "the second worker must wait for the first"
-        release_first.set()
-        a.join(5)
-        b.join(5)
-        assert events == ["start a", "end a", "start b", "end b"]
-
     def test_the_active_listing_puts_the_running_job_first(self, file_db_client):
         client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status, created_at) VALUES ('later','queued','2026-01-02 00:00:00')")
@@ -1697,3 +1686,269 @@ class TestUploadStartsSorting:
         with patch("finance_copilot.api.live_jobs._live", {"first", "later", "queued_early"}):
             ids = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json()]
         assert ids == ["first", "queued_early", "later"]
+
+
+class TestJobRunner:
+    """Sorting jobs wait in the table; one runner thread takes them in turn."""
+
+    @pytest.fixture
+    def db(self, tmp_path, monkeypatch):
+        from finance_copilot.api.deps import get_db as api_get_db
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.main import app
+
+        db_path = str(tmp_path / "runner.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        conn = dbc.get_migrated_db(db_path)
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield TestClient(app), conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    @staticmethod
+    def _queue(conn, job_id, created_at, statement_id=None, transaction_ids=None, kind="annotate"):
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, kind, statement_id, transaction_ids, created_at, updated_at) "
+            "VALUES (?, 'queued', ?, ?, ?, ?, datetime('now'))",
+            (job_id, kind, statement_id, transaction_ids, created_at),
+        )
+        conn.commit()
+
+    @staticmethod
+    def _complete(job_id):
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        c = _open_job_connection()
+        c.execute("UPDATE annotation_jobs SET status='completed' WHERE id=?", (job_id,))
+        c.commit()
+        c.close()
+
+    def test_queued_jobs_run_once_each_oldest_first_ties_by_id(self, db):
+        import json as _json
+
+        from finance_copilot.api.routes.annotations import runner
+
+        _, conn = db
+        self._queue(conn, "c", "2026-01-01 00:00:02", statement_id="sc")
+        self._queue(conn, "b", "2026-01-01 00:00:01", statement_id="sb", transaction_ids=_json.dumps(["t9"]))
+        self._queue(conn, "a", "2026-01-01 00:00:01", statement_id="sa")
+        ran = []
+
+        def fake(job_id, statement_id, transaction_ids):
+            ran.append((job_id, statement_id, transaction_ids))
+            self._complete(job_id)
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", fake):
+            while runner.run_one():
+                pass
+        assert ran == [("a", "sa", None), ("b", "sb", ["t9"]), ("c", "sc", None)]
+
+    def test_a_running_job_of_another_kind_holds_the_line(self, db):
+        from finance_copilot.api.routes.annotations import runner
+
+        _, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('re','running','reembed')")
+        conn.commit()
+        self._queue(conn, "q", "2026-01-01 00:00:00")
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job") as worker, \
+                patch("finance_copilot.api.live_jobs._live", {"re"}):
+            while runner.run_one():
+                pass
+        worker.assert_not_called()
+
+    def test_the_runner_survives_a_job_that_raises_and_runs_the_next(self):
+        import threading
+
+        from finance_copilot.api.live_jobs import JobRunner
+
+        todo = ["boom", "second"]
+        ran = []
+        done = threading.Event()
+
+        def run_next():
+            if not todo:
+                return False
+            name = todo.pop(0)
+            if name == "boom":
+                raise RuntimeError("could not even start")
+            ran.append(name)
+            done.set()
+            return True
+
+        r = JobRunner(run_next, poll_seconds=0.02)
+        r.start()
+        try:
+            assert done.wait(5)
+        finally:
+            r.stop()
+        assert ran == ["second"]
+        assert not r.alive
+
+    def test_start_is_once_per_process_and_stop_is_clean(self):
+        from finance_copilot.api.live_jobs import JobRunner
+
+        r = JobRunner(lambda: False, poll_seconds=0.02)
+        r.start()
+        first = r._thread
+        r.start()
+        assert r._thread is first
+        assert r.alive
+        r.stop()
+        assert not r.alive
+        assert not first.is_alive()
+
+    def test_a_wake_up_runs_a_job_without_waiting_for_the_poll(self):
+        import threading
+
+        from finance_copilot.api.live_jobs import JobRunner
+
+        todo = []
+        ran = threading.Event()
+
+        def run_next():
+            if todo:
+                todo.pop()
+                ran.set()
+                return True
+            return False
+
+        r = JobRunner(run_next, poll_seconds=60)
+        r.start()
+        try:
+            todo.append(1)
+            r.wake()
+            assert ran.wait(5)
+        finally:
+            r.stop()
+
+    def test_a_queued_job_is_not_reaped_while_it_waits(self, db):
+        """Backdate a waiting sorting job past the stale window: with the
+        runner alive it is waiting its turn, not an orphan."""
+        from finance_copilot.api.routes.annotations import runner
+
+        client, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
+        conn.commit()
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        self._queue(conn, "waiting_embed", "2026-01-01 00:00:00", kind="reembed")
+        conn.execute("UPDATE annotation_jobs SET updated_at = datetime('now', '-1 hour')")
+        conn.commit()
+
+        with patch("finance_copilot.api.live_jobs._live", {"busy"}), \
+                patch.object(type(runner), "alive", new=True):
+            active = client.get("/api/annotations/jobs?active=1").json()
+        by_id = {j["id"]: j["status"] for j in active}
+        assert by_id == {"busy": "running", "waiting": "queued"}
+        # A queued re-embed has no runner behind it: it is reaped as before.
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='waiting_embed'").fetchone()[0] == "failed"
+
+    def test_without_a_runner_a_quiet_queued_job_is_reaped(self, db):
+        client, conn = db
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        conn.execute("UPDATE annotation_jobs SET updated_at = datetime('now', '-1 hour')")
+        conn.commit()
+        assert client.get("/api/annotations/jobs?active=1").json() == []
+
+    def test_a_manual_start_attaches_to_the_running_job_not_a_queued_one(self, db):
+        client, conn = db
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, created_at) VALUES ('doing','running','2026-01-02 00:00:00')"
+        )
+        conn.commit()
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={})
+        assert resp.json()["job_id"] == "doing"
+        assert resp.json()["attached"] is True
+
+    def test_active_listing_breaks_ties_by_id(self, db):
+        client, conn = db
+        for jid in ("b", "a"):
+            self._queue(conn, jid, "2026-01-01 00:00:00")
+        with patch("finance_copilot.api.live_jobs._live", {"a", "b"}):
+            ids = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json()]
+        assert ids == ["a", "b"]
+
+    def test_a_manual_scoped_job_remembers_its_transactions(self, db):
+        client, conn = db
+        seen = []
+
+        def fake(job_id, sid, tids):
+            seen.append((sid, tids))
+            self._complete(job_id)
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", fake):
+            resp = client.post(
+                "/api/annotations/auto-annotate/jobs", json={"statement_id": "s1", "transaction_ids": ["t1", "t2"]}
+            )
+        assert resp.status_code == 202
+        assert seen == [("s1", ["t1", "t2"])]
+
+    def test_many_queued_uploads_do_not_hold_request_threads(self, db):
+        """45 statements queued behind a running job: every upload returns, the
+        API still answers, and the only extra thread is the one runner."""
+        import threading
+
+        client, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
+        conn.commit()
+        before = threading.active_count()
+        parser = TestUploadStartsSorting._parser([(5, "zqx vendor")])
+        ids = []
+        for i in range(45):
+            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
+                r = client.post(
+                    "/api/statements/upload",
+                    files={"file": (f"s{i}.pdf", f"%PDF {i}".encode(), "application/pdf")},
+                )
+            assert r.status_code == 200
+            ids.append(r.json()["sorting_job_id"])
+        assert threading.active_count() == before
+        queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
+        assert queued == ids
+
+
+class TestStatementListSortedCount:
+    """One meaning of "sorted": the payments Teach Me is not waiting on."""
+
+    def test_sorted_count_leaves_out_guesses_below_the_bar_and_unsorted_rows(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, "t_user", "a_user", source="manual", confidence=1.0)
+        _seed_annotated_txn(conn, "t_sure", "a_sure", source="llm", confidence=0.95)
+        _seed_annotated_txn(conn, "t_guess", "a_guess", source="llm", confidence=0.4)
+        _seed_annotated_txn(conn, "t_uncat", "a_uncat", source="llm", confidence=0.95, category="Uncategorized")
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES ('t_none', 's1', '2026-01-16', 5.0, 'debit', 'zqx')"
+        )
+        conn.commit()
+
+        stmt = client.get("/api/statements").json()[0]
+        assert stmt["txn_count"] == 5
+        assert stmt["sorted_count"] == 2
+        assert "annotated_count" not in stmt
+        # Exactly what Teach Me holds, so the table and the queue agree.
+        queue = client.get("/api/annotations/review-queue").json()
+        waiting = len(queue["items"]) if isinstance(queue, dict) else len(queue)
+        assert stmt["txn_count"] - stmt["sorted_count"] == waiting
+
+    def test_upload_response_checks_only_its_own_balance(self, client_conn):
+        client, conn, _ = client_conn
+        from finance_copilot.db.queries.transactions import statement_balance_checks
+
+        parser = TestUploadStartsSorting._parser([(5, "Netflix subscription")])
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser), \
+                patch("finance_copilot.api.routes.statements.statement_balance_checks",
+                      wraps=statement_balance_checks) as spy:
+            r = client.post("/api/statements/upload", files={"file": ("a.pdf", b"%PDF a", "application/pdf")})
+        assert r.status_code == 200
+        assert spy.call_args.kwargs.get("statement_id") == r.json()["id"]

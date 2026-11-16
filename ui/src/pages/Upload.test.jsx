@@ -24,7 +24,7 @@ vi.mock('../contexts/DemoDataContext.jsx', () => ({
 
 const stmt = {
   id: 's1', bank_name: 'kotak', statement_month: '2026-07', balance_check: null,
-  txn_count: 10, annotated_count: 2, embedded_count: 10, uploaded_at: '2026-07-01T10:00:00',
+  txn_count: 10, sorted_count: 2, embedded_count: 10, uploaded_at: '2026-07-01T10:00:00',
 }
 
 const uploaded = (id, extra = {}) => ({
@@ -94,6 +94,12 @@ describe('Upload', () => {
     await waitFor(() => expect(jobCtx.startAnnotation).toHaveBeenCalledWith({ statement_id: 's1' }))
     expect(await screen.findByText('Figured out by AI: 2')).toBeInTheDocument()
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/auto-annotate', expect.anything())
+  })
+
+  it('counts a statement as sorted by what Teach Me is not waiting on', async () => {
+    mockApi.get.mockResolvedValue([{ ...stmt, sorted_count: 6 }])
+    renderUpload()
+    expect(await screen.findByText(/Partial · 6\/10/)).toBeInTheDocument()
   })
 
   it('every Sort again waits while another run is tracked', async () => {
@@ -194,7 +200,9 @@ describe('Upload', () => {
       expect(screen.getByText(/Kotak statements/)).toBeInTheDocument()
       expect(screen.getByText(/running-balance column/)).toBeInTheDocument()
       expect(screen.getByText(/password-protected PDFs work/i)).toBeInTheDocument()
-      expect(screen.getByText(/stay on this computer/)).toBeInTheDocument()
+      expect(screen.getByText(
+        /Your statement stays on this computer\. If you connect an online AI model in Settings, each payment.s date, amount, direction and description are sent to it for sorting/,
+      )).toBeInTheDocument()
       expect(screen.getByText(/balance is checked, then sorting starts by itself/i)).toBeInTheDocument()
     })
 
@@ -247,6 +255,42 @@ describe('Upload', () => {
       // One account of the whole drop, with the way on.
       expect(screen.getByRole('status')).toHaveTextContent('Finished: 15 sorted, 1 needs you')
       expect(screen.getByRole('link', { name: /Teach Me/ }).getAttribute('href')).toBe('#/review')
+    })
+
+    it('keeps a drop in progress when more files are picked mid-drop', async () => {
+      let finishFirst
+      mockApi.upload
+        .mockImplementationOnce(() => new Promise(resolve => { finishFirst = () => resolve(uploaded('s1')) }))
+        .mockResolvedValueOnce(uploaded('s2'))
+      pollJob.mockReturnValue(new Promise(() => {}))
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      fireEvent.change(input, { target: { files: [named('a.pdf'), named('b.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      expect(await screen.findByText('Reading the statement…')).toBeInTheDocument()
+
+      // A third file is picked while a.pdf is being read and b.pdf waits its turn.
+      fireEvent.change(input, { target: { files: [named('c.pdf')] } })
+      expect(screen.getByText('a.pdf')).toBeInTheDocument()
+      expect(screen.getByText('c.pdf')).toBeInTheDocument()
+
+      finishFirst()
+      // The drop carries on: b.pdf is still uploaded, and a.pdf shows its sorting.
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(2))
+      expect(screen.getByText('a.pdf')).toBeInTheDocument()
+      expect(screen.getByText('b.pdf')).toBeInTheDocument()
+      expect(screen.getAllByText(/Waiting to sort|Getting started/).length).toBeGreaterThan(0)
+    })
+
+    it('lets only finished files make way for a new pick', async () => {
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      fireEvent.change(input, { target: { files: [named('a.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      await screen.findByText('7 sorted, 1 needs you')
+      fireEvent.change(input, { target: { files: [named('b.pdf')] } })
+      expect(screen.queryByText('a.pdf')).not.toBeInTheDocument()
+      expect(screen.getByText('b.pdf')).toBeInTheDocument()
     })
 
     it('keeps going when one file fails, says why, and lets that file be retried', async () => {

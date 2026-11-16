@@ -16,22 +16,6 @@ export function AnnotationJobProvider({ children }) {
   const trackedKind = useRef(null)
   useEffect(() => { trackedKind.current = job?.kind ?? null }, [job])
 
-  const startAnnotation = useCallback(async body => {
-    // A job this tab already tracks (started here or re-attached on mount)
-    // holds the slot; don't overwrite its card with a run that can't start.
-    if (attached.current) throw new JobBusyError(trackedKind.current)
-    // Show the card immediately (indeterminate) instead of waiting for the
-    // first poll to come back.
-    attached.current = true
-    setJob({ status: 'queued', kind: 'annotate' })
-    try {
-      return await runAnnotationJob(body, setJob)
-    } finally {
-      setJob(null)
-      attached.current = false
-    }
-  }, [])
-
   // Show the progress card for whatever job the server is working on, and
   // carry on to the next queued one when it ends. Used on mount (a reload
   // mid-run lost our state), and after a statement is uploaded: the server
@@ -54,6 +38,25 @@ export function AnnotationJobProvider({ children }) {
     attached.current = false
     if (mounted.current) watchJobs()
   }, [])
+
+  const startAnnotation = useCallback(async body => {
+    // A job this tab already tracks (started here or re-attached on mount)
+    // holds the slot; don't overwrite its card with a run that can't start.
+    if (attached.current) throw new JobBusyError(trackedKind.current)
+    // Show the card immediately (indeterminate) instead of waiting for the
+    // first poll to come back.
+    attached.current = true
+    setJob({ status: 'queued', kind: 'annotate' })
+    try {
+      return await runAnnotationJob(body, setJob)
+    } finally {
+      setJob(null)
+      attached.current = false
+      // Statements may have queued behind this run (an upload while it ran):
+      // keep the card, and with it the disabled Sort again, until they finish.
+      if (mounted.current) watchJobs()
+    }
+  }, [watchJobs])
 
   useEffect(() => {
     mounted.current = true

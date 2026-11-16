@@ -112,6 +112,10 @@ function lastUserPrompt(messages = []) {
 /** Start the stub on a free loopback port. */
 export async function startStubModel() {
   const requests = []
+  // While held, chat answers wait: a test can keep one sorting job running and
+  // watch the statements queued behind it, then let them all through.
+  let gate = null
+  let openGate = () => {}
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://stub').pathname
     let body = {}
@@ -138,6 +142,7 @@ export async function startStubModel() {
     if (req.method === 'GET' && path === '/v1/models') {
       return send({ data: [{ id: CHAT_MODEL }] })
     }
+    if (req.method === 'POST' && (path === '/api/chat' || path === '/v1/chat/completions')) await gate
     if (req.method === 'POST' && path === '/api/chat') {
       const content = JSON.stringify(answerFor(lastUserPrompt(body.messages)))
       return send({ model: body.model, message: { role: 'assistant', content }, done: true })
@@ -160,6 +165,14 @@ export async function startStubModel() {
     url: `http://127.0.0.1:${port}`,
     port,
     requests,
+    /** Make chat answers wait until release(). */
+    hold: () => {
+      if (!gate) gate = new Promise((resolve) => { openGate = resolve })
+    },
+    release: () => {
+      openGate()
+      gate = null
+    },
     close: () => new Promise((resolve) => server.close(resolve)),
   }
 }

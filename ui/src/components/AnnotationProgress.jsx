@@ -4,9 +4,9 @@ import { Sparkles, ArrowRight } from 'lucide-react'
 
 // What each background job kind is doing, in the user's words, and where the
 // card leads. A re-embed (model switch, or an embed-format upgrade on launch)
-// rebuilds retrieval memory; it categorizes nothing, so it must not say it does.
+// rebuilds retrieval memory; it sorts nothing, so it must not say it does.
 const KINDS = {
-  annotate: { title: 'Categorizing your transactions', to: '/transactions' },
+  annotate: { title: 'Sorting your payments', to: '/transactions' },
   reembed: { title: 'Refreshing AI memory', to: '/settings' },
 }
 

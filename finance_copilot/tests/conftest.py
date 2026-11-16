@@ -14,3 +14,14 @@ def _isolate_llm_settings(monkeypatch):
 
     for key in _LLM_KEYS:
         monkeypatch.setattr(settings, key, getattr(settings, key))
+
+
+@pytest.fixture(autouse=True)
+def _run_queued_jobs_inline(monkeypatch):
+    """Queued sorting jobs run on the job runner's thread, which only the app's
+    lifespan starts. Without it a route test would never see its job run, so
+    waking the runner runs the oldest queued job right here instead: the same
+    code path, deterministic and on the test's own thread."""
+    from finance_copilot.api.routes.annotations import runner
+
+    monkeypatch.setattr(runner, "wake", runner.run_one)

@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
-from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
+from finance_copilot.api.live_jobs import JobRunner, live_job_ids, tracks_live_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     get_annotation,
@@ -125,7 +125,9 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     Any observer (a status poll, a new job request, a page mount) can flip these
     to failed so nothing polls a zombie forever. A job whose worker is running
     in this process is skipped however long it has been quiet, so a slow call
-    can never get a live job reaped and a duplicate run started beside it.
+    can never get a live job reaped and a duplicate run started beside it. So is
+    a queued sorting job while the job runner is alive: it is waiting its turn
+    behind the job ahead of it, however long that takes.
     Returns the number of jobs reaped. Caller commits.
 
     Reads before writing: polls are frequent and almost never find anything
@@ -138,6 +140,7 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
         "WHERE status IN ('queued','running') "
         f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
         + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
+        + (" AND NOT (status = 'queued' AND kind = 'annotate')" if runner.alive else "")
     )
     if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1", live).fetchone() is None:
         return 0
@@ -150,15 +153,19 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
 
 
 def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
-    """Fail every queued/running job. Called at startup: this is a
-    single-process app, so any job still marked in-flight when the process
-    boots was orphaned by a restart and will never finish. Left alone it would
-    satisfy start_auto_annotate_job's single-job guard forever and block all
-    future annotation runs."""
+    """Fail the jobs a previous process left mid-run. Called at startup: this is
+    a single-process app, so a job still marked running when the process boots
+    was orphaned by a restart and will never finish. Left alone it would satisfy
+    the single-job guard forever and block all future runs.
+
+    A queued sorting job never started, so nothing about it is broken: it stays
+    queued and the job runner takes it in its turn. Other queued kinds (a
+    re-embed, a model download) were handed to a thread that no longer exists,
+    so those fail too."""
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
         "error='Interrupted by a server restart', updated_at=datetime('now') "
-        "WHERE status IN ('queued','running')"
+        "WHERE status = 'running' OR (status = 'queued' AND kind != 'annotate')"
     )
     conn.commit()
     return cur.rowcount
@@ -218,28 +225,27 @@ def _run_annotation_job(
 def enqueue_annotation_job(
     conn: sqlite3.Connection,
     statement_id: str | None,
-    background_tasks: BackgroundTasks,
     *,
     transaction_ids: list[str] | None = None,
     queue: bool = False,
 ) -> dict:
-    """Record an annotation job and schedule its worker.
+    """Record a sorting job and wake the job runner, which runs it in its turn.
 
     Single-user app: only one job runs at a time. By default a request that
     finds one in flight (a double-click, a click from another open tab)
     re-attaches to it instead of starting a duplicate, which would burn
     duplicate LLM calls and could overwrite a manual label created mid-run.
     With queue=True (a statement that just landed) the new job is recorded
-    anyway and its worker waits its turn (live_jobs), so the statement is sorted
-    once the job ahead of it finishes.
+    anyway and waits in line, so the statement is sorted once the jobs ahead of
+    it finish.
     """
     # Reap + guard + insert must be atomic against a concurrent request (a
     # double-click or a second tab). SQLite serializes writes but not a
     # read-then-write across two connections: without a write lock held up
-    # front, both requests could see no in-flight job and both insert +
-    # schedule, which is the duplicate-LLM-burn the single-job guard exists to
-    # prevent. BEGIN IMMEDIATE takes the write lock now, so the second request
-    # blocks (busy_timeout) until the first commits and then sees its row.
+    # front, both requests could see no in-flight job and both insert, which is
+    # the duplicate-LLM-burn the single-job guard exists to prevent.
+    # BEGIN IMMEDIATE takes the write lock now, so the second request blocks
+    # (busy_timeout) until the first commits and then sees its row.
     conn.execute("BEGIN IMMEDIATE")
     try:
         # An in-flight row with a quiet heartbeat is an orphan (worker died or
@@ -247,9 +253,12 @@ def enqueue_annotation_job(
         # than re-attach, or it would block every future run until restart.
         _reap_stale_jobs(conn)
 
+        # Attach to the job doing the work: with a queue behind it a waiting
+        # row must never be what a caller thinks it is following.
         inflight = conn.execute(
             "SELECT id, status, kind, statement_id FROM annotation_jobs "
-            "WHERE status IN ('queued','running') ORDER BY created_at LIMIT 1"
+            "WHERE status IN ('queued','running') "
+            "ORDER BY (status = 'running') DESC, created_at, id LIMIT 1"
         ).fetchone()
         if inflight is not None and not queue:
             conn.commit()
@@ -266,30 +275,60 @@ def enqueue_annotation_job(
 
         job_id = str(ulid.ULID())
         conn.execute(
-            "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
-            (job_id, statement_id),
+            "INSERT INTO annotation_jobs (id, statement_id, transaction_ids) VALUES (?, ?, ?)",
+            (job_id, statement_id, json.dumps(transaction_ids) if transaction_ids is not None else None),
         )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
 
-    # Schedule the worker only after the row is committed and the lock released,
-    # so the background task's own connection can't deadlock on our write lock.
-    background_tasks.add_task(_run_annotation_job, job_id, statement_id, transaction_ids)
+    # Wake the runner only after the row is committed and the lock released, so
+    # its own connection can't deadlock on our write lock.
+    runner.wake()
     return {"job_id": job_id, "status": "queued"}
+
+
+def _run_next_queued_job() -> bool:
+    """Run the oldest queued sorting job, if the way is clear. Returns whether
+    one ran. The job runner's one unit of work.
+
+    Held back while another kind of job is running (a re-embed, a model
+    download): those start their own thread and must not overlap a sort.
+    """
+    conn = _open_job_connection()
+    try:
+        # The runner is the one observer that is always awake, so it reaps too:
+        # a running row whose worker died would otherwise hold the line.
+        if _reap_stale_jobs(conn):
+            conn.commit()
+        if conn.execute("SELECT 1 FROM annotation_jobs WHERE status = 'running' LIMIT 1").fetchone():
+            return False
+        row = conn.execute(
+            "SELECT id, statement_id, transaction_ids FROM annotation_jobs "
+            "WHERE status = 'queued' AND kind = 'annotate' ORDER BY created_at, id LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    transaction_ids = json.loads(row["transaction_ids"]) if row["transaction_ids"] else None
+    # Looked up by name at call time so a test can stand in for the worker.
+    _run_annotation_job(row["id"], row["statement_id"], transaction_ids)
+    return True
+
+
+# The one runner for this process; the app's lifespan starts and stops it.
+runner = JobRunner(_run_next_queued_job)
 
 
 @router.post("/auto-annotate/jobs", status_code=202)
 def start_auto_annotate_job(
     body: AutoAnnotateRequest,
-    background_tasks: BackgroundTasks,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress."""
-    return enqueue_annotation_job(
-        conn, body.statement_id, background_tasks, transaction_ids=body.transaction_ids
-    )
+    return enqueue_annotation_job(conn, body.statement_id, transaction_ids=body.transaction_ids)
 
 
 @router.get("/jobs")
@@ -305,7 +344,7 @@ def list_active_annotation_jobs(active: int = 0, conn: sqlite3.Connection = Depe
     # Active: the running job first, then the queue in the order it arrived, so
     # the progress card follows the work as it happens. History: newest first.
     where = "WHERE status IN ('queued','running')" if active else ""
-    order = "(status = 'running') DESC, created_at ASC" if active else "created_at DESC"
+    order = "(status = 'running') DESC, created_at ASC, id ASC" if active else "created_at DESC, id DESC"
     rows = conn.execute(f"SELECT * FROM annotation_jobs {where} ORDER BY {order}").fetchall()
     jobs = []
     for row in rows:

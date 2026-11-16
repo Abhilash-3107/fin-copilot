@@ -8,12 +8,14 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.api.routes.annotations import enqueue_annotation_job
 from finance_copilot.config import settings
+from finance_copilot.db.queries.annotations import sorted_counts_by_statement
+from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
 from finance_copilot.demo_seed import has_demo_data
@@ -36,7 +38,6 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
-    background_tasks: BackgroundTasks,
     # Form body, not query param — query strings end up in server access logs.
     password: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
@@ -99,7 +100,7 @@ def upload_statement(
     # Sorting starts by itself. Failing to queue it must not fail an upload that
     # already landed: the statement is there and "Sort again" still works.
     try:
-        job = enqueue_annotation_job(conn, statement.id, background_tasks, queue=True)
+        job = enqueue_annotation_job(conn, statement.id, queue=True)
         sorting_job_id = job["job_id"]
     except Exception:
         logger.exception("could not queue sorting for statement %s", statement.id)
@@ -109,7 +110,7 @@ def upload_statement(
     transaction_count = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE statement_id = ?", (statement.id,)
     ).fetchone()[0]
-    balance_check = statement_balance_checks(conn).get(
+    balance_check = statement_balance_checks(conn, statement_id=statement.id).get(
         statement.id, {"checked": 0, "consistent": 0, "balanced": True}
     )
     return {
@@ -123,21 +124,21 @@ def upload_statement(
 
 @router.get("")
 def list_statements(conn: sqlite3.Connection = Depends(get_db)):
-    """List statements, each enriched with transaction/annotation/embedding counts.
+    """List statements, each enriched with payment, sorted and embedding counts.
 
-    Counts are computed in a single grouped query (no N+1) so the UI can show
-    annotation and vector-DB coverage per statement.
+    Counts are computed in grouped queries (no N+1) so the UI can show sorting
+    and vector-DB coverage per statement. sorted_count means what Teach Me
+    means: payments it is not waiting on, so a guess below the review bar is
+    not counted.
     """
     rows = conn.execute(
         """
         SELECT
             s.*,
             COUNT(DISTINCT t.id)              AS txn_count,
-            COUNT(DISTINCT a.transaction_id)  AS annotated_count,
             COUNT(DISTINCT em.transaction_id) AS embedded_count
         FROM statements s
         LEFT JOIN transactions t   ON t.statement_id = s.id
-        LEFT JOIN annotations a    ON a.transaction_id = t.id
         LEFT JOIN embedding_meta em ON em.transaction_id = t.id
         GROUP BY s.id
         ORDER BY s.uploaded_at DESC
@@ -146,9 +147,11 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     # Per-statement running-balance reconciliation for the "N/N rows balanced"
     # trust indicator (4.20). One extra windowed query, merged in by id.
     checks = statement_balance_checks(conn)
+    sorted_counts = sorted_counts_by_statement(conn, get_confidence_threshold(conn))
     result = []
     for row in rows:
         d = dict(row)
+        d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
         result.append(d)
     return result
