@@ -122,7 +122,7 @@ def enqueue_reembed_job(conn: sqlite3.Connection) -> tuple[dict | None, str | No
         _reap_stale_jobs(conn)
         inflight = conn.execute(
             "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
+            "ORDER BY (status = 'running') DESC, created_at, id LIMIT 1"
         ).fetchone()
         if inflight is not None:
             conn.commit()

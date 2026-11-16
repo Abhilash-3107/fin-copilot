@@ -247,7 +247,11 @@ def remove_demo_data(conn: sqlite3.Connection = Depends(get_db)):
 def delete_all(conn: sqlite3.Connection = Depends(get_db)):
     """Irreversibly remove all user data (statements, transactions, annotations,
     groups, people, embeddings, settings), keeping only the seeded category
-    taxonomy. Vacuum afterward so the file actually shrinks."""
+    taxonomy. Vacuum afterward so the file actually shrinks.
+
+    Refused while any job is waiting or running: a sort writing into rows that
+    vanish under it dies with a foreign-key error."""
+    _refuse_while_job_running(conn, "Delete everything")
     deleted: dict[str, int] = {}
     # Defer FK enforcement so the wipe order can't trip on a transient dangling
     # reference mid-batch; the set we clear is self-contained.

@@ -48,11 +48,17 @@ def reconcile_database(conn: sqlite3.Connection, *, reset_llm_settings: bool = F
             "embedding dimension changed - vector memory cleared; run a re-embed "
             "from Settings > AI & Model to rebuild RAG retrieval"
         )
-    # Jobs still marked in-flight were orphaned by a previous process (or frozen
-    # into a restored snapshot); fail them or they block the single-job guard.
+    # Jobs still marked in-flight were orphaned by a previous process, or were
+    # in flight when a restored snapshot was taken; either way nothing is
+    # working on them. A re-embed or a download fails (it would block the
+    # single-job guard forever). A sorting job, waiting or cut off mid-run, goes
+    # back in line and the job runner runs it against this ledger - after a
+    # restore that is the restored ledger, whose half-sorted statement it
+    # finishes. A queued row naming a statement the ledger does not have finds
+    # nothing to sort and completes.
     reaped = reap_interrupted_jobs(conn)
     if reaped:
-        logger.warning("failed %d annotation job(s) orphaned by the previous process", reaped)
+        logger.warning("failed %d background job(s) orphaned by the previous process", reaped)
     # Parsed description fields and vectors follow the code that derives them: a
     # parser or embed-text upgrade re-derives on the next launch, no manual step.
     reconcile_derived(conn)

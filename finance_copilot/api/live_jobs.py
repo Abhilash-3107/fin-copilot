@@ -7,7 +7,8 @@ worker that is just slow (a cold model load, a long LLM retry, a big model
 download). This is a single-process app, so the process itself can say which
 jobs are alive: the reaper skips those whatever their heartbeat, and its time
 window only has to catch real orphans. A restart empties the set, and startup
-fails every job left running (reap_interrupted_jobs).
+settles every job left running (reap_interrupted_jobs): a sorting job goes back
+in line, the others fail.
 
 Sorting jobs wait in the database, not in threads. A statement that lands
 inserts a `queued` row and wakes the JobRunner, which takes the oldest queued
@@ -68,7 +69,7 @@ class JobRunner:
         self._run_next = run_next
         self._poll_seconds = poll_seconds
         self._wake = threading.Event()
-        self._stop = threading.Event()
+        self._stop = threading.Event()  # the current thread's; each start makes a new one
         self._thread: threading.Thread | None = None
 
     @property
@@ -79,9 +80,12 @@ class JobRunner:
         """Start the thread once; a second call while it runs does nothing."""
         if self.alive:
             return
-        self._stop.clear()
+        # A thread that outlived an earlier stop (stuck in a long job) keeps
+        # its own, already-set event and leaves when that job ends; clearing a
+        # shared event would have revived it beside the new thread.
+        self._stop = threading.Event()
         self._wake.set()  # pick up rows left queued before this start
-        self._thread = threading.Thread(target=self._loop, name="job-runner", daemon=True)
+        self._thread = threading.Thread(target=self._loop, args=(self._stop,), name="job-runner", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -105,8 +109,8 @@ class JobRunner:
             logger.exception("job runner could not run the next queued job")
             return False
 
-    def _loop(self) -> None:
-        while not self._stop.is_set():
+    def _loop(self, stop: threading.Event) -> None:
+        while not stop.is_set():
             # Clear before looking, so a wake-up that lands while a job runs is
             # seen on the next pass instead of lost.
             self._wake.clear()

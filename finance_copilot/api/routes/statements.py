@@ -179,6 +179,26 @@ def patch_statement(
     return {"id": statement_id, "bank_name": body.bank_name.strip()}
 
 
+def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: str) -> None:
+    """409 while a sort that could be writing this statement's payments is
+    running: its own, or one over the whole ledger. A sort still waiting for its
+    turn is not a reason to refuse; it is dropped with the statement."""
+    from finance_copilot.api.routes.annotations import _reap_stale_jobs
+
+    if _reap_stale_jobs(conn):
+        conn.commit()
+    sorting = conn.execute(
+        "SELECT 1 FROM annotation_jobs WHERE status = 'running' AND kind = 'annotate' "
+        "AND (statement_id = ? OR statement_id IS NULL) LIMIT 1",
+        (statement_id,),
+    ).fetchone()
+    if sorting:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This statement is being sorted right now. {action} once sorting finishes.",
+        )
+
+
 @router.delete("/{statement_id}")
 def delete_statement(
     statement_id: str,
@@ -188,6 +208,7 @@ def delete_statement(
     row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Statement not found")
+    _refuse_while_sorting(conn, statement_id, "Delete it")
 
     txn_ids = [
         r[0]
@@ -212,6 +233,11 @@ def delete_statement(
         conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
 
     conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+    # Its sort that was still waiting has nothing left to sort.
+    conn.execute(
+        "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
+        (statement_id,),
+    )
     conn.commit()
     return {"deleted": statement_id}
 
@@ -225,6 +251,7 @@ def reset_statement_data(
     row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Statement not found")
+    _refuse_while_sorting(conn, statement_id, "Reset it")
 
     txn_ids = [
         r[0]

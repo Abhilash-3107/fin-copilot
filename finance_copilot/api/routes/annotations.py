@@ -153,15 +153,20 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
 
 
 def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
-    """Fail the jobs a previous process left mid-run. Called at startup: this is
-    a single-process app, so a job still marked running when the process boots
-    was orphaned by a restart and will never finish. Left alone it would satisfy
-    the single-job guard forever and block all future runs.
+    """Settle the jobs a previous process left in flight. Called at startup,
+    after the data-folder lock is held: no other process owns this ledger, so a
+    job still marked running was orphaned by the restart and will never finish.
+    Left alone it would satisfy the single-job guard forever.
 
-    A queued sorting job never started, so nothing about it is broken: it stays
-    queued and the job runner takes it in its turn. Other queued kinds (a
-    re-embed, a model download) were handed to a thread that no longer exists,
-    so those fail too."""
+    A sorting job, queued or interrupted, goes back in line: the pipeline skips
+    payments that already have a label, so running it again finishes the
+    statement instead of losing the sort. A re-embed or a model download was
+    handed to a thread that no longer exists and fails (the person starts it
+    again). Returns how many jobs failed."""
+    conn.execute(
+        "UPDATE annotation_jobs SET status='queued', processed=0, total=0, error=NULL, "
+        "updated_at=datetime('now') WHERE status = 'running' AND kind = 'annotate'"
+    )
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
         "error='Interrupted by a server restart', updated_at=datetime('now') "
@@ -177,14 +182,9 @@ def _run_annotation_job(
     statement_id: str | None,
     transaction_ids: list[str] | None,
 ) -> None:
+    # The runner claimed the row (status 'running') before calling this.
     conn = _open_job_connection()
     try:
-        conn.execute(
-            "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') WHERE id = ?",
-            (job_id,),
-        )
-        conn.commit()
-
         last_commit = 0.0
 
         def progress(processed: int, total: int) -> None:
@@ -196,7 +196,8 @@ def _run_annotation_job(
             if now - last_commit < 1.0 and processed != total:
                 return
             conn.execute(
-                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
+                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') "
+                "WHERE id = ? AND status = 'running'",
                 (processed, total, job_id),
             )
             conn.commit()
@@ -206,7 +207,7 @@ def _run_annotation_job(
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
-               WHERE id = ?""",
+               WHERE id = ? AND status = 'running'""",
             (result.total_processed, result.total_processed, result.model_dump_json(), job_id),
         )
         conn.commit()
@@ -214,7 +215,8 @@ def _run_annotation_job(
         logger.exception("annotation job failed | job=%s", job_id)
         conn.rollback()
         conn.execute(
-            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') WHERE id = ?",
+            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') "
+            "WHERE id = ? AND status = 'running'",
             (str(e), job_id),
         )
         conn.commit()
@@ -290,28 +292,44 @@ def enqueue_annotation_job(
 
 
 def _run_next_queued_job() -> bool:
-    """Run the oldest queued sorting job, if the way is clear. Returns whether
-    one ran. The job runner's one unit of work.
+    """Claim and run the oldest queued sorting job, if the way is clear. Returns
+    whether one ran. The job runner's one unit of work.
 
-    Held back while another kind of job is running (a re-embed, a model
-    download): those start their own thread and must not overlap a sort.
+    Held back while another job is running (a sort, a re-embed, a model
+    download): those must not overlap. The look and the claim are one write
+    transaction, and the claim only takes a row that is still queued, so two
+    runners (a thread that outlived a restart, say) can never both run it.
     """
     conn = _open_job_connection()
     try:
-        # The runner is the one observer that is always awake, so it reaps too:
-        # a running row whose worker died would otherwise hold the line.
-        if _reap_stale_jobs(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # The runner is the one observer that is always awake, so it reaps too:
+            # a running row whose worker died would otherwise hold the line.
+            _reap_stale_jobs(conn)
+            if conn.execute("SELECT 1 FROM annotation_jobs WHERE status = 'running' LIMIT 1").fetchone():
+                conn.commit()
+                return False
+            row = conn.execute(
+                "SELECT id, statement_id, transaction_ids FROM annotation_jobs "
+                "WHERE status = 'queued' AND kind = 'annotate' ORDER BY created_at, id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return False
+            claimed = conn.execute(
+                "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') "
+                "WHERE id = ? AND status = 'queued'",
+                (row["id"],),
+            ).rowcount
             conn.commit()
-        if conn.execute("SELECT 1 FROM annotation_jobs WHERE status = 'running' LIMIT 1").fetchone():
-            return False
-        row = conn.execute(
-            "SELECT id, statement_id, transaction_ids FROM annotation_jobs "
-            "WHERE status = 'queued' AND kind = 'annotate' ORDER BY created_at, id LIMIT 1"
-        ).fetchone()
+        except Exception:
+            conn.rollback()
+            raise
     finally:
         conn.close()
-    if row is None:
-        return False
+    if not claimed:
+        return True  # another runner took it first: look again straight away
     transaction_ids = json.loads(row["transaction_ids"]) if row["transaction_ids"] else None
     # Looked up by name at call time so a test can stand in for the worker.
     _run_annotation_job(row["id"], row["statement_id"], transaction_ids)

@@ -1253,17 +1253,19 @@ class TestAnnotationJobs:
         assert zombie["status"] == "failed"
         assert "stale" in zombie["error"]
 
-    def test_startup_fails_what_was_running_and_keeps_what_was_waiting(self, file_db_client):
-        """Restarting the server fails any job the previous process left
-        running, even a fresh one - a single-process app can't have live jobs at
-        boot. A queued sorting job never started: it stays for the runner. A
-        queued re-embed or download lost its thread, so it fails."""
+    def test_startup_requeues_sorting_and_fails_the_other_kinds(self, file_db_client):
+        """Restarting the server settles every in-flight job, even a fresh one -
+        a single-process app can't have live jobs at boot. A sorting job, waiting
+        or interrupted mid-run, goes back in line (it skips payments already
+        labelled, so running it again finishes the statement). A queued or
+        running re-embed or download lost its thread, so it fails."""
         from finance_copilot.api.routes.annotations import reap_interrupted_jobs
 
         client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q1','queued')")
         conn.execute("INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('r1','running',10,4)")
         conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('qe','queued','reembed')")
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('re','running','reembed')")
         conn.commit()
 
         assert reap_interrupted_jobs(conn) == 2
@@ -1271,8 +1273,8 @@ class TestAnnotationJobs:
             row["id"]: row["status"]
             for row in conn.execute("SELECT id, status FROM annotation_jobs").fetchall()
         }
-        assert statuses == {"q1": "queued", "r1": "failed", "qe": "failed"}
-        assert "restart" in conn.execute("SELECT error FROM annotation_jobs WHERE id='r1'").fetchone()[0]
+        assert statuses == {"q1": "queued", "r1": "queued", "qe": "failed", "re": "failed"}
+        assert "restart" in conn.execute("SELECT error FROM annotation_jobs WHERE id='re'").fetchone()[0]
 
     def test_startup_runs_the_sorting_jobs_left_queued(self, file_db_client):
         """The lifespan starts the runner, which picks up a job queued before
@@ -1290,14 +1292,14 @@ class TestAnnotationJobs:
             assert runner.alive
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
-                if conn.execute("SELECT status FROM annotation_jobs WHERE id='q2'").fetchone()[0] != "queued":
+                statuses = [r[0] for r in conn.execute("SELECT status FROM annotation_jobs WHERE id IN ('q2','r2')")]
+                if all(status == "completed" for status in statuses):
                     break
                 time.sleep(0.05)
         assert not runner.alive
         assert conn.execute("SELECT status FROM annotation_jobs WHERE id='q2'").fetchone()[0] == "completed"
-        row = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='r2'").fetchone()
-        assert row["status"] == "failed"
-        assert "restart" in row["error"]
+        # The sort the restart interrupted is run again, not lost.
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='r2'").fetchone()[0] == "completed"
 
 
 class TestStatementUploadDedup:
