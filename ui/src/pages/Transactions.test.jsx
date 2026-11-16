@@ -21,6 +21,19 @@ vi.mock('../contexts/ToastContext.jsx', () => {
   }
 })
 
+// A full page is 500 rows, and drawing all of them is what made the "next page
+// fails" test slow. The tables draw at most CAP rows; the page still holds, counts
+// and pages through every one it was given.
+const { CAP } = vi.hoisted(() => ({ CAP: 25 }))
+vi.mock('../components/TransactionTable.jsx', async () => {
+  const { default: Real } = await vi.importActual('../components/TransactionTable.jsx')
+  return { default: props => <Real {...props} transactions={props.transactions.slice(0, CAP)} /> }
+})
+vi.mock('../components/TransactionCards.jsx', async () => {
+  const { default: Real } = await vi.importActual('../components/TransactionCards.jsx')
+  return { default: props => <Real {...props} transactions={props.transactions.slice(0, CAP)} /> }
+})
+
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
 import { StatementProvider } from '../contexts/StatementContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
@@ -236,13 +249,15 @@ describe('Transactions when the API fails', () => {
     })
     renderPage()
     fireEvent.click(await screen.findByText('Load more'))
-    const alert = await screen.findByRole('alert') // role queries over 500 rows are slow, so the Retry lookup stays inside the alert
+    const alert = await screen.findByRole('alert') 
     expect(alert).toHaveTextContent("Couldn't load more payments.")
-    expect(screen.getAllByText('Mystery').length).toBeGreaterThan(100)
+    expect(screen.getAllByText('Mystery').length).toBeGreaterThanOrEqual(CAP)
     failMore = false
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
-    expect(screen.getAllByText('Refund').length).toBeGreaterThan(0)
+    // The short last page arrived (the second ask for it), so there is no more to load.
+    await waitFor(() => expect(screen.queryByText('Load more')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?').filter(p => p.includes('after='))).toHaveLength(2)
   })
 
   it('says the filter options could not load, beside the filters, and Retry loads them', async () => {

@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -26,6 +27,20 @@ const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: nul
 vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
   useAnnotationJob: () => jobCtx,
 }))
+
+// SortCard is the real one, plus a hook for the one moment a test cannot reach
+// from outside: the commit that shows a new card, before the page's effects run.
+const { cardCommit } = vi.hoisted(() => ({ cardCommit: { run: null } }))
+vi.mock('../components/SortCard.jsx', async () => {
+  const { default: Real } = await vi.importActual('../components/SortCard.jsx')
+  return {
+    default: function ProbedSortCard(props) {
+      const { item } = props
+      useLayoutEffect(() => { cardCommit.run?.(item) }, [item?.transaction_id]) // eslint-disable-line react-hooks/exhaustive-deps
+      return <Real {...props} />
+    },
+  }
+})
 
 import { ToastProvider } from '../contexts/ToastContext.jsx'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
@@ -141,6 +156,7 @@ beforeEach(() => {
   aiActive = true
   anyTransactions = true
   learnedRules = () => []
+  cardCommit.run = null
   jobCtx.job = null
   jobCtx.startAnnotation = vi.fn()
   mockApi.post.mockResolvedValue({ reevaluated: [] })
@@ -696,6 +712,35 @@ describe('ReviewQueue teaching propagation', () => {
     key('Enter')
     await act(async () => {})
     expect(mockApi.post).toHaveBeenCalledWith('/annotations/12/confirm', { category: 'Transport' })
+  })
+
+  it('never saves the last card\'s label onto the next card when Enter lands as it appears', async () => {
+    stubGet([
+      // No annotation yet, so the answer has no follow-up lookup and the save is over before the next card renders.
+      makeCard({ annotation_id: null, suggestions: [
+        { category: 'Food', subcategory: null, reason: 'AI guess, 50% sure' },
+        { category: 'Transport', subcategory: null, reason: 'Seen before' },
+      ] }),
+      uber({ category: 'Food' }),
+    ])
+    await renderQueue()
+    key('2') // SWIGGY is being corrected to Transport
+    await act(async () => {})
+
+    // Enter arrives in the very commit that shows UBER, before any effect runs.
+    cardCommit.run = item => {
+      if (item?.transaction_id !== 101) return
+      cardCommit.run = null
+      // A raw event: this runs inside React's commit, where fireEvent's act() cannot.
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+    }
+    mockApi.post.mockClear()
+    key('Enter')
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
+    await act(async () => {})
+
+    expect(mockApi.post.mock.calls.map(([path]) => path)).toEqual(['/annotations/bulk-label', '/annotations/11/confirm'])
+    expect(mockApi.post).toHaveBeenLastCalledWith('/annotations/11/confirm', { category: 'Food' })
   })
 
   it('reloads instead of confirming a label that changed under the card', async () => {

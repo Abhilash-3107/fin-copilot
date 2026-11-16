@@ -167,7 +167,11 @@ export default function ReviewQueue() {
   const [sortRan, setSortRan] = useState(false)
   const [aiActive, setAiActive] = useState(false)
   const [tree, setTree] = useState(_catCache ?? [])
-  const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
+  // What the user has changed on a card, tagged with the card it belongs to. A
+  // draft for another card is never read (see `form` below), so the card that
+  // appears next starts from its own label in the same render, with no window
+  // in which the last card's choice is on screen or answers a keypress.
+  const [draft, setDraft] = useState(null) // {txnId, form?, applyToGroup?}
   const [saving, setSaving] = useState(false)
   // The keyboard can fire again before `saving` re-renders (a quick double
   // press of Enter), so the in-flight check reads a ref, not the state.
@@ -196,9 +200,6 @@ export default function ReviewQueue() {
   const [applying, setApplying] = useState(false)
   const [counts, setCounts] = useState(NO_COUNTS)
   const snoozedCount = counts.set_aside
-  // One answer for every queued payment to the same payee: on for businesses,
-  // off for people (a person is paid for different things).
-  const [applyToGroup, setApplyToGroup] = useState(true)
   // Learned rules when the page opened, so the finish line can say how many
   // payees this session taught the app to sort on its own.
   const baselineRules = useRef(null)
@@ -312,21 +313,12 @@ export default function ReviewQueue() {
     refresh()
   }, [jobRunning, refresh])
 
-  // Sync the form when the card changes, and decide whether an answer covers
-  // the whole payee: yes for a business, no for a person.
+  // Forget a draft whose card has left. A card that comes back (after an undo)
+  // starts from its own label again, not from what was typed before it was answered.
+  const currentId = current?.transaction_id
   useEffect(() => {
-    if (!current) return
-    setForm({
-      category: current.category ?? '',
-      subcategory: current.subcategory ?? '',
-      tags: tagsOf(current),
-    })
-    setApplyToGroup(current.payee_kind !== 'person')
-    // Re-sync the form only when the card identity changes, not on every render
-    // where `current` is a fresh object from a new queue array - otherwise an
-    // in-progress edit would be clobbered mid-keystroke.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.transaction_id])
+    setDraft(d => (d && d.txnId !== currentId ? null : d))
+  }, [currentId])
 
   // A new card takes the keyboard: no chip or button keeps focus from the last
   // card, so Enter cannot activate something the user never chose.
@@ -334,6 +326,22 @@ export default function ReviewQueue() {
     if (!loading && !isDialogOpen()) cardRef.current?.focus({ preventScroll: true })
   }, [loading, current?.transaction_id, propagate])
 
+  const own = useMemo(() => (current
+    ? { category: current.category ?? '', subcategory: current.subcategory ?? '', tags: tagsOf(current) }
+    : { category: '', subcategory: '', tags: [] }), [current])
+  const mine = draft?.txnId === currentId ? draft : null
+  const form = mine?.form ?? own
+  // One answer for every queued payment to the same payee: on for businesses,
+  // off for people (a person is paid for different things).
+  const applyToGroup = mine?.applyToGroup ?? current?.payee_kind !== 'person'
+  const setForm = update => setDraft(d => {
+    const base = d?.txnId === currentId ? d : { txnId: currentId }
+    return { ...base, form: typeof update === 'function' ? update(base.form ?? own) : update }
+  })
+  const setApplyToGroup = update => setDraft(d => {
+    const base = d?.txnId === currentId ? d : { txnId: currentId }
+    return { ...base, applyToGroup: typeof update === 'function' ? update(base.applyToGroup ?? applyToGroup) : update }
+  })
   // Confirm vouches for the machine's label, so it needs a real one. Anything
   // else (no guess, Uncategorized) must be answered by choosing a category.
   const needsPick = !isRealCategory(form.category)
@@ -601,8 +609,8 @@ export default function ReviewQueue() {
   // keyboard is handed back to the card so Enter answers it.
   function choose({ category, subcategory }, event) {
     if (!current) return
-    const own = sameLabel(category, subcategory, current)
-    setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: own ? tagsOf(current) : [] }))
+    const ownLabel = sameLabel(category, subcategory, current)
+    setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: ownLabel ? tagsOf(current) : [] }))
     if (event?.detail > 0 && !isDialogOpen()) cardRef.current?.focus({ preventScroll: true })
   }
 
