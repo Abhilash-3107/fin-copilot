@@ -47,7 +47,7 @@ function Sheet({ onClose }) {
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 id={titleId} className="text-sm font-semibold text-[#e2e8f0]">Keyboard shortcuts</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-[#64748b] transition-colors hover:text-[#e2e8f0]">
+          <button type="button" onClick={onClose} aria-label="Close" className="text-[#94a3b8] transition-colors hover:text-[#e2e8f0]">
             <X size={16} />
           </button>
         </div>

@@ -49,16 +49,16 @@ function AddTransactionSearch({ existingIds, onAdd }) {
   return (
     <div ref={ref} className="relative px-3 py-2.5">
       <div className="flex items-center gap-2 bg-[#0f1117] border border-[#2d3148] rounded-md px-2.5 py-1.5 focus-within:border-[#6366f1] transition-colors max-w-md">
-        <Search size={13} className="text-[#475569] shrink-0" />
+        <Search size={13} className="text-[#94a3b8] shrink-0" />
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
           onFocus={() => query.trim() && setOpen(true)}
           placeholder="Add a transaction to this group…"
-          className="bg-transparent border-none outline-none text-xs text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+          className="bg-transparent border-none outline-none text-xs text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
         />
         {query && (
-          <button type="button" onClick={() => { setQuery(''); setResults([]) }} className="text-[#475569] hover:text-[#94a3b8]">
+          <button type="button" onClick={() => { setQuery(''); setResults([]) }} className="text-[#94a3b8] hover:text-[#e2e8f0]">
             <X size={12} />
           </button>
         )}
@@ -72,10 +72,10 @@ function AddTransactionSearch({ existingIds, onAdd }) {
               onClick={async () => { await onAdd(r.id); setQuery(''); setResults([]); setOpen(false) }}
               className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#1e2440] transition-colors border-b border-[#1e2235] last:border-b-0"
             >
-              <span className="text-[10px] text-[#64748b] whitespace-nowrap tabular-nums">{dayjs(r.txn_date).format('DD MMM YY')}</span>
+              <span className="text-[10px] text-[#94a3b8] whitespace-nowrap tabular-nums">{dayjs(r.txn_date).format('DD MMM YY')}</span>
               <span className="text-xs text-[#cbd5e1] flex-1 truncate">{r.payee}</span>
               <Amount value={r.amount} debitCredit={r.debit_credit} className="text-xs tabular-nums shrink-0" />
-              <Plus size={12} className="text-[#6366f1] shrink-0" />
+              <Plus size={12} className="text-[#818cf8] shrink-0" />
             </button>
           ))}
         </div>
@@ -104,7 +104,7 @@ function RemoveMemberButton({ member, onRemove }) {
       type="button"
       onClick={onRemove}
       aria-label={`Remove ${member.payee} from group`}
-      className="text-[#475569] hover:text-red-400 transition-colors"
+      className="text-[#94a3b8] hover:text-red-400 transition-colors"
     >
       <Trash2 size={12} />
     </button>
@@ -133,7 +133,7 @@ function OwedLine({ summary }) {
           {owedToYou.name ?? `${owedToYou.count} people`} {owedToYou.count === 1 ? 'owes' : 'owe'} you <Money value={owedToYou.total} />
         </span>
       )}
-      {mixed && <span className="text-[#475569]"> · </span>}
+      {mixed && <span className="text-[#94a3b8]"> · </span>}
       {youOwe.count > 0 && (
         <span className="text-red-400">
           {mixed ? 'you' : 'You'} owe {youOwe.name ?? `${youOwe.count} people`} <Money value={youOwe.total} />
@@ -150,7 +150,7 @@ function SettleUp({ settleUp, hasPeople }) {
     if (!hasPeople) return null
     return (
       <div className="border-t border-[#2d3148] px-4 py-3 bg-[#10121a] rounded-b-lg flex items-center gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Settle up</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Settle up</span>
         <span className="text-xs text-green-400">Everyone's settled up</span>
       </div>
     )
@@ -158,9 +158,9 @@ function SettleUp({ settleUp, hasPeople }) {
   return (
     <div className="border-t border-[#2d3148] px-4 py-3 bg-[#10121a] rounded-b-lg">
       <div className="flex items-center gap-1.5 mb-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Settle up</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Settle up</span>
         <Tooltip content="Money a tagged person sent you counts in full. A payment you made is split evenly across them plus you (split, event or blank), counted in full (transfer, refund), or ignored (reimbursement: repaying something they covered)." position="bottom">
-          <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+          <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
         </Tooltip>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -314,7 +314,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
           onClick={toggle}
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.name}`}
-          className="text-[#64748b] hover:text-[#94a3b8] shrink-0"
+          className="text-[#94a3b8] hover:text-[#e2e8f0] shrink-0"
         >
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
@@ -332,7 +332,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
               value={draft.note}
               onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
               placeholder="Add a note"
-              className="w-full h-[36px] bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+              className="w-full h-[36px] bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]"
             />
             <TagInput
               tags={draft.labels}
@@ -366,7 +366,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
               <span key={l} className="text-[10px] bg-[#1e2440] text-[#a5b4fc] px-1.5 py-0.5 rounded-full">{l}</span>
             ))}
           </div>
-          <div className="flex items-center gap-2 mt-0.5 text-xs text-[#64748b] flex-wrap">
+          <div className="flex items-center gap-2 mt-0.5 text-xs text-[#94a3b8] flex-wrap">
             {dateRange && <span>{dateRange}</span>}
             {dateRange && <span className="text-[#2d3148]">·</span>}
             <span>{count(summary.member_count ?? 0, 'payment')}</span>
@@ -378,7 +378,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
         {summary.member_count > 0 && (
           <div className="text-right shrink-0">
             <div className="text-sm tabular-nums text-[#e2e8f0]">
-              <span className="text-xs text-[#64748b]">Your share</span>{' '}
+              <span className="text-xs text-[#94a3b8]">Your share</span>{' '}
               <span className="font-medium tabular-nums"><Money value={summary.your_share} /></span>
             </div>
             <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
@@ -389,7 +389,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
             type="button"
             onClick={startEdit}
             aria-label={`Edit ${group.name}`}
-            className="text-[#475569] hover:text-[#e2e8f0] transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
             title="Edit name, note and labels"
           >
             <Pencil size={14} />
@@ -398,7 +398,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
         <button
           type="button"
           onClick={() => onDelete?.(group)}
-          className="text-[#475569] hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+          className="text-[#94a3b8] hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
           title="Delete group"
         >
           <Trash2 size={14} />
@@ -409,7 +409,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
       {expanded && (
         <div className="border-t border-[#2d3148]">
           {loading ? (
-            <p className="px-4 py-3 text-xs text-[#475569]">Loading…</p>
+            <p className="px-4 py-3 text-xs text-[#94a3b8]">Loading…</p>
           ) : loadError ? (
             <InlineError what="this group" error={loadError} onRetry={open} className="m-3" />
           ) : (
@@ -420,13 +420,13 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
                   <thead>
                     <tr>
                       {['Date', 'Payee', 'Amount', 'People'].map(h => (
-                        <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
+                        <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                       ))}
-                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
+                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">
                         <span className="flex items-center gap-1">
                           Type
                           <Tooltip content={TYPE_HELP} position="bottom">
-                            <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                            <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                           </Tooltip>
                         </span>
                       </th>
@@ -467,7 +467,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
                       <div className="flex items-start gap-3">
                         <div className="flex-1 min-w-0">
                           <p className="text-[#cbd5e1] truncate">{m.payee}</p>
-                          <p className="text-[#64748b]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
+                          <p className="text-[#94a3b8]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
                         </div>
                         <span className="tabular-nums whitespace-nowrap">
                           <Amount value={m.amount} debitCredit={m.debit_credit} />
@@ -491,7 +491,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
                 </ul>
                 </>
               ) : (
-                <p className="px-4 py-3 text-xs text-[#475569]">No transactions yet. Search below to add some.</p>
+                <p className="px-4 py-3 text-xs text-[#94a3b8]">No transactions yet. Search below to add some.</p>
               )}
 
               <AddTransactionSearch existingIds={existingIds} onAdd={addMember} />

@@ -24,7 +24,7 @@ export default function TagInput({ tags = [], onChange, placeholder = 'type and 
           <button
             type="button"
             onClick={() => removeTag(tag)}
-            className="text-[#6366f1] hover:text-white leading-none text-base"
+            className="text-[#818cf8] hover:text-white leading-none text-base"
           >
             &times;
           </button>
@@ -41,7 +41,7 @@ export default function TagInput({ tags = [], onChange, placeholder = 'type and 
             onChange(tags.slice(0, -1))
           }
         }}
-        className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 min-w-[80px] placeholder:text-[#475569]"
+        className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 min-w-[80px] placeholder:text-[#94a3b8]"
         placeholder={tags.length === 0 ? placeholder : ''}
       />
     </div>

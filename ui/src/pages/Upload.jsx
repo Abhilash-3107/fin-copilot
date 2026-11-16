@@ -17,7 +17,7 @@ import { count } from '../lib/plural.js'
 // rigor into visible trust. Green check when every consecutive pair reconciles,
 // amber warning when any break is found; nothing when there's no chain to check.
 function BalancedBadge({ check }) {
-  if (!check || check.checked === 0) return <span className="text-xs text-[#475569]">-</span>
+  if (!check || check.checked === 0) return <span className="text-xs text-[#94a3b8]">-</span>
   const ok = check.balanced
   return (
     <Tooltip content={ok
@@ -35,13 +35,13 @@ function BalancedBadge({ check }) {
 
 // Coverage badge: full (green), partial (amber), none (grey).
 function CoverageBadge({ done, total }) {
-  if (!total) return <span className="text-xs text-[#475569]">-</span>
+  if (!total) return <span className="text-xs text-[#94a3b8]">-</span>
   const full = done >= total
   const none = done === 0
   const cls = full
     ? 'bg-[#14532d] text-[#86efac]'
     : none
-      ? 'bg-[#1e2235] text-[#64748b]'
+      ? 'bg-[#1e2235] text-[#94a3b8]'
       : 'bg-[#451a03] text-[#fdba74]'
   const label = full ? 'Full' : none ? 'None' : 'Partial'
   return (
@@ -83,10 +83,10 @@ function FileRow({ entry, onRemove }) {
   )
   return (
     <li className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0">
-      <FileText size={14} className="text-[#6366f1] shrink-0 mt-0.5" />
+      <FileText size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <span className="text-sm text-[#e2e8f0] break-all">{file.name}</span>
-        {status === 'ready' && <p className="text-xs text-[#64748b] mt-0.5">Ready to upload</p>}
+        {status === 'ready' && <p className="text-xs text-[#94a3b8] mt-0.5">Ready to upload</p>}
         {status === 'uploading' && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
         {status === 'failed' && <p className="text-xs text-[#fca5a5] mt-0.5">{entry.message}</p>}
         {added && <p className="text-xs text-[#94a3b8] mt-0.5">{added}</p>}
@@ -102,7 +102,7 @@ function FileRow({ entry, onRemove }) {
         <button
           onClick={onRemove}
           aria-label={`Remove ${file.name}`}
-          className="text-[#475569] hover:text-[#94a3b8] transition-colors"
+          className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
         >
           <X size={14} />
         </button>
@@ -361,9 +361,9 @@ export default function Upload() {
           dragOver ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] hover:border-[#3d4158] hover:bg-[#13151f]'
         }`}
       >
-        <UploadIcon size={32} className="mx-auto mb-3 text-[#475569]" />
+        <UploadIcon size={32} className="mx-auto mb-3 text-[#94a3b8]" />
         <p className="text-sm text-[#94a3b8]">Drop your bank statements here, or click to browse</p>
-        <p className="text-xs text-[#475569] mt-1">PDF only. You can add several at once.</p>
+        <p className="text-xs text-[#94a3b8] mt-1">PDF only. You can add several at once.</p>
         <input
           ref={fileRef}
           type="file"
@@ -381,7 +381,7 @@ export default function Upload() {
       )}
 
       {entries.length === 0 && !hosted && !removable && (
-        <ul className="space-y-1.5 text-sm text-[#94a3b8] list-disc pl-5 marker:text-[#475569]">
+        <ul className="space-y-1.5 text-sm text-[#94a3b8] list-disc pl-5 marker:text-[#94a3b8]">
           <li>
             Works with Kotak statements, and with other banks when the statement has a
             running-balance column.
@@ -422,7 +422,7 @@ export default function Upload() {
             value={password}
             onChange={e => setPassword(e.target.value)}
             placeholder="Password (if a PDF is locked)"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] w-64"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8] w-64"
           />
           <button
             onClick={handleUpload}
@@ -456,7 +456,7 @@ export default function Upload() {
             </p>
           )}
           {finished.noModel && (
-            <p className="text-xs text-[#64748b]">
+            <p className="text-xs text-[#94a3b8]">
               No model is connected, so only your rules and remembered payees were used. Connect one in{' '}
               <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
               and use Sort again to try the rest.
@@ -468,7 +468,7 @@ export default function Upload() {
       {/* Pipeline result */}
       {lastResult && (
         <div className="bg-[#13151f] border border-[#2d3148] rounded-xl p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] mb-3">Sort results</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">Sort results</p>
           <div className="flex flex-wrap gap-2">
             {[
               { label: 'Processed', value: lastResult.total_processed, color: 'bg-[#1e2235] text-[#94a3b8]' },
@@ -499,7 +499,7 @@ export default function Upload() {
             </p>
           )}
           {lastResult.ai_active === false && (
-            <p className="text-xs text-[#64748b] mt-3">
+            <p className="text-xs text-[#94a3b8] mt-3">
               AI is off - your rules and history did the work above. Add a provider in{' '}
               <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
               to categorize the rest automatically.
@@ -510,21 +510,21 @@ export default function Upload() {
 
       {/* Statement history */}
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-x-auto">
-        <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
+        <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
           Your Statements
         </p>
         {listState.error ? (
           <InlineError what="your statements" error={listState.error} onRetry={loadStatements} className="m-3" />
         ) : !listState.loaded ? (
-          <p className="px-4 py-5 text-sm text-[#475569]">Loading…</p>
+          <p className="px-4 py-5 text-sm text-[#94a3b8]">Loading…</p>
         ) : statements.length === 0 ? (
-          <p className="px-4 py-5 text-sm text-[#475569]">No statements yet - drop one above to get started</p>
+          <p className="px-4 py-5 text-sm text-[#94a3b8]">No statements yet - drop one above to get started</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr>
                 {['Bank', 'Month', 'Balanced', 'Sorted', 'Memory', 'Uploaded', 'Actions'].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
+                  <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -547,17 +547,17 @@ export default function Upload() {
                         <button onClick={() => saveEditName(s.id)} className="text-[#86efac] hover:opacity-80">
                           <Check size={13} />
                         </button>
-                        <button onClick={cancelEditName} className="text-[#64748b] hover:text-[#94a3b8]">
+                        <button onClick={cancelEditName} className="text-[#94a3b8] hover:text-[#e2e8f0]">
                           <X size={13} />
                         </button>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 group">
-                        <FileText size={14} className="text-[#6366f1] shrink-0" />
+                        <FileText size={14} className="text-[#818cf8] shrink-0" />
                         <span>{s.bank_name}</span>
                         <button
                           onClick={() => startEditName(s)}
-                          className="opacity-0 group-hover:opacity-100 text-[#475569] hover:text-[#94a3b8] transition-opacity"
+                          className="opacity-0 group-hover:opacity-100 text-[#94a3b8] hover:text-[#e2e8f0] transition-opacity"
                         >
                           <Pencil size={12} />
                         </button>
@@ -583,7 +583,7 @@ export default function Upload() {
                           <button
                             onClick={() => buildMemory(s)}
                             disabled={embeddingId === s.id}
-                            className="text-[10px] font-medium text-[#6366f1] hover:text-[#818cf8] disabled:opacity-50 transition-colors"
+                            className="text-[10px] font-medium text-[#818cf8] hover:text-[#818cf8] disabled:opacity-50 transition-colors"
                           >
                             {embeddingId === s.id ? 'Building…' : 'Build'}
                           </button>
@@ -598,7 +598,7 @@ export default function Upload() {
                         <button
                           onClick={() => autoAnnotate(s)}
                           disabled={annotatingId === s.id || job != null}
-                          className="flex items-center gap-1 text-[#64748b] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
+                          className="flex items-center gap-1 text-[#94a3b8] hover:text-[#a5b4fc] text-xs disabled:opacity-50 transition-colors"
                         >
                           <Zap size={13} />
                           {annotatingId === s.id ? 'Sorting…' : 'Sort again'}
@@ -607,7 +607,7 @@ export default function Upload() {
                       <Tooltip content="Rebuild the AI's memory - do this after making corrections">
                         <button
                           onClick={() => setClearEmbedTarget(s)}
-                          className="text-[#475569] hover:text-sky-400 transition-colors"
+                          className="text-[#94a3b8] hover:text-sky-400 transition-colors"
                         >
                           <DatabaseZap size={14} />
                         </button>
@@ -615,7 +615,7 @@ export default function Upload() {
                       <Tooltip content="Reset all categories - keeps the statement data">
                         <button
                           onClick={() => setResetTarget(s)}
-                          className="text-[#475569] hover:text-amber-400 transition-colors"
+                          className="text-[#94a3b8] hover:text-amber-400 transition-colors"
                         >
                           <RotateCcw size={14} />
                         </button>
@@ -623,7 +623,7 @@ export default function Upload() {
                       <Tooltip content="Delete this statement and all its data">
                         <button
                           onClick={() => setDeleteTarget(s)}
-                          className="text-[#475569] hover:text-red-400 transition-colors"
+                          className="text-[#94a3b8] hover:text-red-400 transition-colors"
                         >
                           <Trash2 size={14} />
                         </button>

@@ -627,7 +627,7 @@ export default function Transactions() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search payee, note or amount…"
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-64 placeholder:text-[#475569]"
+          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-64 placeholder:text-[#94a3b8]"
         />
 
         <div className="flex items-center gap-1">
@@ -636,15 +636,15 @@ export default function Transactions() {
             value={minAmount}
             onChange={e => setMinAmount(e.target.value)}
             placeholder="Min ₹"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#94a3b8]"
           />
-          <span className="text-[#475569] text-xs">–</span>
+          <span className="text-[#94a3b8] text-xs">–</span>
           <input
             type="number"
             value={maxAmount}
             onChange={e => setMaxAmount(e.target.value)}
             placeholder="Max ₹"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#94a3b8]"
           />
         </div>
 
@@ -696,7 +696,7 @@ export default function Transactions() {
           </button>
         )}
 
-        <span className="text-xs text-[#64748b] ml-auto">
+        <span className="text-xs text-[#94a3b8] ml-auto">
           {loading ? 'Loading…' : loadError ? null : summary ? (
             <>
               {summary.count} transaction{summary.count === 1 ? '' : 's'}
@@ -711,7 +711,7 @@ export default function Transactions() {
         <button
           onClick={loadTransactions}
           disabled={loading}
-          className="text-[#64748b] hover:text-[#94a3b8] disabled:opacity-50"
+          className="text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-50"
           title="Refresh"
         >
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />

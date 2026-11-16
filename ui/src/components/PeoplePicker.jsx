@@ -90,7 +90,7 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
         {selected.map(p => (
           <span key={p.id} className={`flex items-center gap-1 bg-[#1e2440] text-[#a5b4fc] rounded-full ${compact ? 'text-[11px] px-1.5 py-0' : 'text-xs px-2 py-0.5'}`}>
             {p.name}
-            <button type="button" onClick={() => remove(p.id)} aria-label={`Remove ${p.name}`} className="text-[#6366f1] hover:text-white">&times;</button>
+            <button type="button" onClick={() => remove(p.id)} aria-label={`Remove ${p.name}`} className="text-[#818cf8] hover:text-white">&times;</button>
           </span>
         ))}
         <input
@@ -105,7 +105,7 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
           aria-activedescendant={menuOpen && active >= 0 ? optionId(active) : undefined}
           placeholder={selected.length === 0 ? (compact ? 'Tag people…' : 'Search people…') : ''}
           aria-label="Search people"
-          className={`bg-transparent border-none outline-none text-[#e2e8f0] flex-1 placeholder:text-[#475569] ${compact ? 'text-xs min-w-[60px]' : 'text-sm min-w-[80px]'}`}
+          className={`bg-transparent border-none outline-none text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8] ${compact ? 'text-xs min-w-[60px]' : 'text-sm min-w-[80px]'}`}
         />
       </div>
       {menuOpen && (
@@ -127,13 +127,13 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
               className={
                 option.kind === 'person'
                   ? `w-full text-left px-3 py-2 text-sm text-[#e2e8f0] cursor-pointer transition-colors ${i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1e2440]'}`
-                  : `w-full text-left px-3 py-2 text-sm text-[#6366f1] cursor-pointer transition-colors border-t border-[#2d3148] ${i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1e2440]'}`
+                  : `w-full text-left px-3 py-2 text-sm text-[#818cf8] cursor-pointer transition-colors border-t border-[#2d3148] ${i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1e2440]'}`
               }
             >
               {option.kind === 'person' ? (
                 <>
                   {option.person.name}
-                  {option.person.upi && <span className="ml-2 text-xs text-[#64748b]">{option.person.upi}</span>}
+                  {option.person.upi && <span className="ml-2 text-xs text-[#94a3b8]">{option.person.upi}</span>}
                 </>
               ) : (
                 <>+ Create "{query.trim()}"</>

@@ -11,7 +11,7 @@ function SortHeader({ label, col, sort, order, onSort, align = 'left' }) {
   return (
     <button
       onClick={() => onSort(col)}
-      className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#a5b4fc]' : 'hover:text-[#94a3b8]'} ${align === 'right' ? 'flex-row-reverse' : ''}`}
+      className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#a5b4fc]' : 'hover:text-[#e2e8f0]'} ${align === 'right' ? 'flex-row-reverse' : ''}`}
     >
       {label}
       {active && (order === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
@@ -26,7 +26,7 @@ export default function TransactionTable({
   if (!transactions.length) return null
 
   const allSelected = selectable && transactions.every(t => selected?.has(t.id))
-  const th = 'sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap'
+  const th = 'sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] z-10 whitespace-nowrap'
 
   return (
     <table className="w-full border-collapse text-sm">
@@ -102,7 +102,7 @@ export default function TransactionTable({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-[#475569]">-</span>
+                  <span className="text-[#94a3b8]">-</span>
                 )}
               </td>
               <td className="px-3 py-2.5">
@@ -116,9 +116,9 @@ export default function TransactionTable({
                     nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
                 {ann?.confidence == null || src === 'manual' ? (
-                  <span className="text-[#475569]">-</span>
+                  <span className="text-[#94a3b8]">-</span>
                 ) : ann.confidence >= 0.8 ? (
-                  <span className="text-xs tabular-nums text-[#64748b]">
+                  <span className="text-xs tabular-nums text-[#94a3b8]">
                     {Math.round(ann.confidence * 100)}%
                   </span>
                 ) : (

@@ -25,7 +25,7 @@ export default function TopBar({ onMenu }) {
       >
         <Search size={14} strokeWidth={1.75} className="shrink-0" />
         <span className="hidden md:inline flex-1 text-left truncate">Search</span>
-        <kbd className="hidden md:inline text-[10px] text-[#64748b] border border-[#2d3148] rounded px-1.5 py-0.5">{mod === 'Ctrl' ? 'Ctrl K' : '⌘K'}</kbd>
+        <kbd className="hidden md:inline text-[10px] text-[#94a3b8] border border-[#2d3148] rounded px-1.5 py-0.5">{mod === 'Ctrl' ? 'Ctrl K' : '⌘K'}</kbd>
       </button>
       <div className="flex-1" />
       <Tooltip content="Keyboard shortcuts (?)" position="left">

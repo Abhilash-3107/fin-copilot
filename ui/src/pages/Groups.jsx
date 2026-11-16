@@ -57,18 +57,18 @@ export default function Groups() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">Groups</h1>
-        {data != null && <span className="text-xs text-[#64748b]">{count(groups.length, 'group')}</span>}
+        {data != null && <span className="text-xs text-[#94a3b8]">{count(groups.length, 'group')}</span>}
       </div>
 
       {/* Search + create */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex items-center gap-2 flex-1 bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 focus-within:border-[#6366f1] transition-colors">
-          <Search size={14} className="text-[#475569] shrink-0" />
+          <Search size={14} className="text-[#94a3b8] shrink-0" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search groups…"
-            className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+            className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
           />
         </div>
         <form onSubmit={createGroup} className="flex gap-2">
@@ -77,7 +77,7 @@ export default function Groups() {
             aria-label="New group name"
             onChange={e => { setNewName(e.target.value); setCreateError('') }}
             placeholder="New group name…"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] flex-1 sm:flex-none sm:w-52 min-w-0 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] flex-1 sm:flex-none sm:w-52 min-w-0 placeholder:text-[#94a3b8]"
           />
           <button
             type="submit"
@@ -96,7 +96,7 @@ export default function Groups() {
       {error ? (
         <InlineError what="your groups" error={error} onRetry={reload} />
       ) : data == null ? (
-        <p className="text-sm text-[#475569]">Loading…</p>
+        <p className="text-sm text-[#94a3b8]">Loading…</p>
       ) : groups.length === 0 ? (
         <EmptyState
           title="No groups yet"

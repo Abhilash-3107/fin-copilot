@@ -86,7 +86,7 @@ function GroupsSection({ txnId }) {
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] hover:text-[#94a3b8] w-full mb-2"
+        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] hover:text-[#e2e8f0] w-full mb-2"
       >
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Groups
@@ -98,7 +98,7 @@ function GroupsSection({ txnId }) {
       {open && (
         <div className="flex flex-col gap-2">
           {loading ? (
-            <p className="text-xs text-[#475569]">Loading…</p>
+            <p className="text-xs text-[#94a3b8]">Loading…</p>
           ) : groups.length > 0 ? (
             groups.map(g => (
               <div key={g.id} className="flex items-center justify-between bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2">
@@ -106,7 +106,7 @@ function GroupsSection({ txnId }) {
                 <button
                   type="button"
                   onClick={() => removeFromGroup(g.id, g.name)}
-                  className="text-[#475569] hover:text-red-400 transition-colors"
+                  className="text-[#94a3b8] hover:text-red-400 transition-colors"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -117,13 +117,13 @@ function GroupsSection({ txnId }) {
           {/* Add to group input */}
           <div className="relative" ref={searchRef}>
             <div className="flex items-center gap-1.5 bg-[#13151f] border border-[#2d3148] rounded-md px-2.5 py-2 focus-within:border-[#6366f1] transition-colors">
-              <Plus size={13} className="text-[#475569] shrink-0" />
+              <Plus size={13} className="text-[#94a3b8] shrink-0" />
               <input
                 value={search}
                 onChange={e => searchGroups(e.target.value)}
                 onFocus={() => search && setShowSuggestions(true)}
                 placeholder="Add to group…"
-                className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+                className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
               />
             </div>
             {showSuggestions && (suggestions.length > 0 || showCreate) && (
@@ -142,7 +142,7 @@ function GroupsSection({ txnId }) {
                   <button
                     type="button"
                     onMouseDown={() => createAndAdd(search.trim())}
-                    className="w-full text-left px-3 py-2 text-sm text-[#6366f1] hover:bg-[#1e2440] transition-colors border-t border-[#2d3148]"
+                    className="w-full text-left px-3 py-2 text-sm text-[#818cf8] hover:bg-[#1e2440] transition-colors border-t border-[#2d3148]"
                   >
                     + Create group "{search.trim()}"
                   </button>
@@ -351,7 +351,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
           <h2 className="text-sm font-semibold text-[#a5b4fc]">
             {loadError ? "Couldn't load this payment" : annotation ? 'Edit annotation' : 'Annotate transaction'}
           </h2>
-          <button onClick={onClose} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+          <button onClick={onClose} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors">
             <X size={17} />
           </button>
         </div>
@@ -359,7 +359,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
         {/* Transaction summary */}
         <div className="px-5 py-4 bg-[#13151f] border-b border-[#2d3148] shrink-0">
           <div className="flex items-start justify-between gap-4 mb-2">
-            <span className="text-xs text-[#64748b]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
+            <span className="text-xs text-[#94a3b8]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
             <Amount value={txn.amount} debitCredit={txn.debit_credit} className="text-lg font-bold tabular-nums" />
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -387,7 +387,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               <span className="text-[#94a3b8] mr-1.5">{txn.debit_credit === 'credit' ? 'Note' : 'Your note'}</span>{txn.note}
             </div>
           )}
-          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">As printed on the statement</p>
+          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>
           <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
           {annotation && (
             <div className="mt-3 flex items-center gap-2">
@@ -421,7 +421,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
           />
 
           <div>
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">
               Tags
             </label>
             <TagInput tags={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} />

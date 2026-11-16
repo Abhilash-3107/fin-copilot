@@ -11,7 +11,7 @@ function VsThreshold({ value, cmp, threshold, d = 3 }) {
     <span className="text-[#cbd5e1]">
       {num(value, d)}
       {threshold != null && (
-        <span className="text-[#64748b]"> ({cmp} {num(threshold, d)})</span>
+        <span className="text-[#94a3b8]"> ({cmp} {num(threshold, d)})</span>
       )}
     </span>
   )
@@ -19,7 +19,7 @@ function VsThreshold({ value, cmp, threshold, d = 3 }) {
 
 function SectionLabel({ children }) {
   return (
-    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-1.5">
+    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">
       {children}
     </p>
   )
@@ -47,9 +47,9 @@ export default function ReasoningPanel({ reasoning }) {
   const t = r.thresholds ?? {}
   return (
     <details className="bg-[#0f0f1a] border-t border-[#2d3148] group">
-      <summary className="px-6 py-3 cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-[#64748b] hover:text-[#94a3b8] select-none">
+      <summary className="px-6 py-3 cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] hover:text-[#e2e8f0] select-none">
         Why this annotation?
-        <span className="ml-2 normal-case font-normal text-[#475569]">
+        <span className="ml-2 normal-case font-normal text-[#94a3b8]">
           dev · {r.stage}
         </span>
         {r.prompt_truncated && (
@@ -65,7 +65,7 @@ export default function ReasoningPanel({ reasoning }) {
             <SectionLabel>Path</SectionLabel>
             <ol className="space-y-0.5">
               {r.skips.map((s, i) => (
-                <li key={i} className="text-[#64748b]">↳ {s}</li>
+                <li key={i} className="text-[#94a3b8]">↳ {s}</li>
               ))}
               <li className="text-[#a5b4fc]">→ decided by {r.stage}</li>
             </ol>
@@ -81,9 +81,9 @@ export default function ReasoningPanel({ reasoning }) {
                 <div key={n.transaction_id} className="flex items-center justify-between gap-3">
                   <span className="truncate">
                     <span className="text-[#a5b4fc]">{n.category ?? '-'}</span>
-                    {n.source && <span className="text-[#475569]"> · {n.source}</span>}
+                    {n.source && <span className="text-[#94a3b8]"> · {n.source}</span>}
                     {n.raw_description && (
-                      <span className="text-[#64748b]"> · {n.raw_description.slice(0, 40)}</span>
+                      <span className="text-[#94a3b8]"> · {n.raw_description.slice(0, 40)}</span>
                     )}
                   </span>
                   <span className="tabular-nums text-[#cbd5e1] shrink-0">
@@ -119,7 +119,7 @@ export default function ReasoningPanel({ reasoning }) {
                 <span className="text-[#cbd5e1]">
                   {r.vote_category} @ {pct(r.vote_share)}
                   {t.rag_consensus_floor != null && (
-                    <span className="text-[#64748b]"> (floor {pct(t.rag_consensus_floor)})</span>
+                    <span className="text-[#94a3b8]"> (floor {pct(t.rag_consensus_floor)})</span>
                   )}
                 </span>
               </Row>
@@ -139,7 +139,7 @@ export default function ReasoningPanel({ reasoning }) {
                 <span className="text-[#cbd5e1]">
                   ×{num(r.dampening_factor, 3)}
                   {r.calibration_bucket && (
-                    <span className="text-[#64748b]"> ({r.calibration_bucket})</span>
+                    <span className="text-[#94a3b8]"> ({r.calibration_bucket})</span>
                   )}
                 </span>
               </Row>
@@ -166,7 +166,7 @@ export default function ReasoningPanel({ reasoning }) {
               {r.counterparty_prior_category}
               {r.counterparty_prior_probability != null && <> @ {pct(r.counterparty_prior_probability)}</>}
               {r.counterparty_prior_n != null && (
-                <span className="text-[#64748b]">
+                <span className="text-[#94a3b8]">
                   {' '}· n={r.counterparty_prior_n}
                   {t.counterparty_min_observations != null && <> (min {t.counterparty_min_observations})</>}
                 </span>
@@ -184,7 +184,7 @@ export default function ReasoningPanel({ reasoning }) {
             <SectionLabel>
               Prompt examples ({r.prompt_examples.length})
               {r.majority_category && (
-                <span className="ml-2 normal-case font-normal text-[#64748b]">
+                <span className="ml-2 normal-case font-normal text-[#94a3b8]">
                   hint: {r.majority_count} × {r.majority_category}
                 </span>
               )}
@@ -192,10 +192,10 @@ export default function ReasoningPanel({ reasoning }) {
             <div className="space-y-1">
               {r.prompt_examples.map((e, i) => (
                 <div key={i} className="flex items-center justify-between gap-3">
-                  <span className="truncate text-[#64748b]">{e.raw_description?.slice(0, 48) ?? '-'}</span>
+                  <span className="truncate text-[#94a3b8]">{e.raw_description?.slice(0, 48) ?? '-'}</span>
                   <span className="shrink-0">
                     <span className="text-[#a5b4fc]">{e.category}{e.subcategory ? ` > ${e.subcategory}` : ''}</span>
-                    {e.source && <span className="text-[#475569]"> · {e.source}</span>}
+                    {e.source && <span className="text-[#94a3b8]"> · {e.source}</span>}
                   </span>
                 </div>
               ))}
@@ -237,7 +237,7 @@ export default function ReasoningPanel({ reasoning }) {
         {r.embed_text && (
           <div>
             <SectionLabel>Embed text</SectionLabel>
-            <p className="font-mono text-[11px] text-[#64748b] break-all bg-[#161625] rounded px-2 py-1.5">
+            <p className="font-mono text-[11px] text-[#94a3b8] break-all bg-[#161625] rounded px-2 py-1.5">
               {r.embed_text}
             </p>
           </div>

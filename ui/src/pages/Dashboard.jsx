@@ -31,7 +31,7 @@ import {
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ChartTooltip, Filler)
 
 const card = 'bg-[#13151f] border border-[#2d3148] rounded-xl'
-const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#64748b]'
+const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#94a3b8]'
 
 function ordinal(n) {
   const rest = n % 100
@@ -149,7 +149,7 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub, hint }) {
           <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
         </p>
       )}
-      {sub && <p className="mt-0.5 text-xs text-[#475569]">{sub}</p>}
+      {sub && <p className="mt-0.5 text-xs text-[#94a3b8]">{sub}</p>}
     </Link>
   )
   return hint ? (
@@ -194,7 +194,7 @@ function AttentionList({ items, countsError, onRetryCounts }) {
                   <item.icon size={16} />
                 </span>
                 <span className="min-w-0 flex-1 text-sm text-[#e2e8f0]">{item.text}</span>
-                <span className="hidden shrink-0 items-center gap-1 text-xs text-[#6366f1] group-hover:text-[#a5b4fc] sm:flex">
+                <span className="hidden shrink-0 items-center gap-1 text-xs text-[#818cf8] group-hover:text-[#a5b4fc] sm:flex">
                   {item.cta} <ArrowRight size={13} />
                 </span>
               </Link>
@@ -245,7 +245,7 @@ function BalanceCard({ balance, month }) {
     scales: {
       x: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, maxTicksLimit: 6,
+          color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 6,
           callback(value) {
             return dayjs(this.getLabelForValue(value)).format('D MMM')
           },
@@ -254,7 +254,7 @@ function BalanceCard({ balance, month }) {
       },
       y: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, maxTicksLimit: 5,
+          color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 5,
           callback: tick,
         },
         grid: { color: '#1e2235' },
@@ -268,7 +268,7 @@ function BalanceCard({ balance, month }) {
         {points.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-[#475569]">
+          <div className="flex h-full items-center justify-center text-sm text-[#94a3b8]">
             Balance history appears once statements are imported
           </div>
         )}
@@ -306,7 +306,7 @@ function CommittedCard({ recurring, summary }) {
         )}
       </div>
       {committed.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">
           No monthly commitments spotted yet - they show up after a few months of statements.
         </p>
       ) : (
@@ -317,9 +317,9 @@ function CommittedCard({ recurring, summary }) {
               className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm border-b border-[#1a1d27] last:border-0"
             >
               <div className="flex min-w-0 items-center gap-2.5">
-                <CalendarClock size={14} className="shrink-0 text-[#64748b]" />
+                <CalendarClock size={14} className="shrink-0 text-[#94a3b8]" />
                 <span className="truncate text-[#e2e8f0]">{r.name}</span>
-                <span className="hidden text-xs text-[#64748b] sm:inline">
+                <span className="hidden text-xs text-[#94a3b8] sm:inline">
                   {r.units > 1
                     ? `${r.units} ${r.category === 'Investments' ? 'SIPs' : 'charges'}`
                     : `around the ${ordinal(dayjs(r.last_date).date())}`}
@@ -332,7 +332,7 @@ function CommittedCard({ recurring, summary }) {
           ))}
           {rest.length > 0 && (
             <li className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
-              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span className="text-[#94a3b8]">and {rest.length} more</span>
               <span className="tabular-nums text-[#94a3b8]">
                 <Amount value={rest.reduce((sum, r) => sum + r.amount, 0)} decimals={0} />
               </span>
@@ -342,7 +342,7 @@ function CommittedCard({ recurring, summary }) {
       )}
       <Link
         to="/insights"
-        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#818cf8] hover:text-[#a5b4fc]"
       >
         All subscriptions and SIPs on Money Map →
       </Link>
@@ -364,7 +364,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
         Where {dayjs(month).format('MMMM')}'s money went
       </p>
       {top.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">No spending recorded this month.</p>
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">No spending recorded this month.</p>
       ) : (
         <ul className="px-4 py-2">
           {top.map(c => (
@@ -388,7 +388,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
           ))}
           {rest.length > 0 && (
             <li className="-mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_5rem] items-center gap-3 px-1 py-2 text-sm">
-              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span className="text-[#94a3b8]">and {rest.length} more</span>
               <span />
               <span className="text-right tabular-nums text-[#94a3b8]">
                 <Amount value={rest.reduce((sum, v) => sum + v, 0)} decimals={0} />
@@ -399,7 +399,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
       )}
       <Link
         to="/insights"
-        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#818cf8] hover:text-[#a5b4fc]"
       >
         See the full picture on Money Map →
       </Link>
@@ -421,7 +421,7 @@ function AccuracyCard({ rows, error, onRetry }) {
       {error ? (
         <InlineError what="the accuracy figures" error={error} onRetry={onRetry} className="m-3" />
       ) : weak.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-[#475569] leading-relaxed">
+        <p className="px-4 py-4 text-sm text-[#94a3b8] leading-relaxed">
           Not enough corrections yet to spot weak categories. Verify a few in Teach Me
           and the shakiest ones will surface here.
         </p>
@@ -445,7 +445,7 @@ function AccuracyCard({ rows, error, onRetry }) {
                   </span>
                   <span className="text-right tabular-nums text-[#94a3b8]">
                     {pct}%
-                    <span className="block text-[10px] text-[#475569]">n={r.reviewed}</span>
+                    <span className="block text-[10px] text-[#94a3b8]">n={r.reviewed}</span>
                   </span>
                 </Link>
               </li>
@@ -581,7 +581,7 @@ export default function Dashboard() {
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Your money at a glance
           {data?.month && (
-            <span className="text-sm font-normal text-[#64748b]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
+            <span className="text-sm font-normal text-[#94a3b8]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
           {coverage && (
             <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
@@ -601,13 +601,13 @@ export default function Dashboard() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-[#475569]">Pulling it together…</p>
+        <p className="text-sm text-[#94a3b8]">Pulling it together…</p>
       ) : summaryLoad.error ? (
         <InlineError what="your dashboard" error={summaryLoad.error} onRetry={reloadAll} />
       ) : !data?.month ? (
         <div className={`${card} p-8 text-center`}>
           <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>
-          <p className="mt-2 text-sm text-[#64748b]">
+          <p className="mt-2 text-sm text-[#94a3b8]">
             Upload a bank statement and your copilot will sort every transaction for you.
           </p>
           <div className="mt-4 flex items-center justify-center gap-3">
@@ -625,7 +625,7 @@ export default function Dashboard() {
               {seedingDemo ? 'Loading…' : 'Load demo data'}
             </button>
           </div>
-          <p className="mt-3 text-xs text-[#475569]">
+          <p className="mt-3 text-xs text-[#94a3b8]">
             No statement handy? The demo fills four months of realistic sample data - remove it
             anytime from the banner or Settings › Data.
           </p>

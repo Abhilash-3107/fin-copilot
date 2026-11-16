@@ -24,7 +24,7 @@ import { coverageLabel, comparisonLabel } from '../lib/period.js'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
 const card = 'bg-[#13151f] border border-[#2d3148] rounded-xl'
-const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#64748b]'
+const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#94a3b8]'
 
 function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
   return (
@@ -36,7 +36,7 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
       <div className="mt-1 flex flex-wrap items-center gap-x-2">
         <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
         {sub && (typeof sub === 'string'
-          ? <span className="text-xs text-[#64748b]">{sub}</span>
+          ? <span className="text-xs text-[#94a3b8]">{sub}</span>
           : sub)}
       </div>
     </div>
@@ -67,7 +67,7 @@ function VerdictStrip({ verdict, vs }) {
       <StatTile
         label="Kept" value={kept} delta={tileDelta(verdict, 'kept')} vs={vs}
         sub={kept_rate != null
-          ? <span className="text-xs text-[#64748b]"><Percent value={kept_rate} /> of money in</span>
+          ? <span className="text-xs text-[#94a3b8]"><Percent value={kept_rate} /> of money in</span>
           : null}
       />
     </div>
@@ -109,7 +109,7 @@ function BalanceChart({ balance }) {
     scales: {
       x: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, autoSkip: false,
+          color: '#94a3b8', font: { size: 11 }, autoSkip: false,
           // One label per month (on its first data point), so a daily series
           // never renders duplicate month labels.
           callback(value, index) {
@@ -122,7 +122,7 @@ function BalanceChart({ balance }) {
       },
       y: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, maxTicksLimit: 5,
+          color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 5,
           callback: tick,
         },
         grid: { color: '#1e2235' },
@@ -133,13 +133,13 @@ function BalanceChart({ balance }) {
     <div className={`${card} p-4`}>
       <div className="flex items-baseline justify-between mb-3">
         <p className={cardTitle}>Balance over time</p>
-        {account && <span className="text-xs text-[#64748b]">{account}</span>}
+        {account && <span className="text-xs text-[#94a3b8]">{account}</span>}
       </div>
       <div className={`h-52 ${hidden ? 'blur-[6px] select-none' : ''}`}>
         {series.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
-          <div className="flex items-center justify-center h-full text-sm text-[#475569]">
+          <div className="flex items-center justify-center h-full text-sm text-[#94a3b8]">
             Balance history appears once statements are imported
           </div>
         )}
@@ -155,11 +155,11 @@ function WhatChanged({ changes, month, vs }) {
     <div className={`${card} p-4`}>
       <p className={`${cardTitle} mb-3`}>{vs ? `What changed vs ${vs}` : 'What changed'}</p>
       {!vs ? (
-        <p className="text-sm text-[#475569]">
+        <p className="text-sm text-[#94a3b8]">
           There is no earlier period to compare with yet.
         </p>
       ) : changes.length === 0 ? (
-        <p className="text-sm text-[#475569]">No meaningful shifts from {vs}.</p>
+        <p className="text-sm text-[#94a3b8]">No meaningful shifts from {vs}.</p>
       ) : (
         <ul className="space-y-3">
           {changes.map(c => (
@@ -172,7 +172,7 @@ function WhatChanged({ changes, month, vs }) {
                   {c.category} {c.delta > 0 ? 'up' : 'down'}{' '}
                   <Amount value={Math.abs(c.delta)} decimals={0} className="tabular-nums" />
                 </span>
-                <span className="text-xs text-[#64748b] tabular-nums whitespace-nowrap">
+                <span className="text-xs text-[#94a3b8] tabular-nums whitespace-nowrap">
                   <Amount value={c.previous} decimals={0} /> → <Amount value={c.current} decimals={0} />
                 </span>
               </Link>
@@ -186,7 +186,7 @@ function WhatChanged({ changes, month, vs }) {
 
 function DeltaShort({ delta }) {
   if (delta == null) return null
-  if (!delta) return <span className="text-xs text-[#475569]">-</span>
+  if (!delta) return <span className="text-xs text-[#94a3b8]">-</span>
   const up = delta > 0
   return (
     <span className={`text-xs tabular-nums ${up ? 'text-red-400' : 'text-emerald-400'}`}>
@@ -209,10 +209,10 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
     <div className={`${card} overflow-hidden`}>
       <div className="flex items-baseline justify-between gap-3 px-4 py-3 border-b border-[#2d3148]">
         <p className={cardTitle}>Where it went - {heading}</p>
-        {hasDeltas && vs && <p className="text-xs text-[#64748b]">vs {vs}</p>}
+        {hasDeltas && vs && <p className="text-xs text-[#94a3b8]">vs {vs}</p>}
       </div>
       {categories.length === 0 && breakdown.extras.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">No spending recorded this month.</p>
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">No spending recorded this month.</p>
       ) : (
         <ul>
           {categories.map(c => (
@@ -223,7 +223,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                   className="text-left text-[#e2e8f0] hover:text-[#a5b4fc] truncate cursor-pointer"
                   title="Show subcategories"
                 >
-                  <span className="text-[#475569] mr-1.5">{expanded === c.category ? '▾' : '▸'}</span>
+                  <span className="text-[#94a3b8] mr-1.5">{expanded === c.category ? '▾' : '▸'}</span>
                   {c.category}
                 </button>
                 <div className="h-2 rounded bg-[#1e2235] overflow-hidden">
@@ -240,7 +240,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                 </span>
               </div>
               {c.offsets > 0 && (
-                <p className="px-4 pb-2 -mt-1 text-xs text-[#64748b]">
+                <p className="px-4 pb-2 -mt-1 text-xs text-[#94a3b8]">
                   gross <Amount value={c.gross} decimals={0} />, of which{' '}
                   <Amount value={c.offsets} decimals={0} /> was refunded or paid back
                 </p>
@@ -250,7 +250,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                   {c.subcategories.map(s => (
                     <li key={s.name} className="px-4 py-1 pl-10 flex items-baseline justify-between text-xs">
                       <span className="text-[#94a3b8]">
-                        {s.name} <span className="text-[#475569]">× {s.count}</span>
+                        {s.name} <span className="text-[#94a3b8]">× {s.count}</span>
                       </span>
                       <span className="tabular-nums text-[#94a3b8]"><Amount value={s.total} decimals={0} /></span>
                     </li>
@@ -258,7 +258,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                   <li className="px-4 pt-1 pl-10">
                     <Link
                       to={txnFilterPath({ category: c.category, month })}
-                      className="text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+                      className="text-xs text-[#818cf8] hover:text-[#a5b4fc]"
                     >
                       View transactions →
                     </Link>
@@ -276,7 +276,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                     className="truncate text-[#94a3b8] hover:text-[#a5b4fc]"
                   >
                     {e.label}
-                    <span className="ml-1.5 text-xs text-[#475569]">× {e.count}</span>
+                    <span className="ml-1.5 text-xs text-[#94a3b8]">× {e.count}</span>
                   </Link>
                 ) : (
                   <span className="truncate text-[#94a3b8]">{e.label}</span>
@@ -325,9 +325,9 @@ function PeoplePanel({ people, monthName }) {
         Sent and received in {monthName}
       </p>
       {people.items.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">
           No transfers to or from people in {monthName}. To match transfers to names,{' '}
-          <Link to="/people" className="text-[#6366f1] hover:text-[#a5b4fc]">add people</Link>{' '}
+          <Link to="/people" className="text-[#818cf8] hover:text-[#a5b4fc]">add people</Link>{' '}
           and their UPI handles.
         </p>
       ) : (
@@ -340,9 +340,9 @@ function PeoplePanel({ people, monthName }) {
               <div className="min-w-0">
                 <p className="text-[#e2e8f0] truncate">
                   {p.name}
-                  {p.relationship && <span className="ml-2 text-xs text-[#64748b]">{p.relationship}</span>}
+                  {p.relationship && <span className="ml-2 text-xs text-[#94a3b8]">{p.relationship}</span>}
                 </p>
-                <p className="text-xs text-[#64748b] tabular-nums">
+                <p className="text-xs text-[#94a3b8] tabular-nums">
                   sent <Amount value={p.sent} decimals={0} /> · received <Amount value={p.received} decimals={0} /> · {count(p.count, 'transfer')}
                 </p>
               </div>
@@ -366,7 +366,7 @@ function MerchantsPanel({ merchants, heading, month }) {
         Top merchants - {heading}
       </p>
       {merchants.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">No merchant spending this month.</p>
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">No merchant spending this month.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -374,7 +374,7 @@ function MerchantsPanel({ merchants, heading, month }) {
               {['Merchant', 'Total', 'Orders', 'Avg order'].map((h, i) => (
                 <th
                   key={h}
-                  className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] ${i === 0 ? 'text-left' : 'text-right'}`}
+                  className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] ${i === 0 ? 'text-left' : 'text-right'}`}
                 >
                   {h}
                 </th>
@@ -426,7 +426,7 @@ export default function Insights() {
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Money Map
           {data?.month && (
-            <span className="text-sm font-normal text-[#64748b]"> - {dayjs(data.month).format('MMMM YYYY')}</span>
+            <span className="text-sm font-normal text-[#94a3b8]"> - {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
           {coverage && (
             <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
@@ -438,11 +438,11 @@ export default function Insights() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-[#475569]">Crunching your numbers…</p>
+        <p className="text-sm text-[#94a3b8]">Crunching your numbers…</p>
       ) : error ? (
         <InlineError what="your Money Map" error={error} onRetry={reload} />
       ) : !data?.month ? (
-        <p className="text-sm text-[#475569]">Nothing here yet - upload a statement to get started.</p>
+        <p className="text-sm text-[#94a3b8]">Nothing here yet - upload a statement to get started.</p>
       ) : (
         <>
           <VerdictStrip verdict={data.verdict} vs={vs} />

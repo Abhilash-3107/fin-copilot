@@ -76,7 +76,7 @@ export default function DataSettings() {
       {removable && (
         <div>
           <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Sample data</h2>
-          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+          <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
             {mixed
               ? 'Your ledger still holds the bundled sample transactions next to your own statements. '
               : 'Your ledger holds the bundled sample data, not your own. '}
@@ -89,7 +89,7 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Export</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
           Download your transactions with their current categories as a CSV or JSON file -
           your data stays yours and portable.
         </p>
@@ -107,7 +107,7 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Backup</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
           Download a complete snapshot of your database - transactions, categories,
           learned rules, and memory - as a single file you can keep or restore. Your AI
           provider's API key is left out, so the file is safe to share.
@@ -133,7 +133,7 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Delete everything</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
           Permanently remove all statements, transactions, categories you've assigned,
           people, groups, the AI's memory, and your settings (AI model and API key, review
           threshold, developer mode, your rules and dismissed ones). The category list itself is kept. This cannot be

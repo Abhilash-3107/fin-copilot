@@ -23,7 +23,7 @@ function Panel({ title, onClose, children, width = 'w-[28rem]' }) {
       >
         <div className="flex items-center justify-between mb-4">
           <h3 id={titleId} className="text-sm font-semibold text-[#e2e8f0]">{title}</h3>
-          <button onClick={onClose} aria-label="Close" className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+          <button onClick={onClose} aria-label="Close" className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors">
             <X size={16} />
           </button>
         </div>

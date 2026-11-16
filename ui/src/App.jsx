@@ -24,7 +24,7 @@ const Insights = lazy(() => import('./pages/Insights.jsx'))
 const Settings = lazy(() => import('./pages/Settings.jsx'))
 
 function PageFallback() {
-  return <div className="p-6 text-sm text-[#475569]">Loading…</div>
+  return <div className="p-6 text-sm text-[#94a3b8]">Loading…</div>
 }
 
 export default function App() {

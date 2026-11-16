@@ -52,7 +52,7 @@ function StageFunnel({ funnel, total }) {
             </div>
             <span className="w-24 shrink-0 text-right tabular-nums text-[#cbd5e1]">
               {s.count}
-              <span className="text-[#475569]"> ({s.review} rev)</span>
+              <span className="text-[#94a3b8]"> ({s.review} rev)</span>
             </span>
           </div>
         )
@@ -100,7 +100,7 @@ function ThresholdHistogram({ hist, markers, accent = '#a5b4fc' }) {
         ))}
       </div>
       {/* Axis + marker legend */}
-      <div className="flex justify-between text-[10px] text-[#475569] mt-1 tabular-nums">
+      <div className="flex justify-between text-[10px] text-[#94a3b8] mt-1 tabular-nums">
         <span>0.0</span>
         <span>0.5</span>
         <span>1.0</span>
@@ -110,11 +110,11 @@ function ThresholdHistogram({ hist, markers, accent = '#a5b4fc' }) {
           <span key={m.label} className="text-[10px] flex items-center gap-1">
             <span className="inline-block w-2 border-t border-dashed" style={{ borderColor: m.color }} />
             <span className="text-[#94a3b8]">{m.label}</span>
-            <span className="tabular-nums text-[#64748b]">{m.value.toFixed(2)}</span>
+            <span className="tabular-nums text-[#94a3b8]">{m.value.toFixed(2)}</span>
           </span>
         ))}
       </div>
-      <p className="text-[10px] text-[#475569] mt-1">{count(hist.n, 'annotation')} with this signal</p>
+      <p className="text-[10px] text-[#94a3b8] mt-1">{count(hist.n, 'annotation')} with this signal</p>
     </div>
   )
 }
@@ -123,10 +123,10 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
   if (!items.length) return null
   return (
     <div>
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-1.5">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">
         {title} ({items.length})
       </p>
-      <p className="text-[11px] text-[#64748b] mb-2 leading-relaxed">
+      <p className="text-[11px] text-[#94a3b8] mb-2 leading-relaxed">
         Within {band.toFixed(2)} of {gateLabel} ({gate.toFixed(2)}) - lowering that
         threshold slightly would flip these.
       </p>
@@ -135,8 +135,8 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
           <div key={m.transaction_id} className="flex items-center justify-between gap-3 text-xs">
             <span className="truncate text-[#94a3b8]">
               <span className="text-[#a5b4fc]">{m.category}</span>
-              <span className="text-[#475569]"> · {m.source}</span>
-              {m.raw_description && <span className="text-[#64748b]"> · {m.raw_description.slice(0, 44)}</span>}
+              <span className="text-[#94a3b8]"> · {m.source}</span>
+              {m.raw_description && <span className="text-[#94a3b8]"> · {m.raw_description.slice(0, 44)}</span>}
             </span>
             <span className="shrink-0 tabular-nums text-[#f59e0b]">{Number(m[valueKey]).toFixed(3)}</span>
           </div>
@@ -172,21 +172,21 @@ export default function RunSummary({ threshold }) {
   }, [threshold, attempt])
 
   if (loading) {
-    return <p className="px-5 py-4 text-sm text-[#64748b]">Loading run summary…</p>
+    return <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading run summary…</p>
   }
   if (error) {
     return <InlineError what="the run summary" error={error} onRetry={() => setAttempt(n => n + 1)} className="m-3" />
   }
   if (!data || data.total === 0) {
     return (
-      <p className="px-5 py-4 text-sm text-[#64748b]">
+      <p className="px-5 py-4 text-sm text-[#94a3b8]">
         No annotated transactions yet. Run auto-annotate to populate this.
       </p>
     )
   }
 
   const simMarkers = [
-    { label: 'novelty floor', value: data.similarity.thresholds.rag_similarity_floor, color: '#64748b' },
+    { label: 'novelty floor', value: data.similarity.thresholds.rag_similarity_floor, color: '#94a3b8' },
     { label: 'RAG-direct', value: data.similarity.thresholds.rag_direct_threshold, color: '#4ade80' },
   ]
   const confMarkers = [
@@ -198,7 +198,7 @@ export default function RunSummary({ threshold }) {
       {/* Headline */}
       <div className="flex items-baseline gap-4 flex-wrap">
         <span className="text-2xl font-semibold text-[#e2e8f0] tabular-nums">{data.total}</span>
-        <span className="text-xs text-[#64748b]">annotated</span>
+        <span className="text-xs text-[#94a3b8]">annotated</span>
         <span className="text-sm text-[#cbd5e1] tabular-nums">
           {data.auto_accepted_count} auto-accepted · {data.review_count} to review
         </span>
@@ -208,7 +208,7 @@ export default function RunSummary({ threshold }) {
       </div>
 
       {data.truncated && (
-        <p className="text-[11px] text-[#64748b]">
+        <p className="text-[11px] text-[#94a3b8]">
           Showing the most recent {data.scan_cap.toLocaleString()} annotations; older
           ones are excluded from these aggregates.
         </p>
@@ -216,9 +216,9 @@ export default function RunSummary({ threshold }) {
 
       {/* Stage funnel */}
       <div>
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-2.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-2.5">
           Stage funnel
-          <span className="ml-2 normal-case font-normal text-[#475569]">solid = auto-accepted, faded = routed to review</span>
+          <span className="ml-2 normal-case font-normal text-[#94a3b8]">solid = auto-accepted, faded = routed to review</span>
         </p>
         <StageFunnel funnel={data.stage_funnel} total={data.total} />
       </div>
@@ -226,13 +226,13 @@ export default function RunSummary({ threshold }) {
       {/* Distributions */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-2">
             RAG best-similarity
           </p>
           <ThresholdHistogram hist={data.similarity} markers={simMarkers} accent="#a5b4fc" />
         </div>
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#475569] mb-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-2">
             Final confidence
           </p>
           <ThresholdHistogram hist={data.confidence} markers={confMarkers} accent="#818cf8" />

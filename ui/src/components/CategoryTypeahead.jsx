@@ -83,9 +83,9 @@ export default function CategoryTypeahead({ tree, chosenCategory, onPick, onCrea
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
-        className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] pl-3 pr-9 py-2 rounded-lg text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+        className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] pl-3 pr-9 py-2 rounded-lg text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]"
       />
-      <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#64748b] bg-[#1e2235] px-1.5 py-0.5 rounded">/</kbd>
+      <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[#94a3b8] bg-[#1e2235] px-1.5 py-0.5 rounded">/</kbd>
       {open && (
         <ul
           id={listId}

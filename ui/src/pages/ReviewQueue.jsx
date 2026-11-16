@@ -70,7 +70,7 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
               />
               <span className="flex-1 min-w-0">
                 <span className="block text-[#cbd5e1] truncate">{it.payee}</span>
-                <span className="text-[#64748b]">
+                <span className="text-[#94a3b8]">
                   {dayjs(it.txn_date).format('DD MMM')} · <Amount value={it.amount} debitCredit={it.debit_credit} /> · currently {it.category}
                   {it.similarity != null && ` · ${Math.round(it.similarity * 100)}% similar`}
                 </span>
@@ -726,7 +726,7 @@ export default function ReviewQueue() {
   }
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full text-[#475569]">Getting your review list ready…</div>
+    return <div className="flex items-center justify-center h-full text-[#94a3b8]">Getting your review list ready…</div>
   }
 
   const propagateDialog = propagate && (
@@ -757,7 +757,7 @@ export default function ReviewQueue() {
 
   if (outOfCards && !verified) {
     return (
-      <div className="flex items-center justify-center h-full text-[#475569]">
+      <div className="flex items-center justify-center h-full text-[#94a3b8]">
         {propagateDialog}
         Checking for anything left…
       </div>
@@ -824,7 +824,7 @@ export default function ReviewQueue() {
             )}
           </>
         )}
-        {handled > 0 && <p className="text-xs text-[#64748b] mt-1">{statsLine(stats)}</p>}
+        {handled > 0 && <p className="text-xs text-[#94a3b8] mt-1">{statsLine(stats)}</p>}
         <div className="mt-2 flex items-center gap-3">
           {hasTransactions && (
             <Link
@@ -873,7 +873,7 @@ export default function ReviewQueue() {
       )}
       {/* Progress */}
       <div className="max-w-3xl mx-auto w-full mb-5">
-        <div className="flex justify-between text-xs text-[#64748b] mb-1.5">
+        <div className="flex justify-between text-xs text-[#94a3b8] mb-1.5">
           <span>Teach Me</span>
           <span>{handled} / {total}</span>
         </div>
@@ -883,7 +883,7 @@ export default function ReviewQueue() {
             style={{ width: `${(handled / total) * 100}%` }}
           />
         </div>
-        <p className="text-[11px] text-[#64748b] mt-1">
+        <p className="text-[11px] text-[#94a3b8] mt-1">
           {statsLine(stats)}
           {payeesLeft > 0 && ` · ${payeesLeft} payee${payeesLeft === 1 ? '' : 's'} left`}
           {waiting > queue.length && ` · showing the first ${queue.length} of ${waiting} waiting`}
@@ -959,7 +959,7 @@ export default function ReviewQueue() {
         typeaheadRef={typeaheadRef}
       />
 
-      <p className="text-center text-xs text-[#64748b] mt-4">
+      <p className="text-center text-xs text-[#94a3b8] mt-4">
         Keyboard:
         {suggestionKeys > 0 && (
           <>

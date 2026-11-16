@@ -123,24 +123,24 @@ export default function People() {
     navigate(txnFilterPath({ person: p.upi }), { state: { personName: p.name } })
   }
 
-  const th = 'px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]'
+  const th = 'px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]'
 
   return (
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">People</h1>
-        {data != null && <span className="text-xs text-[#64748b]">{count(people.length, 'contact')}</span>}
+        {data != null && <span className="text-xs text-[#94a3b8]">{count(people.length, 'contact')}</span>}
       </div>
 
       {/* Search + add trigger */}
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 focus-within:border-[#6366f1] transition-colors max-w-sm flex-1">
-          <Search size={14} className="text-[#475569] shrink-0" />
+          <Search size={14} className="text-[#94a3b8] shrink-0" />
           <input
             value={search}
             onChange={e => handleSearch(e.target.value)}
             placeholder="Search people…"
-            className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+            className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
           />
         </div>
         <button
@@ -156,7 +156,7 @@ export default function People() {
       {error ? (
         <InlineError what="your people" error={error} onRetry={reload} />
       ) : data == null ? (
-        <p className="text-sm text-[#475569]">Loading…</p>
+        <p className="text-sm text-[#94a3b8]">Loading…</p>
       ) : people.length === 0 ? (
         <EmptyState
           title="No people yet"
@@ -172,7 +172,7 @@ export default function People() {
                   <span className="flex items-center gap-1">
                     Statement Match
                     <Tooltip content="Text pattern to auto-match this person in bank statements (e.g., their UPI ID or name as it appears)" position="bottom">
-                      <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                      <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
                 </th>
@@ -180,7 +180,7 @@ export default function People() {
                   <span className="flex items-center gap-1">
                     Relationship
                     <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. Me (my other account) files them as Self Transfers. Others are Peer Transfers." position="bottom">
-                      <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                      <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
                 </th>
@@ -189,10 +189,10 @@ export default function People() {
                   <span className="inline-flex items-center gap-1">
                     <span className="flex flex-col items-end leading-tight">
                       <span>Sent and received</span>
-                      <span className="font-normal normal-case tracking-normal text-[#475569]">all time</span>
+                      <span className="font-normal normal-case tracking-normal text-[#94a3b8]">all time</span>
                     </span>
                     <Tooltip content="Money you received from them minus money you sent them, across every payment in your statements that matches this person. It is not a group balance: Groups counts only the payments you put in a group. Money Map counts one month of payments labelled Transfers." position="left">
-                      <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                      <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
                 </th>
@@ -219,7 +219,7 @@ export default function People() {
                           onClick={e => e.stopPropagation()}
                         />
                       ) : (
-                        <span className={`cursor-pointer hover:text-[#e2e8f0] transition-colors ${!p.upi ? 'text-[#475569]' : ''}`}>
+                        <span className={`cursor-pointer hover:text-[#e2e8f0] transition-colors ${!p.upi ? 'text-[#94a3b8]' : ''}`}>
                           {p.upi ?? '- click to set'}
                         </span>
                       )}
@@ -228,7 +228,7 @@ export default function People() {
                       <select
                         value={p.relationship ?? ''}
                         onChange={e => commitRelationship(p, e.target.value)}
-                        className={`bg-transparent border border-transparent hover:border-[#2d3148] focus:border-[#6366f1] px-2 py-1 rounded text-sm outline-none capitalize ${p.relationship ? 'text-[#94a3b8]' : 'text-[#475569]'}`}
+                        className={`bg-transparent border border-transparent hover:border-[#2d3148] focus:border-[#6366f1] px-2 py-1 rounded text-sm outline-none capitalize ${p.relationship ? 'text-[#94a3b8]' : 'text-[#94a3b8]'}`}
                       >
                         <option value="">- none</option>
                         {/* The API takes any text, so a value outside the curated list still shows. */}
@@ -247,21 +247,21 @@ export default function People() {
                           {stats.matched}
                         </button>
                       ) : (
-                        <span className="text-[#475569]">0</span>
+                        <span className="text-[#94a3b8]">0</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {stats.matched > 0 ? (
                         <PersonNet net={stats.net} />
                       ) : (
-                        <span className="text-[#475569]">-</span>
+                        <span className="text-[#94a3b8]">-</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
                         onClick={() => setDeleteTarget(p)}
                         aria-label={`Delete ${p.name}`}
-                        className="inline-flex items-center align-middle text-[#475569] hover:text-red-400 transition-colors"
+                        className="inline-flex items-center align-middle text-[#94a3b8] hover:text-red-400 transition-colors"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -284,16 +284,16 @@ export default function People() {
               value={newName}
               onChange={e => { setNewName(e.target.value); setCreateError('') }}
               placeholder="e.g. Karabi"
-              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]"
             />
           </div>
           <div>
-            <label className="block text-xs text-[#94a3b8] mb-1">Statement match <span className="text-[#475569]">(to help us match their transactions)</span></label>
+            <label className="block text-xs text-[#94a3b8] mb-1">Statement match <span className="text-[#94a3b8]">(to help us match their transactions)</span></label>
             <input
               value={newUpi}
               onChange={e => { setNewUpi(e.target.value); setCreateError('') }}
               placeholder="UPI id or name as it appears"
-              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]"
             />
           </div>
           <div>
@@ -301,7 +301,7 @@ export default function People() {
             <select
               value={newRel}
               onChange={e => setNewRel(e.target.value)}
-              className={`w-full bg-[#13151f] border border-[#2d3148] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] ${newRel ? 'text-[#e2e8f0]' : 'text-[#475569]'}`}
+              className={`w-full bg-[#13151f] border border-[#2d3148] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] ${newRel ? 'text-[#e2e8f0]' : 'text-[#94a3b8]'}`}
             >
               <option value="">Relationship…</option>
               {RELATIONSHIPS.map(r => (

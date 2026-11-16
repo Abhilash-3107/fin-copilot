@@ -7,8 +7,8 @@ import InlineError from './InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import { formatRupees } from './Amount.jsx'
 
-const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
-const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
+const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8] transition-colors'
+const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5'
 const EMPTY = { max_amount: '500', category: '', subcategory: '' }
 
 function sortedMessage(resolved) {
@@ -100,7 +100,7 @@ export default function ReviewPolicies() {
   return (
     <div>
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Policies</h2>
-      <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+      <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
         One answer for a kind of transaction you'd otherwise review one at a time. Small UPI
         payments to people who aren't in your People list (autos, street vendors) get this
         category automatically. Businesses, people you've added, and payees you've labeled
@@ -144,9 +144,9 @@ export default function ReviewPolicies() {
         {error ? (
           <InlineError what="your policies" error={error} onRetry={reload} className="m-3" />
         ) : data == null ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading…</p>
         ) : policies.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">No policies yet.</p>
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">No policies yet.</p>
         ) : (
           <ul className="divide-y divide-[#2d3148]">
             {policies.map(p => (
@@ -166,7 +166,7 @@ export default function ReviewPolicies() {
                 </label>
                 <span className="text-[#cbd5e1] flex-1 min-w-[10rem]">
                   → {p.category}
-                  {p.subcategory && <span className="text-[#64748b]"> › {p.subcategory}</span>}
+                  {p.subcategory && <span className="text-[#94a3b8]"> › {p.subcategory}</span>}
                 </span>
                 <div className="flex items-center gap-3 ml-auto">
                   <button
@@ -184,7 +184,7 @@ export default function ReviewPolicies() {
                     disabled={busyId === p.id}
                     aria-label="Remove policy"
                     title="Remove policy"
-                    className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
+                    className="text-[#94a3b8] hover:text-[#f87171] transition-colors disabled:opacity-40"
                   >
                     <X size={15} />
                   </button>

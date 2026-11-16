@@ -61,7 +61,7 @@ export default function TokenGate({ children }) {
   }
 
   if (state === 'checking') {
-    return <div className="min-h-screen bg-[#0a0b10] flex items-center justify-center text-sm text-[#475569]">Loading…</div>
+    return <div className="min-h-screen bg-[#0a0b10] flex items-center justify-center text-sm text-[#94a3b8]">Loading…</div>
   }
 
   if (state === 'locked') {
@@ -69,10 +69,10 @@ export default function TokenGate({ children }) {
       <div className="min-h-screen bg-[#0a0b10] flex items-center justify-center px-4">
         <form onSubmit={submit} className="w-full max-w-sm bg-[#13151f] border border-[#2d3148] rounded-xl p-6 space-y-4">
           <div className="flex items-center gap-2 text-[#e2e8f0]">
-            <Lock size={16} className="text-[#6366f1]" />
+            <Lock size={16} className="text-[#818cf8]" />
             <h1 className="text-sm font-semibold">Access token required</h1>
           </div>
-          <p className="text-xs text-[#64748b] leading-relaxed">
+          <p className="text-xs text-[#94a3b8] leading-relaxed">
             This copy is protected with a shared token. Enter it to continue - it
             is stored only in this browser.
           </p>

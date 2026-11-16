@@ -17,7 +17,7 @@ const EMBED_PROVIDERS = [
   { id: 'none', label: 'Off', hint: 'No memory: matching from your history is disabled; rules still work.' },
 ]
 
-const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]'
+const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]'
 const label = 'block text-xs text-[#94a3b8] mb-1'
 
 // Local-AI management: shows exactly one of (install hint | download button |
@@ -68,7 +68,7 @@ function LocalAICard() {
     }
   }
 
-  if (!status) return <p className="text-sm text-[#475569]">Checking local AI…</p>
+  if (!status) return <p className="text-sm text-[#94a3b8]">Checking local AI…</p>
 
   const downloading = job && (job.status === 'queued' || job.status === 'running')
   const pct = downloading && job.total ? Math.round((job.processed / job.total) * 100) : 0
@@ -78,7 +78,7 @@ function LocalAICard() {
       {!status.extra_installed ? (
         <>
           <p className="text-sm text-[#e2e8f0]">The local-llm add-on isn't installed.</p>
-          <p className="text-xs text-[#64748b]">Restart the app with it included:</p>
+          <p className="text-xs text-[#94a3b8]">Restart the app with it included:</p>
           <code className="block text-xs bg-[#0f1117] border border-[#2d3148] rounded-md px-3 py-2 text-[#a5b4fc] overflow-x-auto">
             {status.install_hint.uvx}
           </code>
@@ -92,14 +92,14 @@ function LocalAICard() {
           <div className="h-1.5 rounded-full bg-[#1e2235] overflow-hidden">
             <div className="h-full bg-[#6366f1] transition-all" style={{ width: `${pct}%` }} />
           </div>
-          <p className="text-xs text-[#64748b]">
+          <p className="text-xs text-[#94a3b8]">
             Safe to keep using the app. If the download is interrupted, it resumes where it left off.
           </p>
         </>
       ) : status.model_present ? (
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-[#e2e8f0]">
-            Model ready <span className="text-xs text-[#64748b]">({status.quant}, {(status.size / 1024 ** 3).toFixed(1)}GB on disk)</span>
+            Model ready <span className="text-xs text-[#94a3b8]">({status.quant}, {(status.size / 1024 ** 3).toFixed(1)}GB on disk)</span>
           </p>
           <button onClick={removeModel} className="text-xs text-[#f87171] hover:opacity-80">Remove model</button>
         </div>
@@ -115,7 +115,7 @@ function LocalAICard() {
             >
               {status.download_partial ? 'Resume download' : 'Enable local AI'}
             </button>
-            <span className="text-xs text-[#64748b]">
+            <span className="text-xs text-[#94a3b8]">
               Downloads {(status.size / 1024 ** 3).toFixed(1)}GB once, into your app data folder.
             </span>
           </div>
@@ -212,7 +212,7 @@ export default function ModelSettings() {
   }
 
   if (loadError) return <InlineError what="your model settings" error={loadError} onRetry={loadConfig} />
-  if (loading || !cfg) return <p className="text-sm text-[#475569]">Loading…</p>
+  if (loading || !cfg) return <p className="text-sm text-[#94a3b8]">Loading…</p>
 
   const provider = cfg.llm_provider
 
@@ -220,7 +220,7 @@ export default function ModelSettings() {
     <div className="space-y-6 max-w-xl">
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI provider</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed">
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed">
           Bring your own model. Your copilot uses this to categorize transactions the
           rules and your history can't resolve on their own.
         </p>
@@ -259,7 +259,7 @@ export default function ModelSettings() {
               />
               <div>
                 <div className="text-sm text-[#e2e8f0]">{p.label}</div>
-                <div className="text-xs text-[#64748b] mt-0.5">{p.hint}</div>
+                <div className="text-xs text-[#94a3b8] mt-0.5">{p.hint}</div>
               </div>
             </label>
           ))}
@@ -308,7 +308,7 @@ export default function ModelSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI memory (embeddings)</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed">
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed">
           How your copilot remembers past transactions so similar ones categorize
           themselves. Switching rebuilds the memory from scratch - it runs in the
           background and matching from history pauses until it's done.
@@ -337,7 +337,7 @@ export default function ModelSettings() {
                 />
                 <div>
                   <div className="text-sm text-[#e2e8f0]">{p.label}</div>
-                  <div className="text-xs text-[#64748b] mt-0.5">
+                  <div className="text-xs text-[#94a3b8] mt-0.5">
                     {disabled
                       ? <>Not available on this Python version. Run <code className="text-[#94a3b8]">uvx --python 3.14 finance-copilot</code> to use it.</>
                       : p.hint}

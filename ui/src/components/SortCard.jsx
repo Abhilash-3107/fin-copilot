@@ -44,14 +44,14 @@ export default function SortCard({
           <PayeeHeading item={item} />
           <Amount value={item.amount} debitCredit={item.debit_credit} className="text-xl font-bold tabular-nums whitespace-nowrap text-[#e2e8f0]" />
         </div>
-        <div className="mt-2 flex items-center gap-3 text-xs text-[#64748b]">
+        <div className="mt-2 flex items-center gap-3 text-xs text-[#94a3b8]">
           <span>{dayjs(item.txn_date).format('DD MMM YYYY')}</span>
           {/* The printed line is the heading when no payee could be read from it. */}
           {item.payee && (
             <button
               onClick={() => setShowPrinted(v => !v)}
               aria-expanded={showPrinted}
-              className="inline-flex items-center gap-1 hover:text-[#94a3b8] transition-colors"
+              className="inline-flex items-center gap-1 hover:text-[#e2e8f0] transition-colors"
             >
               As printed on the statement {showPrinted ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </button>
@@ -77,7 +77,7 @@ export default function SortCard({
       {devMode && <ReasoningPanel reasoning={item.reasoning} />}
 
       <div className="px-6 py-4 border-b border-[#2d3148]">
-        {heading && <p className="text-xs text-[#64748b] mb-2">{heading}</p>}
+        {heading && <p className="text-xs text-[#94a3b8] mb-2">{heading}</p>}
         <div className="grid gap-2">
           {suggestions.map((s, i) => {
             const pressed = !!chosen && sameLabel(s, chosen)
@@ -123,7 +123,7 @@ export default function SortCard({
         <button
           onClick={() => setShowTags(v => !v)}
           aria-expanded={showTags}
-          className="mt-3 flex items-center gap-1 text-[11px] text-[#64748b] hover:text-[#94a3b8] transition-colors"
+          className="mt-3 flex items-center gap-1 text-[11px] text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
         >
           <Tag size={11} />
           {showTags ? 'Hide' : 'Edit'} tags
@@ -132,7 +132,7 @@ export default function SortCard({
         {showTags && (
           <div className="mt-3">
             <div>
-              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">Tags</span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">Tags</span>
               <TagInput tags={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} />
             </div>
           </div>

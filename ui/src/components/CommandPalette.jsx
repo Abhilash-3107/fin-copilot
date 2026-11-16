@@ -185,7 +185,7 @@ function Palette({ onClose }) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2d3148]">
-          <Search size={16} className="text-[#475569]" />
+          <Search size={16} className="text-[#94a3b8]" />
           <input
             data-autofocus
             value={query}
@@ -198,9 +198,9 @@ function Palette({ onClose }) {
             aria-autocomplete="list"
             aria-activedescendant={items.length ? optionId(Math.min(active, items.length - 1)) : undefined}
             aria-label="Search"
-            className="flex-1 bg-transparent outline-none text-sm text-[#e2e8f0] placeholder:text-[#475569]"
+            className="flex-1 bg-transparent outline-none text-sm text-[#e2e8f0] placeholder:text-[#94a3b8]"
           />
-          <kbd className="text-[10px] text-[#475569] border border-[#2d3148] rounded px-1.5 py-0.5">esc</kbd>
+          <kbd className="text-[10px] text-[#94a3b8] border border-[#2d3148] rounded px-1.5 py-0.5">esc</kbd>
         </div>
 
         <div id={listId} role="listbox" aria-label="Results" className="max-h-[52vh] overflow-y-auto py-1">
@@ -218,7 +218,7 @@ function Palette({ onClose }) {
           )}
           {items.length === 0 ? (
             !failed && (
-              <p className="px-4 py-6 text-sm text-[#64748b] text-center">
+              <p className="px-4 py-6 text-sm text-[#94a3b8] text-center">
                 {query.trim() ? 'No matches.' : 'Type to search.'}
               </p>
             )
@@ -230,7 +230,7 @@ function Palette({ onClose }) {
               return (
                 <div key={item.key} role="presentation">
                   {showHeader && (
-                    <p role="presentation" className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#475569]">
+                    <p role="presentation" className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
                       {GROUP_TITLES[item.kind]}
                     </p>
                   )}
@@ -244,9 +244,9 @@ function Palette({ onClose }) {
                       i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1a1d27]'
                     }`}
                   >
-                    <Icon size={15} className="text-[#64748b] shrink-0" />
+                    <Icon size={15} className="text-[#94a3b8] shrink-0" />
                     <span className="text-sm text-[#e2e8f0] flex-1 truncate">{item.label}</span>
-                    {item.meta && <span className="text-xs text-[#64748b] shrink-0 tabular-nums">{item.meta}</span>}
+                    {item.meta && <span className="text-xs text-[#94a3b8] shrink-0 tabular-nums">{item.meta}</span>}
                   </div>
                 </div>
               )

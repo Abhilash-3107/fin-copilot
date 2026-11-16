@@ -9,14 +9,14 @@ import CategoryPicker from './CategoryPicker.jsx'
 import InlineError from './InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 
-const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
-const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
+const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8] transition-colors'
+const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5'
 const EMPTY = { pattern: '', category: '', subcategory: '', merchant: '' }
 
 // What saving + applying this rule would do, from POST /rules/preview.
 function PreviewSummary({ preview }) {
   if (preview.matches === 0) {
-    return <p className="text-xs text-[#64748b]">No transactions match yet - the rule will catch future ones.</p>
+    return <p className="text-xs text-[#94a3b8]">No transactions match yet - the rule will catch future ones.</p>
   }
   const parts = [
     preview.relabel && `${preview.relabel} would be recategorized`,
@@ -32,9 +32,9 @@ function PreviewSummary({ preview }) {
       <ul className="mt-2 space-y-1">
         {preview.sample.map(t => (
           <li key={t.id} className="flex items-center gap-3 text-xs">
-            <span className="text-[#64748b] w-16 shrink-0">{dayjs(t.txn_date).format('DD MMM YY')}</span>
+            <span className="text-[#94a3b8] w-16 shrink-0">{dayjs(t.txn_date).format('DD MMM YY')}</span>
             <span className="text-[#cbd5e1] truncate flex-1 min-w-0">{t.raw_description}</span>
-            <span className="text-[#64748b] shrink-0 truncate max-w-[45%]">
+            <span className="text-[#94a3b8] shrink-0 truncate max-w-[45%]">
               {t.category ? `${t.category}${t.subcategory ? ` › ${t.subcategory}` : ''}` : 'uncategorized'}
             </span>
             <span className="tabular-nums shrink-0 w-24 text-right text-[#94a3b8]">
@@ -141,7 +141,7 @@ export default function UserRules() {
   return (
     <div>
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Your rules</h2>
-      <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+      <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
         Categorize every transaction that mentions a word or phrase. Your rules run first,
         ahead of the built-in ones and anything learned, and match whole words in the
         description or UPI note.
@@ -208,9 +208,9 @@ export default function UserRules() {
         {error ? (
           <InlineError what="your rules" error={error} onRetry={reload} className="m-3" />
         ) : data == null ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading…</p>
         ) : rules.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">No rules yet. Add one above.</p>
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">No rules yet. Add one above.</p>
         ) : (
           <ul className="divide-y divide-[#2d3148]">
             {rules.map(r => (
@@ -218,8 +218,8 @@ export default function UserRules() {
                 <span className="font-mono text-[#e2e8f0] min-w-0 break-all">"{r.pattern}"</span>
                 <span className="text-[#cbd5e1] flex-1 min-w-[10rem]">
                   → {r.category}
-                  {r.subcategory && <span className="text-[#64748b]"> › {r.subcategory}</span>}
-                  {r.merchant && <span className="text-[#64748b] ml-2 text-xs">as {r.merchant}</span>}
+                  {r.subcategory && <span className="text-[#94a3b8]"> › {r.subcategory}</span>}
+                  {r.merchant && <span className="text-[#94a3b8] ml-2 text-xs">as {r.merchant}</span>}
                 </span>
                 <div className="flex items-center gap-3 ml-auto">
                   <button
@@ -244,7 +244,7 @@ export default function UserRules() {
                     disabled={busyId === r.id}
                     aria-label={`Remove rule "${r.pattern}"`}
                     title="Remove rule"
-                    className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
+                    className="text-[#94a3b8] hover:text-[#f87171] transition-colors disabled:opacity-40"
                   >
                     <X size={15} />
                   </button>

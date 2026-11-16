@@ -47,7 +47,7 @@ export default function TransactionCards({
                 </span>
               </div>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-[#64748b]">{dayjs(txn.txn_date).format('DD MMM YY')}</span>
+                <span className="text-xs text-[#94a3b8]">{dayjs(txn.txn_date).format('DD MMM YY')}</span>
                 {ann && (
                   <span className="bg-[#1e1b4b] text-[#a5b4fc] text-xs px-2 py-0.5 rounded-full">
                     {ann.subcategory ? `${ann.category} › ${ann.subcategory}` : ann.category}

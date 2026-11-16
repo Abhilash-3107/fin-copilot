@@ -80,10 +80,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
         {duplicates.map(d => (
           <li key={pairKey(d)} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
             <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
-              <span className="text-[#64748b]">{d.category} › </span>
-              "{d.merge.name}" <span className="text-[#64748b]">({d.merge.uses})</span>
+              <span className="text-[#94a3b8]">{d.category} › </span>
+              "{d.merge.name}" <span className="text-[#94a3b8]">({d.merge.uses})</span>
               {d.same_name ? ' is a duplicate of ' : ' looks like '}
-              "{d.keep.name}" <span className="text-[#64748b]">({d.keep.uses})</span>
+              "{d.keep.name}" <span className="text-[#94a3b8]">({d.keep.uses})</span>
             </span>
             <button
               onClick={() => merge(d)}
@@ -100,7 +100,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
             <button
               onClick={() => keepBoth(d)}
               disabled={busy === pairKey(d)}
-              className="flex items-center gap-1 text-xs text-[#64748b] hover:text-[#cbd5e1] disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#cbd5e1] disabled:opacity-40 transition-colors"
             >
               <X size={12} /> Keep both
             </button>
@@ -114,10 +114,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
             <li key={key} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
               <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
                 {plural(o.count, 'transaction')} in {o.category} use "{o.subcategory}",
-                <span className="text-[#64748b]"> which isn't one of its subcategories</span>
+                <span className="text-[#94a3b8]"> which isn't one of its subcategories</span>
               </span>
               <div className="flex items-center gap-2">
-                <ArrowRight size={13} className="text-[#64748b]" />
+                <ArrowRight size={13} className="text-[#94a3b8]" />
                 <select
                   aria-label={`Move "${o.subcategory}" to`}
                   value={value}
