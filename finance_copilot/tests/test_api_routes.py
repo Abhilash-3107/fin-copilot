@@ -83,6 +83,27 @@ class TestHealthLocalEmbeddings:
             assert client.get("/api/health").json()["embeddings"] == "unavailable"
 
 
+class TestHealthSaysWhatSortingUses:
+    """With no model to ask, the health message says so in the app's own words."""
+
+    def test_no_model_means_rules_and_remembered_payees_only(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        message = client.get("/api/health").json()["ai_message"]
+        assert message.startswith("Sorting is using your rules and remembered payees only")
+
+    def test_an_unreachable_ollama_says_the_same(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "llm_provider", "ollama")
+        # Never ask a real Ollama: the answer must not depend on this machine.
+        with patch("finance_copilot.main.httpx.get", side_effect=OSError("refused")):
+            message = client.get("/api/health").json()["ai_message"]
+        assert "Ollama isn't reachable" in message
+        assert "rules and remembered payees only" in message
+
+
 class TestApiTokenGate:
     """4.9: when settings.api_token is set, /api requests (except health) need it."""
 
@@ -1464,6 +1485,24 @@ class TestLearnedRulesEndpoint:
         rows = resp.json()
         assert [r["counterparty_key"] for r in rows] == ["SWIGGY"]
         assert rows[0]["support"] == 3 and rows[0]["category"] == "Food & Dining"
+
+    def test_names_the_payee_the_way_the_rest_of_the_app_does(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')")
+        for i in range(3):
+            conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) VALUES (?, 's1', '2026-01-10', 100, 'debit', ?, 'CHAI WALA CORNER')", (f"c{i}", f"UPI/CHAI WALA CORNER/50157191952{i}/PAYTM QR/tea"))
+            conn.execute("INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, 'Food & Dining', 1.0, 'manual')", (f"ac{i}", f"c{i}"))
+        conn.commit()
+        row = client.get("/api/annotations/learned-rules").json()[0]
+        # The rule is keyed by the internal counterparty key; a person reads the payee name.
+        assert row["counterparty_key"] == "CHAI WALA CORNER"
+        assert row["payee"] == "CHAI WALA CORNER"
+        # A name the user gave the payee wins.
+        from finance_copilot.db.queries.payee import set_payee_name
+
+        set_payee_name(conn, "CHAI WALA CORNER", "Chai Wala Corner")
+        conn.commit()
+        assert client.get("/api/annotations/learned-rules").json()[0]["payee"] == "Chai Wala Corner"
 
     def test_dismiss_removes_rule_from_listing(self, client_conn):
         client, conn, _ = client_conn

@@ -180,7 +180,7 @@ def get_transaction(
         (transaction_id,),
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="Payment not found")
     result = with_payee(conn, [dict(row)])[0]
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])
@@ -206,7 +206,7 @@ def _payment_or_404(conn: sqlite3.Connection, transaction_id: str):
         "SELECT id, counterparty_key FROM transactions WHERE id = ?", (transaction_id,)
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="Payment not found")
     return row
 
 

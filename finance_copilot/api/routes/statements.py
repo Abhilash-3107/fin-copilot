@@ -54,7 +54,7 @@ def upload_statement(
         raise HTTPException(
             status_code=409,
             detail="Your ledger still has sample data. Remove it first (Settings > Data), "
-            "then upload your statement so the two don't mix.",
+            "then add your statement so the two don't mix.",
         )
     contents = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES:

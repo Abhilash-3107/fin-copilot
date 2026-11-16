@@ -208,11 +208,14 @@ def health():
     provider = settings.llm_provider
     if provider == "none":
         ai_message = (
-            "AI is off. Parsing, rules, and your saved history still categorize "
-            "what they can; add a provider in Settings > AI & Model for the rest."
+            "Sorting is using your rules and remembered payees only. "
+            "Add an AI model to sort the rest."
         )
     elif provider == "ollama" and not ollama_ok:
-        ai_message = "Ollama isn't reachable right now, so AI categorization is paused."
+        ai_message = (
+            "Ollama isn't reachable right now, so sorting is using your rules "
+            "and remembered payees only."
+        )
     else:
         ai_message = ""
     from finance_copilot.pipeline.embed import local_embeddings_installed

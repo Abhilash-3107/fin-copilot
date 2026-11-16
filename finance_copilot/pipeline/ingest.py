@@ -200,10 +200,10 @@ def check_description_formats(conn: sqlite3.Connection, statement: Statement) ->
         "statement %s: %d UPI line(s) in an unrecognized layout (shapes %s)",
         statement.id, len(shapes), sorted(set(shapes)),
     )
-    noun = "transaction is" if len(shapes) == 1 else "transactions are"
+    noun = "payment is" if len(shapes) == 1 else "payments are"
     return [
-        f"{len(shapes)} UPI {noun} in a format I don't fully recognise yet, "
-        "so automatic categories may be weaker for them."
+        f"{len(shapes)} UPI {noun} in a format Finance Copilot doesn't fully recognise yet, "
+        "so automatic sorting may be weaker for them."
     ]
 
 
@@ -212,7 +212,7 @@ class DuplicateStatementError(ValueError):
 
     def __init__(self, existing: dict):
         super().__init__(
-            f"This statement was already uploaded ({existing['bank_name']}, "
+            f"This statement was already added ({existing['bank_name']}, "
             f"{existing['statement_month']})"
         )
         self.existing = existing
@@ -269,7 +269,7 @@ def ingest_pdf(
         parser = detect_parser(pdf_path, password=password)
         if parser is None:
             raise ValueError(
-                "I couldn't find a transaction table I can read in this PDF. "
+                "This PDF has no table of payments that Finance Copilot can read. "
                 "Kotak statements are supported, and other banks work when the "
                 "statement has a running-balance column."
             )
@@ -277,7 +277,7 @@ def ingest_pdf(
         parsed = parser.parse(pdf_path, password=password)
         transactions, opening_balance, closing_balance = _split_balance_artifacts(parsed)
         if not transactions:
-            raise ValueError("I found no transactions in this statement.")
+            raise ValueError("No payments were found in this statement.")
 
         period_start = min(t.txn_date for t in transactions)
         period_end = max(t.txn_date for t in transactions)

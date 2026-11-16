@@ -52,7 +52,7 @@ _WIPE_ORDER = (
 
 
 def _refuse_while_job_running(conn: sqlite3.Connection, action: str) -> None:
-    """409 while a categorization or memory-rebuild job is really running.
+    """409 while a sort or an update of remembered payees is really running.
 
     Jobs whose worker died are failed first, so a zombie row can't block a
     whole-ledger change forever.
@@ -67,7 +67,7 @@ def _refuse_while_job_running(conn: sqlite3.Connection, action: str) -> None:
     if inflight:
         raise HTTPException(
             status_code=409,
-            detail=f"A categorization or memory rebuild is running. {action} once it finishes.",
+            detail=f"A sort or an update of remembered payees is running. {action} once it finishes.",
         )
 
 

@@ -347,7 +347,7 @@ class TestFormatWarning:
         stmt = Statement(id="s1", bank_name="test", parser_version="1", statement_month="2026-06")
         warnings = check_description_formats(conn, stmt)
         assert len(warnings) == 1
-        assert warnings[0].startswith("1 UPI transaction is")
+        assert warnings[0].startswith("1 UPI payment is")
 
     def test_known_layouts_produce_no_warning(self):
         from finance_copilot.models.transaction import Statement

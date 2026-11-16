@@ -33,7 +33,7 @@ from finance_copilot.db.queries.categories import (
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
 from finance_copilot.db.queries.feedback_stats import category_accuracy, record_feedback
-from finance_copilot.db.queries.payee import with_payee
+from finance_copilot.db.queries.payee import payee_labels, with_payee
 from finance_copilot.db.queries.review_undo import UndoCapture, UndoError, undo
 from finance_copilot.models.annotation import (
     Annotation,
@@ -428,7 +428,7 @@ def create_annotation(
         # edited via PATCH so its original_source/reasoning history survives.
         raise HTTPException(
             status_code=409,
-            detail=f"Transaction {body.transaction_id} is already annotated; PATCH it to edit.",
+            detail=f"Payment {body.transaction_id} is already sorted; PATCH it to edit.",
         )
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
@@ -540,7 +540,7 @@ def confirm_annotation(
     if existing is None:
         raise HTTPException(status_code=404, detail="Annotation not found")
     if existing["category"] != body.category:
-        raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
+        raise HTTPException(status_code=409, detail=f"This payment is now sorted as {existing['category']}")
 
     taught = [existing["transaction_id"]]
     capture = UndoCapture(conn, taught)
@@ -728,7 +728,7 @@ def similar_candidates(
         "SELECT * FROM transactions WHERE id = ?", (ann["transaction_id"],)
     ).fetchone()
     if txn_row is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="Payment not found")
     txn = dict(txn_row)
 
     candidate_ids: dict[str, float | None] = {}  # transaction_id → similarity
@@ -859,9 +859,14 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
     """
     from finance_copilot.db.queries.learned_rules import list_learned_rules
 
+    rules = list_learned_rules(conn)
+    # The key is internal; what a person reads is the payee's name, resolved the
+    # same way every other screen does.
+    labels = payee_labels(conn, [r.counterparty_key for r in rules])
     return [
         {
             "counterparty_key": r.counterparty_key,
+            "payee": labels.get(r.counterparty_key, r.counterparty_key),
             "category": r.category,
             "subcategory": r.subcategory,
             "merchant": r.merchant,
@@ -870,7 +875,7 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
             "purity": r.purity,
             "direction": r.direction,
         }
-        for r in list_learned_rules(conn)
+        for r in rules
     ]
 
 
@@ -964,7 +969,7 @@ def skip_review_item(body: SkipRequest, conn: sqlite3.Connection = Depends(get_d
     payment with no annotation can be set aside too. Returns an undo_token."""
     capture = UndoCapture(conn, [body.transaction_id])
     if not snooze_transaction(conn, body.transaction_id):
-        raise HTTPException(status_code=404, detail=f"Transaction {body.transaction_id} not found")
+        raise HTTPException(status_code=404, detail=f"Payment {body.transaction_id} not found")
     conn.commit()
     return {"snoozed": True, "undo_token": capture.finish(conn)}
 

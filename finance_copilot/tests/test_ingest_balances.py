@@ -173,7 +173,7 @@ class TestIngestBalances:
 
     def test_statement_of_only_artifact_rows_rejected(self):
         conn = _make_conn()
-        with pytest.raises(ValueError, match="no transactions"):
+        with pytest.raises(ValueError, match="No payments were found"):
             _ingest(conn, [_txn("OPENING BALANCE", amount=100.0, balance=100.0)], b"%PDF only artifact")
         conn.close()
 
