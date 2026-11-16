@@ -220,27 +220,90 @@ test.describe('J4 the keyboard outside Teach Me', () => {
     await expect(sheet).toHaveCount(0)
   })
 
-  test('a confirm dialog cancels on Escape and confirms on Enter', async ({ page, app }) => {
+  test('a destructive dialog opens on Cancel: Escape and a stray Enter cancel, only the Delete button deletes', async ({ page, app }) => {
     const keep = await app.api.post('/groups', { name: 'Keep me' })
     const drop = await app.api.post('/groups', { name: 'Drop me' })
     await open(page, '/groups')
 
     const trash = (name) => page.getByRole('button', { name: `Expand ${name}` }).locator('..').getByRole('button', { name: 'Delete group' })
+    const dialog = page.getByRole('dialog')
+    const stillThere = async () => (await app.api.get('/groups')).map((g) => g.id)
     await trash('Keep me').focus()
     await page.keyboard.press('Enter')
-    const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
-    await expect(dialog).toBeFocused()
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
-    expect((await app.api.get('/groups')).map((g) => g.id)).toEqual(expect.arrayContaining([keep.id, drop.id]))
+    expect(await stillThere()).toEqual(expect.arrayContaining([keep.id, drop.id]))
 
-    // Delete "Drop me": its trash icon, then Enter on the dialog.
+    // The Enter that opened it, or one more, must not delete: it presses Cancel.
     await trash('Drop me').click()
     await expect(dialog).toContainText('Drop me')
     await page.keyboard.press('Enter')
     await expect(dialog).toHaveCount(0)
-    await expect.poll(async () => (await app.api.get('/groups')).some((g) => g.id === drop.id)).toBe(false)
+    expect(await stillThere()).toEqual(expect.arrayContaining([keep.id, drop.id]))
+
+    // Deleting takes a deliberate move to the Delete button.
+    await trash('Drop me').click()
+    await page.keyboard.press('Tab')
+    await expect(dialog.getByRole('button', { name: 'Delete' })).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect.poll(async () => (await stillThere()).includes(drop.id)).toBe(false)
+    expect(await stillThere()).toContain(keep.id)
+  })
+
+  test('one Enter on "Delete all data" sends nothing, and Escape closes it wherever focus is', async ({ page }) => {
+    const sent = []
+    page.on('request', (r) => { if (r.method() !== 'GET') sent.push(`${r.method()} ${new URL(r.url()).pathname}`) })
+    await open(page, '/settings?tab=data')
+    await page.getByRole('button', { name: 'Delete all data' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Delete all data?' })
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    expect(sent, 'requests sent by one Enter').toEqual([])
+
+    // Reopen, and let focus leave the dialog: Escape still closes it.
+    await page.getByRole('button', { name: 'Delete all data' }).click()
+    await expect(dialog).toBeVisible()
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    expect(sent).toEqual([])
+  })
+
+  test('an open dialog keeps the page keys to itself: "?" on Teach Me, then S skips nothing, and Escape works after focus moves', async ({ page, app }) => {
+    const skipped = []
+    page.on('request', (r) => { if (/review-queue\/skip$/.test(r.url())) skipped.push(r.url()) })
+    await open(page, '/review')
+    await expect(card(page)).toBeFocused()
+    const first = await card(page).getAttribute('aria-label')
+    await page.keyboard.press('?')
+    const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
+    await expect(sheet).toBeVisible()
+    await page.keyboard.press('s')
+    await page.keyboard.press('z')
+    await expect(card(page)).toHaveAttribute('aria-label', first)
+    expect(skipped, 'skips sent while the sheet was open').toEqual([])
+    expect((await app.api.get('/annotations/review-queue/counts')).set_aside).toBe(0)
+
+    // Tab around until focus has left the sheet's own controls; Escape must still close it.
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Escape')
+    await expect(sheet).toHaveCount(0)
+    await expect(card(page)).toHaveAttribute('aria-label', first)
+  })
+
+  test('the search opens with the cursor in its field, so typing works at once', async ({ page }) => {
+    await open(page, '/dashboard')
+    await page.getByRole('button', { name: 'Search' }).click()
+    const box = page.getByRole('combobox', { name: 'Search' })
+    await expect(box).toBeFocused()
+    await page.keyboard.type('swig')
+    await expect(box).toHaveValue('swig')
   })
 
   test('a group can be renamed from the keyboard, and a duplicate is refused where you typed it', async ({ page, app, tolerate }) => {

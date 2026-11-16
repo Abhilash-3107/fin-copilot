@@ -9,7 +9,7 @@ test.describe('J1 first run', () => {
     await expect(page.getByRole('link', { name: 'Add your first statement' })).toBeVisible()
   })
 
-  test('loading demo data fills the home screen', async ({ page }) => {
+  test('loading demo data fills the home screen', async ({ page, app }) => {
     await open(page, '/dashboard')
     await page.getByRole('button', { name: 'Load demo data' }).click()
 
@@ -17,6 +17,12 @@ test.describe('J1 first run', () => {
       expect(await figureNear(page, label), `${label} figure`).toBeGreaterThan(0)
     }
     await expect(page.getByRole('button', { name: 'Load demo data' })).toHaveCount(0)
+
+    // The counts and accuracy refresh with it: the page does not keep what it fetched when it was empty.
+    const { unsorted, guesses } = await app.api.get('/annotations/review-queue/counts')
+    expect(unsorted + guesses, 'payments waiting in the demo').toBeGreaterThan(0)
+    await expect(page.getByRole('link', { name: /sorted yet|to check/ }).first()).toBeVisible()
+    if (guesses > 0) await expect(page.getByRole('link', { name: new RegExp(`${guesses} guess(es)? to check`) })).toBeVisible()
   })
 
   test('Settings > Categories shows no tidy-up warnings', async ({ page, app }) => {
