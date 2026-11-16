@@ -251,7 +251,7 @@ class TestDeleteWhileSorting:
 
         resp = client.post("/api/data/delete-all")
         assert resp.status_code == 409
-        assert "once it finishes" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Finance Copilot is busy sorting. Try again when it finishes."
         assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 1
 
     def test_deleting_a_statement_is_refused_while_its_sort_runs(self, ledger):

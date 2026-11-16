@@ -51,8 +51,11 @@ _WIPE_ORDER = (
 )
 
 
-def _refuse_while_job_running(conn: sqlite3.Connection, action: str) -> None:
-    """409 while a sort or an update of remembered payees is really running.
+BUSY_SORTING = "Finance Copilot is busy sorting. Try again when it finishes."
+
+
+def _refuse_while_job_running(conn: sqlite3.Connection) -> None:
+    """409 while a sort or an update of matching is really running.
 
     Jobs whose worker died are failed first, so a zombie row can't block a
     whole-ledger change forever.
@@ -65,10 +68,7 @@ def _refuse_while_job_running(conn: sqlite3.Connection, action: str) -> None:
         "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued','running')"
     ).fetchone()[0]
     if inflight:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A sort or an update of remembered payees is running. {action} once it finishes.",
-        )
+        raise HTTPException(status_code=409, detail=BUSY_SORTING)
 
 
 @router.get("/backup")
@@ -160,7 +160,7 @@ def restore_database(file: UploadFile, conn: sqlite3.Connection = Depends(get_db
                 out.write(chunk)
         _validate_backup(upload_path)
 
-        _refuse_while_job_running(conn, "Restore")
+        _refuse_while_job_running(conn)
         key_row = conn.execute("SELECT value FROM app_settings WHERE key = 'llm_api_key'").fetchone()
 
         safety_name = f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db"
@@ -239,7 +239,7 @@ def remove_demo_data(conn: sqlite3.Connection = Depends(get_db)):
     """Remove the sample data and nothing else; anything the user added stays."""
     from finance_copilot.demo_seed import wipe
 
-    _refuse_while_job_running(conn, "Remove the sample data")
+    _refuse_while_job_running(conn)
     return {"transactions": wipe(conn)}
 
 
@@ -251,7 +251,7 @@ def delete_all(conn: sqlite3.Connection = Depends(get_db)):
 
     Refused while any job is waiting or running: a sort writing into rows that
     vanish under it dies with a foreign-key error."""
-    _refuse_while_job_running(conn, "Delete everything")
+    _refuse_while_job_running(conn)
     deleted: dict[str, int] = {}
     # Defer FK enforcement so the wipe order can't trip on a transient dangling
     # reference mid-batch; the set we clear is self-contained.

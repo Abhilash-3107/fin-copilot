@@ -1,7 +1,7 @@
 -- Promote "Self Transfer" from a subcategory of Transfers to its own top-level
 -- category "Self Transfers".
 --
--- Self-transfers move money between the user's own accounts — the money stays
+-- Self-transfers move money between the user's own accounts - the money stays
 -- with them, so it is neither spend nor income and should not roll up under
 -- Transfers (which is peer/outgoing). Keeping it as its own top-level category
 -- lets spending views exclude it cleanly.

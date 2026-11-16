@@ -1041,7 +1041,7 @@ class TestAnnotationJobs:
         conn.commit()
         job = client.get("/api/annotations/jobs/zombie").json()
         assert job["status"] == "failed"
-        assert "stale" in job["error"]
+        assert "did not finish" in job["error"]
 
     def test_poll_does_not_block_on_live_worker_write_lock(self, file_db_client):
         """A live worker holds the write lock across a slow LLM call. Polling
@@ -1171,7 +1171,7 @@ class TestAnnotationJobs:
             assert client.get("/api/annotations/jobs/slow").json()["status"] == "running"
             orphan = client.get("/api/annotations/jobs/orphan").json()
         assert orphan["status"] == "failed"
-        assert "stale" in orphan["error"]
+        assert "did not finish" in orphan["error"]
 
     def test_every_job_worker_registers_as_live(self):
         from finance_copilot.api.routes.annotations import _run_annotation_job
@@ -1272,7 +1272,7 @@ class TestAnnotationJobs:
 
         zombie = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='zombie'").fetchone()
         assert zombie["status"] == "failed"
-        assert "stale" in zombie["error"]
+        assert "did not finish" in zombie["error"]
 
     def test_startup_requeues_sorting_and_fails_the_other_kinds(self, file_db_client):
         """Restarting the server settles every in-flight job, even a fresh one -
@@ -1295,7 +1295,7 @@ class TestAnnotationJobs:
             for row in conn.execute("SELECT id, status FROM annotation_jobs").fetchall()
         }
         assert statuses == {"q1": "queued", "r1": "queued", "qe": "failed", "re": "failed"}
-        assert "restart" in conn.execute("SELECT error FROM annotation_jobs WHERE id='re'").fetchone()[0]
+        assert "app closed" in conn.execute("SELECT error FROM annotation_jobs WHERE id='re'").fetchone()[0]
 
     def test_startup_runs_the_sorting_jobs_left_queued(self, file_db_client):
         """The lifespan starts the runner, which picks up a job queued before

@@ -1,39 +1,39 @@
-"""The em dash reads as machine-written: no Python source may contain one.
+"""The em dash reads as machine-written: no Python or SQL source may contain one.
 
-The UI has the same guard (ui/src/lib/noEmDash.test.js). Written with escapes
-so this file holds no em dash itself.
+The UI has the same guard (ui/src/lib/noEmDash.test.js). The forms it looks for
+are built from pieces, so this file holds none of them and needs no exemption.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-EM_DASH = "—"
-FORMS = (EM_DASH, "\\u2014", "&mdash;", "&#8212;")
+EM_DASH = chr(0x2014)
+FORMS = (EM_DASH, "\\" + "u2014", "&md" + "ash;", "&#" + "8212;")
 
 ROOT = Path(__file__).resolve().parents[2]
 
 # LLM prompt text is sent to a model, and changing a character there changes
 # what the model reads and the eval results. List every such file here.
 PROMPT_FILES = {"finance_copilot/pipeline/llm.py"}
-# This file spells the forms it looks for.
-THIS_FILE = "finance_copilot/tests/test_no_em_dash.py"
 
 
-def _python_sources() -> list[Path]:
+def _sources() -> list[Path]:
     folders = [ROOT / "finance_copilot", ROOT / "scripts"]
-    return sorted(p for folder in folders for p in folder.rglob("*.py"))
+    return sorted(p for folder in folders for suffix in ("*.py", "*.sql") for p in folder.rglob(suffix))
 
 
 def test_finds_the_sources_it_is_meant_to_check() -> None:
-    assert len(_python_sources()) > 40
+    sources = _sources()
+    assert len([p for p in sources if p.suffix == ".py"]) > 40
+    assert len([p for p in sources if p.suffix == ".sql"]) > 20  # the migrations
     assert (ROOT / "finance_copilot/pipeline/llm.py").exists()
 
 
-def test_python_sources_have_no_em_dash() -> None:
+def test_sources_have_no_em_dash() -> None:
     offenders = []
-    for path in _python_sources():
+    for path in _sources():
         rel = path.relative_to(ROOT).as_posix()
-        if rel in PROMPT_FILES or rel == THIS_FILE:
+        if rel in PROMPT_FILES:
             continue
         text = path.read_text(encoding="utf-8")
         if any(form in text for form in FORMS):

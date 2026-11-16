@@ -262,12 +262,12 @@ def reset_statement_data(
     statement_id: str,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Delete all transactions, annotations, and embeddings for a statement, but keep the statement record itself."""
+    """Start over with a statement: remove every category and tag on its payments (and what was matched from them), keeping the statement and its payments."""
     with _exclusive(conn):
         row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Statement not found")
-        _refuse_while_sorting(conn, statement_id, "Reset it")
+        _refuse_while_sorting(conn, statement_id, "Start over")
 
         txn_ids = [
             r[0]

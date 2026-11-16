@@ -120,6 +120,7 @@ STALE_JOB_MINUTES = 10
 # A sort the app was closed in the middle of is put back in line once; the
 # second interruption ends it (migration 040 counts the starts).
 MAX_SORT_ATTEMPTS = 2
+CHANGED_ELSEWHERE = "That payment's category changed elsewhere. Reload and try again."
 GAVE_UP_SORTING = "Stopped: the app closed twice while sorting this statement. Use Sort again."
 
 
@@ -151,7 +152,7 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
         return 0
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
-        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}",
+        f"error='Stopped: sorting did not finish. Use Sort again.', updated_at=datetime('now') {stale_where}",
         live,
     )
     return cur.rowcount
@@ -177,7 +178,7 @@ def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
     ).rowcount
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', updated_at=datetime('now'), error = "
-        "CASE WHEN kind = 'annotate' THEN ? ELSE 'Interrupted by a server restart' END "
+        "CASE WHEN kind = 'annotate' THEN ? ELSE 'Stopped: the app closed before this finished. Start it again.' END "
         "WHERE status = 'running' OR (status = 'queued' AND kind != 'annotate')",
         (GAVE_UP_SORTING,),
     )
@@ -428,7 +429,7 @@ def create_annotation(
         # edited via PATCH so its original_source/reasoning history survives.
         raise HTTPException(
             status_code=409,
-            detail=f"Payment {body.transaction_id} is already sorted; PATCH it to edit.",
+            detail="This payment was just sorted. Reopen it to change its category.",
         )
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
@@ -503,7 +504,7 @@ def patch_annotation(
 ):
     existing = get_annotation(conn, annotation_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
 
     patch = _patch_from_body(conn, existing, body)
     if patch:
@@ -538,7 +539,7 @@ def confirm_annotation(
     """
     existing = get_annotation(conn, annotation_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
     if existing["category"] != body.category:
         raise HTTPException(status_code=409, detail=f"This payment is now sorted as {existing['category']}")
 
@@ -723,7 +724,7 @@ def similar_candidates(
     """
     ann = get_annotation(conn, annotation_id)
     if ann is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
     txn_row = conn.execute(
         "SELECT * FROM transactions WHERE id = ?", (ann["transaction_id"],)
     ).fetchone()
@@ -799,7 +800,7 @@ def apply_to_similar(
     """
     donor = get_annotation(conn, annotation_id)
     if donor is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
 
     capture = UndoCapture(conn, list(dict.fromkeys(body.transaction_ids)))
     applied = 0

@@ -734,6 +734,29 @@ def annotate_transaction_llm_with_examples(
     )
 
 
+def _unreachable_detail(provider: str, error: Exception) -> str:
+    """Why a model could not be reached, in plain words: where we looked, then
+    the cause, never an exception class name."""
+    url = settings.llm_base_url.rstrip("/") if provider == "openai" else settings.ollama_url
+    if isinstance(error, httpx.HTTPStatusError):
+        code = error.response.status_code
+        if code in (401, 403):
+            cause = "it did not accept the API key"
+        elif code == 404:
+            cause = "nothing that looks like a model server answers at that address"
+        else:
+            cause = f"it answered with an error ({code})"
+    elif isinstance(error, httpx.TimeoutException):
+        cause = "it took too long to answer"
+    elif isinstance(error, httpx.ConnectError):
+        cause = "nothing is listening there"
+    elif isinstance(error, (ValueError, KeyError)):
+        cause = "it answered with something that isn't a list of models"
+    else:
+        cause = "the connection broke"
+    return f"Couldn't reach the model at {url}: {cause}."
+
+
 def test_connection(timeout: float = 10.0) -> dict:
     """Probe the configured LLM provider with a trivial request.
 
@@ -743,7 +766,7 @@ def test_connection(timeout: float = 10.0) -> dict:
     """
     provider = settings.llm_provider
     if provider == "none":
-        return {"ok": True, "detail": "AI is disabled (provider = none)."}
+        return {"ok": True, "detail": "AI is turned off."}
 
     if provider == "local":
         from finance_copilot.local_llm import test_local_connection
@@ -780,8 +803,8 @@ def test_connection(timeout: float = 10.0) -> dict:
         if settings.ollama_model and models and settings.ollama_model not in models:
             detail += f" Warning: '{settings.ollama_model}' is not pulled - run `ollama pull {settings.ollama_model}`."
         return {"ok": True, "detail": detail, "models": models}
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        return {"ok": False, "detail": _unreachable_detail(provider, e)}
 
 
 def annotate_transaction_llm(

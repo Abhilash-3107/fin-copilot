@@ -1,0 +1,28 @@
+{
+  "note": "Words a person never reads in the app. One list for the interface guard (ui/src/lib/vocabulary.test.js) and the server guard (finance_copilot/tests/test_server_words.py). Patterns are written to mean the same in JavaScript and Python.",
+  "wholeStringsAllowed": ["Transactions"],
+  "banned": [
+    { "pattern": "annotat\\w*", "flags": "i", "use": "Sort (\"Sort\", \"Sort again\", \"Sorted 41 payments\")" },
+    { "pattern": "embedding\\w*", "flags": "i", "use": "matching similar payments" },
+    { "pattern": "counterpart\\w*", "flags": "i", "use": "payee" },
+    { "pattern": "\\bRAG\\b", "flags": "", "use": "matched from history" },
+    { "pattern": "\\bkNN\\b", "flags": "i", "use": "matched from history" },
+    { "pattern": "pipeline", "flags": "i", "use": "say what it does, not how" },
+    { "pattern": "threshold", "flags": "i", "use": "\"When to ask you\"" },
+    { "pattern": "\\b(re-?)?categori[sz]\\w*", "flags": "i", "use": "sort / sorted" },
+    { "pattern": "\\bmerchants?\\b", "flags": "i", "use": "payee" },
+    { "pattern": "\\btxns?\\b", "flags": "i", "use": "payments" },
+    { "pattern": "\\bupload\\w*", "flags": "i", "use": "statement (\"Add statement\", \"Adding...\")" },
+    { "pattern": "\\bmemor(y|ies|iz\\w*)\\b", "flags": "i", "use": "remembered payees or matching similar payments" },
+    { "pattern": "\\blearn\\w*", "flags": "i", "use": "remembered payees" },
+    { "pattern": "\\bconfidence\\b", "flags": "i", "use": "a guess, \"68% sure\"" },
+    { "pattern": "\\bAI guess\\b", "flags": "i", "use": "a guess, \"68% sure\"" },
+    { "pattern": "\\b(your|the|my) copilot\\b", "flags": "i", "use": "you (second person)" },
+    { "pattern": "\\bI\\b", "flags": "", "use": "you (second person)" },
+    { "pattern": "\\bmy\\b", "flags": "i", "use": "you (second person)" },
+    { "pattern": "\\bfailed\\b|Something went wrong", "flags": "i", "use": "\"Couldn't X.\" then the reason" },
+    { "pattern": "\\btransactions?\\b", "flags": "i", "use": "payment (only the page name is \"Transactions\")" },
+    { "pattern": "\\bannotation\\b|\\bPATCH\\b|\\bworker\\b|\\bstale\\b|\\bExceptions?\\b|\\bprovider\\b", "flags": "i", "use": "plain words for what happened" },
+    { "pattern": "\\bReset\\b", "flags": "", "use": "Start over" }
+  ]
+}

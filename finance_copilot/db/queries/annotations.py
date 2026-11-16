@@ -304,6 +304,25 @@ def sorted_counts_by_statement(conn: sqlite3.Connection, threshold: float) -> di
     return {row["statement_id"]: row["n"] for row in rows}
 
 
+def sorted_payment_coverage(conn: sqlite3.Connection, threshold: float, model_version: str) -> tuple[int, int]:
+    """(ready, total) over sorted payments, by the same definition as
+    sorted_counts_by_statement: total is every sorted payment, ready the ones
+    with a vector from the active embedding model. Only sorted payments serve
+    as examples for matching, so a payment still waiting in Teach Me is neither."""
+    condition, params = _queue_condition(threshold)
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(NOT {condition}), 0) AS total,
+               COALESCE(SUM(NOT {condition} AND em.id IS NOT NULL), 0) AS ready
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        LEFT JOIN embedding_meta em ON em.transaction_id = t.id AND em.model_version = ?
+        """,
+        (*params, *params, model_version),
+    ).fetchone()
+    return row["ready"], row["total"]
+
+
 def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:
     """How many payments are set aside: snoozed and would otherwise be queued."""
     return queue_counts(conn, threshold)["set_aside"]
