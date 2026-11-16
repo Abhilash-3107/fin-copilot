@@ -88,7 +88,7 @@ export default function TokenGate({ children }) {
           <button
             type="submit"
             disabled={submitting || !value.trim()}
-            className="w-full bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+            className="w-full bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
           >
             {submitting ? 'Checking…' : 'Unlock'}
           </button>

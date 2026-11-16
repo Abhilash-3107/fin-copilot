@@ -51,27 +51,40 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
     expect(screen.getByRole('button', { name: /General/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /AI & Model/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Insights/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Teach Me/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Insights/ })).not.toBeInTheDocument()
   })
 
-  it('shows the review-bar slider on the Insights tab', async () => {
+  it('shows when to ask you, as a slider, on the Teach Me tab', async () => {
     renderSettings()
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: /Insights/ }))
-    expect(screen.getByText('Review bar')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Teach Me/ }))
+    expect(screen.getByText('When to ask you')).toBeInTheDocument()
     expect(screen.getByRole('slider')).toBeInTheDocument()
     // Default 85% shown.
-    expect(screen.getByText('85%')).toBeInTheDocument()
+    expect(screen.getByText('85% sure')).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=teach')
+  })
+
+  it('still opens the tab from an old ?tab=insights link, and rewrites the address', async () => {
+    renderSettings('/settings?tab=insights')
+    expect(await screen.findByText('When to ask you')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=teach'))
   })
 
   it('loads the BYOM form on the AI & Model tab', async () => {
     renderSettings()
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /AI & Model/ }))
-    await waitFor(() => expect(screen.getByText('AI provider')).toBeInTheDocument())
-    // "Ollama" appears twice: once as an LLM provider, once as an embedding provider.
+    await waitFor(() => expect(screen.getByText('AI model')).toBeInTheDocument())
+    // The machinery sits behind Advanced: Ollama is only the AI provider until it opens.
+    expect(screen.getAllByText('Ollama')).toHaveLength(1)
+    expect(screen.queryByText('Remembered payees')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+    expect(await screen.findByText('Remembered payees')).toBeInTheDocument()
+    await screen.findByText(/Nothing is remembered yet/)
+    // "Ollama" now also appears as the matching provider.
     expect(screen.getAllByText('Ollama')).toHaveLength(2)
-    expect(screen.getByText('AI memory (embeddings)')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Test connection/ })).toBeInTheDocument()
   })
 
@@ -79,10 +92,10 @@ describe('Settings', () => {
     mockApi.get.mockImplementation(path => {
       if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
       if (path === '/annotations/learned-rules') return Promise.resolve([
-        // No merchant name: the payee key is shown.
-        { counterparty_key: 'RAVI KUMAR', merchant: null, category: 'Self Transfers',
+        // The server names the payee; the internal key is never shown.
+        { counterparty_key: 'RAVI KUMAR', payee: 'Ravi Kumar', merchant: null, category: 'Self Transfers',
           subcategory: 'Self Transfer', support: 3, total: 3, purity: 1, direction: 'credit' },
-        { counterparty_key: 'PRACTO TECHNOLO', merchant: 'Practo', category: 'Health',
+        { counterparty_key: 'PRACTO TECHNOLO', payee: 'Practo', merchant: 'Practo', category: 'Health',
           subcategory: null, support: 3, total: 3, purity: 1, direction: 'debit' },
       ])
       return Promise.resolve([])
@@ -90,14 +103,18 @@ describe('Settings', () => {
     renderSettings()
     await waitFor(() => expect(screen.getByText('Developer mode')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /Rules/ }))
-    await waitFor(() => expect(screen.getByText('RAVI KUMAR')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Ravi Kumar')).toBeInTheDocument())
     expect(screen.getAllByText('money in')).toHaveLength(1)
     expect(screen.getByText('Practo')).toBeInTheDocument()
+    expect(screen.queryByText('RAVI KUMAR')).not.toBeInTheDocument()
+    expect(screen.queryByText('PRACTO TECHNOLO')).not.toBeInTheDocument()
+    // The link filters by payee, not by the typed merchant name.
+    expect(screen.getByRole('link', { name: 'Practo' })).toHaveAttribute('href', '/transactions?payee_key=PRACTO+TECHNOLO')
   })
 
   it('opens the tab named in the URL, so a link or a reload lands where it should', async () => {
     renderSettings('/settings?tab=ai')
-    await waitFor(() => expect(screen.getByText('AI provider')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('AI model')).toBeInTheDocument())
     expect(screen.queryByText('Developer mode')).not.toBeInTheDocument()
   })
 
@@ -144,7 +161,7 @@ describe('Settings when the API fails', () => {
   it('keeps the other tabs usable when only the settings failed', async () => {
     mockApi.get.mockImplementation(path => (path === '/config' ? down() : baseGet(path)))
     renderSettings('/settings?tab=ai')
-    expect(await screen.findByText('AI provider')).toBeInTheDocument()
+    expect(await screen.findByText('AI model')).toBeInTheDocument()
   })
 
   it('names each failed block on the Rules tab and never shows its empty text', async () => {
@@ -157,12 +174,12 @@ describe('Settings when the API fails', () => {
     const text = screen.getAllByRole('alert').map(a => a.textContent).join(' ')
     expect(text).toContain("Couldn't load your rules.")
     expect(text).toContain("Couldn't load your policies.")
-    expect(text).toContain("Couldn't load what it has learned.")
-    expect(screen.queryByText(/Nothing learned yet/)).not.toBeInTheDocument()
+    expect(text).toContain("Couldn't load your remembered payees.")
+    expect(screen.queryByText(/No payees yet/)).not.toBeInTheDocument()
     expect(screen.queryByText(/No policies yet/)).not.toBeInTheDocument()
     failing = false
     for (const retry of screen.getAllByRole('button', { name: 'Retry' })) fireEvent.click(retry)
-    expect(await screen.findByText(/Nothing learned yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/No payees yet/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
@@ -184,6 +201,6 @@ describe('Settings when the API fails', () => {
     expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
     failing = false
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(await screen.findByText('AI provider')).toBeInTheDocument()
+    expect(await screen.findByText('AI model')).toBeInTheDocument()
   })
 })

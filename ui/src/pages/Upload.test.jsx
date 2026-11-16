@@ -45,6 +45,9 @@ import Upload from './Upload.jsx'
 
 const renderUpload = () => render(<HashRouter><Upload /></HashRouter>)
 
+// "Add statement" for one file, "Add 2 statements" for two.
+const ADD_BUTTON = /^Add (\d+ statements|statement)$/
+
 const pdf = () => new File(['%PDF-1.4'], 'statement.pdf', { type: 'application/pdf' })
 
 describe('Upload', () => {
@@ -78,20 +81,20 @@ describe('Upload', () => {
     expect(screen.getByText('statement.pdf')).toBeInTheDocument()
     expect(writes).toEqual([''])
 
-    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+    fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
     await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
     await screen.findByText('7 sorted, 1 needs you')
 
     fireEvent.change(input, { target: { files: [pdf()] } })
     expect(writes).toEqual(['', ''])
-    expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: ADD_BUTTON })).toBeInTheDocument()
   })
 
   it('shows a statement\'s warnings on its own row', async () => {
     mockApi.upload.mockResolvedValueOnce(uploaded('s1', { warnings: ['2 rows had no date and were skipped.'] }))
     const { container } = renderUpload()
     fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+    fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
     const row = (await screen.findByText('statement.pdf')).closest('li')
     expect(await within(row).findByText('2 rows had no date and were skipped.')).toBeInTheDocument()
   })
@@ -130,8 +133,10 @@ describe('Upload', () => {
     })
     renderUpload()
     fireEvent.click(await screen.findByRole('button', { name: /sort again/i }))
-    expect(await screen.findByText(/isn.t available \(provider refused the request \(HTTP 404\)\)/))
+    expect(await screen.findByText(/Your AI model stopped answering, so this run stopped using it/))
       .toBeInTheDocument()
+    // The provider's own words are for Test connection, not for this panel.
+    expect(screen.queryByText(/HTTP 404/)).not.toBeInTheDocument()
   })
 
   // The page lives under a HashRouter, so a plain href="/settings" opens the
@@ -187,9 +192,10 @@ describe('Upload', () => {
   it('refreshes the sample-data status after deleting a statement', async () => {
     mockApi.get.mockResolvedValue([stmt])
     mockApi.delete.mockResolvedValue({})
-    const { container } = renderUpload()
+    renderUpload()
     await screen.findByText('kotak')
-    fireEvent.click(container.querySelector('svg.lucide-trash2').closest('button'))
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1'))
     await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
@@ -198,12 +204,38 @@ describe('Upload', () => {
   it('refreshes the sample-data status after resetting a statement', async () => {
     mockApi.get.mockResolvedValue([stmt])
     mockApi.delete.mockResolvedValue({})
-    const { container } = renderUpload()
+    renderUpload()
     await screen.findByText('kotak')
-    fireEvent.click(container.querySelector('svg.lucide-rotate-ccw').closest('button'))
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Start over' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
     await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
     await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps only Sort again on the row, with rename, start over and delete in a menu, and no memory controls', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    renderUpload()
+    await screen.findByText('kotak')
+    expect(screen.getByRole('button', { name: /sort again/i })).toBeInTheDocument()
+    expect(screen.queryByText(/memory|build|rebuild/i)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader').map(h => h.textContent.trim()))
+      .toEqual(['Bank', 'Month', 'Balanced', 'Sorted', 'Added', 'Actions'])
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Rename', 'Start over', 'Delete'])
+  })
+
+  it('renames a statement from its menu', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.patch.mockResolvedValue({})
+    renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByDisplayValue('kotak')
+    fireEvent.change(input, { target: { value: 'Kotak savings' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { bank_name: 'Kotak savings' }))
   })
 
   describe('before the first upload', () => {
@@ -256,7 +288,7 @@ describe('Upload', () => {
       expect(screen.getByText('a.pdf')).toBeInTheDocument()
       expect(screen.getByText('b.pdf')).toBeInTheDocument()
 
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
 
       expect(await screen.findByText('7 sorted, 1 needs you')).toBeInTheDocument()
       expect(await screen.findByText('8 sorted, 0 need you')).toBeInTheDocument()
@@ -280,7 +312,7 @@ describe('Upload', () => {
       const { container } = renderUpload()
       const input = container.querySelector('input[type=file]')
       fireEvent.change(input, { target: { files: [named('a.pdf'), named('b.pdf')] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       expect(await screen.findByText('Reading the statement…')).toBeInTheDocument()
 
       // A third file is picked while a.pdf is being read and b.pdf waits its turn.
@@ -301,7 +333,7 @@ describe('Upload', () => {
       const { container } = renderUpload()
       const input = container.querySelector('input[type=file]')
       fireEvent.change(input, { target: { files: [named('a.pdf')] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       await screen.findByText('7 sorted, 1 needs you')
       fireEvent.change(input, { target: { files: [named('b.pdf')] } })
       expect(screen.queryByText('a.pdf')).not.toBeInTheDocument()
@@ -311,20 +343,20 @@ describe('Upload', () => {
     it('keeps going when one file fails, says why, and lets that file be retried', async () => {
       mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 7]))
       mockApi.upload
-        .mockRejectedValueOnce(new Error('This PDF is password-protected. Enter its password and upload again.'))
+        .mockRejectedValueOnce(Object.assign(new Error('This PDF is password-protected. Enter its password and add it again.'), { status: 422 }))
         .mockResolvedValueOnce(uploaded('s2'))
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [named('locked.pdf'), named('open.pdf')] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
 
-      expect(await screen.findByText(/password-protected/)).toBeInTheDocument()
+      expect(await screen.findByText(/Couldn't read this file\. This PDF is password-protected/)).toBeInTheDocument()
       expect(await screen.findByText('7 sorted, 1 needs you')).toBeInTheDocument()
       expect(mockApi.upload).toHaveBeenCalledTimes(2)
 
       // Enter the password and upload again: only the failed file goes up.
       mockApi.upload.mockResolvedValueOnce(uploaded('s1'))
       fireEvent.change(screen.getByPlaceholderText(/Password/), { target: { value: 'hunter2' } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(3))
       const retry = mockApi.upload.mock.calls[2][1]
       expect(retry.get('file').name).toBe('locked.pdf')
@@ -340,7 +372,7 @@ describe('Upload', () => {
       expect(screen.queryByText('notes.txt', { selector: 'span' })).not.toBeInTheDocument()
       // The PDF next to it is still taken.
       expect(screen.getByText('ok.pdf')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
     })
 
@@ -349,7 +381,7 @@ describe('Upload', () => {
       const input = container.querySelector('input[type=file]')
       const txt = new File(['hello'], 'notes.txt', { type: 'text/plain' })
       fireEvent.change(input, { target: { files: [txt, named('ok.pdf')] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
       expect(screen.getByRole('alert')).toHaveTextContent("notes.txt isn't a PDF")
 
@@ -376,7 +408,7 @@ describe('Upload', () => {
       mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 5]))
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       expect(await screen.findByText('5 sorted, 3 need you', { selector: 'p' })).toBeInTheDocument()
       expect(screen.getByRole('status')).toHaveTextContent('Finished: 5 sorted, 3 need you')
     })
@@ -390,7 +422,7 @@ describe('Upload', () => {
       })
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
 
       expect(await screen.findByText('Sorting 3 of 8')).toBeInTheDocument()
       // The floating progress card is pointed at the job the server started.
@@ -412,14 +444,14 @@ describe('Upload', () => {
       })
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       expect(await screen.findByText('Waiting to sort')).toBeInTheDocument()
     })
 
     it('says plainly when no model is connected, with the way to Settings', async () => {
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       expect(await screen.findByText(/No model is connected/)).toBeInTheDocument()
       expect(screen.getByRole('link', { name: /Settings › AI & Model/ }).getAttribute('href')).toBe('#/settings?tab=ai')
     })
@@ -428,8 +460,9 @@ describe('Upload', () => {
       pollJob.mockResolvedValue({ ...SORTED, ai_active: true, llm_error: 'connection refused' })
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
-      expect(await screen.findByText(/model stopped answering \(connection refused\)/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText(/Your AI model stopped answering/)).toBeInTheDocument()
+      expect(screen.queryByText(/connection refused/)).not.toBeInTheDocument()
       expect(screen.getByRole('link', { name: /Settings › AI & Model/ }).getAttribute('href')).toBe('#/settings?tab=ai')
     })
 
@@ -437,7 +470,7 @@ describe('Upload', () => {
       pollJob.mockRejectedValue(new Error('Went stale without a worker'))
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
-      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
       expect(await screen.findByText(/Sorting stopped/)).toBeInTheDocument()
       expect(screen.getByText(/8 payments added/)).toBeInTheDocument()
     })

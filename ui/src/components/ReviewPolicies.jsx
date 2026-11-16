@@ -6,6 +6,8 @@ import CategoryPicker from './CategoryPicker.jsx'
 import InlineError from './InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import { formatRupees } from './Amount.jsx'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8] transition-colors'
 const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5'
@@ -13,7 +15,7 @@ const EMPTY = { max_amount: '500', category: '', subcategory: '' }
 
 function sortedMessage(resolved) {
   return resolved
-    ? ` It sorted ${resolved} waiting transaction${resolved === 1 ? '' : 's'}.`
+    ? ` It sorted ${count(resolved, 'waiting payment')}.`
     : ''
 }
 
@@ -42,7 +44,7 @@ export default function ReviewPolicies() {
       setDraft(EMPTY)
       toast(`Policy added.${sortedMessage(created.resolved)}`, 'success')
     } catch (err) {
-      toast(`Couldn't add policy - ${err.message}`, 'error')
+      toast(couldnt('add policy', err), 'error')
     } finally {
       setSaving(false)
     }
@@ -55,7 +57,7 @@ export default function ReviewPolicies() {
       setPolicies(ps => ps.map(x => (x.id === p.id ? updated : x)))
       if (updated.enabled) toast(`Policy resumed.${sortedMessage(updated.resolved)}`, 'success')
     } catch (err) {
-      toast(`Couldn't update policy - ${err.message}`, 'error')
+      toast(couldnt('update policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -73,7 +75,7 @@ export default function ReviewPolicies() {
       // not a string is shown as written (see ToastContext).
       toast(<>{`Limit set to ${formatRupees(amount, { decimals: 0 })}.${sortedMessage(updated.resolved)}`}</>, 'success')
     } catch (err) {
-      toast(`Couldn't update policy - ${err.message}`, 'error')
+      toast(couldnt('update policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -86,12 +88,12 @@ export default function ReviewPolicies() {
       setPolicies(ps => ps.filter(x => x.id !== p.id))
       toast(
         back
-          ? `Policy removed. ${back} transaction${back === 1 ? '' : 's'} it sorted ${back === 1 ? 'is' : 'are'} back in Teach Me.`
+          ? `Policy removed. ${count(back, 'payment')} it sorted ${back === 1 ? 'is' : 'are'} back in Teach Me.`
           : 'Policy removed.',
         'info',
       )
     } catch (err) {
-      toast(`Couldn't remove policy - ${err.message}`, 'error')
+      toast(couldnt('remove policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -101,9 +103,9 @@ export default function ReviewPolicies() {
     <div>
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Policies</h2>
       <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
-        One answer for a kind of transaction you'd otherwise review one at a time. Small UPI
+        One answer for a kind of payment you'd otherwise sort one at a time. Small UPI
         payments to people who aren't in your People list (autos, street vendors) get this
-        category automatically. Businesses, people you've added, and payees you've labeled
+        category automatically. Businesses, people you've added, and payees you've sorted
         differently before are never affected.
       </p>
 
@@ -133,7 +135,7 @@ export default function ReviewPolicies() {
           <button
             type="submit"
             disabled={!ready || saving}
-            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm hover:bg-[#5558e3] disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm hover:bg-[#5558e3] disabled:opacity-40 transition-colors"
           >
             <Plus size={14} /> {saving ? 'Adding…' : 'Add policy'}
           </button>

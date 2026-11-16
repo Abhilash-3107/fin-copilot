@@ -15,6 +15,7 @@ import { labelOf } from '../lib/categoryOptions.js'
 import { count, joinWords } from '../lib/plural.js'
 import { isDialogOpen, useDialog } from '../lib/useDialog.js'
 import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
+import { couldnt } from '../lib/errors.js'
 
 // Module-level category cache
 let _catCache = null
@@ -50,10 +51,10 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
         <div className="px-5 py-4 border-b border-[#2d3148]">
           <div id={titleId} className="flex items-center gap-2 text-[#e2e8f0] text-sm font-semibold">
             <Copy size={15} className="text-[#818cf8]" />
-            Apply "{label}" to similar transactions?
+            Apply "{label}" to similar payments?
           </div>
           <p className="text-xs text-[#94a3b8] mt-1">
-            These look like the same counterparty and were labeled by the AI. Untick any that are different.
+            These look like the same payee and were sorted by the AI. Untick any that are different.
           </p>
         </div>
         <div className="overflow-y-auto px-5 py-3 space-y-2 flex-1">
@@ -82,9 +83,9 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
           <button
             onClick={() => onApply([...selected])}
             disabled={!canApply}
-            className="flex-1 py-2 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex-1 py-2 rounded-lg bg-[#4f46e5] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            {applying ? 'Applying…' : `Apply to ${selected.size} transaction${selected.size !== 1 ? 's' : ''}`}
+            {applying ? 'Applying…' : `Apply to ${count(selected.size, 'payment')}`}
           </button>
           <button
             onClick={onDismiss}
@@ -242,9 +243,9 @@ export default function ReviewQueue() {
     } catch (e) {
       // Never "done": the server was not asked successfully, so nothing is known.
       // With no card on screen the page itself says so, with Retry; a toast is for a failure behind a card that is still there.
-      if (queueLengthRef.current > 0) toast(`Couldn't load the review list - ${e.message}`, 'error')
+      if (queueLengthRef.current > 0) toast(couldnt('load the review list', e), 'error')
       setLoadError(e)
-      return e.message || 'Something went wrong'
+      return e
     }
   }, [toast])
 
@@ -433,17 +434,17 @@ export default function ReviewQueue() {
       setPolicySuggestion(null)
       const reloadError = await refresh()
       if (reloadError) {
-        toast(`Policy saved, but the list could not be reloaded - ${reloadError}`, 'error')
+        toast(`Policy saved. ${couldnt('reload the list', reloadError)}`, 'error')
         return
       }
       toast(
         res.resolved
-          ? `Policy saved. It sorted ${res.resolved} waiting transaction${res.resolved === 1 ? '' : 's'}.`
+          ? `Policy saved. It sorted ${count(res.resolved, 'waiting payment')}.`
           : 'Policy saved. New small payments to people will be sorted automatically.',
         'success',
       )
     } catch (e) {
-      toast(`Couldn't save the policy - ${e.message}`, 'error')
+      toast(couldnt('save the policy', e), 'error')
     }
   }
 
@@ -462,7 +463,7 @@ export default function ReviewQueue() {
         toast('Set aside for later', 'info', res?.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined)
       })
       .catch(e => {
-        toast(`Couldn't set that aside - ${e.message}`, 'error')
+        toast(couldnt('set that aside', e), 'error')
         setOutcomes(o => without(o, [item.transaction_id]))
         setQueue(q => [item, ...q])
       })
@@ -501,7 +502,7 @@ export default function ReviewQueue() {
       setPropagate(null)
       const reloadError = await refresh({ first: entry.ids })
       if (refusal) toast(`Only part of that was undone - ${refusal}`, 'error')
-      else if (reloadError) toast(`Undone, but the list could not be reloaded - ${reloadError}`, 'error')
+      else if (reloadError) toast(`Undone. ${couldnt('reload the list', reloadError)}`, 'error')
       else toast('Undone', 'info')
     } finally {
       endSave()
@@ -516,7 +517,7 @@ export default function ReviewQueue() {
       await refresh()
       toast(`Restored ${restored} skipped ${restored === 1 ? 'item' : 'items'}`, 'info')
     } catch (e) {
-      toast(`Couldn't restore skipped items - ${e.message}`, 'error')
+      toast(couldnt('restore skipped items', e), 'error')
     }
   }
 
@@ -544,7 +545,7 @@ export default function ReviewQueue() {
         await refresh()
         return
       }
-      toast(`Something went wrong - ${e.message}`, 'error')
+      toast(couldnt('save that answer', e), 'error')
     } finally {
       endSave()
     }
@@ -590,7 +591,7 @@ export default function ReviewQueue() {
         }
       } catch { /* similar lookup is optional */ }
     } catch (e) {
-      toast(`Something went wrong - ${e.message}`, 'error')
+      toast(couldnt('save that answer', e), 'error')
     } finally {
       endSave()
     }
@@ -620,7 +621,7 @@ export default function ReviewQueue() {
       choose({ category: parentName, subcategory: parentId ? created.name : '' })
       return created
     } catch (e) {
-      toast(`Couldn't add "${name}" - ${e.message}`, 'error')
+      toast(couldnt(`add "${name}"`, e), 'error')
       return null
     }
   }
@@ -685,7 +686,7 @@ export default function ReviewQueue() {
       toast(summary.message, summary.type)
       setSortRan(true)
     } catch (e) {
-      toast(`Sorting failed - ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setSorting(false)
     }
@@ -710,7 +711,7 @@ export default function ReviewQueue() {
         }
       }
       toast(
-        `Fixed ${res.applied} similar transaction${res.applied !== 1 ? 's' : ''}`,
+        `Fixed ${count(res.applied, 'similar payment')}`,
         'success',
         res.undo_token ? { action: { label: 'Undo', onClick: undoLast } } : undefined,
       )
@@ -718,7 +719,7 @@ export default function ReviewQueue() {
       const appliedSet = new Set(transactionIds)
       setQueue(q => q.filter(it => !appliedSet.has(it.transaction_id)))
     } catch (e) {
-      toast(`Couldn't apply - ${e.message}`, 'error')
+      toast(couldnt('apply', e), 'error')
     } finally {
       setApplying(false)
       setPropagate(null)
@@ -789,7 +790,7 @@ export default function ReviewQueue() {
             </p>
             <Link
               to="/upload"
-              className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              className="rounded-lg bg-[#4f46e5] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
             >
               Add a statement
             </Link>
@@ -829,7 +830,7 @@ export default function ReviewQueue() {
           {hasTransactions && (
             <Link
               to="/dashboard"
-              className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              className="rounded-lg bg-[#4f46e5] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
             >
               Back to the Dashboard
             </Link>
@@ -840,7 +841,7 @@ export default function ReviewQueue() {
               disabled={saving}
               className="flex items-center gap-2 text-sm text-[#94a3b8] hover:text-[#e2e8f0] border border-[#2d3148] px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
             >
-              <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
+              <Undo2 size={15} /> Undo <kbd className="text-[10px]">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
             </button>
           )}
         </div>
@@ -902,7 +903,7 @@ export default function ReviewQueue() {
               onClick={sortAutomatically}
               className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-[#2d3148] px-3 py-1.5 text-xs font-medium text-[#e2e8f0] transition-colors hover:border-[#6366f1]"
             >
-              <Sparkles size={13} /> Sort my transactions
+              <Sparkles size={13} /> Sort payments
             </button>
           )}
         </div>
@@ -918,13 +919,13 @@ export default function ReviewQueue() {
             automatically?
             {policySuggestion.matches > 0 && (
               <span className="text-[#a5b4fc]">
-                {' '}It would sort {policySuggestion.matches} waiting transaction{policySuggestion.matches === 1 ? '' : 's'} now.
+                {' '}It would sort {count(policySuggestion.matches, 'waiting payment')} now.
               </span>
             )}
           </p>
           <button
             onClick={createPolicy}
-            className="shrink-0 px-3 py-1.5 rounded-lg bg-[#6366f1] text-white text-xs font-medium hover:opacity-90 transition-opacity"
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-[#4f46e5] text-white text-xs font-medium hover:opacity-90 transition-opacity"
           >
             Yes, always
           </button>

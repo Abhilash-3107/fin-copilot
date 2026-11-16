@@ -27,6 +27,7 @@ import {
   FilePlus2, TrendingUp, HelpCircle,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
 } from 'lucide-react'
+import { couldnt } from '../lib/errors.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ChartTooltip, Filler)
 
@@ -110,17 +111,17 @@ function SetupStage({ annotation, verdict, month, annotating, onSort }) {
           style={{ background: 'linear-gradient(90deg, #6366f1, #a78bfa)' }}
         />
         <p className="text-xl leading-relaxed text-[#e2e8f0]">
-          {annotation.total} transaction{many ? 's' : ''} from {dayjs(month).format('MMMM')} {many ? 'are' : 'is'} in.
+          {count(annotation.total, 'payment')} from {dayjs(month).format('MMMM')} {many ? 'are' : 'is'} in.
         </p>
         <p className="mt-1 text-sm text-[#94a3b8]">
-          Your copilot hasn't sorted them yet - run it to see the full picture.
+          They aren't sorted yet - sort them to see the full picture.
         </p>
         <button
           onClick={onSort}
           disabled={annotating}
           className="mt-4 inline-flex items-center gap-2 rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9] disabled:cursor-default disabled:opacity-60"
         >
-          <Sparkles size={15} /> {annotating ? 'Sorting…' : 'Sort my transactions'}
+          <Sparkles size={15} /> {annotating ? 'Sorting…' : 'Sort payments'}
         </button>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -416,7 +417,7 @@ function AccuracyCard({ rows, error, onRetry }) {
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
-        Where I need your help most
+        Where your help matters most
       </p>
       {error ? (
         <InlineError what="the accuracy figures" error={error} onRetry={onRetry} className="m-3" />
@@ -497,7 +498,7 @@ export default function Dashboard() {
       toast(summary.message, summary.type, summaryDuration(summary))
       reloadAll()
     } catch (e) {
-      toast(`Sorting failed - ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setAnnotating(false)
     }
@@ -507,11 +508,11 @@ export default function Dashboard() {
     setSeedingDemo(true)
     try {
       const s = await api.post('/data/demo')
-      toast(`Demo loaded: ${count(s.transactions, 'transaction')} across ${count(s.months, 'month')}`, 'success', 5000)
+      toast(`Demo loaded: ${count(s.transactions, 'payment')} across ${count(s.months, 'month')}`, 'success', 5000)
       refreshDemoData()
       reloadAll()
     } catch (e) {
-      toast(`Couldn't load demo data - ${e.message}`, 'error')
+      toast(couldnt('load demo data', e), 'error')
     } finally {
       setSeedingDemo(false)
     }
@@ -608,7 +609,7 @@ export default function Dashboard() {
         <div className={`${card} p-8 text-center`}>
           <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>
           <p className="mt-2 text-sm text-[#94a3b8]">
-            Upload a bank statement and your copilot will sort every transaction for you.
+            Add a bank statement and every payment gets sorted for you.
           </p>
           <div className="mt-4 flex items-center justify-center gap-3">
             <Link

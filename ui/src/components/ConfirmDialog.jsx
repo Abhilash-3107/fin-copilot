@@ -33,7 +33,7 @@ function Dialog({ title, description, confirmLabel = 'Confirm', onConfirm, onCan
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               danger
                 ? 'bg-red-700 hover:bg-red-600 text-white'
-                : 'bg-[#6366f1] hover:opacity-90 text-white'
+                : 'bg-[#4f46e5] hover:opacity-90 text-white'
             }`}
           >
             {confirmLabel}

@@ -9,6 +9,7 @@ import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
 import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -48,7 +49,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => [...prev, group])
       toast(`Added to "${group.name}"`, 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('add it to the group', e), 'error')
     }
     setSearch('')
     setSuggestions([])
@@ -62,7 +63,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => [...prev, group])
       toast(`Created and added to "${group.name}"`, 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('create the group', e), 'error')
     }
     setSearch('')
     setSuggestions([])
@@ -75,7 +76,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => prev.filter(g => g.id !== groupId))
       toast(`Removed from "${groupName}"`, 'info')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('remove it from the group', e), 'error')
     }
   }
 
@@ -187,7 +188,7 @@ function RenameForm({ txn, onRenamed, onCancel }) {
       const updated = await api.put(`/transactions/${txn.id}/${path}`, { name: value })
       onRenamed(updated, to)
     } catch (e) {
-      toast(`Rename failed: ${e.message}`, 'error')
+      toast(couldnt('rename', e), 'error')
     } finally {
       setSaving(false)
     }
@@ -232,7 +233,7 @@ function RenameForm({ txn, onRenamed, onCancel }) {
         <button
           type="submit"
           disabled={saving || !name.trim()}
-          className="px-3 py-1.5 rounded-md bg-[#6366f1] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
         >
           Save name
         </button>
@@ -330,7 +331,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
       onSaved?.(txn.id, saved)
       onClose?.()
     } catch (e) {
-      toast(`Save failed: ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setSaving(false)
     }
@@ -349,7 +350,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#2d3148] flex items-center justify-between shrink-0">
           <h2 className="text-sm font-semibold text-[#a5b4fc]">
-            {loadError ? "Couldn't load this payment" : annotation ? 'Edit annotation' : 'Annotate transaction'}
+            {loadError ? "Couldn't load this payment" : annotation ? 'Edit this payment' : 'Sort this payment'}
           </h2>
           <button onClick={onClose} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors">
             <X size={17} />
@@ -444,9 +445,9 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex-1 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+              className="flex-1 px-4 py-2 rounded-md bg-[#4f46e5] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
-              {saving ? 'Saving…' : annotation ? 'Update annotation' : 'Save annotation'}
+              {saving ? 'Saving…' : annotation ? 'Update' : 'Save'}
             </button>
           )}
         </div>

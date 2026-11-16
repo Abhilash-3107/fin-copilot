@@ -10,6 +10,7 @@ import PeoplePicker from './PeoplePicker.jsx'
 import Tooltip from './Tooltip.jsx'
 import TagInput from './TagInput.jsx'
 import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
 const TYPE_HELP = 'Matters for payments you made. split / event / blank = shared cost, divided with you · transfer / refund = money you sent them, owed back in full · reimbursement = repaying something they covered, no effect. Money you received always counts as paid back.'
@@ -40,7 +41,7 @@ function AddTransactionSearch({ existingIds, onAdd }) {
         setResults(rows.filter(r => !existingIds.has(r.id)))
         setOpen(true)
       } catch (e) {
-        toast(`Search failed: ${e.message}`, 'error')
+        toast(couldnt('search', e), 'error')
       }
     }, 300)
     return () => clearTimeout(t)
@@ -54,7 +55,7 @@ function AddTransactionSearch({ existingIds, onAdd }) {
           value={query}
           onChange={e => setQuery(e.target.value)}
           onFocus={() => query.trim() && setOpen(true)}
-          placeholder="Add a transaction to this group…"
+          placeholder="Add a payment to this group…"
           className="bg-transparent border-none outline-none text-xs text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
         />
         {query && (
@@ -212,7 +213,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
       setPeople(prev => [...prev, person])
       return person
     } catch (e) {
-      toast(`Couldn't add ${name}: ${e.message}`, 'error')
+      toast(couldnt(`add ${name}`, e), 'error')
       return null
     }
   }
@@ -275,7 +276,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
       await api.patch(`/groups/${group.id}/members/${txnId}`, patch)
       await reload()
     } catch (e) {
-      toast(`Update failed: ${e.message}`, 'error')
+      toast(couldnt('update', e), 'error')
     }
   }
 
@@ -284,7 +285,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
       await api.delete(`/groups/${group.id}/members/${txnId}`)
       await reload()
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('remove it from the group', e), 'error')
     }
   }
 
@@ -294,7 +295,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
       await reload()
       toast('Added to group', 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('add it to the group', e), 'error')
     }
   }
 
@@ -345,7 +346,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
                 type="button"
                 onClick={saveEdit}
                 disabled={saving || !draft.name.trim()}
-                className="bg-[#6366f1] text-white px-3 py-1 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+                className="bg-[#4f46e5] text-white px-3 py-1 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
               >
                 {saving ? 'Saving…' : 'Save'}
               </button>
@@ -368,9 +369,9 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-xs text-[#94a3b8] flex-wrap">
             {dateRange && <span>{dateRange}</span>}
-            {dateRange && <span className="text-[#2d3148]">·</span>}
+            {dateRange && <span aria-hidden="true" className="text-[#94a3b8]">·</span>}
             <span>{count(summary.member_count ?? 0, 'payment')}</span>
-            {group.note && <><span className="text-[#2d3148]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
+            {group.note && <><span aria-hidden="true" className="text-[#94a3b8]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
           </div>
         </div>
         )}
@@ -491,7 +492,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
                 </ul>
                 </>
               ) : (
-                <p className="px-4 py-3 text-xs text-[#94a3b8]">No transactions yet. Search below to add some.</p>
+                <p className="px-4 py-3 text-xs text-[#94a3b8]">No payments yet. Search below to add some.</p>
               )}
 
               <AddTransactionSearch existingIds={existingIds} onAdd={addMember} />

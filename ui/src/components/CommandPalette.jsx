@@ -191,7 +191,7 @@ function Palette({ onClose }) {
             value={query}
             onChange={e => { setQuery(e.target.value); setActive(0) }}
             onKeyDown={onKeyDown}
-            placeholder="Search transactions, people, groups… or jump to a page"
+            placeholder="Search payments, people, groups… or jump to a page"
             role="combobox"
             aria-expanded="true"
             aria-controls={listId}

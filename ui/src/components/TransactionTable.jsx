@@ -50,7 +50,7 @@ export default function TransactionTable({
           <th className={`${th} text-right`}>
             {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
           </th>
-          {['Category', 'Source', 'Confidence'].map(h => (
+          {['Category', 'Source', 'How sure'].map(h => (
             <th key={h} className={`${th} text-left`}>{h}</th>
           ))}
         </tr>
@@ -81,7 +81,7 @@ export default function TransactionTable({
                     checked={!!isSelected}
                     onChange={() => onToggle(txn.id)}
                     className="accent-[#6366f1] align-middle"
-                    aria-label="Select transaction"
+                    aria-label="Select payment"
                   />
                 </td>
               )}

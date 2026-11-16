@@ -279,8 +279,8 @@ describe('Dashboard', () => {
       return Promise.resolve([])
     })
     renderDashboard()
-    expect(await screen.findByText(/120 transactions from May are in/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Sort my transactions/ })).toBeInTheDocument()
+    expect(await screen.findByText(/120 payments from May are in/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Sort payments/ })).toBeInTheDocument()
     // Only the honest cash totals show: raw In and Out, nothing derived.
     expect(screen.getByText('In')).toBeInTheDocument()
     expect(screen.getByText('₹80,738')).toBeInTheDocument()
@@ -305,7 +305,7 @@ describe('Dashboard', () => {
       return { rule_matched: 40, rag_direct_annotated: 60, llm_annotated: 20 }
     })
     renderDashboard()
-    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
     // The job sweeps everything pending, not one statement.
     expect(mockRunAnnotationJob).toHaveBeenCalledWith({}, expect.any(Function))
     // Nothing-to-everything: the verdict hero appears after the refetch.
@@ -313,7 +313,7 @@ describe('Dashboard', () => {
       await screen.findByText((_, el) => el.tagName === 'P' && /In May, you kept/.test(el.textContent))
     ).toBeInTheDocument()
     expect(screen.getByText('Invested')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort payments/ })).not.toBeInTheDocument()
   })
 
   it('sorting also refreshes the counts, so the guesses row is not left at what it was', async () => {
@@ -330,7 +330,7 @@ describe('Dashboard', () => {
       return { rule_matched: 40, rag_direct_annotated: 60, llm_annotated: 20 }
     })
     renderDashboard()
-    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
     expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
   })
 
@@ -354,8 +354,8 @@ describe('Dashboard', () => {
     })
     mockRunAnnotationJob.mockRejectedValue(new Error('LLM unreachable'))
     renderDashboard()
-    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
-    expect(await screen.findByRole('button', { name: /Sort my transactions/ })).toBeEnabled()
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
+    expect(await screen.findByRole('button', { name: /Sort payments/ })).toBeEnabled()
   })
 
   it('waits while another job holds the slot (e.g. re-attached after a reload)', async () => {
@@ -666,7 +666,7 @@ describe('Dashboard when the API fails', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't load your dashboard.")
     expect(screen.queryByText(/Welcome!/)).not.toBeInTheDocument()
-    expect(screen.queryByText('Where I need your help most')).not.toBeInTheDocument()
+    expect(screen.queryByText('Where your help matters most')).not.toBeInTheDocument()
     heal()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Balance over time')).toBeInTheDocument()

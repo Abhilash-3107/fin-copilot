@@ -7,7 +7,7 @@ export default function NotFound() {
       <p className="max-w-sm text-sm text-[#94a3b8]">There is nothing at this address. It may have moved, or the link is mistyped.</p>
       <Link
         to="/dashboard"
-        className="mt-2 rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+        className="mt-2 rounded-lg bg-[#4f46e5] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
       >
         Back to the Dashboard
       </Link>

@@ -64,7 +64,7 @@ export default function RecurringPanel({ items = [], summary = { monthly_total: 
     <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#2d3148]">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] flex items-center gap-1.5">
-          <RefreshCw size={12} /> Recurring & Subscriptions
+          <RefreshCw size={12} /> Recurring and subscriptions
         </p>
         {summary.count > 0 && (
           <p className="text-xs text-[#94a3b8]">
@@ -76,7 +76,7 @@ export default function RecurringPanel({ items = [], summary = { monthly_total: 
 
       {items.length === 0 ? (
         <p className="px-4 py-4 text-sm text-[#94a3b8]">
-          No recurring charges detected yet - they surface once a merchant bills you across a few months.
+          No recurring charges detected yet - they surface once a payee bills you across a few months.
         </p>
       ) : (
         <table className="w-full text-sm">

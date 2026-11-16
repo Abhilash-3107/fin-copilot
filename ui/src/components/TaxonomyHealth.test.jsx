@@ -47,7 +47,7 @@ describe('TaxonomyHealth', () => {
     render(<TaxonomyHealth health={HEALTH} categories={CATS} onChanged={onChanged} />)
     fireEvent.click(screen.getByRole('button', { name: /Merge into "Cafe & Snacks"/ }))
     expect(mockApi.post).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: /Move 13 transactions and delete "Cafes"\?/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Move 13 payments and delete "Cafes"\?/ }))
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
     expect(mockApi.post).toHaveBeenCalledWith('/categories/subcategories/u_cafes/merge', { target_id: 'cat_food_cafe' })
   })

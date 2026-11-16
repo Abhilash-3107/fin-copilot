@@ -126,7 +126,7 @@ export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
     failures = 0
     onProgress?.(job)
     if (job.status === 'completed') return job.result
-    if (job.status === 'failed') throw new ApiError(500, job.error || 'Annotation job failed')
+    if (job.status === 'failed') throw new ApiError(500, job.error || 'Sorting did not finish')
   }
 }
 
@@ -134,12 +134,14 @@ export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
 export class JobBusyError extends Error {
   constructor(kind) {
     const what = {
-      annotate: 'Another categorization run is in progress',
-      reembed: "The AI's memory is being rebuilt",
+      annotate: 'Another sort is already running',
+      reembed: 'Remembered payees are being updated',
       model_download: 'A model download is in progress',
     }[kind] ?? 'Another background job is running'
     super(`${what} - try again when it finishes`)
     this.name = 'JobBusyError'
+    // A conflict, not a dropped connection: the reason is worth showing as written.
+    this.status = 409
   }
 }
 

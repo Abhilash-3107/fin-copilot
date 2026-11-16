@@ -4,6 +4,8 @@ import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import TaxonomyHealth from './TaxonomyHealth.jsx'
 import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 // Category management (4.13): add / rename / merge subcategories under each
 // top-level category. Top-level categories are fixed; subcategories are the
@@ -46,7 +48,7 @@ export default function CategorySettings() {
       await load()
       toast(`Added "${name}"`, 'success')
     } catch (e) {
-      toast(`Couldn't add - ${e.message}`, 'error')
+      toast(couldnt('add', e), 'error')
     }
   }
 
@@ -59,7 +61,7 @@ export default function CategorySettings() {
       await load()
       toast('Renamed', 'success')
     } catch (e) {
-      toast(`Couldn't rename - ${e.message}`, 'error')
+      toast(couldnt('rename', e), 'error')
     }
   }
 
@@ -68,9 +70,9 @@ export default function CategorySettings() {
       const { moved } = await api.post(`/categories/subcategories/${sourceId}/merge`, { target_id: targetId })
       setMerging(null)
       await load()
-      toast(`Merged - ${moved} transaction${moved === 1 ? '' : 's'} moved`, 'info')
+      toast(`Merged - ${count(moved, 'payment')} moved`, 'info')
     } catch (e) {
-      toast(`Couldn't merge - ${e.message}`, 'error')
+      toast(couldnt('merge', e), 'error')
     }
   }
 
@@ -82,9 +84,9 @@ export default function CategorySettings() {
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Categories</h2>
         <p className="text-xs text-[#94a3b8] leading-relaxed max-w-xl">
-          Refine the subcategories your copilot sorts transactions into. Rename one and
-          the change follows every transaction already using it; merge two to fold their
-          transactions together.
+          Refine the subcategories your payments are sorted into. Rename one and
+          the change follows every payment already using it; merge two to fold their
+          payments together.
         </p>
       </div>
 

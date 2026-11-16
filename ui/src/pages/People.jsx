@@ -12,6 +12,7 @@ import Tooltip from '../components/Tooltip.jsx'
 import PersonNet from '../components/PersonNet.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
+import { couldnt } from '../lib/errors.js'
 
 // Curated relationship choices. Family ones (dad/mom/…) make this person's
 // transfers land in Transfers › Family instead of the generic Peer Transfer;
@@ -21,7 +22,7 @@ const RELATIONSHIPS = [
   'self', 'dad', 'mom', 'sister', 'brother', 'wife', 'husband',
   'son', 'daughter', 'family', 'friend', 'roommate', 'landlord', 'colleague', 'other',
 ]
-const RELATIONSHIP_LABELS = { self: 'Me (my other account)' }
+const RELATIONSHIP_LABELS = { self: 'You (your other account)' }
 
 export default function People() {
   const toast = useToast()
@@ -74,7 +75,7 @@ export default function People() {
       toast(`Deleted "${deleteTarget.name}"`, 'info')
       setDeleteTarget(null)
     } catch (e) {
-      toast(`Delete failed: ${e.message}`, 'error')
+      toast(couldnt('delete', e), 'error')
     }
   }
 
@@ -96,7 +97,7 @@ export default function People() {
       setPeople(ps => ps.map(x => x.id === p.id ? { ...updated, stats: x.stats } : x))
       toast('Saved', 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setEditingId(null)
     }
@@ -109,7 +110,7 @@ export default function People() {
       const updated = await api.patch(`/people/${p.id}`, { relationship: val })
       setPeople(ps => ps.map(x => x.id === p.id ? { ...updated, stats: x.stats } : x))
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     }
   }
 
@@ -117,7 +118,7 @@ export default function People() {
   // Carries the display name in navigation state so the chip reads as a name.
   function viewTransactions(p) {
     if (!p.upi) {
-      toast('Add a statement match first so we can find their transactions', 'info')
+      toast('Add a statement match first so we can find their payments', 'info')
       return
     }
     navigate(txnFilterPath({ person: p.upi }), { state: { personName: p.name } })
@@ -129,7 +130,7 @@ export default function People() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">People</h1>
-        {data != null && <span className="text-xs text-[#94a3b8]">{count(people.length, 'contact')}</span>}
+        {data != null && <span className="text-xs text-[#94a3b8]">{count(people.length, 'person', 'people')}</span>}
       </div>
 
       {/* Search + add trigger */}
@@ -145,10 +146,10 @@ export default function People() {
         </div>
         <button
           onClick={() => { setCreateError(''); setAddOpen(true) }}
-          className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 transition-opacity"
+          className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 transition-opacity"
         >
           <Plus size={14} />
-          Add Person
+          Add person
         </button>
       </div>
 
@@ -160,7 +161,7 @@ export default function People() {
       ) : people.length === 0 ? (
         <EmptyState
           title="No people yet"
-          description="Add people to track who is involved in group transactions."
+          description="Add people to track who is involved in group payments."
         />
       ) : (
         <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-visible">
@@ -170,7 +171,7 @@ export default function People() {
                 <th className={th}>Name</th>
                 <th className={th}>
                   <span className="flex items-center gap-1">
-                    Statement Match
+                    Statement match
                     <Tooltip content="Text pattern to auto-match this person in bank statements (e.g., their UPI ID or name as it appears)" position="bottom">
                       <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                     </Tooltip>
@@ -179,7 +180,7 @@ export default function People() {
                 <th className={th}>
                   <span className="flex items-center gap-1">
                     Relationship
-                    <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. Me (my other account) files them as Self Transfers. Others are Peer Transfers." position="bottom">
+                    <Tooltip content="Family relationships (dad, mom, sister…) file this person's transfers under Transfers › Family. You (your other account) files them as Self Transfers. Others are Peer Transfers." position="bottom">
                       <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                     </Tooltip>
                   </span>
@@ -242,7 +243,7 @@ export default function People() {
                         <button
                           onClick={() => viewTransactions(p)}
                           className="text-[#a5b4fc] hover:underline"
-                          title={`View ${stats.matched} transaction${stats.matched === 1 ? '' : 's'} for ${p.name}`}
+                          title={`View ${count(stats.matched, 'payment')} for ${p.name}`}
                         >
                           {stats.matched}
                         </button>
@@ -288,7 +289,7 @@ export default function People() {
             />
           </div>
           <div>
-            <label className="block text-xs text-[#94a3b8] mb-1">Statement match <span className="text-[#94a3b8]">(to help us match their transactions)</span></label>
+            <label className="block text-xs text-[#94a3b8] mb-1">Statement match <span className="text-[#94a3b8]">(to help find their payments)</span></label>
             <input
               value={newUpi}
               onChange={e => { setNewUpi(e.target.value); setCreateError('') }}
@@ -321,10 +322,10 @@ export default function People() {
             <button
               type="submit"
               disabled={creating || !newName.trim()}
-              className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+              className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
               <Plus size={14} />
-              {creating ? 'Adding…' : 'Add Person'}
+              {creating ? 'Adding…' : 'Add person'}
             </button>
           </div>
         </form>
@@ -333,7 +334,7 @@ export default function People() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete person?"
-        description={`Remove "${deleteTarget?.name}" from your contacts? This does not remove them from existing group memberships.`}
+        description={`Remove "${deleteTarget?.name}" from People? This does not remove them from existing group memberships.`}
         confirmLabel="Delete"
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}

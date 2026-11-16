@@ -41,9 +41,9 @@ describe('CommandPalette', () => {
 
   it('is hidden until Cmd-K is pressed', () => {
     renderPalette()
-    expect(screen.queryByPlaceholderText(/Search transactions/)).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/Search payments/)).not.toBeInTheDocument()
     openPalette()
-    expect(screen.getByPlaceholderText(/Search transactions/)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/Search payments/)).toBeInTheDocument()
   })
 
   it('shows jump-to-page results with no query', () => {
@@ -56,7 +56,7 @@ describe('CommandPalette', () => {
   it('searches across transactions, people and groups', async () => {
     renderPalette()
     openPalette()
-    fireEvent.change(screen.getByPlaceholderText(/Search transactions/), { target: { value: 'swiggy' } })
+    fireEvent.change(screen.getByPlaceholderText(/Search payments/), { target: { value: 'swiggy' } })
     await waitFor(() => expect(screen.getByText('Transactions')).toBeInTheDocument())
     expect(screen.getByText('Swiggy')).toBeInTheDocument()
     expect(screen.getByText('Karabi')).toBeInTheDocument()
@@ -77,7 +77,7 @@ describe('CommandPalette', () => {
     // Opened from a control (the top bar's search field), so there is an opener whose focus a remount could restore.
     screen.getByRole('button', { name: 'Search' }).focus()
     openPalette()
-    const input = screen.getByPlaceholderText(/Search transactions/)
+    const input = screen.getByPlaceholderText(/Search payments/)
     expect(input).toHaveFocus()
     fireEvent.change(input, { target: { value: 'swiggy' } })
     expect(await screen.findByText('Karabi')).toBeInTheDocument()
@@ -86,15 +86,15 @@ describe('CommandPalette', () => {
   it('closes on Escape', () => {
     renderPalette()
     openPalette()
-    fireEvent.keyDown(screen.getByPlaceholderText(/Search transactions/), { key: 'Escape' })
-    expect(screen.queryByPlaceholderText(/Search transactions/)).not.toBeInTheDocument()
+    fireEvent.keyDown(screen.getByPlaceholderText(/Search payments/), { key: 'Escape' })
+    expect(screen.queryByPlaceholderText(/Search payments/)).not.toBeInTheDocument()
   })
 })
 
 describe('CommandPalette and privacy mode', () => {
   function search() {
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    fireEvent.change(screen.getByPlaceholderText(/Search transactions/), { target: { value: 'swiggy' } })
+    fireEvent.change(screen.getByPlaceholderText(/Search payments/), { target: { value: 'swiggy' } })
   }
 
   beforeEach(() => {

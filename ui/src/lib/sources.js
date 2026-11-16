@@ -20,9 +20,9 @@ export const SOURCE_PILL = {
 const SOURCE_LABEL = {
   rag_direct:   'from history',
   rag_prompted: 'from history',
-  llm:          'AI guess',
-  model:        'AI guess',
-  learned_rule: 'learned merchant',
+  llm:          'guess',
+  model:        'guess',
+  learned_rule: 'remembered payee',
   rule:         'rule',
   user_rule:    'your rule',
   policy:       'your policy',

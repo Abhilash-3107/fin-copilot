@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Upload as UploadIcon, FileText, Trash2, Zap, RotateCcw, DatabaseZap, Pencil, Check, X, AlertTriangle, ArrowRight } from 'lucide-react'
+import { Upload as UploadIcon, FileText, Zap, Check, X, AlertTriangle, ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import dayjs from 'dayjs'
 import { api, pollAnnotationJob } from '../lib/api.js'
@@ -7,11 +7,13 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import InlineError from '../components/InlineError.jsx'
+import ActionMenu from '../components/ActionMenu.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
 import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
+import { couldnt, errorReason } from '../lib/errors.js'
 
 // Running-balance reconciliation badge (4.20): turns the parser's balance-chain
 // rigor into visible trust. Green check when every consecutive pair reconciles,
@@ -65,7 +67,7 @@ function balanceLine(check) {
 
 function sortLine(entry) {
   if (entry.status === 'sorted') return entry.outcome ? sortedText(entry.outcome.sorted, entry.outcome.needYou) : 'Sorting finished'
-  if (entry.status === 'sortFailed') return `Sorting stopped (${entry.message}). Use Sort again below.`
+  if (entry.status === 'sortFailed') return `Sorting stopped${entry.message ? ` (${entry.message})` : ''}. Use Sort again below.`
   if (!entry.job) return 'Getting started…'
   if (entry.job.status === 'queued') return 'Waiting to sort'
   const { processed = 0, total = 0 } = entry.job
@@ -86,7 +88,7 @@ function FileRow({ entry, onRemove }) {
       <FileText size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <span className="text-sm text-[#e2e8f0] break-all">{file.name}</span>
-        {status === 'ready' && <p className="text-xs text-[#94a3b8] mt-0.5">Ready to upload</p>}
+        {status === 'ready' && <p className="text-xs text-[#94a3b8] mt-0.5">Ready to add</p>}
         {status === 'uploading' && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
         {status === 'failed' && <p className="text-xs text-[#fca5a5] mt-0.5">{entry.message}</p>}
         {added && <p className="text-xs text-[#94a3b8] mt-0.5">{added}</p>}
@@ -130,9 +132,7 @@ export default function Upload() {
   const [dragOver, setDragOver] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [resetTarget, setResetTarget] = useState(null)
-  const [clearEmbedTarget, setClearEmbedTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
-  const [embeddingId, setEmbeddingId] = useState(null)
   const [lastResult, setLastResult] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editingName, setEditingName] = useState('')
@@ -194,7 +194,7 @@ export default function Upload() {
         patchEntry(id, { status: 'sorted', result, outcome })
       })
       .catch(e => {
-        patchEntry(id, { status: 'sortFailed', message: e.message })
+        patchEntry(id, { status: 'sortFailed', message: errorReason(e) })
         loadStatements()
       })
   }
@@ -222,7 +222,7 @@ export default function Upload() {
         }
         loadStatements()
       } catch (e) {
-        patchEntry(entry.id, { status: 'failed', message: e.message })
+        patchEntry(entry.id, { status: 'failed', message: couldnt('read this file', e) })
       }
     }
     setUploading(false)
@@ -237,7 +237,7 @@ export default function Upload() {
       loadStatements()
       refreshDemoData()
     } catch (e) {
-      toast(`Delete failed: ${e.message}`, 'error')
+      toast(couldnt('delete', e), 'error')
     }
   }
 
@@ -245,12 +245,12 @@ export default function Upload() {
     if (!resetTarget) return
     try {
       await api.delete(`/statements/${resetTarget.id}/data`)
-      toast(`Reset ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
+      toast(`Started over with ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
       setResetTarget(null)
       loadStatements()
       refreshDemoData()
     } catch (e) {
-      toast(`Reset failed: ${e.message}`, 'error')
+      toast(couldnt('reset', e), 'error')
     }
   }
 
@@ -266,7 +266,7 @@ export default function Upload() {
       toast(summary.message, summary.type, summaryDuration(summary))
       loadStatements()
     } catch (e) {
-      toast(`Sorting failed - ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setAnnotatingId(null)
     }
@@ -291,40 +291,14 @@ export default function Upload() {
       setEditingName('')
       loadStatements()
     } catch (e) {
-      toast(`Couldn't rename - ${e.message}`, 'error')
-    }
-  }
-
-  async function clearEmbeddings() {
-    if (!clearEmbedTarget) return
-    try {
-      await api.delete(`/embeddings/statement/${clearEmbedTarget.id}`)
-      toast(`Memory cleared - rebuild it when you're ready`, 'info')
-      setClearEmbedTarget(null)
-      loadStatements()
-    } catch (e) {
-      toast(`Couldn't clear the memory - ${e.message}`, 'error')
-    }
-  }
-
-  // Build the AI's memory (embeddings) for a statement so it can learn from the
-  // categories here. Invoked from the Memory status chip when it isn't full.
-  async function buildMemory(s) {
-    setEmbeddingId(s.id)
-    try {
-      const result = await api.post('/embeddings/generate', { statement_id: s.id })
-      toast(`Added ${count(result.embedded, 'transaction')} to memory`, 'success')
-      loadStatements()
-    } catch (e) {
-      toast(`Couldn't build memory - ${e.message}`, 'error')
-    } finally {
-      setEmbeddingId(null)
+      toast(couldnt('rename', e), 'error')
     }
   }
 
   // The account of a drop, once nothing in it is still being read or sorted.
   const sortedEntries = entries.filter(e => e.status === 'sorted')
   const busy = entries.some(e => ['uploading', 'sorting'].includes(e.status))
+  const todoCount = entries.filter(e => ['ready', 'failed'].includes(e.status)).length
   const finished = !busy && sortedEntries.length > 0
     ? {
         ...sortedEntries.reduce((t, e) => ({
@@ -427,10 +401,10 @@ export default function Upload() {
           <button
             onClick={handleUpload}
             disabled={uploading}
-            className="flex items-center gap-2 bg-[#6366f1] text-white px-5 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex items-center gap-2 bg-[#4f46e5] text-white px-5 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <UploadIcon size={14} />
-            {uploading ? 'Uploading…' : 'Upload'}
+            {uploading ? 'Adding…' : todoCount > 1 ? `Add ${todoCount} statements` : 'Add statement'}
           </button>
         </div>
       )}
@@ -449,7 +423,7 @@ export default function Upload() {
           )}
           {finished.modelError && (
             <p className="text-xs text-[#fdba74]">
-              The model stopped answering ({finished.modelError}), so what it hadn&apos;t reached was left for you.
+              Your AI model stopped answering, so what it hadn&apos;t reached was left for you.
               Check it in{' '}
               <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
               and use Sort again to try the rest.
@@ -482,7 +456,7 @@ export default function Upload() {
                     { label: 'Figured out by AI', value: lastResult.llm_annotated, color: 'bg-[#3b1f5e] text-[#c4b5fd]' },
                     { label: 'Couldn\'t figure out', value: lastResult.llm_failed, color: 'bg-[#450a0a] text-[#fca5a5]' },
                   ]),
-              { label: 'Needs your review', value: lastResult.low_confidence, color: 'bg-[#451a03] text-[#fdba74]' },
+              { label: 'Needs you', value: lastResult.low_confidence, color: 'bg-[#451a03] text-[#fdba74]' },
               { label: 'Already done', value: lastResult.already_annotated, color: 'bg-[#14532d] text-[#86efac]' },
             ].map(({ label, value, color }) => (
               <span key={label} className={`text-xs px-3 py-1 rounded-full font-medium ${color}`}>
@@ -492,17 +466,17 @@ export default function Upload() {
           </div>
           {lastResult.llm_error && (
             <p className="text-xs text-[#fca5a5] mt-3">
-              The AI model isn&apos;t available ({lastResult.llm_error}), so this run stopped using it.
+              Your AI model stopped answering, so this run stopped using it.
               Check it in{' '}
               <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
-              and run again to categorize what&apos;s left.
+              and use Sort again for what&apos;s left.
             </p>
           )}
           {lastResult.ai_active === false && (
             <p className="text-xs text-[#94a3b8] mt-3">
-              AI is off - your rules and history did the work above. Add a provider in{' '}
+              No AI model is connected, so only your rules and remembered payees did the work above. Connect one in{' '}
               <Link to="/settings?tab=ai" className="text-[#818cf8] hover:underline">Settings › AI &amp; Model</Link>{' '}
-              to categorize the rest automatically.
+              to sort the rest automatically.
             </p>
           )}
         </div>
@@ -511,7 +485,7 @@ export default function Upload() {
       {/* Statement history */}
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-x-auto">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
-          Your Statements
+          Your statements
         </p>
         {listState.error ? (
           <InlineError what="your statements" error={listState.error} onRetry={loadStatements} className="m-3" />
@@ -523,9 +497,10 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Balanced', 'Sorted', 'Memory', 'Uploaded', 'Actions'].map(h => (
+                {['Bank', 'Month', 'Balanced', 'Sorted', 'Added'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                 ))}
+                <th className="px-4 py-2.5 border-b border-[#1e2235]"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -552,15 +527,9 @@ export default function Upload() {
                         </button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 group">
+                      <div className="flex items-center gap-2">
                         <FileText size={14} className="text-[#818cf8] shrink-0" />
                         <span>{s.bank_name}</span>
-                        <button
-                          onClick={() => startEditName(s)}
-                          className="opacity-0 group-hover:opacity-100 text-[#94a3b8] hover:text-[#e2e8f0] transition-opacity"
-                        >
-                          <Pencil size={12} />
-                        </button>
                       </div>
                     )}
                   </td>
@@ -569,31 +538,13 @@ export default function Upload() {
                     <BalancedBadge check={s.balance_check} />
                   </td>
                   <td className="px-4 py-3">
-                    <Tooltip content="Payments sorted with enough confidence. The rest are waiting for you in Teach Me.">
+                    <Tooltip content="Payments sorted without needing you. The rest are waiting for you in Teach Me.">
                       <CoverageBadge done={s.sorted_count} total={s.txn_count} />
                     </Tooltip>
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <Tooltip content="How much of this statement the AI has memorized. It learns from these to categorize your future statements.">
-                        <CoverageBadge done={s.embedded_count} total={s.txn_count} />
-                      </Tooltip>
-                      {s.txn_count > 0 && s.embedded_count < s.txn_count && (
-                        <Tooltip content="Add the rest of this statement to the AI's memory so it can learn from your categories here">
-                          <button
-                            onClick={() => buildMemory(s)}
-                            disabled={embeddingId === s.id}
-                            className="text-[10px] font-medium text-[#818cf8] hover:text-[#818cf8] disabled:opacity-50 transition-colors"
-                          >
-                            {embeddingId === s.id ? 'Building…' : 'Build'}
-                          </button>
-                        </Tooltip>
-                      )}
-                    </div>
-                  </td>
                   <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-end gap-2">
                       <Tooltip content="Sort this statement again, for example after connecting a model">
                         <button
                           onClick={() => autoAnnotate(s)}
@@ -604,30 +555,14 @@ export default function Upload() {
                           {annotatingId === s.id ? 'Sorting…' : 'Sort again'}
                         </button>
                       </Tooltip>
-                      <Tooltip content="Rebuild the AI's memory - do this after making corrections">
-                        <button
-                          onClick={() => setClearEmbedTarget(s)}
-                          className="text-[#94a3b8] hover:text-sky-400 transition-colors"
-                        >
-                          <DatabaseZap size={14} />
-                        </button>
-                      </Tooltip>
-                      <Tooltip content="Reset all categories - keeps the statement data">
-                        <button
-                          onClick={() => setResetTarget(s)}
-                          className="text-[#94a3b8] hover:text-amber-400 transition-colors"
-                        >
-                          <RotateCcw size={14} />
-                        </button>
-                      </Tooltip>
-                      <Tooltip content="Delete this statement and all its data">
-                        <button
-                          onClick={() => setDeleteTarget(s)}
-                          className="text-[#94a3b8] hover:text-red-400 transition-colors"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </Tooltip>
+                      <ActionMenu
+                        label={`More for ${s.bank_name} - ${formatMonth(s.statement_month)}`}
+                        items={[
+                          { label: 'Rename', onSelect: () => startEditName(s) },
+                          { label: 'Start over', onSelect: () => setResetTarget(s) },
+                          { label: 'Delete', onSelect: () => setDeleteTarget(s), danger: true },
+                        ]}
+                      />
                     </div>
                   </td>
                 </tr>
@@ -638,20 +573,10 @@ export default function Upload() {
       </div>
 
       <ConfirmDialog
-        open={!!clearEmbedTarget}
-        title="Rebuild the AI's memory?"
-        description={`This will reset the AI's memory for "${clearEmbedTarget?.bank_name} - ${formatMonth(clearEmbedTarget?.statement_month)}". Your categories are kept. Rebuild after making corrections so the AI learns from your changes.`}
-        confirmLabel="Rebuild memory"
-        onConfirm={clearEmbeddings}
-        onCancel={() => setClearEmbedTarget(null)}
-        danger
-      />
-
-      <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This will remove all categories and the AI's memory for "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}". Your transactions stay - you can re-categorize anytime. This can't be undone.`}
-        confirmLabel="Reset"
+        description={`This removes every category on "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}" and the payees remembered from it. Your payments stay, and you can sort them again any time. This can't be undone.`}
+        confirmLabel="Start over"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}
         danger
@@ -660,7 +585,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this statement?"
-        description={`This will permanently remove "${deleteTarget?.bank_name} - ${formatMonth(deleteTarget?.statement_month)}" and all its transactions. This can't be undone.`}
+        description={`This will permanently remove "${deleteTarget?.bank_name} - ${formatMonth(deleteTarget?.statement_month)}" and all its payments. This can't be undone.`}
         confirmLabel="Delete"
         onConfirm={deleteStatement}
         onCancel={() => setDeleteTarget(null)}

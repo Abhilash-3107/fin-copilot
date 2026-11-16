@@ -49,7 +49,7 @@ describe('runAnnotationJob', () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'reembed', statement_id: null })))
     const run = runAnnotationJob({ statement_id: 's1' }, null, 0)
     await expect(run).rejects.toBeInstanceOf(JobBusyError)
-    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("memory is being rebuilt")
+    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("Remembered payees are being updated")
     expect(fetch).toHaveBeenCalledTimes(2) // never polled the other job
   })
 
@@ -63,7 +63,7 @@ describe('runAnnotationJob', () => {
   it("refuses another statement's run", async () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'annotate', statement_id: 's2' })))
     await expect(runAnnotationJob({ statement_id: 's1' }, null, 0))
-      .rejects.toThrow('Another categorization run is in progress')
+      .rejects.toThrow('Another sort is already running')
   })
 
   it('re-attaches to the same run (a double-click, a second tab)', async () => {

@@ -119,10 +119,10 @@ describe('People', () => {
     expect(document.body.textContent).not.toContain('\u2014')
   })
 
-  it('counts contacts with the right plural', async () => {
+  it('counts people with the right plural', async () => {
     mockApi.get.mockResolvedValue([PEOPLE[0]])
     renderPeople()
-    expect(await screen.findByText('1 contact')).toBeInTheDocument()
+    expect(await screen.findByText('1 person')).toBeInTheDocument()
   })
 
   it('clicks the matched count through to filtered transactions', async () => {
@@ -137,7 +137,7 @@ describe('People', () => {
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
     // No modal heading until the trigger is clicked.
     expect(screen.queryByText('Add a person')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Add Person/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add person/i }))
     expect(screen.getByText('Add a person')).toBeInTheDocument()
   })
 })
@@ -161,11 +161,11 @@ describe('People duplicates', () => {
     mockApi.post.mockRejectedValue(Object.assign(new Error('You already have Karabi with the match "karabi".'), { status: 409 }))
     renderPeople()
     await screen.findByText('Karabi')
-    fireEvent.click(screen.getByRole('button', { name: /Add Person/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add person/i }))
     const dialog = screen.getByRole('dialog', { name: 'Add a person' })
     fireEvent.change(within(dialog).getByPlaceholderText('e.g. Karabi'), { target: { value: 'Karabi' } })
     fireEvent.change(within(dialog).getByPlaceholderText(/UPI id or name/), { target: { value: 'karabi' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add Person' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add person' }))
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('You already have Karabi with the match "karabi".')
     expect(screen.getByRole('dialog', { name: 'Add a person' })).toBeInTheDocument()
     // Typing again clears the message.

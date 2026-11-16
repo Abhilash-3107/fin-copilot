@@ -18,6 +18,8 @@ import Amount from '../components/Amount.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 const PAGE_SIZE = 500
 
@@ -157,7 +159,7 @@ export default function Transactions() {
   const [linkError, setLinkError] = useState(null) // {id, status} of a linked payment that could not open
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
-  // Any tracked run holds the single job slot, so Auto-annotate waits for it.
+  // Any tracked run holds the single job slot, so Sort again waits for it.
   const { job, startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const loadRef = useRef(0)
@@ -276,12 +278,12 @@ export default function Transactions() {
       const gone = skipped.length
         ? ` · ${skipped.length} skipped (no longer exist${skipped.length === 1 ? 's' : ''})`
         : ''
-      toast(`Categorized ${updated} transaction${updated === 1 ? '' : 's'}${gone}`, skipped.length ? 'info' : 'success')
+      toast(`Sorted ${count(updated, 'payment')}${gone}`, skipped.length ? 'info' : 'success')
       setSelected(new Set())
       setBulkCategory('')
       loadTransactions()
     } catch (e) {
-      toast(`Couldn't apply - ${e.message}`, 'error')
+      toast(couldnt('apply', e), 'error')
     } finally {
       setBulkApplying(false)
     }
@@ -532,7 +534,7 @@ export default function Transactions() {
       loadTransactions()
       loadFacets()
     } catch (e) {
-      toast(`Auto-annotate failed: ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setAutoAnnotating(false)
     }
@@ -699,12 +701,12 @@ export default function Transactions() {
         <span className="text-xs text-[#94a3b8] ml-auto">
           {loading ? 'Loading…' : loadError ? null : summary ? (
             <>
-              {summary.count} transaction{summary.count === 1 ? '' : 's'}
+              {count(summary.count, 'payment')}
               {' · '}<Amount value={summary.money_out} decimals={0} /> out
               {' · '}<Amount value={summary.money_in} decimals={0} /> in
             </>
           ) : (
-            `${transactions.length}${hasMore ? '+' : ''} transaction${transactions.length === 1 ? '' : 's'}`
+            `${transactions.length}${hasMore ? '+' : ''} ${transactions.length === 1 ? 'payment' : 'payments'}`
           )}
         </span>
 
@@ -717,14 +719,14 @@ export default function Transactions() {
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        <Tooltip content="Use AI to automatically categorize transactions in this statement">
+        <Tooltip content="Sort this statement again, for example after connecting a model">
           <button
             onClick={autoAnnotate}
             disabled={autoAnnotating || !selectedStmt || job != null}
-            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Zap size={13} />
-            {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
+            {autoAnnotating ? 'Sorting…' : 'Sort again'}
           </button>
         </Tooltip>
       </div>
@@ -756,7 +758,7 @@ export default function Transactions() {
             <button
               onClick={applyBulkCategory}
               disabled={!bulkCategory || bulkApplying}
-              className="bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+              className="bg-[#4f46e5] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
             >
               {bulkApplying ? 'Applying…' : 'Apply'}
             </button>
@@ -785,11 +787,11 @@ export default function Transactions() {
           </p>
         )}
         {loadError ? (
-          <InlineError what="your transactions" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
+          <InlineError what="your payments" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
         ) : !loading && transactions.length === 0 ? (
           <EmptyState
-            title="No transactions"
-            description={filtersActive ? 'No transactions match the current filters.' : 'Upload a statement to get started.'}
+            title="No payments"
+            description={filtersActive ? 'No payments match the current filters.' : 'Add a statement to get started.'}
           />
         ) : (
           <>
@@ -821,7 +823,7 @@ export default function Transactions() {
               />
             </div>
             {moreError && (
-              <InlineError what="more transactions" error={moreError} onRetry={loadMore} retrying={loadingMore} className="mx-4 mt-3" />
+              <InlineError what="more payments" error={moreError} onRetry={loadMore} retrying={loadingMore} className="mx-4 mt-3" />
             )}
             {hasMore && (
               <div className="flex justify-center py-4">

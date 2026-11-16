@@ -152,16 +152,16 @@ export default function SortCard({
           <button
             onClick={onConfirm}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#4f46e5] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            <CheckCircle size={16} /> {saving ? 'Saving…' : 'Confirm'} <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.confirm)}</kbd>
+            <CheckCircle size={16} /> {saving ? 'Saving…' : 'Confirm'} <kbd className="text-[10px]">{keyLabel(TEACH_ME_KEYS.confirm)}</kbd>
           </button>
         )}
         <button
           onClick={onSkip}
           className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#2d3148] text-sm text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
         >
-          <SkipForward size={16} /> Skip <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.skip)}</kbd>
+          <SkipForward size={16} /> Skip <kbd className="text-[10px]">{keyLabel(TEACH_ME_KEYS.skip)}</kbd>
         </button>
         <span className="flex-1" />
         <button
@@ -169,7 +169,7 @@ export default function SortCard({
           disabled={!canUndo}
           className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
+          <Undo2 size={15} /> Undo <kbd className="text-[10px]">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
         </button>
       </div>
     </div>

@@ -260,7 +260,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                       to={txnFilterPath({ category: c.category, month })}
                       className="text-xs text-[#818cf8] hover:text-[#a5b4fc]"
                     >
-                      View transactions →
+                      View payments →
                     </Link>
                   </li>
                 </ul>
@@ -306,8 +306,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
           to="/review"
           className="block px-4 py-2.5 border-t border-[#2d3148] text-xs text-[#f59e0b] hover:text-[#fbbf24]"
         >
-          <Amount value={unexplained.total} decimals={0} /> across {unexplained.count} transaction
-          {unexplained.count === 1 ? '' : 's'} is unexplained - review them →
+          <Amount value={unexplained.total} decimals={0} /> across {count(unexplained.count, 'payment')} is unexplained - sort them →
         </Link>
       )}
     </div>
@@ -357,21 +356,21 @@ function PeoplePanel({ people, monthName }) {
   )
 }
 
-// Row 6: merchants with order counts and average ticket, on canonical
-// counterparty keys so ZOMATO and ZOMATO LIMITED are one merchant.
+// Row 6: payees with order counts and average ticket, on canonical
+// payee keys so ZOMATO and ZOMATO LIMITED are one payee.
 function MerchantsPanel({ merchants, heading, month }) {
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
-        Top merchants - {heading}
+        Top payees - {heading}
       </p>
       {merchants.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#94a3b8]">No merchant spending this month.</p>
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">No spending on payees this month.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
             <tr>
-              {['Merchant', 'Total', 'Orders', 'Avg order'].map((h, i) => (
+              {['Payee', 'Total', 'Orders', 'Avg order'].map((h, i) => (
                 <th
                   key={h}
                   className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] ${i === 0 ? 'text-left' : 'text-right'}`}
@@ -442,7 +441,7 @@ export default function Insights() {
       ) : error ? (
         <InlineError what="your Money Map" error={error} onRetry={reload} />
       ) : !data?.month ? (
-        <p className="text-sm text-[#94a3b8]">Nothing here yet - upload a statement to get started.</p>
+        <p className="text-sm text-[#94a3b8]">Nothing here yet - add a statement to get started.</p>
       ) : (
         <>
           <VerdictStrip verdict={data.verdict} vs={vs} />

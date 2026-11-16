@@ -571,7 +571,7 @@ describe('answering and undoing', () => {
     await act(async () => {})
     expect(loads).toBeGreaterThan(0)
     expect(toastSpy).not.toHaveBeenCalledWith('Undone', expect.anything())
-    expect(lastToast()[0]).toMatch(/offline/)
+    expect(lastToast()[0]).toBe("Undone. Couldn't reload the list. Finance Copilot isn't answering.")
     expect(lastToast()[1]).toBe('error')
   })
 
@@ -631,7 +631,7 @@ describe('undoing a correction and the similar payments it fixed', () => {
     await user.keyboard('/trans')
     await user.keyboard('{Enter}')
     key('Enter')
-    fireEvent.click(await screen.findByRole('button', { name: /Apply to 1 transaction/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Apply to 1 payment/ }))
     await heading('UBER')
     await act(async () => {})
   }
@@ -812,8 +812,7 @@ describe('ReviewQueue payee groups', () => {
     await act(async () => {})
     await act(async () => {})
     expect(lastToast()[1]).toBe('error')
-    expect(lastToast()[0]).toMatch(/Policy saved, but/)
-    expect(lastToast()[0]).toMatch(/offline/)
+    expect(lastToast()[0]).toBe("Policy saved. Couldn't reload the list. Finance Copilot isn't answering.")
   })
 
   it('keeps the suggested limit readable while amounts are hidden', async () => {
@@ -887,13 +886,13 @@ describe('ReviewQueue custom categories', () => {
   it('keeps the typed name when the server rejects it', async () => {
     const user = userEvent.setup()
     stubGet([makeCard()])
-    mockApi.post.mockRejectedValue(new Error("'Pets' already exists"))
+    mockApi.post.mockRejectedValue(Object.assign(new Error("'Pets' already exists"), { status: 422 }))
     await renderQueue()
 
     await user.keyboard('/Pets{Enter}')
 
     expect(await screen.findByRole('combobox', { name: 'Another category' })).toHaveValue('Pets')
-    expect(lastToast().slice(0, 2)).toEqual(['Couldn\'t add "Pets" - \'Pets\' already exists', 'error'])
+    expect(lastToast().slice(0, 2)).toEqual(['Couldn\'t add "Pets". \'Pets\' already exists', 'error'])
   })
 })
 
@@ -937,7 +936,7 @@ describe('ReviewQueue unsorted payments', () => {
       '2 payments have no guess yet. Pick a category for each below, or run automatic sorting.'
     )).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Sort my transactions/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Sort payments/ }))
     await act(async () => {})
     expect(jobCtx.startAnnotation).toHaveBeenCalledWith({})
   })
@@ -947,7 +946,7 @@ describe('ReviewQueue unsorted payments', () => {
     stubGet([bare(100, 'SWIGGY')])
     await renderQueue()
     expect(screen.getByText(/Automatic sorting is running/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort payments/ })).not.toBeInTheDocument()
   })
 
   it('shows no line when every queued payment has a guess', async () => {
@@ -969,17 +968,17 @@ describe('ReviewQueue unsorted payments', () => {
     stubGet([bare(100, 'SWIGGY'), bare(101, 'UBER')])
     await renderQueue()
     expect(screen.getByText('2 payments have no guess yet. Pick a category for each below.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort payments/ })).not.toBeInTheDocument()
   })
 
   it('stops offering the run once a run has left the payments bare', async () => {
     jobCtx.startAnnotation.mockResolvedValue({ ai_active: true, llm_failed: 2 })
     stubGet(() => [bare(100, 'SWIGGY'), bare(101, 'UBER')])
     await renderQueue()
-    fireEvent.click(screen.getByRole('button', { name: /Sort my transactions/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Sort payments/ }))
     await act(async () => {})
     expect(await screen.findByText('2 payments have no guess yet. Pick a category for each below.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort payments/ })).not.toBeInTheDocument()
   })
 
   it('does not offer Confirm on a payment with no guess; Enter does nothing until a category is chosen', async () => {

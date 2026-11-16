@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database, FolderTree } from 'lucide-react'
+import { X, SlidersHorizontal, Cpu, GraduationCap, BookOpen, Database, FolderTree } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import RunSummary from '../components/RunSummary.jsx'
+import { DeveloperInsights } from '../components/RunSummary.jsx'
 import ModelSettings from '../components/ModelSettings.jsx'
 import DataSettings from '../components/DataSettings.jsx'
 import CategorySettings from '../components/CategorySettings.jsx'
@@ -12,6 +12,7 @@ import ReviewPolicies from '../components/ReviewPolicies.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import { txnFilterPath } from '../lib/txnLink.js'
+import { couldnt } from '../lib/errors.js'
 
 function Toggle({ checked, disabled, onChange }) {
   return (
@@ -33,18 +34,12 @@ function Toggle({ checked, disabled, onChange }) {
   )
 }
 
-// Prefer the human merchant, but fall back to the raw counterparty key when the
-// merchant is empty or a mangled one-character fragment (4.21) - a lone "U" or
-// "3" reads as broken, whereas the raw key ("U OBEROIFC TUCKSH") is at least
-// recognizable.
-function ruleDisplayName(r) {
-  const m = (r.merchant || '').trim()
-  return m.length > 1 ? m : r.counterparty_key
-}
-
 const ruleId = r => `${r.counterparty_key}|${r.direction}`
 
-function LearnedRules() {
+// The payees Finance Copilot sorts without asking, and without an AI model:
+// each one was sorted the same way, by you, enough times. The list is computed
+// from your own sorting, so sorting a payee differently is how you change one.
+function RememberedPayees() {
   const toast = useToast()
   const { data, error, reload, setData: setRules } = useLoad(useCallback(() => api.get('/annotations/learned-rules'), []))
   const rules = data ?? []
@@ -58,9 +53,9 @@ function LearnedRules() {
       )
       setRules(rs => rs.filter(r => ruleId(r) !== ruleId(rule)))
       const which = rule.direction === 'credit' ? ' (money in)' : ''
-      toast(`Stopped learning "${ruleDisplayName(rule)}"${which}`, 'info')
+      toast(`Stopped sorting "${rule.payee}"${which} on its own`, 'info')
     } catch (e) {
-      toast(`Couldn't dismiss - ${e.message}`, 'error')
+      toast(couldnt('stop that', e), 'error')
     } finally {
       setDismissing(null)
     }
@@ -68,32 +63,32 @@ function LearnedRules() {
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Learned from your corrections</h2>
+      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Payees sorted on their own</h2>
       <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
-        When you verify a merchant enough times and agree on a category, your copilot
-        starts categorizing it automatically - no AI needed. These rules update as you
-        review; correcting a merchant is how you change one. Dismiss (×) a rule to stop
-        it - useful once you've added that contact to People and they're handled there.
+        When you sort a payee the same way enough times, Finance Copilot sorts its
+        payments for you, no AI needed. This list follows your sorting: sort a payee
+        differently to change one. Remove (×) one to stop it - useful once you've added
+        that person to People and they're handled there.
       </p>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
         {error ? (
-          <InlineError what="what it has learned" error={error} onRetry={reload} className="m-3" />
+          <InlineError what="your remembered payees" error={error} onRetry={reload} className="m-3" />
         ) : data == null ? (
           <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading…</p>
         ) : rules.length === 0 ? (
           <p className="px-5 py-4 text-sm text-[#94a3b8]">
-            Nothing learned yet. As you verify transactions in the review queue, recurring
-            merchants will show up here.
+            No payees yet. As you sort payments in Teach Me, payees you sort the same way
+            again and again will show up here.
           </p>
         ) : (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-[#94a3b8] border-b border-[#2d3148]">
-                <th className="font-medium px-5 py-2.5">Merchant</th>
-                <th className="font-medium px-5 py-2.5">Categorized as</th>
-                <th className="font-medium px-5 py-2.5 text-right">Confidence</th>
-                <th className="font-medium px-5 py-2.5 w-10"></th>
+                <th className="font-medium px-5 py-2.5">Payee</th>
+                <th className="font-medium px-5 py-2.5">Sorted as</th>
+                <th className="font-medium px-5 py-2.5 text-right">Your sorts that agree</th>
+                <th className="font-medium px-5 py-2.5 w-10"><span className="sr-only">Remove</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#2d3148]">
@@ -101,16 +96,11 @@ function LearnedRules() {
                 <tr key={ruleId(r)}>
                   <td className="px-5 py-3 text-[#e2e8f0]">
                     <Link
-                      to={txnFilterPath(
-                        r.merchant ? { merchant: r.merchant } : { category: r.category }
-                      )}
+                      to={txnFilterPath({ payeeKeys: [r.counterparty_key] })}
                       className="hover:text-[#a5b4fc] transition-colors"
                     >
-                      {ruleDisplayName(r)}
+                      {r.payee}
                     </Link>
-                    {ruleDisplayName(r) !== r.counterparty_key && (
-                      <span className="text-[#94a3b8] ml-2 text-xs">{r.counterparty_key}</span>
-                    )}
                     {r.direction === 'credit' && (
                       <span className="text-[#94a3b8] ml-2 text-xs">money in</span>
                     )}
@@ -120,14 +110,14 @@ function LearnedRules() {
                     {r.subcategory && <span className="text-[#94a3b8]"> › {r.subcategory}</span>}
                   </td>
                   <td className="px-5 py-3 text-right text-[#94a3b8] tabular-nums whitespace-nowrap">
-                    {Math.round(r.purity * 100)}%
-                    <span className="ml-1.5 text-[#94a3b8]">({r.support}/{r.total})</span>
+                    {r.support} of {r.total}
                   </td>
                   <td className="px-2 py-3 text-right">
                     <button
                       onClick={() => dismiss(r)}
                       disabled={dismissing === ruleId(r)}
-                      title="Stop learning this merchant"
+                      title="Stop sorting this payee on its own"
+                      aria-label={`Stop sorting ${r.payee} on its own`}
                       className="text-[#94a3b8] hover:text-[#f87171] transition-colors disabled:opacity-40"
                     >
                       <X size={15} />
@@ -143,9 +133,9 @@ function LearnedRules() {
   )
 }
 
-// Insights tab: the review-bar slider with a live preview. Moving it repreviews
-// the run summary at the candidate threshold (dev mode) before saving.
-function InsightsSettings({ devMode, threshold, onSave }) {
+// Teach Me tab: when Finance Copilot should ask you. Moving the slider
+// repreviews the run summary at the candidate value (developer mode) before saving.
+function WhenToAskYou({ devMode, threshold, onSave }) {
   const toast = useToast()
   const [value, setValue] = useState(threshold)
   const [saving, setSaving] = useState(false)
@@ -157,9 +147,9 @@ function InsightsSettings({ devMode, threshold, onSave }) {
     setSaving(true)
     try {
       await onSave(value)
-      toast(`Review bar set to ${Math.round(value * 100)}%`, 'success')
+      toast(`You'll be asked about guesses under ${Math.round(value * 100)}% sure`, 'success')
     } catch (e) {
-      toast(`Couldn't save - ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setSaving(false)
     }
@@ -168,11 +158,11 @@ function InsightsSettings({ devMode, threshold, onSave }) {
   return (
     <div className="space-y-8">
       <div>
-        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Review bar</h2>
+        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">When to ask you</h2>
         <p className="text-xs text-[#94a3b8] mb-4 leading-relaxed max-w-xl">
-          Auto-categorizations below this confidence go to the review queue for you to
-          verify; at or above it, they're accepted automatically. Raise it to catch more
-          borderline calls yourself; lower it to review less.
+          When a guess is less sure than this, the payment waits for you in Teach Me.
+          Guesses at or above it are accepted on their own. Raise it to be asked more
+          often, lower it to be asked less.
         </p>
         <div className="bg-[#13151f] border border-[#2d3148] rounded-xl px-5 py-5">
           <div className="flex items-center gap-4">
@@ -181,15 +171,16 @@ function InsightsSettings({ devMode, threshold, onSave }) {
               min="0.5" max="0.99" step="0.01"
               value={value}
               onChange={e => setValue(parseFloat(e.target.value))}
+              aria-label="Ask me below this sureness"
               className="flex-1 accent-[#6366f1]"
             />
-            <span className="w-16 text-right tabular-nums text-lg font-semibold text-[#e2e8f0]">
-              {Math.round(value * 100)}%
+            <span className="w-24 text-right tabular-nums text-lg font-semibold text-[#e2e8f0]">
+              {Math.round(value * 100)}% sure
             </span>
             <button
               onClick={save}
               disabled={!dirty || saving}
-              className="bg-[#6366f1] text-white px-4 py-1.5 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+              className="bg-[#4f46e5] text-white px-4 py-1.5 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
@@ -203,32 +194,24 @@ function InsightsSettings({ devMode, threshold, onSave }) {
       </div>
 
       {devMode ? (
-        <div>
-          <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Auto-categorization insights</h2>
-          <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
-            Where your annotated transactions sit relative to the pipeline's thresholds:
-            which stage decided each, how the similarity and confidence scores are
-            distributed against their cutoffs, and the transactions sitting just below the
-            review bar. The lists and review rate update live as you drag the slider.
-          </p>
-          <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-            <RunSummary threshold={value} />
-          </div>
-        </div>
+        <DeveloperInsights threshold={value} />
       ) : (
         <p className="text-xs text-[#94a3b8] max-w-xl">
-          Turn on Developer mode (General tab) to preview which transactions the current
-          review bar catches or lets through.
+          Turn on Developer mode (General tab) to preview which payments this setting
+          would ask you about.
         </p>
       )}
     </div>
   )
 }
 
+// The Teach Me tab was called Insights: old links and bookmarks still open it.
+const RENAMED_TABS = { insights: 'teach' }
+
 const TABS = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
   { id: 'ai', label: 'AI & Model', icon: Cpu },
-  { id: 'insights', label: 'Insights', icon: BarChart3 },
+  { id: 'teach', label: 'Teach Me', icon: GraduationCap },
   { id: 'categories', label: 'Categories', icon: FolderTree },
   { id: 'rules', label: 'Rules', icon: BookOpen },
   { id: 'data', label: 'Data', icon: Database },
@@ -240,12 +223,17 @@ export default function Settings() {
   // reload keeps it. General is the default and leaves the URL bare.
   const [params, setParams] = useSearchParams()
   const requested = params.get('tab')
-  const tab = TABS.some(t => t.id === requested) ? requested : 'general'
+  const wanted = Object.hasOwn(RENAMED_TABS, requested) ? RENAMED_TABS[requested] : requested
+  const tab = TABS.some(t => t.id === wanted) ? wanted : 'general'
   const setTab = id => setParams(id === 'general' ? {} : { tab: id }, { replace: true })
+  // Rewrite an old tab id in the address, so a reload or a copied link keeps the new one.
+  useEffect(() => {
+    if (Object.hasOwn(RENAMED_TABS, requested)) setParams({ tab: RENAMED_TABS[requested] }, { replace: true })
+  }, [requested, setParams])
   const [devMode, setDevMode] = useState(false)
   const [threshold, setThreshold] = useState(0.85)
   const [loading, setLoading] = useState(true)
-  // General and Insights show these values: when they did not load, saying so
+  // General and Teach Me show these values: when they did not load, saying so
   // beats showing defaults that look like the saved settings.
   const [configError, setConfigError] = useState(null)
   const [attempt, setAttempt] = useState(0)
@@ -278,7 +266,7 @@ export default function Settings() {
       setDevMode(!!cfg.dev_mode)
       toast(next ? 'Developer mode on' : 'Developer mode off', 'success')
     } catch (e) {
-      toast(`Couldn't save - ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setSaving(false)
     }
@@ -292,7 +280,7 @@ export default function Settings() {
   return (
     <div className="max-w-3xl mx-auto w-full px-4 py-6">
       <h1 className="text-lg font-semibold text-[#e2e8f0] mb-1">Settings</h1>
-      <p className="text-sm text-[#94a3b8] mb-5">Configure how your copilot behaves.</p>
+      <p className="text-sm text-[#94a3b8] mb-5">Choose how payments get sorted, and look after your data.</p>
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-[#2d3148] mb-6 overflow-x-auto">
@@ -327,10 +315,10 @@ export default function Settings() {
                 <div>
                   <p className="text-sm font-medium text-[#e2e8f0]">Developer mode</p>
                   <p className="text-xs text-[#94a3b8] mt-0.5 leading-relaxed">
-                    Show the reasoning behind each auto-categorization - the neighbours,
-                    similarity math against each threshold, the model's explanation, and a
-                    run-level summary in the Insights tab. The reasoning is always recorded,
-                    so turning this on also explains transactions categorized earlier.
+                    Show how each payment was sorted - the similar payments it was compared
+                    with, the scores, the model's explanation, and a summary of recent runs
+                    in the Teach Me tab. This is always recorded, so turning it on also
+                    explains payments sorted earlier.
                   </p>
                 </div>
                 <Toggle checked={devMode} disabled={saving} onChange={setDev} />
@@ -340,9 +328,9 @@ export default function Settings() {
 
           {tab === 'ai' && <ModelSettings />}
 
-          {tab === 'insights' && configError && configFailed}
-          {tab === 'insights' && !configError && (
-            <InsightsSettings devMode={devMode} threshold={threshold} onSave={saveThreshold} />
+          {tab === 'teach' && configError && configFailed}
+          {tab === 'teach' && !configError && (
+            <WhenToAskYou devMode={devMode} threshold={threshold} onSave={saveThreshold} />
           )}
 
           {tab === 'categories' && <CategorySettings />}
@@ -351,7 +339,7 @@ export default function Settings() {
             <div className="space-y-8">
               <UserRules />
               <ReviewPolicies />
-              <LearnedRules />
+              <RememberedPayees />
             </div>
           )}
 

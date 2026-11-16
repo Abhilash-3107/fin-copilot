@@ -8,6 +8,7 @@ import EmptyState from '../components/EmptyState.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
+import { couldnt } from '../lib/errors.js'
 
 export default function Groups() {
   const toast = useToast()
@@ -49,7 +50,7 @@ export default function Groups() {
       toast(`Deleted "${deleteTarget.name}"`, 'info')
       setDeleteTarget(null)
     } catch (e) {
-      toast(`Delete failed: ${e.message}`, 'error')
+      toast(couldnt('delete', e), 'error')
     }
   }
 
@@ -82,7 +83,7 @@ export default function Groups() {
           <button
             type="submit"
             disabled={creating || !newName.trim()}
-            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Plus size={14} />
             {creating ? 'Creating…' : 'Create'}
@@ -100,7 +101,7 @@ export default function Groups() {
       ) : groups.length === 0 ? (
         <EmptyState
           title="No groups yet"
-          description="Create a group to organize related transactions: trips, shared expenses, recurring splits."
+          description="Create a group to organize related payments: trips, shared expenses, recurring splits."
         />
       ) : (
         <div className="space-y-3">

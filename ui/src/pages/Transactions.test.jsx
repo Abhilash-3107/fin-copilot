@@ -59,7 +59,7 @@ function renderPage(initialEntries = ['/transactions']) {
 async function rowsSettled() {
   await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/statement_id=s2/))
   await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
-  return screen.findAllByLabelText('Select transaction')
+  return screen.findAllByLabelText('Select payment')
 }
 
 const callsTo = prefix => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith(prefix))
@@ -83,13 +83,13 @@ describe('Transactions', () => {
   it('summarises exactly the filtered rows in one line', async () => {
     renderPage()
     expect(await screen.findByText(
-      (_, el) => el.tagName === 'SPAN' && el.textContent === '2 transactions · ₹300 out · ₹250 in'
+      (_, el) => el.tagName === 'SPAN' && el.textContent === '2 payments · ₹300 out · ₹250 in'
     )).toBeInTheDocument()
   })
 
   it('asks for the summary with the same filters as the list', async () => {
     renderPage(['/transactions?category=Uncategorized&month=2026-11'])
-    await screen.findByText(/2 transactions/)
+    await screen.findByText(/2 payments/)
     const list = new URLSearchParams(callsTo('/transactions?').at(-1).split('?')[1])
     const summary = new URLSearchParams(callsTo('/transactions/summary').at(-1).split('?')[1])
     expect(summary.get('category')).toBe('Uncategorized')
@@ -116,7 +116,7 @@ describe('Transactions', () => {
 
   it('choosing All time after a month clears the statement select too', async () => {
     renderPage()
-    await screen.findByText(/2 transactions/)
+    await screen.findByText(/2 payments/)
     const [statementSelect, periodSelect] = screen.getAllByRole('combobox')
     await waitFor(() => expect(periodSelect).toHaveValue('2026-11'))
     expect(statementSelect).toHaveValue('s2')
@@ -188,7 +188,7 @@ describe('Transactions', () => {
 
   it('drills by payee key: the list and the summary both get it, and the chip is named', async () => {
     renderPage(['/transactions?payee_key=AMIT.LANDLORD%40OKSBI&payee_key=OTHER'])
-    await screen.findByText(/2 transactions/)
+    await screen.findByText(/2 payments/)
     const list = new URLSearchParams(callsTo('/transactions?').at(-1).split('?')[1])
     const summary = new URLSearchParams(callsTo('/transactions/summary').at(-1).split('?')[1])
     expect(list.getAll('payee_key')).toEqual(['AMIT.LANDLORD@OKSBI', 'OTHER'])
@@ -210,14 +210,14 @@ describe('Transactions when the API fails', () => {
   const down = () => Promise.reject(new TypeError('Failed to fetch'))
   const routed = () => mockApi.get.getMockImplementation()
 
-  it('says the list could not load, never "No transactions", and recovers on Retry', async () => {
+  it('says the list could not load, never "No payments", and recovers on Retry', async () => {
     const base = routed()
     let failing = true
     mockApi.get.mockImplementation(path => (failing && path.startsWith('/transactions?') ? down() : base(path)))
     renderPage()
     const alert = await screen.findByRole('alert')
-    expect(alert).toHaveTextContent("Couldn't load your transactions.")
-    expect(screen.queryByText('No transactions')).not.toBeInTheDocument()
+    expect(alert).toHaveTextContent("Couldn't load your payments.")
+    expect(screen.queryByText('No payments')).not.toBeInTheDocument()
     expect(screen.queryByText(/Upload a statement to get started/)).not.toBeInTheDocument()
     failing = false
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -237,7 +237,7 @@ describe('Transactions when the API fails', () => {
     renderPage()
     fireEvent.click(await screen.findByText('Load more'))
     const alert = await screen.findByRole('alert') // role queries over 500 rows are slow, so the Retry lookup stays inside the alert
-    expect(alert).toHaveTextContent("Couldn't load more transactions.")
+    expect(alert).toHaveTextContent("Couldn't load more payments.")
     expect(screen.getAllByText('Mystery').length).toBeGreaterThan(100)
     failMore = false
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
@@ -280,15 +280,15 @@ describe('Transactions when the API fails', () => {
     await user.click((await screen.findAllByText('Mystery'))[0])
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't load this payment's details.")
-    // A failed payment never poses as one to annotate: no such header, no save button.
+    // A failed payment never poses as one to sort: no such header, no save button.
     expect(screen.getByRole('heading', { name: "Couldn't load this payment" })).toBeInTheDocument()
-    expect(screen.queryByText('Annotate transaction')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Save annotation|Update annotation/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Sort this payment')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^(Save|Update)$/ })).not.toBeInTheDocument()
     failing = false
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
-    expect(screen.getByRole('button', { name: 'Save annotation' })).toBeEnabled()
-    expect(screen.getByRole('heading', { name: 'Annotate transaction' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(screen.getByRole('heading', { name: 'Sort this payment' })).toBeInTheDocument()
   })
 })
 

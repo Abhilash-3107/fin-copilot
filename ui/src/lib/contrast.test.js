@@ -55,6 +55,8 @@ describe('text contrast', () => {
       // The theme tokens meant for text.
       new RegExp(`--color-(muted|text[\\w-]*):\\s*#(${hexes})`, 'i'),
     ]
+    // White text on the accent fill: #6366f1 gives 4.47:1, just under the bar. The deeper indigo clears it.
+    asText.push(/bg-\[#6366f1\].*text-white|text-white.*bg-\[#6366f1\]/i)
     const offenders = Object.entries(sources).flatMap(([file, text]) =>
       text.split('\n').flatMap((line, i) =>
         asText.some(re => re.test(line)) ? [`${file}:${i + 1} ${line.trim().slice(0, 100)}`] : []))

@@ -8,3 +8,12 @@ export function errorReason(err) {
   }
   return "Finance Copilot isn't answering."
 }
+
+// The one wording for a failure shown in a toast: what could not be done, then
+// the reason when there is one worth reading ("Couldn't save. Pick a month.").
+// The person retries by doing the thing again, so the message does not repeat
+// the instruction.
+export function couldnt(action, err) {
+  const reason = errorReason(err)
+  return `Couldn't ${action}.${reason ? ` ${reason}` : ''}`
+}

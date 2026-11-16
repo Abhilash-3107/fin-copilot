@@ -30,7 +30,7 @@ describe('AnnotationProgress', () => {
         <AnnotationProgress job={{ kind: 'reembed', status: 'running', processed: 544, total: 668 }} />
       </MemoryRouter>
     )
-    expect(screen.getByRole('link', { name: /refreshing ai memory/i })).toHaveAttribute('href', '/settings')
+    expect(screen.getByRole('link', { name: /updating remembered payees/i })).toHaveAttribute('href', '/settings?tab=ai')
     expect(screen.queryByText(/sorting/i)).not.toBeInTheDocument()
   })
 

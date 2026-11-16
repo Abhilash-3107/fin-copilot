@@ -31,7 +31,7 @@ function renderRules() {
 }
 
 async function fillDraft() {
-  fireEvent.change(screen.getByLabelText(/When the transaction mentions/), { target: { value: 'zepto' } })
+  fireEvent.change(screen.getByLabelText(/When the payment mentions/), { target: { value: 'zepto' } })
   // CategoryPicker loads the taxonomy asynchronously; pick once it's there.
   await screen.findByRole('option', { name: 'Food & Dining' })
   fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'Food & Dining' } })
@@ -52,8 +52,8 @@ describe('UserRules', () => {
   it('previews what a rule would change before saving', async () => {
     renderRules()
     await fillDraft()
-    await waitFor(() => expect(screen.getByText(/Matches 3 transactions/)).toBeInTheDocument())
-    expect(screen.getByText(/1 you labeled yourself \(kept\)/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText(/Matches 3 payments/)).toBeInTheDocument())
+    expect(screen.getByText(/1 you sorted yourself \(kept\)/)).toBeInTheDocument()
     expect(screen.getByText('UPI/ZEPTO/1')).toBeInTheDocument()
     expect(mockApi.post).not.toHaveBeenCalledWith('/rules', expect.anything())
   })
@@ -61,7 +61,7 @@ describe('UserRules', () => {
   it('adds the rule, and applies it to existing matches only when asked', async () => {
     renderRules()
     await fillDraft()
-    await waitFor(() => expect(screen.getByText(/Also categorize the 2 existing matches now/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Also sort the 2 existing matches now/)).toBeInTheDocument())
     fireEvent.click(screen.getByText('Add rule'))
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules', expect.objectContaining({ pattern: 'zepto' })))
     expect(mockApi.post).not.toHaveBeenCalledWith('/rules/r1/apply')

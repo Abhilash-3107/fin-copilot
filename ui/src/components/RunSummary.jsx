@@ -263,3 +263,23 @@ export default function RunSummary({ threshold }) {
     </div>
   )
 }
+
+// Settings > Teach Me in developer mode: the run summary with its heading. The
+// words here are the machinery's own, which is why this file is on the
+// vocabulary guard's developer-mode list.
+export function DeveloperInsights({ threshold }) {
+  return (
+    <div>
+      <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Auto-categorization insights</h2>
+      <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
+        Where your annotated transactions sit relative to the pipeline's thresholds:
+        which stage decided each, how the similarity and confidence scores are
+        distributed against their cutoffs, and the transactions sitting just below the
+        review bar. The lists and review rate update live as you drag the slider.
+      </p>
+      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+        <RunSummary threshold={threshold} />
+      </div>
+    </div>
+  )
+}

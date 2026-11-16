@@ -36,7 +36,7 @@ export default function TransactionCards({
                 onClick={e => e.stopPropagation()}
                 onChange={() => onToggle(txn.id)}
                 className="accent-[#6366f1] mt-1 shrink-0"
-                aria-label="Select transaction"
+                aria-label="Select payment"
               />
             )}
             <div className="min-w-0 flex-1">

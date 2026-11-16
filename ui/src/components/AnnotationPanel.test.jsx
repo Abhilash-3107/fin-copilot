@@ -67,7 +67,7 @@ describe('AnnotationPanel', () => {
     const user = userEvent.setup()
     renderPanel({ annotation: null })
 
-    await user.click(screen.getByRole('button', { name: 'Save annotation' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(toastSpy).toHaveBeenCalledWith('Category is required', 'error')
     expect(mockApi.post).not.toHaveBeenCalled()
@@ -83,7 +83,7 @@ describe('AnnotationPanel', () => {
     const [categorySelect] = screen.getAllByRole('combobox')
     await user.selectOptions(categorySelect, 'Food')
 
-    await user.click(screen.getByRole('button', { name: 'Save annotation' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() =>
       expect(mockApi.post).toHaveBeenCalledWith(
@@ -105,7 +105,7 @@ describe('AnnotationPanel', () => {
       annotation: { id: 5, category: 'Food', subcategory: '', merchant: 'Swiggy', tags: [], source: 'llm', confidence: 0.5 },
     })
 
-    await user.click(screen.getByRole('button', { name: 'Update annotation' }))
+    await user.click(screen.getByRole('button', { name: 'Update' }))
 
     await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith('/annotations/5', expect.objectContaining({ category: 'Food' }))
@@ -121,7 +121,7 @@ describe('AnnotationPanel', () => {
     expect(screen.queryByPlaceholderText('e.g. Swiggy')).not.toBeInTheDocument()
     expect(screen.queryByText('Merchant')).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Update annotation' }))
+    await user.click(screen.getByRole('button', { name: 'Update' }))
 
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalled())
     expect(mockApi.patch.mock.calls[0][1]).not.toHaveProperty('merchant')
@@ -259,7 +259,7 @@ describe('AnnotationPanel naming', () => {
     await user.click(screen.getByRole('button', { name: 'Rename' }))
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'x')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
-    expect(toastSpy).toHaveBeenCalledWith('Rename failed: boom', 'error')
+    expect(toastSpy).toHaveBeenCalledWith("Couldn't rename. Finance Copilot isn't answering.", 'error')
     expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument()
   })
 })

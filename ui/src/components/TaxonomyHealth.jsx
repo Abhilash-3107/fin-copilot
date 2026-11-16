@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { GitMerge, ArrowRight, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 // "Tidy up" for Settings > Categories: subcategories that look like the same
 // thing, and transactions carrying a subcategory name that no longer exists.
@@ -28,10 +28,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
     setBusy(pairKey(d))
     try {
       const { moved } = await api.post(`/categories/subcategories/${d.merge.id}/merge`, { target_id: d.keep.id })
-      toast(`Merged "${d.merge.name}" into "${d.keep.name}" - ${plural(moved, 'transaction')} moved`, 'info')
+      toast(`Merged "${d.merge.name}" into "${d.keep.name}" - ${count(moved, 'payment')} moved`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't merge - ${e.message}`, 'error')
+      toast(couldnt('merge', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -44,7 +44,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       toast(`Keeping "${d.merge.name}" and "${d.keep.name}" separate`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't save - ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -59,10 +59,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       const { moved } = await api.post('/categories/tidy-up/orphans', {
         category_id: o.category_id, name: o.subcategory, target_id: target,
       })
-      toast(`Moved ${plural(moved, 'transaction')}`, 'info')
+      toast(`Moved ${count(moved, 'payment')}`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't move - ${e.message}`, 'error')
+      toast(couldnt('move', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -73,7 +73,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       <div className="px-4 py-2.5 border-b border-[#4f46e5]/20">
         <span className="text-sm font-medium text-[#e2e8f0]">Tidy up</span>
         <p className="text-xs text-[#94a3b8] mt-0.5">
-          Splitting one kind of spending across two labels makes learning and insights weaker.
+          Splitting one kind of spending across two subcategories makes your totals harder to read.
         </p>
       </div>
       <ul className="divide-y divide-[#2d3148]">
@@ -94,7 +94,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
             >
               <GitMerge size={13} />
               {confirming === pairKey(d)
-                ? `Move ${plural(d.merge.uses, 'transaction')} and delete "${d.merge.name}"?`
+                ? `Move ${count(d.merge.uses, 'payment')} and delete "${d.merge.name}"?`
                 : `Merge into "${d.keep.name}"`}
             </button>
             <button
@@ -113,7 +113,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
           return (
             <li key={key} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
               <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
-                {plural(o.count, 'transaction')} in {o.category} use "{o.subcategory}",
+                {count(o.count, 'payment')} in {o.category} use "{o.subcategory}",
                 <span className="text-[#94a3b8]"> which isn't one of its subcategories</span>
               </span>
               <div className="flex items-center gap-2">
