@@ -10,7 +10,7 @@ import Amount from './Amount.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { useDialog } from '../lib/useDialog.js'
 import { ALL_TIME } from '../contexts/PeriodContext.jsx'
-import { OPEN_PALETTE_EVENT } from '../lib/shortcuts.js'
+import { OPEN_PALETTE_EVENT, PALETTE_KEY } from '../lib/shortcuts.js'
 
 // Static destinations, always searchable by label.
 const PAGES = [
@@ -50,7 +50,7 @@ export default function CommandPalette() {
 
   useEffect(() => {
     function onKey(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === PALETTE_KEY) {
         e.preventDefault()
         setOpen(o => !o)
       }
@@ -188,7 +188,7 @@ function Palette({ onClose }) {
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2d3148]">
           <Search size={16} className="text-[#475569]" />
           <input
-            autoFocus
+            data-autofocus
             value={query}
             onChange={e => { setQuery(e.target.value); setActive(0) }}
             onKeyDown={onKeyDown}

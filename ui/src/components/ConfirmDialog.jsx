@@ -7,7 +7,7 @@ export default function ConfirmDialog({ open, ...props }) {
 
 function Dialog({ title, description, confirmLabel = 'Confirm', onConfirm, onCancel, danger }) {
   const titleId = useId()
-  const dialog = useDialog({ onCancel, onConfirm })
+  const dialog = useDialog({ onCancel, onConfirm, danger })
   return (
     <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center" onClick={onCancel}>
       <div
@@ -22,6 +22,7 @@ function Dialog({ title, description, confirmLabel = 'Confirm', onConfirm, onCan
         {description && <p className="text-sm text-[#94a3b8] mb-5">{description}</p>}
         <div className="flex gap-3 justify-end">
           <button
+            data-autofocus={danger ? '' : undefined}
             onClick={onCancel}
             className="px-4 py-2 rounded-md bg-[#1e2235] text-[#94a3b8] text-sm hover:text-[#e2e8f0] transition-colors"
           >

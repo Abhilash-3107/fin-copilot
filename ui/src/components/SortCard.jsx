@@ -8,6 +8,7 @@ import ReasoningPanel from './ReasoningPanel.jsx'
 import TagInput from './TagInput.jsx'
 import { labelOf } from '../lib/categoryOptions.js'
 import { count } from '../lib/plural.js'
+import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
 
 const KBD = 'bg-[#1e2235] px-1.5 py-0.5 rounded text-[10px] text-[#94a3b8]'
 
@@ -68,7 +69,7 @@ export default function SortCard({
             <span>
               Do the same for all {count(groupSize, 'payment')} to <span className="text-[#cbd5e1]">{groupName(item)}</span>
             </span>
-            <kbd className={KBD}>A</kbd>
+            <kbd className={KBD}>{keyLabel(TEACH_ME_KEYS.group)}</kbd>
           </label>
         )}
       </div>
@@ -89,7 +90,7 @@ export default function SortCard({
                   pressed ? 'border-[#e2e8f0] bg-[#1e2235]' : 'border-[#2d3148] hover:bg-[#1a1d2c]'
                 }`}
               >
-                <kbd className={KBD}>{i + 1}</kbd>
+                <kbd className={KBD}>{keyLabel(TEACH_ME_KEYS.choose[i] ?? String(i + 1))}</kbd>
                 <span className="min-w-0">
                   <span className="block text-sm font-medium text-[#e2e8f0]">{labelOf(s)}</span>
                   <span className="block text-xs text-[#94a3b8]">{s.reason}</span>
@@ -153,14 +154,14 @@ export default function SortCard({
             disabled={saving}
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            <CheckCircle size={16} /> {saving ? 'Saving…' : 'Confirm'} <kbd className="text-[10px] opacity-70">↵</kbd>
+            <CheckCircle size={16} /> {saving ? 'Saving…' : 'Confirm'} <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.confirm)}</kbd>
           </button>
         )}
         <button
           onClick={onSkip}
           className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#2d3148] text-sm text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
         >
-          <SkipForward size={16} /> Skip <kbd className="text-[10px] opacity-70">S</kbd>
+          <SkipForward size={16} /> Skip <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.skip)}</kbd>
         </button>
         <span className="flex-1" />
         <button
@@ -168,7 +169,7 @@ export default function SortCard({
           disabled={!canUndo}
           className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">Z</kbd>
+          <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
         </button>
       </div>
     </div>

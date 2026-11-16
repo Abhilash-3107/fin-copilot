@@ -1,4 +1,5 @@
 import { createContext, useContext, useCallback, useEffect, useState } from 'react'
+import { PRIVACY_KEY } from '../lib/shortcuts.js'
 
 import { readStored, writeStored } from '../lib/storage.js'
 
@@ -29,7 +30,7 @@ export function PrivacyProvider({ children }) {
     function onKeyDown(e) {
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (isEditableTarget(e.target)) return
-      if (e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+      if (e.shiftKey && e.key.toLowerCase() === PRIVACY_KEY) {
         e.preventDefault()
         toggle()
       }

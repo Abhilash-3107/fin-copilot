@@ -280,7 +280,7 @@ export default function People() {
           <div>
             <label className="block text-xs text-[#94a3b8] mb-1">Name</label>
             <input
-              autoFocus
+              data-autofocus
               value={newName}
               onChange={e => { setNewName(e.target.value); setCreateError('') }}
               placeholder="e.g. Karabi"

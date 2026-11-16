@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, act, within } from '@testing-library/react'
+import { render, screen, fireEvent, act, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -30,6 +30,8 @@ vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
 import { ToastProvider } from '../contexts/ToastContext.jsx'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
 import ReviewQueue from './ReviewQueue.jsx'
+import ShortcutSheet from '../components/ShortcutSheet.jsx'
+import { TEACH_ME_KEYS } from '../lib/shortcuts.js'
 
 const CATEGORIES = [
   { id: 1, name: 'Food', parent_id: null },
@@ -120,6 +122,7 @@ function renderPage() {
       <PrivacyProvider>
         <ToastProvider>
           <ReviewQueue />
+          <ShortcutSheet />
         </ToastProvider>
       </PrivacyProvider>
     </MemoryRouter>
@@ -547,7 +550,7 @@ describe('answering and undoing', () => {
     await act(async () => {})
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/11/confirm', expect.anything()) // the skip is not written yet
     await act(async () => finishSkip())
-    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/annotations/11/confirm', { category: 'Food' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/annotations/11/confirm', { category: 'Food' }))
   })
 
   it('does not say Undone when the list could not be reloaded afterwards', async () => {
@@ -564,7 +567,7 @@ describe('answering and undoing', () => {
       path === '/annotations/review-queue' ? Promise.reject(new Error('offline')) : base(path)
     ))
     key('z')
-    await vi.waitFor(() => expect(mockApi.post).toHaveBeenLastCalledWith(UNDO, { token: 'tok-1' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenLastCalledWith(UNDO, { token: 'tok-1' }))
     await act(async () => {})
     expect(loads).toBeGreaterThan(0)
     expect(toastSpy).not.toHaveBeenCalledWith('Undone', expect.anything())
@@ -638,9 +641,9 @@ describe('undoing a correction and the similar payments it fixed', () => {
     expect(lastToast()[2].action.label).toBe('Undo')
     mockApi.post.mockClear()
     key('z')
-    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
     expect(mockApi.post.mock.calls).toEqual([[UNDO, { token: 'tok-sim' }], [UNDO, { token: 'tok-ans' }]])
-    await vi.waitFor(() => expect(lastToast().slice(0, 2)).toEqual(['Undone', 'info']))
+    await waitFor(() => expect(lastToast().slice(0, 2)).toEqual(['Undone', 'info']))
     // One step: a second Z has nothing left.
     mockApi.post.mockClear()
     key('z')
@@ -658,7 +661,7 @@ describe('undoing a correction and the similar payments it fixed', () => {
         : Promise.resolve({ restored: [100] })
     ))
     key('z')
-    await vi.waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(2))
     await act(async () => {})
     const [message, type] = lastToast()
     expect(type).toBe('error')
@@ -763,7 +766,7 @@ describe('ReviewQueue payee groups', () => {
 
     key('Enter')
 
-    await vi.waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('and 1 more from Rent'), 'success', undefined))
+    await waitFor(() => expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('and 1 more from Rent'), 'success', undefined))
   })
 
   it('"a" turns the group off so only this card is confirmed', async () => {
@@ -1156,7 +1159,7 @@ describe('ReviewQueue side loads and dialogs', () => {
     expect(alert).toHaveTextContent("Couldn't load your settings and your policies.")
     failing = false
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
-    await vi.waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
     expect(screen.getByRole('heading', { name: 'SWIGGY' })).toBeInTheDocument()
   })
 
@@ -1197,7 +1200,7 @@ describe('ReviewQueue side loads and dialogs', () => {
     const dialog = await openPropagateDialog()
     expect(dialog).toHaveFocus()
     fireEvent.keyDown(dialog, { key: 'Enter' })
-    await vi.waitFor(() => expect(mockApi.post.mock.calls.some(([p]) => p.endsWith('/apply-to-similar'))).toBe(true))
+    await waitFor(() => expect(mockApi.post.mock.calls.some(([p]) => p.endsWith('/apply-to-similar'))).toBe(true))
   })
 })
 
@@ -1367,5 +1370,72 @@ describe('ReviewQueue wording and counts', () => {
       <MemoryRouter><PrivacyProvider><ToastProvider><ReviewQueue /></ToastProvider></PrivacyProvider></MemoryRouter>
     )
     expect(await heading('UBER')).toBeInTheDocument()
+  })
+})
+
+describe('the keys Teach Me lists', () => {
+  const sugg = [
+    { category: 'Food', subcategory: null, reason: 'one' },
+    { category: 'Transport', subcategory: null, reason: 'two' },
+    { category: 'Food', subcategory: 'Groceries', reason: 'three' },
+  ]
+  const member = (id, extra = {}) => makeCard({
+    annotation_id: id, transaction_id: 100 + id, group_key: 'OBEROI|debit', group_size: 2, payee: 'OBEROI',
+    suggestions: sugg, ...extra,
+  })
+
+  it.each(TEACH_ME_KEYS.choose.map((k, i) => [k, i]))('"%s" chooses suggestion %i', async (k, i) => {
+    stubGet([member(10), member(11)])
+    await renderQueue('OBEROI')
+    key(k)
+    const buttons = screen.getAllByRole('button', { pressed: true })
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]).toHaveTextContent(sugg[i].reason)
+  })
+
+  it('"a" toggles the group, "/" opens the category filter', async () => {
+    stubGet([member(10), member(11)])
+    await renderQueue('OBEROI')
+    expect(screen.getByRole('checkbox')).toBeChecked()
+    key(TEACH_ME_KEYS.group)
+    expect(screen.getByRole('checkbox')).not.toBeChecked()
+    key(TEACH_ME_KEYS.another)
+    expect(screen.getByRole('combobox', { name: 'Another category' })).toHaveFocus()
+  })
+
+  it('Enter confirms, "s" skips, "z" undoes', async () => {
+    stubGet(() => [makeCard(), uber(), bare(102, 'OLA')]) // the server keeps serving them: only the keys are under test
+    await renderQueue()
+    key(TEACH_ME_KEYS.confirm)
+    await heading('UBER')
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/10/confirm', { category: 'Food' })
+    mockApi.post.mockResolvedValue({ snoozed: true, undo_token: 'tok-s' })
+    key(TEACH_ME_KEYS.skip)
+    await heading('OLA')
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/review-queue/skip', { transaction_id: 101 })
+    mockApi.post.mockResolvedValue({ restored: [101] })
+    key(TEACH_ME_KEYS.undo)
+    await heading('UBER')
+    expect(mockApi.post).toHaveBeenLastCalledWith(UNDO, { token: 'tok-s' })
+  })
+})
+
+describe('an open dialog on Teach Me', () => {
+  it('blocks the page keys, and Escape still closes it once focus has left', async () => {
+    stubGet([makeCard(), uber()])
+    await renderQueue()
+    key('?')
+    const sheet = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+    key('s')
+    key('z')
+    fireEvent.keyDown(document.body, { key: 's' })
+    expect(mockApi.post).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: 'SWIGGY' })).toBeInTheDocument()
+    // The sheet, not the card, holds the keyboard.
+    expect(sheet).toHaveFocus()
+    // Focus wandering out of the sheet does not stop Escape.
+    document.body.focus()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { LEDGER_KEYS } from '../lib/shortcuts.js'
 import { useSearchParams, useLocation } from 'react-router-dom'
 import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -428,7 +429,7 @@ export default function Transactions() {
   const panelOpen = activeTxn != null
   useEffect(() => {
     function handler(e) {
-      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (e.key !== LEDGER_KEYS.closePanel || e.defaultPrevented) return
       const t = e.target
       const typing = t?.tagName === 'INPUT' || t?.tagName === 'TEXTAREA' || t?.tagName === 'SELECT' || t?.isContentEditable
       if (typing && panelOpen) { t.blur?.(); return }

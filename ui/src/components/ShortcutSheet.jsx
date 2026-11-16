@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { X } from 'lucide-react'
-import { shortcutScopes, OPEN_SHORTCUTS_EVENT } from '../lib/shortcuts.js'
+import { shortcutScopes, OPEN_SHORTCUTS_EVENT, SHORTCUTS_KEY } from '../lib/shortcuts.js'
 import { useDialog } from '../lib/useDialog.js'
 
 function isTyping(el) {
@@ -16,7 +16,7 @@ export default function ShortcutSheet() {
 
   useEffect(() => {
     function onKey(e) {
-      if (e.key !== '?' || e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return
+      if (e.key !== SHORTCUTS_KEY || e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return
       e.preventDefault()
       setOpen(true)
     }

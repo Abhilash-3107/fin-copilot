@@ -31,6 +31,7 @@ export default function RemoveSampleData({ className }) {
       </button>
       <ConfirmDialog
         open={asking}
+        danger
         title="Remove the sample data?"
         description="The sample transactions, people, groups and rule go away. Anything you added yourself stays."
         confirmLabel="Remove sample data"

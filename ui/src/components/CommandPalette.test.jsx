@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
@@ -59,6 +60,26 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Swiggy')).toBeInTheDocument()
     expect(screen.getByText('Karabi')).toBeInTheDocument()
     expect(screen.getByText('Goa Trip')).toBeInTheDocument()
+  })
+
+  it('puts the cursor in the search field under React StrictMode, so typing works in dev', async () => {
+    render(
+      <StrictMode>
+        <PrivacyProvider>
+          <MemoryRouter>
+            <button>Search</button>
+            <CommandPalette />
+          </MemoryRouter>
+        </PrivacyProvider>
+      </StrictMode>,
+    )
+    // Opened from a control (the top bar's search field), so there is an opener whose focus a remount could restore.
+    screen.getByRole('button', { name: 'Search' }).focus()
+    openPalette()
+    const input = screen.getByPlaceholderText(/Search transactions/)
+    expect(input).toHaveFocus()
+    fireEvent.change(input, { target: { value: 'swiggy' } })
+    expect(await screen.findByText('Karabi')).toBeInTheDocument()
   })
 
   it('closes on Escape', () => {

@@ -13,7 +13,8 @@ import { groupName } from '../components/PayeeHeading.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
 import { labelOf } from '../lib/categoryOptions.js'
 import { count } from '../lib/plural.js'
-import { useDialog } from '../lib/useDialog.js'
+import { isDialogOpen, useDialog } from '../lib/useDialog.js'
+import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
 
 // Module-level category cache
 let _catCache = null
@@ -329,8 +330,8 @@ export default function ReviewQueue() {
   // A new card takes the keyboard: no chip or button keeps focus from the last
   // card, so Enter cannot activate something the user never chose.
   useEffect(() => {
-    if (!loading) cardRef.current?.focus({ preventScroll: true })
-  }, [loading, current?.transaction_id])
+    if (!loading && !isDialogOpen()) cardRef.current?.focus({ preventScroll: true })
+  }, [loading, current?.transaction_id, propagate])
 
   // Confirm vouches for the machine's label, so it needs a real one. Anything
   // else (no guess, Uncategorized) must be answered by choosing a category.
@@ -601,7 +602,7 @@ export default function ReviewQueue() {
     if (!current) return
     const own = sameLabel(category, subcategory, current)
     setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: own ? tagsOf(current) : [] }))
-    if (event?.detail > 0) cardRef.current?.focus({ preventScroll: true })
+    if (event?.detail > 0 && !isDialogOpen()) cardRef.current?.focus({ preventScroll: true })
   }
 
   // Create a category (parentId null) or subcategory, add it to the shared
@@ -637,18 +638,17 @@ export default function ReviewQueue() {
     if (e.repeat) return
     // Enter on a focused button or link is that control's own activation: the
     // browser clicks it, so the shortcut must not also act (AUDIT B13).
-    if (e.key === 'Enter' && e.target.closest?.('button, a')) return
-    if (propagate) return // dialog owns the keyboard
+    if (e.key === TEACH_ME_KEYS.confirm && e.target.closest?.('button, a')) return
     const key = e.key.toLowerCase()
-    if (key === 'z') { undoLast(); return }
+    if (key === TEACH_ME_KEYS.undo) { undoLast(); return }
     if (!current) return
-    if (key === 's') skip()
-    else if (key === 'a') setApplyToGroup(v => !v)
-    else if (e.key === '/') { e.preventDefault(); typeaheadRef.current?.focus() }
-    else if (['1', '2', '3'].includes(e.key)) {
-      const suggestion = current.suggestions?.[Number(e.key) - 1]
+    if (key === TEACH_ME_KEYS.skip) skip()
+    else if (key === TEACH_ME_KEYS.group) setApplyToGroup(v => !v)
+    else if (e.key === TEACH_ME_KEYS.another) { e.preventDefault(); typeaheadRef.current?.focus() }
+    else if (TEACH_ME_KEYS.choose.includes(e.key)) {
+      const suggestion = current.suggestions?.[TEACH_ME_KEYS.choose.indexOf(e.key)]
       if (suggestion && !savingRef.current) choose(suggestion)
-    } else if (e.key === 'Enter') {
+    } else if (e.key === TEACH_ME_KEYS.confirm) {
       // With no real category on the card there is nothing to confirm or save.
       if (needsPick) return
       isDirty ? saveEdit() : confirm()
@@ -840,7 +840,7 @@ export default function ReviewQueue() {
               disabled={saving}
               className="flex items-center gap-2 text-sm text-[#94a3b8] hover:text-[#e2e8f0] border border-[#2d3148] px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
             >
-              <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">Z</kbd>
+              <Undo2 size={15} /> Undo <kbd className="text-[10px] opacity-70">{keyLabel(TEACH_ME_KEYS.undo)}</kbd>
             </button>
           )}
         </div>
@@ -963,22 +963,22 @@ export default function ReviewQueue() {
         Keyboard:
         {suggestionKeys > 0 && (
           <>
-            {' '}{Array.from({ length: suggestionKeys }, (_, i) => (
-              <kbd key={i} className="bg-[#1e2235] px-1.5 py-0.5 rounded mr-1">{i + 1}</kbd>
+            {' '}{TEACH_ME_KEYS.choose.slice(0, suggestionKeys).map(k => (
+              <kbd key={k} className="bg-[#1e2235] px-1.5 py-0.5 rounded mr-1">{keyLabel(k)}</kbd>
             ))}
             choose ·
           </>
         )}
         {!needsPick && (
           <>
-            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">↵</kbd> confirm ·
+            <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">{keyLabel(TEACH_ME_KEYS.confirm)}</kbd> confirm ·
           </>
         )}
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">S</kbd> skip ·
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">Z</kbd> undo ·
-        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">/</kbd> another category
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">{keyLabel(TEACH_ME_KEYS.skip)}</kbd> skip ·
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">{keyLabel(TEACH_ME_KEYS.undo)}</kbd> undo ·
+        <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded mx-1">{keyLabel(TEACH_ME_KEYS.another)}</kbd> another category
         {groupSize > 1 && (
-          <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">A</kbd> all from this payee</>
+          <> · <kbd className="bg-[#1e2235] px-1.5 py-0.5 rounded">{keyLabel(TEACH_ME_KEYS.group)}</kbd> all from this payee</>
         )}
       </p>
     </div>
