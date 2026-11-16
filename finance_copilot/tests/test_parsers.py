@@ -16,7 +16,7 @@ REAL_PDF = Path("/Users/abhilashbora/Projects/finance-copilot/data/26356222-XXXX
 _PASSWORD = os.environ.get("KOTAK_PDF_PASSWORD")
 
 # ---------------------------------------------------------------------------
-# Unit tests — no PDF required
+# Unit tests - no PDF required
 # ---------------------------------------------------------------------------
 
 
@@ -134,7 +134,7 @@ class TestKotakParserAttributes:
 
 
 # ---------------------------------------------------------------------------
-# Registry unit tests — no PDF required
+# Registry unit tests - no PDF required
 # ---------------------------------------------------------------------------
 
 
@@ -161,7 +161,7 @@ class TestRegistry:
 
 
 # ---------------------------------------------------------------------------
-# Integration tests — require real PDF + KOTAK_PDF_PASSWORD env var
+# Integration tests - require real PDF + KOTAK_PDF_PASSWORD env var
 # ---------------------------------------------------------------------------
 
 _SKIP_INTEGRATION = not REAL_PDF.exists() or not _PASSWORD

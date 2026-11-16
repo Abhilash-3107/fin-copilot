@@ -39,7 +39,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
-    # Form body, not query param — query strings end up in server access logs.
+    # Form body, not query param - query strings end up in server access logs.
     password: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):

@@ -75,7 +75,7 @@ class LlmConfigPatch(BaseModel):
 @router.get("/llm")
 def get_llm(conn: sqlite3.Connection = Depends(get_db)):
     """Effective BYOM/LLM config for the Settings › AI & Model form. The API key is
-    never returned — only a boolean `llm_api_key_set` indicating one is stored."""
+    never returned - only a boolean `llm_api_key_set` indicating one is stored."""
     return get_llm_config(conn)
 
 

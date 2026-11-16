@@ -9,7 +9,7 @@ that would fall through to RAG), and reports:
   - the annotation currently stored for the query transaction
   - whether a consensus shortcut (>=K trusted neighbors agreeing) would fire
 
-This touches no production code and writes nothing — it's a read-only diagnostic
+This touches no production code and writes nothing - it's a read-only diagnostic
 so we can diff behavior on the same statement before and after the fixes land.
 
 Usage:
@@ -113,7 +113,7 @@ def main() -> int:
     try:
         conn.execute("SELECT vec_version()")
     except Exception:
-        print("ERROR: sqlite-vec not loaded — retrieval unavailable.", file=sys.stderr)
+        print("ERROR: sqlite-vec not loaded - retrieval unavailable.", file=sys.stderr)
         return 1
 
     if args.all:
@@ -140,7 +140,7 @@ def main() -> int:
         stored_str = (
             f"{stored['category']}/{stored.get('subcategory')} [{stored['source']}]"
             if stored
-            else "—"
+            else "-"
         )
         print("=" * 88)
         print(f"QUERY  {txn['raw_description'][:60]!r}  amt={txn['amount']} {txn['debit_credit']}")
@@ -170,7 +170,7 @@ def _diff_llm(conn, txn: dict, category_list: list[str]) -> None:
     ann_by = _annotations_by_transaction(conn, [m["transaction_id"] for m in similar])
     examples = _build_examples_from_similar(conn, similar, ann_by)
     if not examples:
-        print("  llm:       (no examples — skipped)")
+        print("  llm:       (no examples - skipped)")
         return
 
     # Rebuild the deduped, source-weighted vote exactly as the pipeline does.

@@ -7,7 +7,7 @@ import sqlite3
 
 import ulid
 
-# Relationships that mean "family" — payments to these people are labelled
+# Relationships that mean "family" - payments to these people are labelled
 # Transfers › Family rather than the generic Transfers › Peer Transfer. Kept as a
 # flat set (not a per-relationship subcategory map) because Family is the only
 # subcategory that currently distinguishes the person rule; everything else,

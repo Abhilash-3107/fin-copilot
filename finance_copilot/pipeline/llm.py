@@ -227,7 +227,7 @@ def _salvage_dropping_reasoning(content: str) -> AnnotationResponse | None:
     Small models intermittently mangle the free-text `reasoning` string (escaped
     `\\"`, nested quotes, stray braces) into invalid JSON, which fails parsing
     *before* any field validator runs. The category/subcategory/confidence are
-    still recoverable — strip the reasoning field and retry, so a cosmetic prose
+    still recoverable - strip the reasoning field and retry, so a cosmetic prose
     error never costs us a usable classification. Returns None if unrecoverable.
     """
     # Remove a `"reasoning": "..."` (or `\"..."`) entry, greedy to the last
@@ -533,7 +533,7 @@ def _build_provider_request(
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        # Keep the model resident between calls — cold-loading a 4B model costs
+        # Keep the model resident between calls - cold-loading a 4B model costs
         # 5-15 s and auto-annotate runs are bursty.
         "keep_alive": "30m",
         "format": schema,
@@ -593,7 +593,7 @@ def _call_llm(
     re-asks here.
     """
     if settings.llm_provider == "none":
-        logger.debug("%s | txn=%s  llm_provider=none — skipping", log_prefix, txn_id)
+        logger.debug("%s | txn=%s  llm_provider=none - skipping", log_prefix, txn_id)
         return None
 
     messages = [
@@ -651,7 +651,7 @@ def _call_llm(
                     log_prefix, txn_id, attempt,
                 )
             # Truncation is silent (Ollama drops from the front, i.e. the system
-            # prompt) — log the actual prompt token count so it's observable.
+            # prompt) - log the actual prompt token count so it's observable.
             prompt_tokens = data.get("prompt_eval_count") or (data.get("usage") or {}).get("prompt_tokens")
             truncated = prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64
             if truncated:
@@ -739,7 +739,7 @@ def test_connection(timeout: float = 10.0) -> dict:
 
     Returns {ok, detail, models?}. Used by the Settings › AI & Model
     test-connection button so a user can validate a BYOM endpoint before relying
-    on it. Never raises — connection/HTTP errors are reported in `detail`.
+    on it. Never raises - connection/HTTP errors are reported in `detail`.
     """
     provider = settings.llm_provider
     if provider == "none":

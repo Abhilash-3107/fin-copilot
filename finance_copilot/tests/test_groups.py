@@ -348,7 +348,7 @@ class TestUpdateMemberRole:
         _txn(conn, "t1", "2026-01-05", 100.0, "debit")
         add_member(conn, g["id"], "t1", txn_type="split")
         conn.commit()
-        # The UI sends "" when the user picks the "—" option; must clear, not violate CHECK.
+        # The UI sends "" when the user picks the "-" option; must clear, not violate CHECK.
         assert update_member(conn, g["id"], "t1", txn_type="") is True
         row = conn.execute(
             "SELECT txn_type FROM transaction_group_members WHERE group_id=? AND transaction_id=?",

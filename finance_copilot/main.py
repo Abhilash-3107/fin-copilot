@@ -192,7 +192,7 @@ def health():
             pass
 
     def _model_status(name: str) -> dict:
-        # Ollama names may include tags like "qwen3.5:7b" — match prefix too
+        # Ollama names may include tags like "qwen3.5:7b" - match prefix too
         is_loaded = any(m == name or m.startswith(name + ":") for m in loaded)
         is_pulled = any(m == name or m.startswith(name + ":") for m in pulled)
         if is_loaded:

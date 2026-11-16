@@ -1,9 +1,9 @@
-"""Counterparty recurrence prior — a late-fused, out-of-band signal for the RAG stage.
+"""Counterparty recurrence prior - a late-fused, out-of-band signal for the RAG stage.
 
 The embedding/KNN retriever is blind to *recurrence*: two payments to the same
 person and one to a random cab driver are all "a UPI to a personal name", so the
 neighbour vote is dominated by base rates (cab drivers vastly outnumber recurring
-contacts in the donor pool). But the user's own history separates them cleanly —
+contacts in the donor pool). But the user's own history separates them cleanly -
 cab counterparties are one-and-done (~1.06 txns each) while family/friends recur
 (~4.2 txns each).
 
@@ -168,11 +168,11 @@ def _label_weight(source: str | None) -> float:
 class CounterpartyPrior:
     """The recurrence-based category prior for one counterparty.
 
-    n_prior         — count of prior annotated txns to this counterparty (any source)
-    trusted_weight  — summed source-weight of those labels (the evidence mass)
-    category        — the dominant prior category, or None when there is no evidence
-    probability     — shrunk P(category | counterparty) in [0, 1]
-    histogram       — weighted category → weight map (for tracing / debugging)
+    n_prior         - count of prior annotated txns to this counterparty (any source)
+    trusted_weight  - summed source-weight of those labels (the evidence mass)
+    category        - the dominant prior category, or None when there is no evidence
+    probability     - shrunk P(category | counterparty) in [0, 1]
+    histogram       - weighted category → weight map (for tracing / debugging)
 
     `established` gates whether the prior is strong enough to influence routing: it
     requires both a minimum number of observations and a dominant category. Below
@@ -235,7 +235,7 @@ def counterparty_prior(conn: sqlite3.Connection, txn: dict, *, as_of: str | None
     """Compute the empirical-Bayes recurrence prior for a transaction's counterparty.
 
     Returns an inert CounterpartyPrior (category=None, probability=0) when the
-    counterparty is unknown or has no prior labels — so a new user, or any first-time
+    counterparty is unknown or has no prior labels - so a new user, or any first-time
     counterparty, gets no nudge.
 
     The shrinkage estimate for the dominant category c is:
@@ -247,7 +247,7 @@ def counterparty_prior(conn: sqlite3.Connection, txn: dict, *, as_of: str | None
     this is undefined and we short-circuit to inert), and m the prior pseudo-count
     (settings.counterparty_prior_weight). With m>0 a single observation cannot drive
     the probability to 1.0; it takes several consistent labels to clear the
-    dominance floor — exactly the recurrence requirement.
+    dominance floor - exactly the recurrence requirement.
     """
     identity = txn["counterparty_key"]
     if identity is None:

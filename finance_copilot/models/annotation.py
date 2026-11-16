@@ -35,7 +35,7 @@ class TraceExample(BaseModel):
 
 
 class ReasoningTrace(BaseModel):
-    """Why the pipeline chose what it did — captured at annotation time.
+    """Why the pipeline chose what it did - captured at annotation time.
 
     Always stored (annotations.reasoning JSON column); dev mode only gates whether
     the API/UI surface it. This is a persistence format read long after settings
@@ -67,7 +67,7 @@ class ReasoningTrace(BaseModel):
     # Set when an existing label was re-decided after new human evidence, e.g.
     # "teaching" (a label elsewhere) or "rescore" (a queue sweep).
     trigger: str | None = None
-    # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
+    # Counterparty recurrence prior (rag_prompted) - the late-fused out-of-band signal
     counterparty_prior_category: str | None = None
     counterparty_prior_probability: float | None = None
     counterparty_prior_n: int | None = None       # prior observations for this counterparty

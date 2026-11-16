@@ -50,7 +50,7 @@ def client_conn():
 
     conn = _make_conn()
     app.dependency_overrides[api_get_db] = lambda: conn
-    # Embedding service isn't available in tests — stub the best-effort embed call.
+    # Embedding service isn't available in tests - stub the best-effort embed call.
     # No context manager on TestClient: lifespan would migrate the real settings.db_path.
     # Background re-embeds open their own connection to settings.db_path (the
     # real ledger in a dev checkout) - never let a test reach it.
@@ -1315,7 +1315,7 @@ class TestStatementUploadDedup:
                 return True
 
             def parse(self, path, password=None):
-                # Spans two months on purpose — period metadata must cover both
+                # Spans two months on purpose - period metadata must cover both
                 return [
                     Transaction(txn_date=date(2026, 1, 5), amount=100.0,
                                 debit_credit="debit", raw_description="TEST TXN 1"),
@@ -1401,7 +1401,7 @@ def _seed_upi_txn(conn, txn_id, ann_id, name, source="llm", category="Miscellane
 
 class TestApplyToSimilar:
     """Embedding service is stubbed out in tests, so candidates come from the
-    same-counterparty-identity path — which must work without embeddings."""
+    same-counterparty-identity path - which must work without embeddings."""
 
     def test_similar_lists_same_identity_machine_rows(self, client_conn):
         client, conn, _ = client_conn

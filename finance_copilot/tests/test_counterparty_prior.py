@@ -73,7 +73,7 @@ class TestNormalizeIdentity:
 
 
 # ---------------------------------------------------------------------------
-# counterparty_history — causality / leakage
+# counterparty_history - causality / leakage
 # ---------------------------------------------------------------------------
 
 class TestCounterpartyHistory:
@@ -103,7 +103,7 @@ class TestCounterpartyHistory:
 
 
 # ---------------------------------------------------------------------------
-# counterparty_prior — empirical-Bayes shrinkage
+# counterparty_prior - empirical-Bayes shrinkage
 # ---------------------------------------------------------------------------
 
 class TestCounterpartyPrior:
@@ -186,7 +186,7 @@ class TestCounterpartyPrior:
 
 
 # ---------------------------------------------------------------------------
-# _fuse_counterparty_prior — the late-fusion decision logic
+# _fuse_counterparty_prior - the late-fusion decision logic
 # ---------------------------------------------------------------------------
 
 class TestFuseCounterpartyPrior:
@@ -311,7 +311,7 @@ class TestCounterpartyPriorInPipeline:
         assert ann["confidence"] > settings.confidence_threshold
 
     def test_cold_start_unaffected_through_pipeline(self):
-        """A first-time counterparty gets no prior nudge — behaves exactly as before."""
+        """A first-time counterparty gets no prior nudge - behaves exactly as before."""
         from unittest.mock import patch
 
         from finance_copilot.db.queries.annotations import get_annotation_by_transaction

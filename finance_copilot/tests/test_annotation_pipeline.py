@@ -521,7 +521,7 @@ class TestAutoAnnotateEndpoint:
 
 class TestBuildEmbedText:
     def test_basic(self):
-        # Amount is deliberately excluded — it's per-transaction noise that
+        # Amount is deliberately excluded - it's per-transaction noise that
         # dilutes the merchant signal the retriever depends on.
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 500.0,
@@ -803,7 +803,7 @@ class TestRagPromptedOffExample:
         from finance_copilot.pipeline.annotate import auto_annotate
         from finance_copilot.pipeline.llm import AnnotationResponse
 
-        # All donors are Transport — none are Transfers.
+        # All donors are Transport - none are Transfers.
         for i in range(4):
             self._insert_donor(f"donor_t{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
         _insert_txn(self.conn, "target_off", "UPI/UNKNOWN NAME/9/UPI")
@@ -821,7 +821,7 @@ class TestRagPromptedOffExample:
         ann = get_annotation_by_transaction(self.conn, "target_off")
         assert ann is not None
         assert ann["source"] == "rag_prompted"
-        assert ann["category"] == "Transfers"  # not overridden — just distrusted
+        assert ann["category"] == "Transfers"  # not overridden - just distrusted
         assert ann["confidence"] <= settings.rag_offexample_confidence_cap
         assert ann["confidence"] < settings.confidence_threshold
         assert result.low_confidence == 1

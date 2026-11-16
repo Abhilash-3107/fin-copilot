@@ -68,7 +68,7 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
 
 # Columns a patch is allowed to set. The column names are interpolated into the
 # UPDATE (SQLite can't parameterize identifiers), so they must never come from
-# request-shaped data — validate against this allowlist to keep the injection
+# request-shaped data - validate against this allowlist to keep the injection
 # surface closed regardless of caller.
 def replace_machine_annotation(
     conn: sqlite3.Connection,

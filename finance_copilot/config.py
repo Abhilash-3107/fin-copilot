@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     llm_confidence_dampen: float = 0.85
     llm_confidence_dampen_rag: float = 0.92
     # Cap on confidence when the rag_prompted LLM picks a category that appears in
-    # none of the retrieved examples — keeps unsupported guesses out of the
+    # none of the retrieved examples - keeps unsupported guesses out of the
     # auto-accepted set and routes them to the review queue instead.
     rag_offexample_confidence_cap: float = 0.5
     # Vote weight given to machine-sourced donors (llm/rag_*) relative to a
@@ -112,14 +112,14 @@ class Settings(BaseSettings):
     # Empirical-Bayes pseudo-count: the weight of the uninformed base rate relative
     # to observed labels. Higher = more evidence needed before a counterparty's own
     # history dominates. With this >0, a single observation can't pin probability to
-    # 1.0 — recurrence (several consistent labels) is required to clear the floor.
+    # 1.0 - recurrence (several consistent labels) is required to clear the floor.
     counterparty_prior_weight: float = 2.0
     # Minimum prior observations before the recurrence prior may influence routing.
     # Below this the prior is inert → cold-start / first-time counterparties behave
     # exactly like today. Tuned on the Dec–Mar 2026 causal backtest sweep
     # (scripts/backtest_counterparty_prior.py --sweep): min_obs=2, floor=0.65 gave
     # the best precision (~85%) at comparable coverage. The ~85% ceiling is the
-    # irreducible "recurring contact's occasional off-category spend" — which the
+    # irreducible "recurring contact's occasional off-category spend" - which the
     # late-fusion layer (prior vs LLM disagreement → review) catches, not the floor.
     counterparty_min_observations: int = 2
     # Shortest payee key that can be a bank's truncation of a longer name
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     counterparty_prior_enabled: bool = True
     # Context window for annotation LLM calls. The few-shot prompt (system + 5
     # examples + full category list + txn) can exceed 2048 tokens, and Ollama
-    # truncates silently from the front (the system prompt) — prompt_eval_count is
+    # truncates silently from the front (the system prompt) - prompt_eval_count is
     # logged per call so truncation is observable.
     ollama_num_ctx: int = 2048
     # LLM call robustness (pipeline/llm.py). llm_timeout_s bounds how long one
@@ -191,7 +191,7 @@ class Settings(BaseSettings):
     # embed text, few-shot prompt content, LLM telemetry, raw vs dampened
     # confidence) into annotations.reasoning. DEV_MODE only gates the surface:
     # when on, the API returns the trace and the UI shows the "Why this
-    # annotation?" panel. Off by default — regular users never see it, but
+    # annotation?" panel. Off by default - regular users never see it, but
     # flipping it on explains past decisions too.
     dev_mode: bool = False
     # Hosted-demo hardening (FC_DEMO_MODE=1): the API refuses statement uploads,

@@ -3,7 +3,7 @@
 Diagnostic only: separates LLM non-determinism (temperature) from a real
 regression. For each run it clears + re-annotates the target transactions and
 records (category, subcategory, confidence). Prints, per transaction, the set of
-distinct labels seen across runs — stable labels = deterministic, varying labels =
+distinct labels seen across runs - stable labels = deterministic, varying labels =
 temperature noise.
 
 Usage: uv run python -m scripts.diff_reannotate_april [n_runs]

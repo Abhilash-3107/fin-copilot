@@ -1,4 +1,4 @@
-"""Causal backtest for the counterparty recurrence prior — the decision gate.
+"""Causal backtest for the counterparty recurrence prior - the decision gate.
 
 Replays annotated UPI transactions in chronological order. For each one, it
 computes the counterparty prior using ONLY labels dated strictly before it
@@ -10,7 +10,7 @@ We only score against trusted labels (manual/rule/imported); machine-only labels
 are excluded from the truth set so we don't grade the prior against an unverified
 guess.
 
-The point is to find out — before touching the pipeline — whether the mature-history
+The point is to find out - before touching the pipeline - whether the mature-history
 recurrence signal (4.2x vs 1.06x) survives causal evaluation, or whether it was
 survivorship bias. If the established prior is not both high-precision and
 meaningfully-covering on the ambiguous personal-name cohort, we STOP.
@@ -31,7 +31,7 @@ from finance_copilot.pipeline.counterparty import counterparty_prior
 _TRUSTED = {"manual", "rule", "imported"}
 # The cohort the prior is meant to help: bare personal-name UPIs that the
 # embedding can't separate. We approximate "personal name" as a UPI whose name
-# segment is not a known merchant token. Kept deliberately simple — the headline
+# segment is not a known merchant token. Kept deliberately simple - the headline
 # metric is overall, this cohort is the stress test.
 _MERCHANT_HINTS = (
     "ZOMATO", "SWIGGY", "ZEPTO", "BLINKIT", "DISTRICT DINING", "RAPIDO", "UBER",
@@ -98,7 +98,7 @@ def main() -> int:
 
     conn = get_connection()
 
-    # All annotated UPI txns in chronological order — the replay timeline.
+    # All annotated UPI txns in chronological order - the replay timeline.
     rows = conn.execute(
         """
         SELECT t.id, t.txn_date, t.raw_description, t.debit_credit, t.counterparty_key, a.category, a.source
@@ -130,7 +130,7 @@ def main() -> int:
         print(f"  established & wrong:              {c['wrong']}")
         print(f"  PRECISION when established:       {precision:.1%}")
 
-    print("Causal backtest — counterparty recurrence prior")
+    print("Causal backtest - counterparty recurrence prior")
     print(f"settings: prior_weight={settings.counterparty_prior_weight} "
           f"min_obs={settings.counterparty_min_observations} "
           f"dominance_floor={settings.counterparty_dominance_floor}")
@@ -148,10 +148,10 @@ def main() -> int:
     cov = p["established"] / p["scored"] if p["scored"] else 0.0
     print("\n=== DECISION GATE ===")
     if p["established"] >= 5 and prec >= 0.85:
-        print(f"  PASS — personal-cohort precision {prec:.1%} at {cov:.1%} coverage "
+        print(f"  PASS - personal-cohort precision {prec:.1%} at {cov:.1%} coverage "
               f"({p['established']} established cases). Signal survives causal eval.")
     else:
-        print(f"  STOP — insufficient evidence: precision {prec:.1%}, coverage {cov:.1%}, "
+        print(f"  STOP - insufficient evidence: precision {prec:.1%}, coverage {cov:.1%}, "
               f"{p['established']} established cases. Do not wire into pipeline yet.")
     return 0
 

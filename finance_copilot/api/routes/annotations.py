@@ -509,7 +509,7 @@ def patch_annotation(
     if patch:
         _apply_correction(conn, existing, patch)
         conn.commit()
-        # Corrected annotations are trusted donors — refresh the embedding (best-effort)
+        # Corrected annotations are trusted donors - refresh the embedding (best-effort)
         embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))

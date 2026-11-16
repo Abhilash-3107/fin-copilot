@@ -3,7 +3,7 @@
 Replays the full cascade (rules → rag_direct → rag_prompted → llm)
 over the golden set (human-verified labels, scripts/build_golden.py), with all
 retrieval and priors restricted to history strictly before each transaction's
-date — the same causality rule as scripts/backtest_counterparty_prior.py, so a
+date - the same causality rule as scripts/backtest_counterparty_prior.py, so a
 replayed transaction can never see donors that didn't exist yet.
 
 Nothing is written to the database. The pipeline's stage functions are pure

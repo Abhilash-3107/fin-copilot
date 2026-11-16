@@ -157,10 +157,10 @@ def find_similar(
     """Return top-k most similar transactions by cosine distance.
 
     Returns list of {transaction_id, distance} dicts.
-    sqlite-vec MATCH returns cosine distance — lower means more similar.
+    sqlite-vec MATCH returns cosine distance - lower means more similar.
     Cosine similarity = 1.0 - distance.
 
-    before_txn_date restricts donors to transactions dated strictly earlier —
+    before_txn_date restricts donors to transactions dated strictly earlier -
     used by the time-split eval harness to prevent retrieval leakage (a replayed
     transaction must never retrieve donors that didn't exist yet).
     """

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 from finance_copilot.models.transaction import Transaction
 
-# "Account No. 3250508074", "A/c Number: XXXX-1234", "Account #: 1234567890" —
+# "Account No. 3250508074", "A/c Number: XXXX-1234", "Account #: 1234567890" -
 # tolerant of masked digits so partial numbers still distinguish accounts, but
 # at least one real digit so a fully-redacted header yields None.
 _ACCOUNT_REF_RE = re.compile(

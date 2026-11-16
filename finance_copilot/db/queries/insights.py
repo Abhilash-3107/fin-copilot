@@ -212,8 +212,8 @@ def _offsets_fingerprint(conn: sqlite3.Connection) -> tuple:
 
     Two independent change counters make it complete:
     - conn.total_changes: SQLite's running count of rows inserted/updated/deleted
-      through *this* connection. Catches same-connection edits — including a
-      category re-label that leaves all row counts unchanged — which a
+      through *this* connection. Catches same-connection edits - including a
+      category re-label that leaves all row counts unchanged - which a
       count/timestamp fingerprint misses at datetime()'s one-second resolution.
     - data_version (PRAGMA): bumps when *another* connection commits, catching
       writes this connection didn't make.

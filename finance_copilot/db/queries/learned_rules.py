@@ -1,9 +1,9 @@
-"""Learned merchant memory — a deterministic annotation stage derived from the
+"""Learned merchant memory - a deterministic annotation stage derived from the
 user's own verified labels.
 
 When a counterparty (by indexed transactions.counterparty_key) has accumulated
 enough *human-verified* annotations that agree on a category, we can label future
-transactions to it deterministically, with no embedding call and no LLM — the
+transactions to it deterministically, with no embedding call and no LLM - the
 recurring, single-purpose bulk of a mature user's statement (SWIGGY, LICIOUS,
 OBEROIFC, ...). This is the exact-match/cache idea from the June review, upgraded
 with a support+purity promotion bar.
@@ -13,7 +13,7 @@ Design (on-demand, not materialized):
     counterparty_key index (migration 017) makes this an indexed lookup, the same
     shape the counterparty prior already pays for. Benefits: single source of
     truth (no staleness), automatic demotion (a correction lowers purity on the
-    next lookup), and — critically — the eval harness and production share one
+    next lookup), and - critically - the eval harness and production share one
     code path because `before_txn_date` makes the computation causal.
   - Promotion is gated on *human-verified* labels only (manual/imported). Machine
     sources (rule/rag_*/llm/learned_rule) are excluded so a recurring machine
