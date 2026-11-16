@@ -40,10 +40,11 @@ async function fillDraft() {
 describe('UserRules', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    let added = 0
     mockApi.get.mockImplementation(path => Promise.resolve(path === '/categories' ? TREE : []))
     mockApi.post.mockImplementation(path => {
       if (path === '/rules/preview') return Promise.resolve(PREVIEW)
-      if (path === '/rules') return Promise.resolve(RULE)
+      if (path === '/rules') return Promise.resolve({ ...RULE, id: `r${++added}` })
       return Promise.resolve({ relabeled: 1, labeled: 1, protected: 1, unchanged: 0 })
     })
   })
@@ -70,7 +71,7 @@ describe('UserRules', () => {
     await screen.findByRole('checkbox')
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByText('Add rule'))
-    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules/r1/apply'))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules/r2/apply'))
   })
 
   it('pauses and removes a rule', async () => {
