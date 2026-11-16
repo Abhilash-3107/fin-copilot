@@ -6,6 +6,7 @@ import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
 import { DemoDataProvider } from './contexts/DemoDataContext.jsx'
+import { ROUTER_FUTURE } from './lib/routerFuture.js'
 import Layout from './components/Layout.jsx'
 import TokenGate from './components/TokenGate.jsx'
 import NotFound from './pages/NotFound.jsx'
@@ -35,7 +36,7 @@ export default function App() {
       <PeriodProvider>
       <AnnotationJobProvider>
       <DemoDataProvider>
-      <HashRouter>
+      <HashRouter future={ROUTER_FUTURE}>
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Navigate to="/dashboard" replace />} />

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { Routes, Route } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },

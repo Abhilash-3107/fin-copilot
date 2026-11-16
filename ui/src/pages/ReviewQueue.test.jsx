@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 // Mock the API layer so the queue is hermetic (no backend, no fetch).
 const { mockApi } = vi.hoisted(() => ({

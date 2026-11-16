@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { Routes, Route } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 const { statementCtx } = vi.hoisted(() => ({ statementCtx: { error: null, reload: vi.fn() } }))
 vi.mock('../contexts/StatementContext.jsx', () => ({ useStatement: () => statementCtx }))

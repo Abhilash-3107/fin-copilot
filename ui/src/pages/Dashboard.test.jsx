@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
 const { mockApi, mockRunAnnotationJob, refreshDemoData } = vi.hoisted(() => ({
