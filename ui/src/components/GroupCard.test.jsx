@@ -333,6 +333,20 @@ describe('GroupCard editing', () => {
     await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1))
   })
 
+  it('Enter on the Cancel button cancels and never saves', () => {
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'Goa 2026' } })
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    fireEvent.keyDown(cancel, { key: 'Enter' })
+    expect(mockApi.patch).not.toHaveBeenCalled()
+    // The browser turns that Enter into a click on the focused button.
+    fireEvent.click(cancel)
+    expect(screen.queryByLabelText('Group name')).not.toBeInTheDocument()
+    expect(mockApi.patch).not.toHaveBeenCalled()
+  })
+
   it('shows a refused name in the form and keeps it open', async () => {
     mockApi.patch.mockRejectedValue(Object.assign(new Error('You already have a group called "Flat".'), { status: 409 }))
     renderEditable()

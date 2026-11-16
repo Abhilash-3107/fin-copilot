@@ -474,6 +474,8 @@ export default function Dashboard() {
   // guesses waiting in Teach Me span every month, not just this one.
   const countsLoad = useLoad(useCallback(() => api.get('/annotations/review-queue/counts'), []))
   const accuracyLoad = useLoad(useCallback(() => api.get('/annotations/accuracy'), []))
+  // Sorting, loading the demo and the page's Retry change all three at once.
+  const reloadAll = () => { summaryLoad.reload(); countsLoad.reload(); accuracyLoad.reload() }
   const data = summaryLoad.data
   const loading = summaryLoad.loading
   const guessCount = countsLoad.data?.guesses ?? 0
@@ -493,7 +495,7 @@ export default function Dashboard() {
       const result = await startAnnotation({})
       const summary = annotationSummary(result)
       toast(summary.message, summary.type, summaryDuration(summary))
-      summaryLoad.reload()
+      reloadAll()
     } catch (e) {
       toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
@@ -507,7 +509,7 @@ export default function Dashboard() {
       const s = await api.post('/data/demo')
       toast(`Demo loaded: ${count(s.transactions, 'transaction')} across ${count(s.months, 'month')}`, 'success', 5000)
       refreshDemoData()
-      summaryLoad.reload()
+      reloadAll()
     } catch (e) {
       toast(`Couldn't load demo data - ${e.message}`, 'error')
     } finally {
@@ -601,7 +603,7 @@ export default function Dashboard() {
       {loading ? (
         <p className="text-sm text-[#475569]">Pulling it together…</p>
       ) : summaryLoad.error ? (
-        <InlineError what="your dashboard" error={summaryLoad.error} onRetry={summaryLoad.reload} />
+        <InlineError what="your dashboard" error={summaryLoad.error} onRetry={reloadAll} />
       ) : !data?.month ? (
         <div className={`${card} p-8 text-center`}>
           <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>

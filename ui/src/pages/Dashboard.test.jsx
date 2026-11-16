@@ -316,6 +316,37 @@ describe('Dashboard', () => {
     expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
   })
 
+  it('sorting also refreshes the counts, so the guesses row is not left at what it was', async () => {
+    let insights = PENDING_SUMMARY
+    let counts = { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 }
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(insights)
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(counts)
+      return Promise.resolve([])
+    })
+    mockRunAnnotationJob.mockImplementation(async () => {
+      insights = SUMMARY
+      counts = COUNTS
+      return { rule_matched: 40, rag_direct_annotated: 60, llm_annotated: 20 }
+    })
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+
+  it('loading the demo refreshes the counts and the accuracy block too', async () => {
+    let loaded = false
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(loaded ? SUMMARY : { months: [], month: null })
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(loaded ? COUNTS : { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 })
+      return Promise.resolve([])
+    })
+    mockApi.post.mockImplementation(async () => { loaded = true; return { transactions: 195, months: 4 } })
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load demo data' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+
   it('stays in the setup stage when sorting fails', async () => {
     mockApi.get.mockImplementation(path => {
       if (path.startsWith('/insights')) return Promise.resolve(PENDING_SUMMARY)
@@ -639,6 +670,21 @@ describe('Dashboard when the API fails', () => {
     heal()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Balance over time')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('one Retry on the page-level failure brings every block back', async () => {
+    let failing = true
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      failing && path !== '/statements' ? Promise.reject(new TypeError('Failed to fetch')) : base(path)
+    ))
+    renderDashboard()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your dashboard.")
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+    expect(screen.getByText(/Not enough corrections yet/)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

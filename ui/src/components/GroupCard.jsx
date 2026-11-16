@@ -263,10 +263,11 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
   }
 
   // Enter saves and Escape cancels, from any field in the form; a label being
-  // typed owns its own Enter (it adds the label).
+  // typed owns its own Enter (it adds the label), and a button owns its own
+  // (Enter on Cancel must cancel, not save).
   function onEditKeyDown(e) {
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
-    else if (e.key === 'Enter' && !e.defaultPrevented) { e.preventDefault(); saveEdit() }
+    else if (e.key === 'Enter' && !e.defaultPrevented && !e.target.closest('button')) { e.preventDefault(); saveEdit() }
   }
 
   async function updateMember(txnId, patch) {
@@ -331,7 +332,7 @@ export default function GroupCard({ group, onDelete, onUpdate }) {
               value={draft.note}
               onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
               placeholder="Add a note"
-              className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+              className="w-full h-9 bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
             />
             <TagInput
               tags={draft.labels}
