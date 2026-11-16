@@ -7,6 +7,14 @@ Every payment is shown by who it went to and what you wrote, you can rename it, 
 Every number on screen agrees with every other number or says what it counts, and Teach Me holds every payment that still has no category.
 The categorizer and the statement reader got a round of fixes, and there is now a browser test suite behind all of it.
 
+### Trying the release candidate
+
+0.2.0rc1 is a release candidate.
+Plain `uvx finance-copilot` stays on 0.1.2, the last stable release, until 0.2.0 itself is out.
+It rewrites data in your ledger (see below), so try it on a copy first:
+copy your data folder, then run `uvx finance-copilot==0.2.0rc1 --data-dir <a copy of your data folder>`.
+Your own folder is untouched until you point the new version at it.
+
 ### Before you upgrade
 
 Download a backup first (Settings > Data > Download backup).
@@ -59,14 +67,14 @@ What moves is how some of them are added up, compared and named, so the same led
   It used to show all-time totals under every month.
 - The Sorted column on Add Statement.
   It counts the payments Teach Me is not waiting on, the same as everywhere else.
-  It used to count every payment the machine had labelled, however unsure it was, so it reads lower for a statement with guesses still to check.
+  It used to count every payment the machine had labelled, however unsure it was, so it reads lower for a statement with guesses still to check, and for payments labelled Uncategorized.
 - Names, not money.
-  A recurring charge or a merchant row with no merchant name is now listed under the payee exactly as the bank printed it (CHAI WALA CORNER where it used to read Chai Wala Corner), the same name the Ledger, Teach Me and Money Map use.
+  A recurring charge, or a row under Top payees on Money Map, for a payee with no merchant name is now listed under the payee exactly as the bank printed it (CHAI WALA CORNER where it used to read Chai Wala Corner), the same name Transactions, Teach Me and Money Map use.
   No amount, count or category moves.
 
 ### Your payments, by name
 
-- Ledger rows lead with who the payment went to, and under it what you wrote and how it was paid.
+- Rows on Transactions lead with who the payment went to, and under it what you wrote and how it was paid.
   The bank's own line moved behind the row, under "As printed on the statement".
 - Rename a payee, and every payment to it, past and future, carries the name, or rename just one payment.
   A name only changes what the payment is called: categories, rules, search by the bank's text and matching are untouched.
@@ -93,16 +101,17 @@ What moves is how some of them are added up, compared and named, so the same led
 - The sort card shows at most three suggestions with the reason for each, and number keys pick one.
   Type to find any category, and the payee and the note are decoded for you.
   There is no Confirm on Uncategorized, and Uncategorized is no longer offered as an answer.
+- The keys: 1 to 3 choose a suggestion, Enter confirms, / finds another category, S skips, Z undoes your last answer, A does the same for all payments from this payee, and ? lists every shortcut.
+  B and C are gone, and Z replaces Back.
 - One message at a time, with Undo.
-  Undo puts back what your last answers changed, one answer or "apply to all", and it is kept for a day or your last 50 answers.
+  Undo puts back what your last answer changed, one answer or "do the same for all", and it is kept for a day, up to your last 50 answers.
 - Shortcut keys never fire while you type, and an open dialog or sheet blocks them.
 - Skipping a payment sticks for every kind of payment, and the "set aside" count and the done check come from the server.
   The phantom skipped item is gone.
 - A failed load shows the error with a Retry button, never the done screen.
 - Keyboard focus moves to the new card, and Enter on a button or chip no longer also triggers the card's shortcut.
-- The queue asks one question per payee and direction, with "apply my answer to all N payments", and you can make your own category or subcategory from the card.
+- The queue asks one question per payee and direction, with "Do the same for all N payments to <payee>" (on for businesses, off for people), and you can make your own category or subcategory from the card.
 - Review policies (Settings > Rules) sort small payments to people in one rule of thumb, and a human label re-decides the machine labels it could change, so you teach each payee once.
-- A quick double press of c or Enter saves once.
 
 ### Errors, search and shortcuts
 
@@ -122,7 +131,8 @@ What moves is how some of them are added up, compared and named, so the same led
 
 ### The words
 
-- One vocabulary: sort, payee, payment and remembered payees replace annotate, merchant, transaction and memory outside developer mode.
+- One vocabulary: sort, payee and payment replace annotate, merchant and transaction outside developer mode.
+  The payees the app has learned to sort on its own are "Remembered payees" (Settings > Rules), and what finds similar payments to compare against is "Matching similar payments" (Settings > AI & Model > Advanced), where the old AI memory was.
   A failure says what could not be done ("Couldn't load the payments.") and then why, and the app's own messages say payments and sorted too.
 - The machine settings moved into Settings under Advanced.
   AI & Model leads with a plain sentence about what is switched on, and the Insights tab is now called Teach Me (old links still open it).
@@ -159,8 +169,8 @@ What moves is how some of them are added up, compared and named, so the same led
 - Kotak's new statement layout (mid-2026) is read, and the bank is identified from the statement header, not from a counterparty named in a line.
   A locked PDF says it needs a password.
 - Payment descriptions are read once, by one grammar, so lowercase bank codes and payee names containing a slash (M/S.) no longer trigger the format warning.
-  The first start of 0.2.0 re-reads your stored descriptions and rebuilds the AI memory in the background.
-  For some UPI layouts the payee now includes the word after the name (SWIGGY/ORDER where 0.1.2 showed SWIGGY), so a payee, and a learned rule listed by that payee in Settings > Rules, can appear under the longer name.
+  The first start of 0.2.0 re-reads your stored descriptions and rebuilds what Matching similar payments compares against (Settings > AI & Model > Advanced) in the background.
+  For some UPI layouts the payee now includes the word after the name (SWIGGY/ORDER where 0.1.2 showed SWIGGY), so a payee, and a remembered payee listed in Settings > Rules > Remembered payees, can appear under the longer name.
 - Merchant knowledge: well-known merchants the rules missed are recognised, and personal names are not labelled Self Transfers unless you have told the app the account is yours.
 - Matches from your own history count only when the neighbour is similar enough to be evidence, so teaching more merchants no longer makes exact matches score lower.
 - Subcategory names the machine writes outside your taxonomy are snapped to the one they plainly mean, and Settings > Categories has a Tidy up panel for look-alike and orphaned subcategories.
@@ -172,6 +182,9 @@ What moves is how some of them are added up, compared and named, so the same led
 
 - The terminal `review` command is gone.
   Use Teach Me in the app.
+- Forget, the per-statement control that cleared one statement's AI memory, is gone.
+  The next launch rebuilt the memory anyway, so it did nothing lasting.
+- The per-statement Build control on Add Statement moved to Settings > AI & Model > Advanced > Update now, which shows how many sorted payments are ready to match and adds the rest.
 
 ### For contributors
 

@@ -152,27 +152,72 @@ function sortedCountsFollowTeachMe(before, after) {
   return problems
 }
 
+// How a line names its channel, written out here on purpose (the app's own
+// mapping is parsers/description.py channel_of) so the journey does not trust
+// the code it checks. UPI and its reversals need something after the head.
+const OTHER_CHANNELS = { NEFT: 'NEFT', IMPS: 'IMPS', RTGS: 'RTGS', POS: 'Card', ATM: 'ATM' }
+const CHANNEL_WORDS = new Set([...Object.keys(OTHER_CHANNELS), 'UPI', 'REV-UPI'])
+
+function channelOf(line) {
+  const tokens = line.trim().split('/')
+  const head = tokens[0].trim().toUpperCase()
+  if (tokens.length >= 2 && head === 'UPI') return 'UPI'
+  if (tokens.length >= 2 && head === 'REV-UPI') return 'UPI reversal'
+  const first = line.replace(/\//g, ' ').trim().split(/\s+/)[0].toUpperCase()
+  return OTHER_CHANNELS[first] ?? null
+}
+
+/** The line as the bank printed it, minus a leading channel word it names ("POS/", "NEFT/"). */
+function withoutChannel(line) {
+  const text = line.trim()
+  const slash = text.indexOf('/')
+  const rest = slash < 0 ? '' : text.slice(slash + 1).trim()
+  return slash >= 0 && CHANNEL_WORDS.has(text.slice(0, slash).trim().toUpperCase()) && rest ? rest : text
+}
+
 /**
  * Nothing is renamed in this journey, so a payment is called by its merchant, or
  * else the payee exactly as the bank printed it, which is the payee the key names.
  * A label that is not the key's own payee (SWIGGY ORDER 412 for SWIGGY) would split
- * one payee into two names. The key is compared case-insensitively because a UPI
- * address is kept in capitals in the key and as printed in the label.
+ * one payee into two names. Labels are shown as printed, so comparisons are exact,
+ * with one explicit exception: a UPI handle is kept in capitals in the key and
+ * shown lower-cased. A payment with no key has no payee to share: it is called its
+ * printed line without the channel word, and "every payment to this payee" is nothing.
  */
 function payeeLabelsNameTheirKey(before, after) {
   const problems = []
-  const keysWithMerchant = new Set(after.facts.transactions.filter((t) => t.merchant && t.counterparty_key).map((t) => t.counterparty_key))
-  for (const t of after.facts.transactions) {
+  const payments = after.facts.transactions
+  const merchantsByKey = new Map()
+  for (const t of payments) {
+    if (!t.merchant || !t.counterparty_key) continue
+    const counts = merchantsByKey.get(t.counterparty_key) ?? new Map()
+    counts.set(t.merchant.trim(), (counts.get(t.merchant.trim()) ?? 0) + 1)
+    merchantsByKey.set(t.counterparty_key, counts)
+  }
+  // What every payment to a key is called: its most common merchant (ties to the
+  // first alphabetically), else the key's own payee, a UPI handle lower-cased.
+  const labelOfKey = (key) => {
+    const counts = merchantsByKey.get(key)
+    if (counts) return [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0]
+    return key.includes('@') ? key.toLowerCase() : key
+  }
+  for (const t of payments) {
     if (typeof t.payee !== 'string' || t.payee.trim() === '') problems.push(`payment ${t.id} has no name`)
     else if (t.merchant && t.payee !== t.merchant) problems.push(`payment ${t.id} is called "${t.payee}" but its merchant is "${t.merchant}"`)
-    else if (!t.merchant && t.counterparty_key && !keysWithMerchant.has(t.counterparty_key)) {
-      if (t.payee.toUpperCase() !== t.counterparty_key.toUpperCase()) {
+    else if (!t.merchant && t.counterparty_key && !merchantsByKey.has(t.counterparty_key)) {
+      if (t.payee !== labelOfKey(t.counterparty_key)) {
         problems.push(`payment ${t.id} is called "${t.payee}" but its payee key is "${t.counterparty_key}"`)
       }
-      if (t.payee_all !== t.payee) problems.push(`payment ${t.id} is called "${t.payee}" but its payee as a whole is "${t.payee_all}"`)
+    } else if (!t.merchant && !t.counterparty_key) {
+      const printed = withoutChannel(t.raw_description)
+      const fine = /^UPI\//i.test(t.raw_description) ? t.raw_description.toLowerCase().includes(t.payee.toLowerCase()) : t.payee === printed
+      if (!fine) problems.push(`payment ${t.id} has no payee key and is called "${t.payee}", not its line "${printed}"`)
     }
-    if ((t.channel === 'UPI') !== /^UPI\//i.test(t.raw_description)) {
-      problems.push(`payment ${t.id} has channel ${JSON.stringify(t.channel)} for the line "${t.raw_description}"`)
+    if (t.counterparty_key ? t.payee_all !== labelOfKey(t.counterparty_key) : t.payee_all !== null) {
+      problems.push(`payment ${t.id} says every payment to its payee is called ${JSON.stringify(t.payee_all)}, not ${JSON.stringify(t.counterparty_key ? labelOfKey(t.counterparty_key) : null)}`)
+    }
+    if (t.channel !== channelOf(t.raw_description)) {
+      problems.push(`payment ${t.id} has channel ${JSON.stringify(t.channel)} for the line "${t.raw_description}", which says ${JSON.stringify(channelOf(t.raw_description))}`)
     }
   }
   return problems
@@ -229,6 +274,23 @@ function recurringRowsOnlyChangeTheirCase(before, after) {
   return problems
 }
 
+/**
+ * Top payees are the same list as before (the journey renames nothing, so no
+ * expected change names them), and each is called what its payments are called.
+ */
+function topPayeesAreNamedLikeTheirPayments(before, after) {
+  const problems = []
+  const names = new Set(after.facts.transactions.flatMap((t) => [t.payee, t.payee_all]).filter(Boolean))
+  for (const [month, now] of Object.entries(after.figures.months)) {
+    for (const row of now.topPayees) {
+      if (!names.has(row.name)) problems.push(`${month}: the top payee "${row.name}" is not what any payment is called`)
+    }
+    const was = before.figures.months[month]?.topPayees
+    if (was && was.length !== now.topPayees.length) problems.push(`${month}: ${was.length} top payees before and ${now.topPayees.length} after`)
+  }
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
@@ -237,6 +299,7 @@ export function checkInvariants(before, after) {
     ...groupMembersAgreeWithTheirPayment(before, after),
     ...learnedRulePayeesAreThePayeesNames(before, after),
     ...recurringRowsOnlyChangeTheirCase(before, after),
+    ...topPayeesAreNamedLikeTheirPayments(before, after),
     ...categoryIdsNameTheirLabel(before, after),
     ...upiMetaOnlyLosesSampleNotes(before, after),
     ...peopleFiguresAddUpToTheOldTotals(before, after),

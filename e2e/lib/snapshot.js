@@ -115,6 +115,8 @@ const sumOf = (rows) => Math.round(rows.reduce((total, r) => total + r.amount, 0
 // No comparison is null: the first month has no month before it.
 const pickTotals = (prev) => (prev ? { in: prev.money_in, out: prev.money_out, invested: prev.invested, kept: prev.kept } : null)
 const pickPeople = (items) => items.map(({ id, sent, received, net, count }) => ({ id, sent, received, net, count }))
+// Money Map's Top payees: who, how much, how many payments (the key list the new release adds is not a figure).
+const pickTopPayees = (rows) => rows.map(({ name, total, count }) => ({ name, total, count }))
 const pickRecurring = (rows) => rows.map(({ name, category, amount, cadence, active }) => ({ name, category, amount, cadence, active }))
 
 /**
@@ -143,6 +145,7 @@ const FIGURES_FROM_INSIGHTS = {
     recurring: pickRecurring(i.recurring),
     people: pickPeople(i.people.items),
     unexplained: i.unexplained,
+    topPayees: pickTopPayees(i.merchants),
   }),
   // Current: one recurring total, which both screens show.
   current: (i) => ({
@@ -160,14 +163,15 @@ const FIGURES_FROM_INSIGHTS = {
     recurring: pickRecurring(i.recurring),
     people: pickPeople(i.people.items),
     unexplained: i.unexplained,
+    topPayees: pickTopPayees(i.merchants),
   }),
 }
 
 /**
  * The figures the app computes from the stored facts, in one neutral shape
  * whatever the release: per month, In, Out, Invested, Kept, the category
- * breakdown, the recurring totals, the people panel and the uncategorised
- * figure; and over all time, each person's totals and each group's summary.
+ * breakdown, the recurring totals, the people panel, Money Map's top payees
+ * and the uncategorised figure; and over all time, each person's totals and each group's summary.
  * The upgrade journey compares these before and after, so a change in how they
  * are computed shows up as a change here.
  *

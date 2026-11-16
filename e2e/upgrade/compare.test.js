@@ -37,7 +37,8 @@ const month = (over) => ({
   in: 1000, out: 600, invested: 100, kept: 300, keptHeadline: 400, comparison: { in: 0, out: 0, invested: 0, kept: 0 },
   whatChanged: [{ category: 'Housing', delta: 500, current: 500, previous: 0 }], breakdown: [{ category: 'Housing', net: 500 }],
   breakdownExtras: null, recurringHeader: 80, committedEachMonth: 90, unexplained: { count: 1, total: 100 },
-  people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], recurring: [CHAI], ...over,
+  people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], recurring: [CHAI],
+  topPayees: [{ name: 'BigBasket', total: 100, count: 1 }], ...over,
 })
 
 /** A ledger as 0.1.2 leaves it: one of everything a migration or the re-read of descriptions acts on. */
@@ -52,6 +53,11 @@ function ledgerBefore() {
     payment('demo_2', { upi_meta: meta({ note: 'goa share' }), counterparty_key: 'RAHUL' }),
     payment('demo_3'),
     payment('R6', { raw_description: 'UPI/CHAI WALA CORNER/PAYTM QR', counterparty_key: 'CHAI WALA CORNER' }),
+    // Lines with no payee key and no merchant: the app calls them by their printed line.
+    payment('R7', { raw_description: 'NEFT/ACME LABS PVT LTD/SALARY OCT' }),
+    payment('R8', { raw_description: 'POS/EXAMPLE BOOKSTORE BANGALORE' }),
+    payment('R9', { raw_description: 'UPI/9988776655@OKAXIS', counterparty_key: '9988776655@OKAXIS' }),
+    payment('R10', { raw_description: 'UPI/BIGBASKET/GROCERIES', counterparty_key: 'BIGBASKET', merchant: 'BigBasket' }),
   ]
   const facts = {
     statements: [{ id: 's', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 }],
@@ -134,6 +140,9 @@ function upgrade(before) {
   for (const t of facts.transactions) {
     Object.assign(t, { display_name: null, payee_name: null, note: null, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
   }
+  Object.assign(byId.R7, { payee: 'ACME LABS PVT LTD/SALARY OCT', channel: 'NEFT' })
+  Object.assign(byId.R8, { payee: 'EXAMPLE BOOKSTORE BANGALORE', channel: 'Card' })
+  Object.assign(byId.R9, { payee: '9988776655@okaxis', payee_all: '9988776655@okaxis' }) // a UPI handle is shown lower-cased
   for (const m of facts.groups[0].members) {
     const t = byId[m.id]
     for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) m[field] = t[field]
@@ -273,20 +282,60 @@ const regressions = {
   ],
   'a statement counts an unsorted payment as sorted': [
     (a) => (a.facts.statements[0].sorted_count += 1),
-    /statement s reports 9 sorted payments, its payments hold 8/,
+    /statement s reports 13 sorted payments, its payments hold 12/,
   ],
   'a machine guess below the bar counts as sorted': [
     (a) => Object.assign(a.facts.transactions.find((t) => t.id === 'R4'), { confidence: 0.3 }),
-    /statement s reports 8 sorted payments, its payments hold 7/,
+    /statement s reports 12 sorted payments, its payments hold 11/,
   ],
   'the old annotated count was not the number of labelled payments': [
     () => {},
-    /reported 9 annotated payments, 8 were labelled/,
-    (b) => (b.facts.statements[0].annotated_count = 9),
+    /reported 13 annotated payments, 12 were labelled/,
+    (b) => (b.facts.statements[0].annotated_count = 13),
   ],
   'a payment is called by something other than its payee key': [
     (a) => (a.facts.transactions.find((t) => t.id === 'R2').payee = 'RAHUL M'),
     /payment R2 is called "RAHUL M" but its payee key is "RAHUL MEHTA"/,
+  ],
+  'a payee label differs from its key only in case': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R2').payee = 'Rahul Mehta'),
+    /payment R2 is called "Rahul Mehta" but its payee key is "RAHUL MEHTA"/,
+  ],
+  'a UPI handle is not lower-cased': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R9').payee = '9988776655@OKAXIS'),
+    /payment R9 is called "9988776655@OKAXIS" but its payee key is "9988776655@OKAXIS"/,
+  ],
+  'a payment with no key is called by another payee': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R8').payee = 'Swiggy'),
+    /payment R8 has no payee key and is called "Swiggy", not its line "EXAMPLE BOOKSTORE BANGALORE"/,
+  ],
+  'a payment with no key keeps its channel word in its name': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R7').payee = 'NEFT/ACME LABS PVT LTD/SALARY OCT'),
+    /payment R7 has no payee key and is called "NEFT\/ACME LABS PVT LTD\/SALARY OCT", not its line "ACME LABS PVT LTD\/SALARY OCT"/,
+  ],
+  'a payment with no key claims a payee as a whole': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R8').payee_all = 'EXAMPLE BOOKSTORE BANGALORE'),
+    /payment R8 says every payment to its payee is called "EXAMPLE BOOKSTORE BANGALORE", not null/,
+  ],
+  'a payee as a whole is not the key\'s label': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R2').payee_all = 'RAHUL'),
+    /payment R2 says every payment to its payee is called "RAHUL", not "RAHUL MEHTA"/,
+  ],
+  'a payee as a whole drops the merchant its key is called': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R10').payee_all = 'BIGBASKET'),
+    /payment R10 says every payment to its payee is called "BIGBASKET", not "BigBasket"/,
+  ],
+  'a card payment is called a NEFT one': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R8').channel = 'NEFT'),
+    /payment R8 has channel "NEFT" for the line "POS\/EXAMPLE BOOKSTORE BANGALORE", which says "Card"/,
+  ],
+  'a line with no channel word is given one': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R7').channel = null),
+    /payment R7 has channel null for the line "NEFT\/ACME LABS PVT LTD\/SALARY OCT", which says "NEFT"/,
+  ],
+  'a UPI payment loses its channel': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R1').channel = null),
+    /payment R1 has channel null for the line "UPI\/R1", which says "UPI"/,
   ],
   'a payment is called by something other than its merchant': [
     (a) => (a.facts.transactions.find((t) => t.id === 'R5').payee = 'Chai Stall'),
@@ -315,6 +364,18 @@ const regressions = {
   'a recurring charge changes its amount with its name': [
     (a) => (a.figures.months['2026-09'].recurring[0].amount = 31),
     /months\.2026-09\.recurring\[CHAI WALA CORNER\]/,
+  ],
+  'a top payee is called something no payment is': [
+    (a) => (a.figures.months['2026-09'].topPayees[0].name = 'Big Basket'),
+    /2026-09: the top payee "Big Basket" is not what any payment is called/,
+  ],
+  'a top payee changes its total': [
+    (a) => (a.figures.months['2026-09'].topPayees[0].total = 101),
+    /months\.2026-09\.topPayees\[BigBasket\]\.total/,
+  ],
+  'a top payee goes missing': [
+    (a) => (a.figures.months['2026-09'].topPayees = []),
+    /2026-09: 1 top payees before and 0 after/,
   ],
   'a recurring charge goes missing': [
     (a) => (a.figures.months['2026-09'].recurring = []),
