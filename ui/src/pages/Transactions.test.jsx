@@ -53,6 +53,15 @@ function renderPage(initialEntries = ['/transactions']) {
   )
 }
 
+// The page loads its list once before the statements arrive and again scoped to the
+// newest one, and every fresh result set clears the selection. Waits for that second
+// load to land so a row picked afterwards is not cleared under the test.
+async function rowsSettled() {
+  await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/statement_id=s2/))
+  await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  return screen.findAllByLabelText('Select transaction')
+}
+
 const callsTo = prefix => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith(prefix))
 
 beforeEach(() => {
@@ -254,7 +263,7 @@ describe('Transactions when the API fails', () => {
     let failing = true
     mockApi.get.mockImplementation(path => (failing && path === '/categories' ? down() : base(path)))
     renderPage()
-    fireEvent.click((await screen.findAllByLabelText('Select transaction'))[0])
+    fireEvent.click((await rowsSettled())[0])
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent("Couldn't load the categories.")
     failing = false
