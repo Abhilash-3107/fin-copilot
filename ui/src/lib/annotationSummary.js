@@ -44,21 +44,10 @@ export function annotationSummary(result) {
   return { type: 'success', message: done }
 }
 
-// What a sorting run left behind, in the words the Add Statement page uses:
-// "41 sorted, 9 need you". A row counts as sorted once something decided it
-// with enough confidence; one decided below the review bar, or that nothing
-// decided, is waiting for the person in Teach Me.
-export function sortOutcome(result) {
-  const decided =
-    (result.rule_matched ?? 0) + (result.learned_rule_annotated ?? 0) +
-    (result.rag_direct_annotated ?? 0) + (result.rag_prompted_annotated ?? 0) +
-    (result.llm_annotated ?? 0)
-  const lowConfidence = result.low_confidence ?? 0
-  const sorted = Math.max(0, decided - lowConfidence)
-  const needYou = lowConfidence + (result.llm_failed ?? 0)
-  return { sorted, needYou, text: sortedText(sorted, needYou) }
-}
-
+// "41 sorted, 9 need you": the words the Add Statement page uses for a
+// statement's sorting. The numbers come from the server (a statement's
+// sorted_count), never from a run's counters, so this page, the statements
+// table and Teach Me always agree.
 export function sortedText(sorted, needYou) {
   return `${sorted} sorted, ${needYou} ${needYou === 1 ? 'needs' : 'need'} you`
 }

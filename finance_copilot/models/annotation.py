@@ -130,7 +130,7 @@ class AutoAnnotateResult(BaseModel):
     rag_prompted_annotated: int = 0
     llm_annotated: int
     llm_failed: int
-    low_confidence: int       # annotations below settings.confidence_threshold
+    low_confidence: int       # decided this run but still waiting for you: below the review bar, or Uncategorized
     already_annotated: int    # transactions skipped because already annotated
     # Whether an LLM provider was configured for this run. False means the LLM
     # stage never fired, so "llm_failed" transactions are simply waiting for the

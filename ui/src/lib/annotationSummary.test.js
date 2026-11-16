@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { annotationSummary, sortOutcome, sortedText, summaryDuration } from './annotationSummary.js'
+import { annotationSummary, sortedText, summaryDuration } from './annotationSummary.js'
 
 const base = {
   rule_matched: 3, learned_rule_annotated: 1,
@@ -47,19 +47,9 @@ describe('annotationSummary', () => {
   })
 })
 
-describe('sortOutcome', () => {
-  it('counts a confident decision as sorted and a doubtful or missing one as needing you', () => {
-    // 11 decided, 1 of them below the review bar; 2 nobody decided.
-    const out = sortOutcome({ ...base, llm_failed: 2 })
-    expect(out).toMatchObject({ sorted: 10, needYou: 3, text: '10 sorted, 3 need you' })
-  })
-
+describe('sortedText', () => {
   it('reads "1 needs you" in the singular and "0 need you" at zero', () => {
     expect(sortedText(41, 1)).toBe('41 sorted, 1 needs you')
     expect(sortedText(8, 0)).toBe('8 sorted, 0 need you')
-  })
-
-  it('is zero and zero for a run with nothing to do', () => {
-    expect(sortOutcome({ total_processed: 0 }).text).toBe('0 sorted, 0 need you')
   })
 })

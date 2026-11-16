@@ -12,6 +12,7 @@ import httpx
 
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
+    count_in_review_queue,
     demote_machine_annotation,
     insert_annotation,
     replace_machine_annotation,
@@ -530,7 +531,7 @@ def auto_annotate(
     rag_prompted_annotated = 0
     llm_annotated = 0
     llm_failed = 0
-    low_confidence = 0
+    decided_ids: list[str] = []
 
     # Commit in small batches: cheap enough to keep progress on a crash, without
     # paying a WAL sync per annotation.
@@ -553,6 +554,7 @@ def auto_annotate(
             reasoning=reasoning,
         )
         insert_annotation(conn, annotation)
+        decided_ids.append(ann_create.transaction_id)
         uncommitted += 1
         if uncommitted >= _COMMIT_EVERY:
             conn.commit()
@@ -610,8 +612,6 @@ def auto_annotate(
                 learned_rule_annotated += 1
             else:
                 rule_matched += 1
-            if result.confidence < settings.confidence_threshold:
-                low_confidence += 1
             logger.debug(
                 "rule match | txn=%s  desc=%r  → category=%s/%s  conf=%.2f  source=%s",
                 txn["id"], txn["raw_description"], result.category, result.subcategory,
@@ -647,8 +647,6 @@ def auto_annotate(
                     rag_direct_annotated += 1
                 else:
                     rag_prompted_annotated += 1
-                if rag_result.confidence < settings.confidence_threshold:
-                    low_confidence += 1
             else:
                 needs_llm.append(txn)
                 _heartbeat()
@@ -711,9 +709,6 @@ def auto_annotate(
                 _apply_fact_gate(conn, txn, ann, trace, txn["txn_date"])
                 _persist(ann, trace)
                 llm_annotated += 1
-                # Compare the stored (dampened) confidence — it decides review-queue membership
-                if ann.confidence < settings.confidence_threshold:
-                    low_confidence += 1
                 logger.debug(
                     "llm result | txn=%s  → %s/%s  merchant=%r  raw_conf=%.2f  dampened_conf=%.4f",
                     txn["id"], llm_result.category, llm_result.subcategory, llm_result.merchant,
@@ -725,6 +720,10 @@ def auto_annotate(
             _tick()
 
     conn.commit()  # flush the final partial batch
+    # What this run decided but still needs the person: asked of the review
+    # queue's own condition, with the bar the user set, so a guess below it and
+    # a confident "Uncategorized" both count and nothing else does.
+    low_confidence = count_in_review_queue(conn, get_confidence_threshold(conn), decided_ids)
     logger.info(
         "auto_annotate done | total_processed=%d  rule=%d  learned_rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
         len(unannotated), rule_matched, learned_rule_annotated, rag_direct_annotated,

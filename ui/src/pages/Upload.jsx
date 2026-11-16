@@ -9,7 +9,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
-import { annotationSummary, sortOutcome, sortedText, summaryDuration } from '../lib/annotationSummary.js'
+import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
 
 // Running-balance reconciliation badge (4.20): turns the parser's balance-chain
@@ -63,7 +63,7 @@ function balanceLine(check) {
 }
 
 function sortLine(entry) {
-  if (entry.status === 'sorted') return sortOutcome(entry.result).text
+  if (entry.status === 'sorted') return entry.outcome ? sortedText(entry.outcome.sorted, entry.outcome.needYou) : 'Sorting finished'
   if (entry.status === 'sortFailed') return `Sorting stopped (${entry.message}). Use Sort again below.`
   if (!entry.job) return 'Getting started…'
   if (entry.job.status === 'queued') return 'Waiting to sort'
@@ -139,8 +139,10 @@ export default function Upload() {
     try {
       const data = await api.get('/statements')
       setStatements(data)
+      return data
     } catch (e) {
       toast(`Couldn't load your statements - ${e.message}`, 'error')
+      return null
     }
   }, [toast])
 
@@ -177,11 +179,20 @@ export default function Upload() {
     e.target.value = ''
   }
 
-  function trackSorting(id, jobId) {
+  // When the job ends, what to tell the person comes from the same place as
+  // the statements table and Teach Me: the server's own count of sorted
+  // payments for this statement, not the job's counters.
+  function trackSorting(id, statementId, jobId) {
     pollAnnotationJob(jobId, j => patchEntry(id, { job: j }))
-      .then(result => patchEntry(id, { status: 'sorted', result }))
-      .catch(e => patchEntry(id, { status: 'sortFailed', message: e.message }))
-      .finally(loadStatements)
+      .then(async result => {
+        const row = (await loadStatements())?.find(r => r.id === statementId)
+        const outcome = row ? { sorted: row.sorted_count, needYou: row.txn_count - row.sorted_count } : null
+        patchEntry(id, { status: 'sorted', result, outcome })
+      })
+      .catch(e => {
+        patchEntry(id, { status: 'sortFailed', message: e.message })
+        loadStatements()
+      })
   }
 
   // One file after another: each has its own result, so a bad file does not
@@ -202,7 +213,7 @@ export default function Upload() {
         if (result.sorting_job_id) {
           patchEntry(entry.id, { status: 'sorting', statement: result, job: null })
           watchJobs()
-          trackSorting(entry.id, result.sorting_job_id)
+          trackSorting(entry.id, result.id, result.sorting_job_id)
         } else {
           patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued" })
         }
@@ -313,10 +324,10 @@ export default function Upload() {
   const busy = entries.some(e => ['uploading', 'sorting'].includes(e.status))
   const finished = !busy && sortedEntries.length > 0
     ? {
-        ...sortedEntries.reduce((t, e) => {
-          const o = sortOutcome(e.result)
-          return { sorted: t.sorted + o.sorted, needYou: t.needYou + o.needYou }
-        }, { sorted: 0, needYou: 0 }),
+        ...sortedEntries.reduce((t, e) => ({
+          sorted: t.sorted + (e.outcome?.sorted ?? 0),
+          needYou: t.needYou + (e.outcome?.needYou ?? 0),
+        }), { sorted: 0, needYou: 0 }),
         noModel: sortedEntries.some(e => e.result.ai_active === false),
         modelError: sortedEntries.map(e => e.result.llm_error).find(Boolean) ?? null,
       }

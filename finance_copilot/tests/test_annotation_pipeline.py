@@ -417,6 +417,42 @@ class TestAutoAnnotatePipeline:
 
         assert result.low_confidence == 1
 
+    def test_low_confidence_follows_the_stored_review_bar(self):
+        """The count that reaches the Upload page is the one Teach Me uses: the
+        bar the user set in Settings, not the config default."""
+        from finance_copilot.db.queries.app_settings import set_confidence_threshold
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "t6b", "mystery transaction two")
+        set_confidence_threshold(self.conn, 0.3)
+        self.conn.commit()
+        llm_result = AnnotationResponse(category="Shopping", subcategory="General Retail", confidence=0.7)
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn)
+
+        # 0.7 is below the config default (0.85) but above the bar the user set.
+        assert result.low_confidence == 0
+
+    def test_a_confident_uncategorized_answer_is_not_sorted(self, monkeypatch):
+        from finance_copilot.db.queries.app_settings import set_confidence_threshold
+        monkeypatch.setattr(settings, "confidence_threshold", 0.3)
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "t6c", "mystery transaction three")
+        set_confidence_threshold(self.conn, 0.3)
+        self.conn.commit()
+        llm_result = AnnotationResponse(category="Uncategorized", confidence=0.99)
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn)
+
+        assert result.low_confidence == 1
+
     def test_filter_by_statement_id(self):
         from finance_copilot.pipeline.annotate import auto_annotate
 

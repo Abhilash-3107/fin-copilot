@@ -230,6 +230,27 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def count_in_review_queue(conn: sqlite3.Connection, threshold: float, transaction_ids: list[str]) -> int:
+    """How many of these payments the review queue would ask about, by the
+    same condition list_review_queue uses (snoozing aside: a skip hides a
+    payment from Teach Me, it does not make it sorted)."""
+    condition, params = _queue_condition(threshold)
+    total = 0
+    for start in range(0, len(transaction_ids), 500):
+        chunk = transaction_ids[start:start + 500]
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM transactions t
+            LEFT JOIN annotations a ON a.transaction_id = t.id
+            WHERE t.id IN ({','.join('?' for _ in chunk)}) AND {condition}
+            """,
+            (*chunk, *params),
+        ).fetchone()
+        total += row["n"]
+    return total
+
+
 def snooze_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
     """Snooze a payment out of the review queue (a "skip" that sticks), whether
     or not it has an annotation. Idempotent; returns True when the payment

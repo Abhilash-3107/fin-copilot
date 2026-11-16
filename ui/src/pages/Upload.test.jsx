@@ -38,6 +38,9 @@ const SORTED = {
   llm_failed: 1, low_confidence: 0, already_annotated: 0, ai_active: false, llm_error: null,
 }
 
+// What GET /statements says once sorting has ended: the one definition of sorted.
+const ledgerRows = (...rows) => rows.map(([id, total, sorted]) => ({ ...stmt, id, txn_count: total, sorted_count: sorted }))
+
 import Upload from './Upload.jsx'
 
 const renderUpload = () => render(<HashRouter><Upload /></HashRouter>)
@@ -57,6 +60,7 @@ describe('Upload', () => {
   })
 
   it('clears the file input after a pick, so the same file can be picked again', async () => {
+    mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
     const { container } = renderUpload()
     const input = container.querySelector('input[type=file]')
     // jsdom does not model a file input's path value, so record what the page
@@ -240,6 +244,7 @@ describe('Upload', () => {
     })
 
     it('uploads them one after another, each with its own result and a sorted summary', async () => {
+    mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 8]))
       mockApi.upload
         .mockResolvedValueOnce(uploaded('s1'))
         .mockResolvedValueOnce(uploaded('s2', { bank_name: 'hdfc' }))
@@ -292,6 +297,7 @@ describe('Upload', () => {
     })
 
     it('lets only finished files make way for a new pick', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
       const { container } = renderUpload()
       const input = container.querySelector('input[type=file]')
       fireEvent.change(input, { target: { files: [named('a.pdf')] } })
@@ -303,6 +309,7 @@ describe('Upload', () => {
     })
 
     it('keeps going when one file fails, says why, and lets that file be retried', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 7]))
       mockApi.upload
         .mockRejectedValueOnce(new Error('This PDF is password-protected. Enter its password and upload again.'))
         .mockResolvedValueOnce(uploaded('s2'))
@@ -349,7 +356,19 @@ describe('Upload', () => {
   })
 
   describe('sorting starts by itself', () => {
+    it('reports what the statements table says, not the job counters', async () => {
+      // The job counted 7 of 8 as decided, but by the review bar Teach Me uses
+      // only 5 are sorted: the page must agree with the table and the queue.
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 5]))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      expect(await screen.findByText('5 sorted, 3 need you', { selector: 'p' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Finished: 5 sorted, 3 need you')
+    })
+
     it('shows progress and then the outcome without a click on anything else', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
       let finish
       pollJob.mockImplementation((_id, onProgress) => {
         onProgress({ status: 'running', processed: 3, total: 8 })
