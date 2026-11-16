@@ -23,7 +23,9 @@ test.describe('J3 add a statement', () => {
     await expect(page.getByText(/Works with Kotak statements/)).toBeVisible()
     await expect(page.getByText(/running-balance column/)).toBeVisible()
     await expect(page.getByText(/Password-protected PDFs work/)).toBeVisible()
-    await expect(page.getByText(/Your statement stays on this computer/)).toBeVisible()
+    await expect(page.getByText(
+      /Your statement stays on this computer\. If you connect an online AI model in Settings, each payment.s date, amount, description and note are sent to it for sorting, along with a few similar payments you have already sorted and how you sorted them\./,
+    )).toBeVisible()
     await expect(page.getByText(/sorting starts by itself/)).toBeVisible()
   })
 
@@ -71,6 +73,48 @@ test.describe('J3 add a statement', () => {
     await expect(page.getByText(new RegExp(`0\\s*/\\s*${queue.length}\\b`))).toBeVisible()
   })
 
+  // One meaning of "sorted": the summary, the Sorted column and the Teach Me queue
+  // must give the same numbers, even where a job's own counters would not.
+  async function expectOneCount(page, app) {
+    const [statement] = await app.api.get('/statements')
+    const queue = await app.api.get('/annotations/review-queue')
+    const needYou = statement.txn_count - statement.sorted_count
+    const words = `${statement.sorted_count} sorted, ${needYou} ${needYou === 1 ? 'needs' : 'need'} you`
+    await expect(summaryOf(page)).toContainText(`Finished: ${words}`)
+    await expect(fileRow(page, 'sample_statement.pdf')).toContainText(words)
+    await expect(statementRows(page)).toContainText(`${statement.sorted_count}/${statement.txn_count}`)
+    expect(queue.length, 'payments waiting in Teach Me').toBe(needYou)
+    return statement
+  }
+
+  test('the summary, the table and Teach Me agree when the model is sure a payment is Uncategorized', async ({ page, app }) => {
+    // A bar low enough that the model's 0.85 passes it: only "Uncategorized" keeps those payments in the queue.
+    await app.api.put('/config', { confidence_threshold: 0.5 })
+    app.stub.answerUncategorized(/ELECTRICITY|BMRCL/i)
+    await drop(page, FIXTURE_PDF)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
+    const rows = await app.api.get('/transactions?include=annotation&limit=1000')
+    const confidentUncategorized = rows.filter((t) => t.category === 'Uncategorized' && t.confidence >= 0.5)
+    expect(confidentUncategorized.length, 'payments the model sorted into Uncategorized').toBeGreaterThan(0)
+    await expectOneCount(page, app)
+  })
+
+  test('the summary, the table and Teach Me agree after the review bar is lowered', async ({ page, app }) => {
+    // The model's answers (0.81) clear 0.5 but not the config default of 0.85 a job's own counters used.
+    await app.api.put('/config', { confidence_threshold: 0.5 })
+    await drop(page, FIXTURE_PDF)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
+    const statement = await expectOneCount(page, app)
+    expect(statement.sorted_count, 'sorted at the lowered bar').toBeGreaterThanOrEqual(5)
+  })
+
+  test('the summary, the table and Teach Me agree after the review bar is raised', async ({ page, app }) => {
+    await app.api.put('/config', { confidence_threshold: 0.99 })
+    await drop(page, FIXTURE_PDF)
+    await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
+    await expectOneCount(page, app)
+  })
+
   test('two statements dropped together go in one after the other, each with its own result', async ({ page, app }) => {
     await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
 
@@ -93,7 +137,7 @@ test.describe('J3 add a statement', () => {
     }
   })
 
-  test('a statement dropped while another is being sorted waits its turn, is not reaped, and then runs', async ({ page, app }) => {
+  test('a statement dropped while another is being sorted waits its turn, and then runs', async ({ page, app }) => {
     app.stub.hold()
     await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
     const first = fileRow(page, 'sample_statement.pdf')
@@ -105,7 +149,7 @@ test.describe('J3 add a statement', () => {
     const active = await app.api.get('/annotations/jobs?active=1')
     expect(active.map((j) => j.status)).toEqual(['running', 'queued'])
 
-    // However long it waits, it is waiting, not abandoned.
+    // The second statement is still waiting, not lost, once the first is released.
     app.stub.release()
     await expect(summaryOf(page)).toContainText(/Finished: \d+ sorted/)
     const jobs = (await app.api.get('/annotations/jobs')).reverse()

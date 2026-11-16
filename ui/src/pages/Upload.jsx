@@ -201,7 +201,6 @@ export default function Upload() {
   async function handleUpload() {
     const todo = entries.filter(e => ['ready', 'failed'].includes(e.status))
     if (todo.length === 0) return
-    setRefused([])
     setUploading(true)
     for (const entry of todo) {
       patchEntry(entry.id, { status: 'uploading', message: null })
@@ -386,8 +385,8 @@ export default function Upload() {
           <li>Password-protected PDFs work: enter the password after you choose the file.</li>
           <li>
             Your statement stays on this computer. If you connect an online AI model in Settings,
-            each payment&apos;s date, amount, direction and description are sent to it for sorting,
-            along with a few similar payments you have already sorted.
+            each payment&apos;s date, amount, description and note are sent to it for sorting,
+            along with a few similar payments you have already sorted and how you sorted them.
           </li>
           <li>
             What happens next: the balance is checked, then sorting starts by itself. Whatever

@@ -214,7 +214,7 @@ describe('Upload', () => {
       expect(screen.getByText(/running-balance column/)).toBeInTheDocument()
       expect(screen.getByText(/password-protected PDFs work/i)).toBeInTheDocument()
       expect(screen.getByText(
-        /Your statement stays on this computer\. If you connect an online AI model in Settings, each payment.s date, amount, direction and description are sent to it for sorting/,
+        /Your statement stays on this computer\. If you connect an online AI model in Settings, each payment.s date, amount, description and note are sent to it for sorting, along with a few similar payments you have already sorted and how you sorted them\./,
       )).toBeInTheDocument()
       expect(screen.getByText(/balance is checked, then sorting starts by itself/i)).toBeInTheDocument()
     })
@@ -342,6 +342,20 @@ describe('Upload', () => {
       expect(screen.getByText('ok.pdf')).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
       await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
+    })
+
+    it('keeps the refusal on screen while the PDFs go up, until the next pick', async () => {
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      const txt = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+      fireEvent.change(input, { target: { files: [txt, named('ok.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
+      expect(screen.getByRole('alert')).toHaveTextContent("notes.txt isn't a PDF")
+
+      // The next pick replaces it: with only PDFs there is nothing to refuse.
+      fireEvent.change(input, { target: { files: [named('next.pdf')] } })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     })
 
     it('refuses a dropped non-PDF the same way', async () => {

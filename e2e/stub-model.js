@@ -52,8 +52,13 @@ function lastMatch(text, re) {
 
 // The transaction being classified is the unindented "Description:" line; the
 // few-shot examples before it indent theirs.
-export function answerFor(prompt) {
+export function answerFor(prompt, sureOfUncategorized = []) {
   const description = lastMatch(prompt, /^Description: (.*)$/gm)
+  // A model that is confident a payment has no category: the answer a person
+  // would call "not sorted" however sure the model sounds.
+  if (sureOfUncategorized.some((re) => re.test(description))) {
+    return { category: 'Uncategorized', subcategory: null, merchant: null, tags: [], confidence: 1 }
+  }
   const offered = [...prompt.matchAll(/^ {2}- (.+)$/gm)].map((m) => m[1].trim())
   const tops = new Set(offered.map((c) => c.split(' > ')[0]))
   const hit = KEYWORDS.find(([re]) => re.test(description))
@@ -116,6 +121,7 @@ export async function startStubModel() {
   // watch the statements queued behind it, then let them all through.
   let gate = null
   let openGate = () => {}
+  const sureOfUncategorized = []
   const server = http.createServer(async (req, res) => {
     const path = new URL(req.url, 'http://stub').pathname
     let body = {}
@@ -144,11 +150,11 @@ export async function startStubModel() {
     }
     if (req.method === 'POST' && (path === '/api/chat' || path === '/v1/chat/completions')) await gate
     if (req.method === 'POST' && path === '/api/chat') {
-      const content = JSON.stringify(answerFor(lastUserPrompt(body.messages)))
+      const content = JSON.stringify(answerFor(lastUserPrompt(body.messages), sureOfUncategorized))
       return send({ model: body.model, message: { role: 'assistant', content }, done: true })
     }
     if (req.method === 'POST' && path === '/v1/chat/completions') {
-      const content = JSON.stringify(answerFor(lastUserPrompt(body.messages)))
+      const content = JSON.stringify(answerFor(lastUserPrompt(body.messages), sureOfUncategorized))
       return send({ model: body.model, choices: [{ message: { role: 'assistant', content } }] })
     }
     if (req.method === 'POST' && path === '/api/embed') {
@@ -165,6 +171,8 @@ export async function startStubModel() {
     url: `http://127.0.0.1:${port}`,
     port,
     requests,
+    /** From now on answer "Uncategorized, sure of it" for descriptions matching `pattern`. */
+    answerUncategorized: (pattern) => { sureOfUncategorized.push(pattern) },
     /** Make chat answers wait until release(). */
     hold: () => {
       if (!gate) gate = new Promise((resolve) => { openGate = resolve })
