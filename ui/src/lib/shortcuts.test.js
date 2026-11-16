@@ -12,7 +12,7 @@ describe('shortcutScopes', () => {
     for (const { items } of shortcutScopes()) {
       for (const item of items) {
         expect(item.keys.length).toBeGreaterThan(0)
-        expect(item.label).not.toMatch(/—/)
+        expect(item.label).not.toMatch(/\u2014/)
         expect(item.label.length).toBeGreaterThan(3)
       }
     }
