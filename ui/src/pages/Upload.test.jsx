@@ -244,7 +244,7 @@ describe('Upload', () => {
     })
 
     it('uploads them one after another, each with its own result and a sorted summary', async () => {
-    mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 8]))
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 8]))
       mockApi.upload
         .mockResolvedValueOnce(uploaded('s1'))
         .mockResolvedValueOnce(uploaded('s2', { bank_name: 'hdfc' }))

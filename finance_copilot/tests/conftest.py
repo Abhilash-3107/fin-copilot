@@ -19,8 +19,11 @@ def _only_temp_databases(database, *args, **kwargs):
     background runner, a re-embed or a backup that opens it from a test would
     sort, reap or overwrite it. Every test path is under tmp, so anything else
     is a bug in the test, and it fails loudly instead of touching real data."""
+    if isinstance(database, bytes):
+        database = os.fsdecode(database)
     target = str(database)
-    if target != ":memory:" and not target.startswith("file::memory:"):
+    # "" is SQLite's anonymous temporary database: a private file it deletes on close.
+    if target != "" and target != ":memory:" and not target.startswith("file::memory:"):
         raw = target[len("file:"):].split("?")[0] if target.startswith("file:") else target
         path = Path(raw).expanduser().resolve()
         if _TEMP_ROOT not in path.parents:

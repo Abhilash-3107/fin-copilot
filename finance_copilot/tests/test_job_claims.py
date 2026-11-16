@@ -187,6 +187,51 @@ class TestStartup:
         assert _status(conn, "download") == "failed"
 
 
+    def test_a_sort_that_keeps_being_interrupted_is_failed_not_requeued_forever(self, ledger, caplog):
+        """The app closing while it sorts (a crash loop, say) must not put the
+        same job back in line for ever: the second interruption ends it."""
+        from finance_copilot.api.routes.annotations import (
+            _run_next_queued_job,
+            reap_interrupted_jobs,
+        )
+
+        _, conn = ledger
+        _statement(conn, "s1", "t1")
+        _job(conn, "sort", statement_id="s1")
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", lambda *a: None):
+            assert _run_next_queued_job() is True  # claim 1: the app closes while it runs
+            assert reap_interrupted_jobs(conn) == 0
+            assert _status(conn, "sort") == "queued"
+            assert _run_next_queued_job() is True  # claim 2: closes again
+            with caplog.at_level("INFO"):
+                assert reap_interrupted_jobs(conn) == 1
+        row = conn.execute("SELECT status, error, attempts FROM annotation_jobs WHERE id='sort'").fetchone()
+        assert (row["status"], row["attempts"]) == ("failed", 2)
+        assert row["error"] == "Stopped: the app closed twice while sorting this statement. Use Sort again."
+        assert "requeued 0" in caplog.text and "failed 1" in caplog.text
+
+    def test_a_failed_interrupted_sort_no_longer_blocks_delete_reset_or_restore(self, ledger):
+        from finance_copilot.api.routes.annotations import (
+            _run_next_queued_job,
+            reap_interrupted_jobs,
+        )
+
+        client, conn = ledger
+        _statement(conn, "s1", "t1")
+        backup = client.get("/api/data/backup").content
+        _job(conn, "sort", statement_id="s1")
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", lambda *a: None):
+            for _ in range(2):
+                _run_next_queued_job()
+                reap_interrupted_jobs(conn)
+        assert _status(conn, "sort") == "failed"
+        assert client.delete("/api/statements/s1/data").status_code == 200
+        assert client.post("/api/data/delete-all").status_code == 200
+        assert client.delete("/api/statements/s1").status_code == 404  # gone, not refused
+        resp = client.post("/api/data/restore", files={"file": ("backup.db", backup, "application/x-sqlite3")})
+        assert resp.status_code == 200
+
+
     def test_a_queued_sort_for_a_statement_the_ledger_lacks_completes_with_nothing_to_do(self, ledger):
         """After a restore the queue can name a statement that is not in the
         restored ledger: it finds nothing to sort and ends, it does not wedge the line."""
@@ -244,6 +289,49 @@ class TestDeleteWhileSorting:
         _job(conn, "j", status="running", statement_id=None)
 
         assert client.delete("/api/statements/s1").status_code == 409
+
+
+class TestDeleteRacesTheClaim:
+    """The guard looks, then the delete writes. A runner claiming the statement's
+    waiting sort in between would sort payments that are being deleted."""
+
+    @pytest.mark.parametrize("call", [
+        lambda client: client.delete("/api/statements/s1"),
+        lambda client: client.delete("/api/statements/s1/data"),
+    ], ids=["delete", "reset"])
+    def test_a_claim_waits_for_the_delete_that_passed_the_guard(self, ledger, call):
+        from finance_copilot.api.routes import statements
+        from finance_copilot.api.routes.annotations import _run_next_queued_job
+
+        client, conn = ledger
+        _statement(conn, "s1", "t1")
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, category, confidence, source) "
+            "VALUES ('a1', 't1', 'Shopping', 0.9, 'manual')"
+        )
+        conn.commit()
+        _job(conn, "sort", statement_id="s1")
+        labels_when_sorted = []  # what the claimed sort would find already labelled
+        claimer = threading.Thread(
+            target=lambda: _run_next_queued_job(), name="claimer")
+
+        real_guard = statements._refuse_while_sorting
+
+        def guard_then_a_runner_tries_to_claim(c, statement_id, action):
+            real_guard(c, statement_id, action)
+            # Past the guard, before the delete writes: a runner wakes up right now.
+            claimer.start()
+            claimer.join(0.5)
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job",
+                   lambda job_id, *a: labels_when_sorted.append(
+                       conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0])), \
+                patch.object(statements, "_refuse_while_sorting", guard_then_a_runner_tries_to_claim):
+            assert call(client).status_code == 200
+            claimer.join(10)
+        # A reset keeps the waiting sort, so it may run afterwards, on nothing; a
+        # delete drops it. Either way it never starts on labels being deleted.
+        assert labels_when_sorted in ([], [0])
 
 
 class TestReattachPrefersTheRunningJob:

@@ -117,6 +117,11 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
 # ever runs where this process's registry can't see it).
 STALE_JOB_MINUTES = 10
 
+# A sort the app was closed in the middle of is put back in line once; the
+# second interruption ends it (migration 040 counts the starts).
+MAX_SORT_ATTEMPTS = 2
+GAVE_UP_SORTING = "Stopped: the app closed twice while sorting this statement. Use Sort again."
+
 
 def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     """Fail in-flight jobs with no live worker whose heartbeat has gone quiet
@@ -160,19 +165,25 @@ def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
 
     A sorting job, queued or interrupted, goes back in line: the pipeline skips
     payments that already have a label, so running it again finishes the
-    statement instead of losing the sort. A re-embed or a model download was
-    handed to a thread that no longer exists and fails (the person starts it
-    again). Returns how many jobs failed."""
-    conn.execute(
+    statement instead of losing the sort. Only once, though: a job already
+    started twice (the app closed both times) fails, so a crash while sorting
+    one statement cannot relaunch the same sort at every start. A re-embed or a
+    model download was handed to a thread that no longer exists and fails (the
+    person starts it again). Returns how many jobs failed."""
+    requeued = conn.execute(
         "UPDATE annotation_jobs SET status='queued', processed=0, total=0, error=NULL, "
-        "updated_at=datetime('now') WHERE status = 'running' AND kind = 'annotate'"
-    )
+        "updated_at=datetime('now') "
+        f"WHERE status = 'running' AND kind = 'annotate' AND attempts < {MAX_SORT_ATTEMPTS}"
+    ).rowcount
     cur = conn.execute(
-        "UPDATE annotation_jobs SET status='failed', "
-        "error='Interrupted by a server restart', updated_at=datetime('now') "
-        "WHERE status = 'running' OR (status = 'queued' AND kind != 'annotate')"
+        "UPDATE annotation_jobs SET status='failed', updated_at=datetime('now'), error = "
+        "CASE WHEN kind = 'annotate' THEN ? ELSE 'Interrupted by a server restart' END "
+        "WHERE status = 'running' OR (status = 'queued' AND kind != 'annotate')",
+        (GAVE_UP_SORTING,),
     )
     conn.commit()
+    if requeued or cur.rowcount:
+        logger.info("Startup: requeued %d interrupted job(s), failed %d", requeued, cur.rowcount)
     return cur.rowcount
 
 
@@ -318,8 +329,8 @@ def _run_next_queued_job() -> bool:
                 conn.commit()
                 return False
             claimed = conn.execute(
-                "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') "
-                "WHERE id = ? AND status = 'queued'",
+                "UPDATE annotation_jobs SET status='running', attempts = attempts + 1, "
+                "updated_at=datetime('now') WHERE id = ? AND status = 'queued'",
                 (row["id"],),
             ).rowcount
             conn.commit()

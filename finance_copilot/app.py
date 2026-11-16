@@ -59,6 +59,15 @@ def _clear_runtime(data_dir: Path) -> None:
         (data_dir / "runtime.json").unlink()
 
 
+def _wait_until_healthy(port: int, seconds: float = 30) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _instance_alive(port):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def _open_when_healthy(port: int, open_browser: bool) -> None:
     """Poll health from a daemon thread; print the URL (and open a tab) when up."""
     url = f"http://127.0.0.1:{port}"
@@ -119,7 +128,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         lock_data_folder(data_dir)
     except DataFolderInUse as busy:
-        print(busy, file=sys.stderr, flush=True)
+        # The other copy has the folder but may still be starting (a big ledger
+        # takes a while to open), so the check above found nothing answering.
+        # If it recorded a port, give it time to come up and open it.
+        runtime = _read_runtime(data_dir)
+        port = runtime.get("port") if runtime else None
+        if not isinstance(port, int):
+            print(busy, file=sys.stderr, flush=True)
+            return 1
+        url = f"http://127.0.0.1:{port}"
+        message = f"Finance Copilot is already running. Open {url}, or quit that copy first."
+        if _wait_until_healthy(port):
+            print(message, flush=True)
+            if not args.no_browser:
+                webbrowser.open(url)
+            return 0
+        print(message, file=sys.stderr, flush=True)
         return 1
 
     port = args.port or _free_port()

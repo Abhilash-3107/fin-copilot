@@ -100,8 +100,24 @@ class TestResolutionOrder:
     def test_unrecognised_upi_shape_falls_back_to_the_line_without_its_channel(self, conn, client):
         txn = add_txn(conn, "UPI/SOMEONE/NOREFHERE", annotate=False)
         row = get_txn(client, txn)
-        assert row["payee"] == "SOMEONE/NOREFHERE"
+        assert row["payee"] == "SOMEONE"
         assert row["channel"] == "UPI"
+
+    @pytest.mark.parametrize("raw, key", [
+        ("UPI/CHAI WALA CORNER/PAYTM QR", "CHAI WALA CORNER"),
+        ("UPI/BLUE TOKAI COFFEE/ORDER", "BLUE TOKAI COFFEE"),
+        ("UPI/LICIOUS/ORDER", "LICIOUS"),
+        ("UPI/BMRCL METRO/RECHARGE", "BMRCL METRO"),
+        ("UPI/APOLLO PHARMACY/BILL", "APOLLO PHARMACY"),
+        ("UPI/DUNZO/DELIVERY", "DUNZO"),
+    ])
+    def test_an_unreferenced_upi_line_is_labelled_by_the_payee_its_key_names(self, conn, client, raw, key):
+        """Label and key come from the same parse, so they never disagree: the
+        line has no reference, but its payee is still the payee."""
+        txn = add_txn(conn, raw, annotate=False)
+        stored = conn.execute("SELECT counterparty_key FROM transactions WHERE id = ?", (txn,)).fetchone()[0]
+        assert stored == key
+        assert get_txn(client, txn)["payee"].upper() == stored
 
     @pytest.mark.parametrize("raw, fallback, channel", [
         ("POS/GLENS BAKEHOUSE 123/4567", "GLENS BAKEHOUSE 123/4567", "Card"),

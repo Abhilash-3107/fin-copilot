@@ -55,10 +55,14 @@ def _clean(value: str | None) -> str | None:
 
 def printed_payee(raw_description: str | None) -> str:
     """Levels 5 and 6: the payee parsed out of the line as the bank printed it
-    (a UPI handle in lower case), else the line itself without its channel."""
+    (a UPI handle in lower case), else the line itself without its channel.
+
+    Any UPI line uses its parsed payee, with or without a reference, because
+    that is how its counterparty key is derived (identity_from_parsed): the
+    label and the key must name the same payee."""
     raw = (raw_description or "").strip()
     parsed = parse_description(raw)
-    if parsed.counterparty and parsed.shape != SHAPE_UNRECOGNIZED:
+    if parsed.counterparty and (parsed.rail == "upi" or parsed.shape != SHAPE_UNRECOGNIZED):
         return parsed.counterparty.lower() if "@" in parsed.counterparty else parsed.counterparty
     return without_channel(raw) if channel_of(raw) else raw
 

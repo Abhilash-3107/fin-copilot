@@ -1,6 +1,7 @@
 """Statement routes: upload PDF, list statements, list transactions for a statement."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
@@ -179,14 +180,28 @@ def patch_statement(
     return {"id": statement_id, "bank_name": body.bank_name.strip()}
 
 
+@contextlib.contextmanager
+def _exclusive(conn: sqlite3.Connection):
+    """Take the write lock before looking, commit on success, undo on error.
+    A sort claims its job under the same lock, so a delete that passed the
+    sorting check cannot have a runner claim the statement before it commits."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: str) -> None:
     """409 while a sort that could be writing this statement's payments is
     running: its own, or one over the whole ledger. A sort still waiting for its
-    turn is not a reason to refuse; it is dropped with the statement."""
+    turn is not a reason to refuse; it is dropped with the statement. Call it
+    inside _exclusive."""
     from finance_copilot.api.routes.annotations import _reap_stale_jobs
 
-    if _reap_stale_jobs(conn):
-        conn.commit()
+    _reap_stale_jobs(conn)  # inside the caller's write transaction
     sorting = conn.execute(
         "SELECT 1 FROM annotation_jobs WHERE status = 'running' AND kind = 'annotate' "
         "AND (statement_id = ? OR statement_id IS NULL) LIMIT 1",
@@ -205,40 +220,40 @@ def delete_statement(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Delete a statement and all associated transactions, annotations, and embeddings."""
-    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    _refuse_while_sorting(conn, statement_id, "Delete it")
+    with _exclusive(conn):
+        row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Statement not found")
+        _refuse_while_sorting(conn, statement_id, "Delete it")
 
-    txn_ids = [
-        r[0]
-        for r in conn.execute(
-            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
-        ).fetchall()
-    ]
+        txn_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
+            ).fetchall()
+        ]
 
-    if txn_ids:
-        placeholders = ",".join("?" * len(txn_ids))
-        conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
-        delete_embeddings(conn, txn_ids)
-        # transaction_links references transactions(id) without ON DELETE CASCADE,
-        # so links must go before the transactions or the FK check (PRAGMA
-        # foreign_keys=ON) aborts the delete. A link can cross a statement
-        # boundary, so match on either endpoint.
+        if txn_ids:
+            placeholders = ",".join("?" * len(txn_ids))
+            conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+            delete_embeddings(conn, txn_ids)
+            # transaction_links references transactions(id) without ON DELETE CASCADE,
+            # so links must go before the transactions or the FK check (PRAGMA
+            # foreign_keys=ON) aborts the delete. A link can cross a statement
+            # boundary, so match on either endpoint.
+            conn.execute(
+                f"DELETE FROM transaction_links "
+                f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
+                txn_ids + txn_ids,
+            )
+            conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+
+        conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+        # Its sort that was still waiting has nothing left to sort.
         conn.execute(
-            f"DELETE FROM transaction_links "
-            f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
-            txn_ids + txn_ids,
+            "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
+            (statement_id,),
         )
-        conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
-
-    conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
-    # Its sort that was still waiting has nothing left to sort.
-    conn.execute(
-        "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
-        (statement_id,),
-    )
-    conn.commit()
     return {"deleted": statement_id}
 
 
@@ -248,28 +263,28 @@ def reset_statement_data(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Delete all transactions, annotations, and embeddings for a statement, but keep the statement record itself."""
-    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    _refuse_while_sorting(conn, statement_id, "Reset it")
+    with _exclusive(conn):
+        row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Statement not found")
+        _refuse_while_sorting(conn, statement_id, "Reset it")
 
-    txn_ids = [
-        r[0]
-        for r in conn.execute(
-            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
-        ).fetchall()
-    ]
+        txn_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
+            ).fetchall()
+        ]
 
-    annotations_deleted = 0
-    if txn_ids:
-        placeholders = ",".join("?" * len(txn_ids))
-        cur = conn.execute(
-            f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
-        )
-        annotations_deleted = cur.rowcount
-        delete_embeddings(conn, txn_ids)
+        annotations_deleted = 0
+        if txn_ids:
+            placeholders = ",".join("?" * len(txn_ids))
+            cur = conn.execute(
+                f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
+            )
+            annotations_deleted = cur.rowcount
+            delete_embeddings(conn, txn_ids)
 
-    conn.commit()
     return {"reset": statement_id, "annotations_deleted": annotations_deleted}
 
 
