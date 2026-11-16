@@ -15,7 +15,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
   const [targets, setTargets] = useState({})
   const [confirming, setConfirming] = useState(null)
 
-  if (!health || (health.duplicates.length === 0 && health.orphans.length === 0)) return null
+  // A malformed payload (not the {duplicates, orphans} shape) reads as tidy.
+  const duplicates = Array.isArray(health?.duplicates) ? health.duplicates : []
+  const orphans = Array.isArray(health?.orphans) ? health.orphans : []
+  if (duplicates.length === 0 && orphans.length === 0) return null
 
   const pairKey = d => `${d.keep.id}|${d.merge.id}`
 
@@ -74,7 +77,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
         </p>
       </div>
       <ul className="divide-y divide-[#2d3148]">
-        {health.duplicates.map(d => (
+        {duplicates.map(d => (
           <li key={pairKey(d)} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
             <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
               <span className="text-[#64748b]">{d.category} › </span>
@@ -103,7 +106,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
             </button>
           </li>
         ))}
-        {health.orphans.map(o => {
+        {orphans.map(o => {
           const key = `${o.category_id}|${o.subcategory}`
           const options = categories.filter(c => c.parent_id === o.category_id)
           const value = targets[key] ?? o.suggestion?.id ?? ''

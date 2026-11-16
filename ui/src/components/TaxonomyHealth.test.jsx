@@ -34,6 +34,14 @@ describe('TaxonomyHealth', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('tolerates a malformed payload instead of throwing', () => {
+    for (const bad of [[], {}, { duplicates: null }, { duplicates: [], orphans: 'x' }]) {
+      const { container, unmount } = render(<TaxonomyHealth health={bad} categories={CATS} onChanged={() => {}} />)
+      expect(container).toBeEmptyDOMElement()
+      unmount()
+    }
+  })
+
   it('merges a duplicate only after a second, explicit click', async () => {
     const onChanged = vi.fn().mockResolvedValue()
     render(<TaxonomyHealth health={HEALTH} categories={CATS} onChanged={onChanged} />)

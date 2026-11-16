@@ -119,6 +119,7 @@ describe('Settings when the API fails', () => {
   const baseGet = path => {
     if (path === '/config') return Promise.resolve({ dev_mode: false, confidence_threshold: 0.85 })
     if (path === '/config/llm') return Promise.resolve({ llm_provider: 'ollama', ollama_url: 'http://localhost:11434', ollama_model: 'qwen3.5:4b', llm_base_url: '', llm_model: '', llm_api_key_set: false })
+    if (path === '/categories/tidy-up') return Promise.resolve({ duplicates: [], orphans: [] })
     return Promise.resolve([])
   }
   const down = () => Promise.reject(new TypeError('Failed to fetch'))
