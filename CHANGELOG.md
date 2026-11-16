@@ -1,16 +1,17 @@
 # Changelog
 
-## 0.1.3 - unreleased
+## 0.2.0 - unreleased
 
-Every number on screen agrees with every other number or says what it counts.
-Teach Me holds every payment that still has no category.
+The app speaks in your words, and the core job, sorting what the machine could not, can be done from the keyboard.
+Every payment is shown by who it went to and what you wrote, you can rename it, sorting starts by itself when a statement lands, and a failure says it failed and offers Retry.
+Every number on screen agrees with every other number or says what it counts, and Teach Me holds every payment that still has no category.
 The categorizer and the statement reader got a round of fixes, and there is now a browser test suite behind all of it.
 
 ### Before you upgrade
 
 Download a backup first (Settings > Data > Download backup).
 This release rewrites data in your ledger, and the new version cannot be undone by installing the old one on the same folder.
-On the first start of 0.1.3 it:
+On the first start of 0.2.0 it:
 
 - fills category ids that sample data left empty, and moves "skipped" from the label to the payment;
 - re-reads every payment's description and stores what it finds;
@@ -18,18 +19,23 @@ On the first start of 0.1.3 it:
 - clears a merchant name that has two or more slashes in it ("UPI/NAME/1207.../self"), where a machine copied it from the bank line.
   A merchant you typed or imported yourself, or set with your own rule, is kept, whatever it contains;
 - deletes a subcategory that has exactly the same name and parent as another and that nothing uses (no label, rule or policy).
-  The copy that is used stays.
+  The copy that is used stays;
+- adds the places that hold the names you give to payees and payments, the records that let Teach Me undo an answer, and what a waiting sorting job covers.
+  They start empty and rewrite nothing you have.
 
 A migration that fails now rolls back whole instead of stopping halfway.
 
-To go back to 0.1.2, do not run it on the same folder: on a ledger 0.1.3 has opened, 0.1.2 fails (Teach Me does not load), and a 0.1.2 backup restored into 0.1.3 is migrated again.
+Only one copy of the app can use a data folder at a time.
+Starting a second copy on the same folder no longer touches it: it opens the copy that is already running, or tells you to quit that one first.
+
+To go back to 0.1.2, do not run it on the same folder: on a ledger 0.2.0 has opened, 0.1.2 fails (Teach Me does not load), and a 0.1.2 backup restored into 0.2.0 is migrated again.
 Run `uvx finance-copilot==0.1.2 --data-dir <a new folder>` and restore your backup there (Settings > Data).
 
 ### Figures that change in this release
 
 Your payments, amounts, dates, balances, people, groups and rules are unchanged, and so are In, Out, Invested and the Kept tile.
 Categories are unchanged too, apart from an unused duplicate subcategory (above).
-What moves is how some of them are added up and compared, so the same ledger reads differently on these screens:
+What moves is how some of them are added up, compared and named, so the same ledger reads differently on these screens:
 
 - The Dashboard headline.
   It used to say you "kept" what you invested plus what stayed in the bank.
@@ -51,11 +57,45 @@ What moves is how some of them are added up and compared, so the same ledger rea
 - The people panel on Money Map.
   It shows the month it sits on.
   It used to show all-time totals under every month.
+- The Sorted column on Add Statement.
+  It counts the payments Teach Me is not waiting on, the same as everywhere else.
+  It used to count every payment the machine had labelled, however unsure it was, so it reads lower for a statement with guesses still to check.
+- Names, not money.
+  A recurring charge or a merchant row with no merchant name is now listed under the payee exactly as the bank printed it (CHAI WALA CORNER where it used to read Chai Wala Corner), the same name the Ledger, Teach Me and Money Map use.
+  No amount, count or category moves.
+
+### Your payments, by name
+
+- Ledger rows lead with who the payment went to, and under it what you wrote and how it was paid.
+  The bank's own line moved behind the row, under "As printed on the statement".
+- Rename a payee, and every payment to it, past and future, carries the name, or rename just one payment.
+  A name only changes what the payment is called: categories, rules, search by the bank's text and matching are untouched.
+  Search and the Money Map drill-through find the names you chose.
+- Money out reads in ink with a minus and money in in green with a plus.
+  Red is kept for a change in the bad direction.
+- The same payee is called the same thing on every screen.
+
+### Adding statements
+
+- Sorting starts by itself when a statement lands, and waits its turn behind any sort already running.
+- Drop several statements at once.
+  Each file shows its own progress, balance check and summary, files that are not PDFs are refused up front, and the summary leads to Teach Me.
+- Add Statement says which banks it reads, how a locked PDF is handled and that nothing leaves your computer, before you add the first file.
+- Each statement has a menu (Rename, Start over, Delete), and the machine controls that used to sit on the page are gone.
+- A sort the app was closed in the middle of goes back in line at the next start.
+  If it is interrupted a second time it fails with a plain message instead of coming back for ever.
+  Deleting a statement waits for a sort that is running instead of failing.
 
 ### Teach Me
 
 - Every payment without a category now reaches Teach Me, including payments with no label at all and ones the machine labelled Uncategorized.
   A card with no guess offers no Confirm, and it says "Nothing to sort yet" on an empty ledger instead of "All done".
+- The sort card shows at most three suggestions with the reason for each, and number keys pick one.
+  Type to find any category, and the payee and the note are decoded for you.
+  There is no Confirm on Uncategorized, and Uncategorized is no longer offered as an answer.
+- One message at a time, with Undo.
+  Undo puts back what your last answers changed, one answer or "apply to all", and it is kept for a day or your last 50 answers.
+- Shortcut keys never fire while you type, and an open dialog or sheet blocks them.
 - Skipping a payment sticks for every kind of payment, and the "set aside" count and the done check come from the server.
   The phantom skipped item is gone.
 - A failed load shows the error with a Retry button, never the done screen.
@@ -63,6 +103,30 @@ What moves is how some of them are added up and compared, so the same ledger rea
 - The queue asks one question per payee and direction, with "apply my answer to all N payments", and you can make your own category or subcategory from the card.
 - Review policies (Settings > Rules) sort small payments to people in one rule of thumb, and a human label re-decides the machine labels it could change, so you teach each payee once.
 - A quick double press of c or Enter saves once.
+
+### Errors, search and shortcuts
+
+- A block that cannot load says so, in place, with a Retry button.
+  It never shows an empty state or a stale count in its place.
+- A search field in the header opens the command palette, and `?` opens a sheet of every shortcut.
+  Choosing a payment in the palette opens that payment.
+- Dialogs and pickers obey Escape and Enter.
+  A dialog that deletes something opens on Cancel, and Enter never confirms it.
+
+### Groups and people
+
+- Rename a group, give it a note and labels.
+  The group header stays current after an edit.
+- A group or a person with a name that already exists is refused, even when two are created at once.
+- A change to a person leaves the fields you did not touch as they were.
+
+### The words
+
+- One vocabulary: sort, payee, payment and remembered payees replace annotate, merchant, transaction and memory outside developer mode.
+  A failure says what could not be done ("Couldn't load the payments.") and then why, and the app's own messages say payments and sorted too.
+- The machine settings moved into Settings under Advanced.
+  AI & Model leads with a plain sentence about what is switched on, and the Insights tab is now called Teach Me (old links still open it).
+- The two dim greys and the accent blue are no longer used for small text, and white on the accent colour is deeper, so everything small reads at a contrast of at least 4.5 to 1.
 
 ### Sample data
 
@@ -95,7 +159,7 @@ What moves is how some of them are added up and compared, so the same ledger rea
 - Kotak's new statement layout (mid-2026) is read, and the bank is identified from the statement header, not from a counterparty named in a line.
   A locked PDF says it needs a password.
 - Payment descriptions are read once, by one grammar, so lowercase bank codes and payee names containing a slash (M/S.) no longer trigger the format warning.
-  The first start of 0.1.3 re-reads your stored descriptions and rebuilds the AI memory in the background.
+  The first start of 0.2.0 re-reads your stored descriptions and rebuilds the AI memory in the background.
   For some UPI layouts the payee now includes the word after the name (SWIGGY/ORDER where 0.1.2 showed SWIGGY), so a payee, and a learned rule listed by that payee in Settings > Rules, can appear under the longer name.
 - Merchant knowledge: well-known merchants the rules missed are recognised, and personal names are not labelled Self Transfers unless you have told the app the account is yours.
 - Matches from your own history count only when the neighbour is similar enough to be evidence, so teaching more merchants no longer makes exact matches score lower.

@@ -1,6 +1,6 @@
 // The comparison of J15 has to fail on a damaged upgrade, not only pass on a
 // good one. This builds a small ledger as 0.1.2 leaves it, applies to it exactly
-// what 0.1.3 declares in expected-changes.json, checks the comparison is silent,
+// what 0.2.0 declares in expected-changes.json, checks the comparison is silent,
 // and then breaks the result in one way at a time. Each break is a regression
 // that once passed the journey because the expected changes were too permissive.
 import assert from 'node:assert/strict'
@@ -17,18 +17,27 @@ const planted = {
   typedMerchant: { id: 'R5', value: TYPED },
 }
 
+const MIGRATIONS = [
+  '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
+  '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
+  '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
+  '039_annotation_job_scope', '040_annotation_job_attempts',
+]
+const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
+
 const meta = (m) => JSON.stringify(m)
 const payment = (id, over = {}) => ({
   id, statement_id: 's', txn_date: '2026-08-02', amount: 100, debit_credit: 'debit', raw_description: `UPI/${id}`, running_balance: 0,
   upi_meta: null, counterparty_key: null, annotation_id: `a_${id}`, merchant: null, category: 'Food & Dining', subcategory: 'Restaurants',
   tags: [], confidence: 1, source: 'manual', original_source: null, ...over,
 })
+const sortedPayments = (transactions) => transactions.filter((t) => t.annotation_id !== null).length
 const member = (t) => ({ id: t.id, transaction_id: t.id, upi_meta: t.upi_meta })
 const month = (over) => ({
   in: 1000, out: 600, invested: 100, kept: 300, keptHeadline: 400, comparison: { in: 0, out: 0, invested: 0, kept: 0 },
   whatChanged: [{ category: 'Housing', delta: 500, current: 500, previous: 0 }], breakdown: [{ category: 'Housing', net: 500 }],
-  breakdownExtras: null, recurringHeader: 80, committedEachMonth: 90, recurring: [], unexplained: { count: 1, total: 100 },
-  people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], ...over,
+  breakdownExtras: null, recurringHeader: 80, committedEachMonth: 90, unexplained: { count: 1, total: 100 },
+  people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], recurring: [CHAI], ...over,
 })
 
 /** A ledger as 0.1.2 leaves it: one of everything a migration or the re-read of descriptions acts on. */
@@ -42,8 +51,10 @@ function ledgerBefore() {
     payment('demo_1', { upi_meta: meta({ note: 'Salary August' }), category: 'Income', subcategory: 'Salary' }),
     payment('demo_2', { upi_meta: meta({ note: 'goa share' }), counterparty_key: 'RAHUL' }),
     payment('demo_3'),
+    payment('R6', { raw_description: 'UPI/CHAI WALA CORNER/PAYTM QR', counterparty_key: 'CHAI WALA CORNER' }),
   ]
   const facts = {
+    statements: [{ id: 's', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 }],
     transactions,
     groups: [{ id: 'g1', members: [member(transactions[0]), member(transactions[5]), member(transactions[6])] }],
     annotationCategoryIds: transactions
@@ -60,10 +71,16 @@ function ledgerBefore() {
     ],
     policies: null,
     tidyUp: null,
-    learnedRules: [{ counterparty_key: 'AMIT', category: 'Housing' }],
+    learnedRules: [{ counterparty_key: 'RAHUL', category: 'Housing' }],
     reviewQueue: [],
     reviewCounts: { set_aside: 1 },
-    settings: { config: { dev_mode: false }, llm: {} },
+    settings: { config: { dev_mode: false, confidence_threshold: 0.85 }, llm: {} },
+    schema: {
+      appliedMigrations: ['026_user_rules'],
+      tableRows: { payee_names: null, review_undo: null },
+      addedColumns: [],
+      jobAttempts: [{ id: 'job1', attempts: null }],
+    },
     snoozedAt: [{ transaction_id: 'R1', review_snoozed_at: '2026-11-01 10:00:00' }],
   }
   const figures = {
@@ -78,7 +95,7 @@ function ledgerBefore() {
   return { facts, figures }
 }
 
-/** What 0.1.3 does to that ledger, as expected-changes.json declares it. */
+/** What 0.2.0 does to that ledger, as expected-changes.json declares it. */
 function upgrade(before) {
   const after = structuredClone(before)
   const { facts, figures } = after
@@ -112,6 +129,24 @@ function upgrade(before) {
   facts.reviewCounts = { unsorted: 1, guesses: 0, set_aside: 1, set_aside_unsorted: 0 }
   facts.settings.config.ai_active = false
 
+  // Release 2: payee labels, the sorted count, and the schema the new migrations add.
+  const printed = (t) => t.merchant ?? t.counterparty_key ?? t.raw_description.slice(4)
+  for (const t of facts.transactions) {
+    Object.assign(t, { display_name: null, payee_name: null, note: null, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
+  }
+  for (const m of facts.groups[0].members) {
+    const t = byId[m.id]
+    for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) m[field] = t[field]
+  }
+  facts.statements = facts.statements.map(({ id, txn_count }) => ({ id, txn_count, sorted_count: sortedPayments(facts.transactions) }))
+  facts.learnedRules[0].payee = 'RAHUL'
+  facts.schema = {
+    appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
+    tableRows: { payee_names: 0, review_undo: 0 },
+    addedColumns: ['transactions.display_name', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts'],
+    jobAttempts: [{ id: 'job1', attempts: 0 }],
+  }
+
   const m = figures.months
   for (const month of Object.values(m)) {
     month.keptHeadline = month.kept
@@ -126,12 +161,13 @@ function upgrade(before) {
   m['2026-08'].people = [{ id: 'p1', sent: 100, received: 100, net: 0, count: 2 }]
   m['2026-09'].people = [{ id: 'p1', sent: 200, received: 0, net: -200, count: 1 }]
   m['2026-11'].people = []
+  for (const month of Object.values(m)) month.recurring = [{ ...CHAI, name: 'CHAI WALA CORNER' }]
   return after
 }
 
 const compare = (before, after) => compareSnapshots(before, after, expected, { today, planted }).problems
 
-test('the ledger before and the ledger after 0.1.3 agree on every figure the release keeps', () => {
+test('the ledger before and the ledger after 0.2.0 agree on every figure the release keeps', () => {
   const before = ledgerBefore()
   assert.deepEqual(compare(before, upgrade(before)), [])
 })
@@ -234,6 +270,71 @@ const regressions = {
   'Teach Me newly holds a payment that had a category': [
     (a) => a.facts.reviewQueue.push('R5'),
     /Teach Me newly holds payment R5/,
+  ],
+  'a statement counts an unsorted payment as sorted': [
+    (a) => (a.facts.statements[0].sorted_count += 1),
+    /statement s reports 9 sorted payments, its payments hold 8/,
+  ],
+  'a machine guess below the bar counts as sorted': [
+    (a) => Object.assign(a.facts.transactions.find((t) => t.id === 'R4'), { confidence: 0.3 }),
+    /statement s reports 8 sorted payments, its payments hold 7/,
+  ],
+  'the old annotated count was not the number of labelled payments': [
+    () => {},
+    /reported 9 annotated payments, 8 were labelled/,
+    (b) => (b.facts.statements[0].annotated_count = 9),
+  ],
+  'a payment is called by something other than its payee key': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R2').payee = 'RAHUL M'),
+    /payment R2 is called "RAHUL M" but its payee key is "RAHUL MEHTA"/,
+  ],
+  'a payment is called by something other than its merchant': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R5').payee = 'Chai Stall'),
+    /payment R5 is called "Chai Stall" but its merchant is/,
+  ],
+  'a payment is renamed by the upgrade': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R2').payee_name = 'My friend'),
+    /transactions\[R2\]\.payee_name/,
+  ],
+  'a payment name appears on its own': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R6').display_name = 'Tea'),
+    /transactions\[R6\]\.display_name/,
+  ],
+  'a group member disagrees with its payment': [
+    (a) => (a.facts.groups[0].members[0].payee = 'Other'),
+    /group g1 member R1: payee is "Other", its payment says "SWIGGY\/ORDER"/,
+  ],
+  'a learned rule shows another payee': [
+    (a) => (a.facts.learnedRules[0].payee = 'Someone else'),
+    /the learned rule for RAHUL shows "Someone else"/,
+  ],
+  'a recurring charge is renamed to something else': [
+    (a) => (a.figures.months['2026-09'].recurring[0].name = 'Tea stall'),
+    /2026-09: the recurring row "Tea stall" is not what any payment is called/,
+  ],
+  'a recurring charge changes its amount with its name': [
+    (a) => (a.figures.months['2026-09'].recurring[0].amount = 31),
+    /months\.2026-09\.recurring\[CHAI WALA CORNER\]/,
+  ],
+  'a recurring charge goes missing': [
+    (a) => (a.figures.months['2026-09'].recurring = []),
+    /2026-09: 1 recurring rows before and 0 after/,
+  ],
+  'a migration does not run': [
+    (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('040'))),
+    /"stored-migration-040" \(stored\) did not happen/,
+  ],
+  'a table a migration adds is not there': [
+    (a) => (a.facts.schema.tableRows.review_undo = null),
+    /"stored-review-undo-table" \(stored\) did not happen/,
+  ],
+  'a table a migration adds starts with rows in it': [
+    (a) => (a.facts.schema.tableRows.payee_names = 3),
+    /schema\.tableRows\.payee_names/,
+  ],
+  'a sorting job starts with an attempt already counted': [
+    (a) => (a.facts.schema.jobAttempts[0].attempts = 1),
+    /schema\.jobAttempts\[job1\]\.attempts/,
   ],
 }
 

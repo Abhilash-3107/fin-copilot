@@ -52,7 +52,7 @@ const DUPLICATE_SUBCATEGORY = 'legacy-copy-of-restaurants'
  */
 async function buildLedger(api) {
   // The demo is anchored to the day the previous release believes it is, which is
-  // the real date (it has no FC_TODAY). The 0.1.3 run is pinned to that day, so a
+  // the real date (it has no FC_TODAY). The run on the new release is pinned to that day, so a
   // midnight in the middle of the seeding would leave the two runs a day apart.
   const dayBefore = localToday()
   await api.post('/data/demo')

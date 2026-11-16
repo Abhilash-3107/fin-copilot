@@ -1,8 +1,10 @@
-// Two facts the API does not show but the migrations in a release rewrite: the
+// Facts the API does not show but the migrations in a release act on: the
 // category ids on annotations (migration 036 fills the ones the old demo seeder
-// left empty) and each skipped payment's snooze time (migration 035 moves it
-// from the annotation to the payment). They are read straight from the SQLite
-// file, with the server stopped, through Python's own sqlite3.
+// left empty), each skipped payment's snooze time (migration 035 moves it from
+// the annotation to the payment), and the schema itself: which migrations have
+// run, what the tables and columns they add hold, and the start count of each
+// sorting job (migration 040). They are read straight from the SQLite file, with
+// the server stopped, through Python's own sqlite3.
 //
 // plantLegacyRows writes into the same file two rows the previous release's API
 // cannot make, so the migrations that repair them have something to repair.
@@ -24,7 +26,34 @@ if "review_snoozed_at" in columns("transactions"):
 else:
     sql = "SELECT transaction_id, review_snoozed_at FROM annotations WHERE review_snoozed_at IS NOT NULL"
 snoozed = [{"transaction_id": row[0], "review_snoozed_at": row[1]} for row in conn.execute(sql)]
-print(json.dumps({"annotationCategoryIds": ids, "snoozedAt": snoozed}, sort_keys=True))
+# The schema: migrations run, rows in the tables that hold what the user types
+# (None where the table does not exist yet), the columns that later migrations add
+# (a column the release does not have yet is simply not listed), and how many times
+# each sorting job has been started (migration 040; None before it exists).
+tables = {}
+for name in ("payee_names", "review_undo"):
+    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
+    tables[name] = conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0] if exists else None
+added = [
+    table + "." + column
+    for table, column in (
+        ("transactions", "display_name"),
+        ("annotation_jobs", "transaction_ids"),
+        ("annotation_jobs", "attempts"),
+    )
+    if column in columns(table)
+]
+if "attempts" in columns("annotation_jobs"):
+    attempts = [{"id": row[0], "attempts": row[1]} for row in conn.execute("SELECT id, attempts FROM annotation_jobs")]
+else:
+    attempts = [{"id": row[0], "attempts": None} for row in conn.execute("SELECT id FROM annotation_jobs")]
+schema = {
+    "appliedMigrations": sorted(row[0].removesuffix(".sql") for row in conn.execute("SELECT version FROM schema_migrations")),
+    "tableRows": tables,
+    "addedColumns": added,
+    "jobAttempts": attempts,
+}
+print(json.dumps({"annotationCategoryIds": ids, "snoozedAt": snoozed, "schema": schema}, sort_keys=True))
 `
 
 /** @param {string} dataDir the folder that holds finance.db; the server using it must be stopped */

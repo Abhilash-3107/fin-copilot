@@ -79,7 +79,7 @@ It needs network access to PyPI.
    It also plants what the migrations that rewrite data act on: a merchant typed by hand with two slashes (migration 030 must keep it), a machine-labelled merchant copied from a bank line (030 clears it), a description ending in "Closing Balance" (027 strips it) and an unused duplicate subcategory (033 deletes it).
    The first three go through the API; the last two cannot be made there, so `upgrade/db.js` writes them with the server stopped, and the old release is started again to read them back.
    The day the demo is seeded on is read right after it, and the journey stops if midnight fell inside the seeding.
-2. It records stored facts (`lib/snapshot.js` `storedFacts`, plus the annotation category ids and snooze times that migrations 035 and 036 rewrite, read from the SQLite file) and derived figures (`derivedFigures`: In, Out, Invested, Kept, the breakdown, the recurring totals, the people panel, per month).
+2. It records stored facts (`lib/snapshot.js` `storedFacts`, plus what `upgrade/db.js` reads from the SQLite file: the annotation category ids and snooze times that migrations 035 and 036 rewrite, and the schema itself, meaning which migrations ran, the tables and columns they add and the start count of each sorting job) and derived figures (`derivedFigures`: In, Out, Invested, Kept, the breakdown, the recurring totals, the people panel, per month).
    Both take the release as an argument, because the old and new API differ; each release's payload is mapped to one neutral shape in `lib/snapshot.js`.
 3. It stops that release, starts the wheel on the same folder, and records both again.
 4. Every difference must be explained by an entry in `upgrade/expected-changes.json` for this version, with its reason.
