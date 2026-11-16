@@ -215,6 +215,8 @@ export default function ReviewQueue() {
   const writesRef = useRef(Promise.resolve())
 
   const current = queue[0]
+  const queueLengthRef = useRef(0)
+  queueLengthRef.current = queue.length
 
   // Everything the page shows about the queue comes from the server: the list,
   // how many payments are set aside, and whether there is anything to sort at
@@ -238,7 +240,8 @@ export default function ReviewQueue() {
       return null
     } catch (e) {
       // Never "done": the server was not asked successfully, so nothing is known.
-      toast(`Couldn't load the review list - ${e.message}`, 'error')
+      // With no card on screen the page itself says so, with Retry; a toast is for a failure behind a card that is still there.
+      if (queueLengthRef.current > 0) toast(`Couldn't load the review list - ${e.message}`, 'error')
       setLoadError(e)
       return e.message || 'Something went wrong'
     }

@@ -28,7 +28,7 @@ export default function Layout() {
           {/* Keyed on the route so navigating to another page clears a caught error. */}
           {/* Add Statement shows its own list, with its own Retry. */}
           {statementsError && pathname !== '/upload' && (
-            <InlineError what="your statements" error={statementsError} onRetry={reloadStatements} className="mx-5 mt-4" />
+            <InlineError what="your statements" error={statementsError} onRetry={reloadStatements} compact className="px-6 pt-3" />
           )}
           <ErrorBoundary resetKey={pathname}>
             <Outlet />

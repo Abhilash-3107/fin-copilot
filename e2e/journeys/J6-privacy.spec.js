@@ -133,7 +133,7 @@ test.describe('J6 privacy mode', () => {
     await page.keyboard.press('ControlOrMeta+k')
     const search = page.getByPlaceholder(/Search transactions/)
     await search.fill('swiggy')
-    await expect(page.getByRole('button', { name: /Swiggy/ }).first()).toBeVisible()
+    await expect(page.getByRole('option', { name: /Swiggy/ }).first()).toBeVisible()
     await expectNoLeaks(page, 'the command palette')
   })
 

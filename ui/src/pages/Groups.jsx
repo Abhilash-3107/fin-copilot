@@ -57,7 +57,7 @@ export default function Groups() {
     <div className="px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-[#e2e8f0]">Groups</h1>
-        <span className="text-xs text-[#64748b]">{count(groups.length, 'group')}</span>
+        {data != null && <span className="text-xs text-[#64748b]">{count(groups.length, 'group')}</span>}
       </div>
 
       {/* Search + create */}

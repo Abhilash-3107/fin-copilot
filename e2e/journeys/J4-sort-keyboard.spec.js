@@ -193,3 +193,128 @@ test.describe('J4 sort from the keyboard', () => {
     expect(await rowOf()).toEqual(before)
   })
 })
+
+// The rest of the app obeys the same keys: dialogs answer to Escape and Enter,
+// pickers to the arrows, and "?" lists them all.
+test.describe('J4 the keyboard outside Teach Me', () => {
+  test.beforeEach(async ({ app }) => {
+    await app.loadDemo()
+  })
+
+  test('? lists every shortcut by scope, Escape closes it, and it stays out of text fields', async ({ page }) => {
+    await open(page, '/transactions')
+    await page.getByRole('searchbox').click()
+    await page.keyboard.type('a?')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.getByRole('searchbox')).toHaveValue('a?')
+
+    await page.getByRole('searchbox').blur()
+    await page.keyboard.press('?')
+    const sheet = page.getByRole('dialog', { name: 'Keyboard shortcuts' })
+    await expect(sheet).toBeVisible()
+    for (const scope of ['Everywhere', 'Search', 'Teach Me', 'Transactions']) {
+      await expect(sheet.getByRole('group', { name: scope })).toBeVisible()
+    }
+    await expect(sheet.getByText('Hide or show amounts')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(sheet).toHaveCount(0)
+  })
+
+  test('a confirm dialog cancels on Escape and confirms on Enter', async ({ page, app }) => {
+    const keep = await app.api.post('/groups', { name: 'Keep me' })
+    const drop = await app.api.post('/groups', { name: 'Drop me' })
+    await open(page, '/groups')
+
+    const trash = (name) => page.getByRole('button', { name: `Expand ${name}` }).locator('..').getByRole('button', { name: 'Delete group' })
+    await trash('Keep me').focus()
+    await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    expect((await app.api.get('/groups')).map((g) => g.id)).toEqual(expect.arrayContaining([keep.id, drop.id]))
+
+    // Delete "Drop me": its trash icon, then Enter on the dialog.
+    await trash('Drop me').click()
+    await expect(dialog).toContainText('Drop me')
+    await page.keyboard.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect.poll(async () => (await app.api.get('/groups')).some((g) => g.id === drop.id)).toBe(false)
+  })
+
+  test('a group can be renamed from the keyboard, and a duplicate is refused where you typed it', async ({ page, app, tolerate }) => {
+    // The refusals are 409s the page is expected to show.
+    tolerate(/\/api\/groups/, 409)
+    await app.api.post('/groups', { name: 'Flat' })
+    const trip = await app.api.post('/groups', { name: 'Trip' })
+    await open(page, '/groups')
+
+    // A new group with a taken name, in any capitals, says so beside the field.
+    await page.getByPlaceholder('New group name…').fill('flat')
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
+    expect((await app.api.get('/groups')).filter((g) => g.name.toLowerCase() === 'flat')).toHaveLength(1)
+
+    // Rename Trip, add a note and a label; Enter saves.
+    await page.getByRole('button', { name: 'Edit Trip' }).click()
+    await expect(page.getByLabel('Group name', { exact: true })).toBeFocused()
+    await page.getByLabel('Group name', { exact: true }).fill('Hill cabin')
+    await page.getByLabel('Note').fill('Flights and stay')
+    await page.getByPlaceholder(/Labels/).fill('travel')
+    await page.keyboard.press('Enter') // adds the label
+    await page.getByLabel('Group name', { exact: true }).press('Enter') // saves
+    await expect(page.getByText('Hill cabin', { exact: true })).toBeVisible()
+    await expect(page.getByText('Flights and stay')).toBeVisible()
+    await expect(page.getByText('travel', { exact: true })).toBeVisible()
+    const saved = (await app.api.get(`/groups/${trip.id}`))
+    expect(saved).toMatchObject({ name: 'Hill cabin', note: 'Flights and stay', labels: ['travel'] })
+
+    // Renaming onto a taken name is refused in the form, which stays open.
+    await page.getByRole('button', { name: 'Edit Hill cabin' }).click()
+    await page.getByLabel('Group name', { exact: true }).fill('FLAT')
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByLabel('Group name', { exact: true })).toHaveCount(0)
+    expect((await app.api.get(`/groups/${trip.id}`)).name).toBe('Hill cabin')
+  })
+
+  test('the people picker takes typing, arrows, Enter and Escape', async ({ page, app }) => {
+    const [row] = await app.api.get('/transactions?limit=1')
+    const group = await app.api.post('/groups', { name: 'Dinner' })
+    await app.api.post(`/groups/${group.id}/members`, { transaction_id: row.id })
+    const people = await app.api.get('/people')
+    const neha = people.find((p) => p.name === 'Neha Gupta')
+
+    await open(page, '/groups')
+    await page.getByRole('button', { name: 'Expand Dinner' }).click()
+    const picker = page.getByRole('combobox', { name: 'Search people' }).first()
+    await picker.fill('neha')
+    const option = page.getByRole('option', { name: /Neha Gupta/ })
+    // The match shows as it is stored, with one at-sign.
+    await expect(option).toContainText('neha.gupta@paytm')
+    await expect(option).not.toContainText('@neha.gupta@paytm')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('listbox')).toHaveCount(0)
+    await expect(picker).toHaveValue('neha')
+
+    await picker.fill('neh')
+    await page.keyboard.press('Enter') // the highlighted match
+    await expect.poll(async () => (await app.api.get(`/groups/${group.id}`)).members[0].people).toEqual([neha.id])
+  })
+
+  test('Escape in a field of the open payment leaves the field first, and closes the panel second', async ({ page }) => {
+    await open(page, '/transactions')
+    await page.getByRole('row').nth(1).click()
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    const tags = page.getByPlaceholder(/type and press Enter/)
+    await tags.click()
+    await page.keyboard.type('weekend')
+    await page.keyboard.press('Escape')
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    await expect(tags).toHaveValue('weekend')
+    await page.keyboard.press('Escape')
+    await expect(page.getByText('As printed on the statement')).toHaveCount(0)
+  })
+})

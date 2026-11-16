@@ -59,9 +59,12 @@ describe('PeoplePicker', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('Enter with only the create row creates the person', async () => {
+  it('Enter never creates a person by accident, but an arrow to "Create" does', async () => {
     const { input, onCreatePerson, onChange } = setup()
     fireEvent.change(input, { target: { value: 'Zoya' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onCreatePerson).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
     fireEvent.keyDown(input, { key: 'Enter' })
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(['new']))
     expect(onCreatePerson).toHaveBeenCalledWith('Zoya')

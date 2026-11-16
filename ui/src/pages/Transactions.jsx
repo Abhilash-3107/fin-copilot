@@ -692,7 +692,7 @@ export default function Transactions() {
         )}
 
         <span className="text-xs text-[#64748b] ml-auto">
-          {loading ? 'Loading…' : summary ? (
+          {loading ? 'Loading…' : loadError ? null : summary ? (
             <>
               {summary.count} transaction{summary.count === 1 ? '' : 's'}
               {' · '}<Amount value={summary.money_out} decimals={0} /> out

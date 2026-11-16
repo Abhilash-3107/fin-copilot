@@ -50,4 +50,51 @@ test.describe('J1 first run', () => {
     expect((await app.api.get('/rules')).map((r) => r.id)).toEqual([rule.id])
     expect((await app.api.get('/config')).confidence_threshold).toBe(0.7)
   })
+
+  // The search opens what it found, wherever that is: another month than the one on
+  // screen, with the payment's panel open, and a person's results are their payments,
+  // not a text search that can land on "No transactions".
+  test('search opens the exact payment from another month', async ({ page, app }) => {
+    await app.loadDemo()
+    const [payment] = await app.api.get('/transactions?q=September%20rent')
+    expect(payment, 'the demo payment noted "September rent"').toBeDefined()
+    expect(payment.txn_date.slice(0, 7)).toBe('2026-09')
+
+    await open(page, '/dashboard')
+    await page.keyboard.press('Control+K')
+    await page.getByRole('combobox', { name: 'Search' }).fill('September rent')
+    await page.getByRole('option', { name: /01 Sep/ }).click()
+
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    await expect(page.getByText(payment.raw_description)).toBeVisible()
+    // The period followed the payment, and its row is on the page behind the panel.
+    await expect(page.locator('select').filter({ has: page.locator('option[value="2026-09"]') })).toHaveValue('2026-09')
+    await expect(page.getByRole('row', { name: /01 Sep 26 Amit Kumar September rent/ })).toBeVisible()
+    await expect(page).not.toHaveURL(/txn=/)
+  })
+
+  test('search for a person lists their payments across every month', async ({ page, app }) => {
+    await app.loadDemo()
+    await open(page, '/dashboard')
+    await page.getByRole('button', { name: 'Search' }).click()
+    await page.getByRole('combobox', { name: 'Search' }).fill('neha')
+    await page.getByRole('option', { name: /Neha Gupta/ }).filter({ hasText: 'person' }).click()
+
+    await expect(page.getByRole('button', { name: /Person: Neha Gupta/ })).toBeVisible()
+    await expect(page.getByRole('row').nth(1)).toBeVisible()
+    await expect(page.getByText('No transactions')).toHaveCount(0)
+    await expect(page.locator('select').filter({ has: page.locator('option[value="all"]') })).toHaveValue('all')
+  })
+
+  test('a repeated payee is one result that filters to all of its payments', async ({ page, app }) => {
+    await app.loadDemo()
+    await open(page, '/dashboard')
+    await page.keyboard.press('Control+K')
+    await page.getByRole('combobox', { name: 'Search' }).fill('swiggy')
+    const payee = page.getByRole('option', { name: /Swiggy - \d+\+? payments/i })
+    await expect(payee).toHaveCount(1)
+    await payee.click()
+    await expect(page.getByRole('button', { name: /Payee: Swiggy/i })).toBeVisible()
+    await expect(page.getByRole('row').nth(1)).toBeVisible()
+  })
 })

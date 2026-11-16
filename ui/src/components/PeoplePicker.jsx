@@ -3,8 +3,8 @@ import { useEffect, useId, useRef, useState } from 'react'
 export default function PeoplePicker({ selectedIds = [], allPeople = [], onChange, onCreatePerson, compact = false }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
-  // Which option the keyboard is on; -1 until there is something to pick.
-  const [active, setActive] = useState(-1)
+  // Where the arrows moved the highlight; null until they do.
+  const [moved, setMoved] = useState(null)
   const ref = useRef(null)
   const listId = useId()
 
@@ -32,6 +32,11 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
     ...(showCreate ? [{ kind: 'create' }] : []),
   ]
   const menuOpen = open && options.length > 0
+  // Typing highlights the first matching person, so Enter picks them. "Create"
+  // is only highlighted by the arrows: Enter never makes a new person by accident.
+  const active = moved != null
+    ? Math.min(moved, options.length - 1)
+    : (query.trim() && options[0]?.kind === 'person' ? 0 : -1)
   const optionId = i => `${listId}-${i}`
 
   function choose(option) {
@@ -45,7 +50,7 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
       e.preventDefault()
       setOpen(true)
       const step = e.key === 'ArrowDown' ? 1 : -1
-      setActive(a => Math.min(Math.max(a + step, 0), options.length - 1))
+      setMoved(Math.min(Math.max(active + step, 0), options.length - 1))
     } else if (e.key === 'Enter') {
       const option = menuOpen ? options[active] : null
       if (!option) return
@@ -90,7 +95,7 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
         ))}
         <input
           value={query}
-          onChange={e => { setQuery(e.target.value); setOpen(true); setActive(e.target.value.trim() ? 0 : -1) }}
+          onChange={e => { setQuery(e.target.value); setOpen(true); setMoved(null) }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
           role="combobox"
@@ -117,7 +122,7 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
               role="option"
               aria-selected={i === active}
               onMouseDown={e => e.preventDefault()}
-              onMouseEnter={() => setActive(i)}
+              onMouseEnter={() => setMoved(i)}
               onClick={() => choose(option)}
               className={
                 option.kind === 'person'
