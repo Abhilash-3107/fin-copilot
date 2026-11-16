@@ -195,3 +195,138 @@ describe('Transactions', () => {
     expect(box.className).toMatch(/w-(64|72|80)\b/)
   })
 })
+
+describe('Transactions when the API fails', () => {
+  const down = () => Promise.reject(new TypeError('Failed to fetch'))
+  const routed = () => mockApi.get.getMockImplementation()
+
+  it('says the list could not load, never "No transactions", and recovers on Retry', async () => {
+    const base = routed()
+    let failing = true
+    mockApi.get.mockImplementation(path => (failing && path.startsWith('/transactions?') ? down() : base(path)))
+    renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your transactions.")
+    expect(screen.queryByText('No transactions')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Upload a statement to get started/)).not.toBeInTheDocument()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect((await screen.findAllByText('Mystery')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('keeps the rows and offers Retry when the next page fails', async () => {
+    const base = routed()
+    const page = Array.from({ length: 500 }, (_, i) => ({ ...TXNS[0], id: `p${i}` }))
+    let failMore = true
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/transactions?') && path.includes('after=')) return failMore ? down() : Promise.resolve([{ ...TXNS[1], id: 'last' }])
+      if (path.startsWith('/transactions?')) return Promise.resolve(page)
+      return base(path)
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load more transactions.")
+    expect(screen.getAllByText('Mystery').length).toBeGreaterThan(100)
+    failMore = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getAllByText('Refund').length).toBeGreaterThan(0)
+  })
+
+  it('says the filter options could not load, beside the filters, and Retry loads them', async () => {
+    const base = routed()
+    let failing = true
+    mockApi.get.mockImplementation(path => (failing && path.startsWith('/transactions/facets') ? down() : base(path)))
+    renderPage()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the filter options.")
+    expect((await screen.findAllByText('Mystery')).length).toBeGreaterThan(0)
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('says the categories could not load when you pick rows to set one', async () => {
+    const base = routed()
+    let failing = true
+    mockApi.get.mockImplementation(path => (failing && path === '/categories' ? down() : base(path)))
+    renderPage()
+    fireEvent.click((await screen.findAllByLabelText('Select transaction'))[0])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the categories.")
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('does not open a payment as new when its details could not load, and Retry loads them', async () => {
+    const user = userEvent.setup()
+    const base = routed()
+    let failing = true
+    mockApi.get.mockImplementation(path => (failing && /^\/transactions\/t\d/.test(path) ? down() : base(path)))
+    renderPage()
+    await user.click((await screen.findAllByText('Mystery'))[0])
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load this payment's details.")
+    expect(screen.getByRole('button', { name: 'Save annotation' })).toBeDisabled()
+    failing = false
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Save annotation' })).toBeEnabled()
+  })
+})
+
+describe('Transactions opened for one payment', () => {
+  const OCT = { id: 't9', statement_id: 's1', txn_date: '2026-10-05', amount: 90, debit_credit: 'debit', raw_description: 'UPI/OLDSHOP/509/q', counterparty_key: 'OLDSHOP', payee: 'Old Shop', payee_all: 'Old Shop', note: null, channel: 'UPI', annotation_id: null }
+
+  it('switches to the payment\'s month, clears the statement scope and opens its panel', async () => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/t9') return Promise.resolve(OCT)
+      if (path.startsWith('/transactions?') && path.includes('month=2026-10')) return Promise.resolve([OCT])
+      return base(path)
+    })
+    renderPage(['/transactions?txn=t9'])
+    expect(await screen.findByText('UPI/OLDSHOP/509/q')).toBeInTheDocument()
+    expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/month=2026-10/)
+      expect(last).not.toMatch(/statement_id=/)
+    })
+    // The month in the list is the payment's, so its row is on the page.
+    expect((await screen.findAllByText('Old Shop')).length).toBeGreaterThan(1)
+  })
+
+  it('says so when the payment is gone, and still shows the list', async () => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/transactions/missing'
+        ? Promise.reject(Object.assign(new Error('Transaction not found'), { status: 404 }))
+        : base(path)
+    ))
+    renderPage(['/transactions?txn=missing'])
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't find that payment.")
+    expect((await screen.findAllByText('Mystery')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('Transactions panel keys', () => {
+  it('Escape inside a field only leaves the field; the next Escape closes the panel', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click((await screen.findAllByText('Mystery'))[0])
+    await screen.findByText('As printed on the statement')
+    const tags = screen.getByPlaceholderText(/type and press Enter/)
+    await user.click(tags)
+    await user.type(tags, 'trip')
+    await user.keyboard('{Escape}')
+    expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
+    expect(tags).not.toHaveFocus()
+    expect(tags).toHaveValue('trip')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByText('As printed on the statement')).not.toBeInTheDocument()
+  })
+})

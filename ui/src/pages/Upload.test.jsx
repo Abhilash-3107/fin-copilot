@@ -443,3 +443,33 @@ describe('Upload', () => {
     })
   })
 })
+
+describe('Upload when the statement list fails', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    jobCtx.job = null
+    jobCtx.startAnnotation = vi.fn()
+    Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
+  })
+
+  it('says the list could not load, never "No statements yet", and recovers on Retry', async () => {
+    mockApi.get.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderUpload()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your statements.")
+    expect(screen.queryByText(/No statements yet/)).not.toBeInTheDocument()
+    mockApi.get.mockResolvedValue([stmt])
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('kotak')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not flash "No statements yet" while the list is still loading', async () => {
+    let release
+    mockApi.get.mockReturnValue(new Promise(resolve => { release = () => resolve([]) }))
+    renderUpload()
+    expect(screen.queryByText(/No statements yet/)).not.toBeInTheDocument()
+    release()
+    expect(await screen.findByText(/No statements yet/)).toBeInTheDocument()
+  })
+})

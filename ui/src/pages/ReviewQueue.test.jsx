@@ -1120,8 +1120,7 @@ describe('ReviewQueue load failure', () => {
     ))
     renderPage()
 
-    expect(await screen.findByText("Couldn't load your review list")).toBeInTheDocument()
-    expect(screen.getByText('Network down')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your review list.")
     expect(screen.queryByText(/all done/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Everything is sorted/)).not.toBeInTheDocument()
 
@@ -1137,9 +1136,68 @@ describe('ReviewQueue load failure', () => {
       path === '/annotations/review-queue' ? Promise.reject(new Error('Network down')) : routed(path)
     ))
     renderPage()
-    await screen.findByText("Couldn't load your review list")
+    await screen.findByRole('alert')
     await act(async () => {})
     expect(mockApi.get.mock.calls.filter(([p]) => p === '/annotations/review-queue')).toHaveLength(1)
+  })
+})
+
+describe('ReviewQueue side loads and dialogs', () => {
+  it('says so, with Retry, when the categories or settings could not load, and keeps the card', async () => {
+    stubGet([makeCard()])
+    const routed = mockApi.get.getMockImplementation()
+    let failing = true
+    mockApi.get.mockImplementation(path => (
+      failing && (path === '/config' || path === '/policies') ? Promise.reject(new TypeError('Failed to fetch')) : routed(path)
+    ))
+    renderPage()
+    await heading('SWIGGY')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your settings and your policies.")
+    failing = false
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+    await vi.waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'SWIGGY' })).toBeInTheDocument()
+  })
+
+  async function openPropagateDialog() {
+    const user = userEvent.setup()
+    stubGet(() => [makeCard(), uber()])
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/10/similar'
+        ? Promise.resolve([{
+          transaction_id: 200, payee: 'SWIGGY BLR', txn_date: '2026-01-02', amount: 90, debit_credit: 'debit',
+          category: 'Food', differs: true, similarity: 0.9,
+        }])
+        : base(path)
+    ))
+    mockApi.post.mockImplementation(path => Promise.resolve(
+      path.endsWith('/apply-to-similar') ? { applied: 1, skipped: 0, undo_token: 'tok-sim' }
+        : path === '/annotations/bulk-label' ? { updated: 1, reevaluated: [], undo_token: 'tok-ans' }
+          : { restored: [] }
+    ))
+    await renderQueue()
+    key('1')
+    await user.keyboard('/trans')
+    await user.keyboard('{Enter}')
+    key('Enter')
+    return screen.findByRole('dialog', { name: /Apply "Transport" to similar/ })
+  }
+
+  it('Escape dismisses the similar-payments dialog without applying', async () => {
+    const dialog = await openPropagateDialog()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await heading('UBER')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(mockApi.post.mock.calls.some(([p]) => p.endsWith('/apply-to-similar'))).toBe(false)
+  })
+
+  it('Enter applies to the ticked payments', async () => {
+    const dialog = await openPropagateDialog()
+    expect(dialog).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Enter' })
+    await vi.waitFor(() => expect(mockApi.post.mock.calls.some(([p]) => p.endsWith('/apply-to-similar'))).toBe(true))
   })
 })
 

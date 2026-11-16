@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X, Pencil } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { formatDateRange } from '../lib/dates.js'
@@ -8,6 +8,8 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import PeoplePicker from './PeoplePicker.jsx'
 import Tooltip from './Tooltip.jsx'
+import TagInput from './TagInput.jsx'
+import InlineError from './InlineError.jsx'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
 const TYPE_HELP = 'Matters for payments you made. split / event / blank = shared cost, divided with you · transfer / refund = money you sent them, owed back in full · reimbursement = repaying something they covered, no effect. Money you received always counts as paid back.'
@@ -178,12 +180,17 @@ function SettleUp({ settleUp, hasPeople }) {
   )
 }
 
-export default function GroupCard({ group, onDelete }) {
+export default function GroupCard({ group, onDelete, onUpdate }) {
   const toast = useToast()
   const [expanded, setExpanded] = useState(false)
   const [detail, setDetail] = useState(null)
   const [loading, setLoading] = useState(false)
   const [people, setPeople] = useState([])
+  const [loadError, setLoadError] = useState(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({ name: '', note: '', labels: [] })
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   // The open card's detail carries a fresh rollup from the server; the list's
   // copy (group.summary) only describes the group as it was when the page loaded.
@@ -210,18 +217,56 @@ export default function GroupCard({ group, onDelete }) {
     }
   }
 
-  async function toggle() {
-    if (!expanded && !detail) {
-      setLoading(true)
-      try {
-        await reload()
-      } catch (e) {
-        toast(`Failed to load group: ${e.message}`, 'error')
-      } finally {
-        setLoading(false)
-      }
+  async function open() {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      await reload()
+    } catch (e) {
+      setLoadError(e)
+    } finally {
+      setLoading(false)
     }
+  }
+
+  async function toggle() {
+    if (!expanded && !detail) open()
     setExpanded(o => !o)
+  }
+
+  function startEdit() {
+    setDraft({ name: group.name, note: group.note ?? '', labels: labels })
+    setSaveError('')
+    setEditing(true)
+  }
+
+  async function saveEdit() {
+    const name = draft.name.trim()
+    if (!name || saving) return
+    const note = draft.note.trim()
+    if (name === group.name && note === (group.note ?? '') && draft.labels.join('\n') === labels.join('\n')) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    try {
+      const updated = await api.patch(`/groups/${group.id}`, { name, note, labels: draft.labels })
+      onUpdate?.(updated)
+      setEditing(false)
+    } catch (e) {
+      // Shown in the form beside the field that caused it, e.g. a name already taken.
+      setSaveError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Enter saves and Escape cancels, from any field in the form; a label being
+  // typed owns its own Enter (it adds the label).
+  function onEditKeyDown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
+    else if (e.key === 'Enter' && !e.defaultPrevented) { e.preventDefault(); saveEdit() }
   }
 
   async function updateMember(txnId, patch) {
@@ -272,6 +317,47 @@ export default function GroupCard({ group, onDelete }) {
         >
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
+        {editing ? (
+          <div className="flex-1 min-w-0 space-y-2" onKeyDown={onEditKeyDown}>
+            <input
+              autoFocus
+              aria-label="Group name"
+              value={draft.name}
+              onChange={e => { setDraft(d => ({ ...d, name: e.target.value })); setSaveError('') }}
+              className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+            />
+            <input
+              aria-label="Note"
+              value={draft.note}
+              onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
+              placeholder="Add a note"
+              className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
+            />
+            <TagInput
+              tags={draft.labels}
+              onChange={labels => setDraft(d => ({ ...d, labels }))}
+              placeholder="Labels - type and press Enter"
+            />
+            {saveError && <p role="alert" className="text-xs text-[#fca5a5]">{saveError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={saving || !draft.name.trim()}
+                className="bg-[#6366f1] text-white px-3 py-1 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="px-3 py-1 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="flex-1 min-w-0 cursor-pointer" onClick={toggle}>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-[#e2e8f0]">{group.name}</span>
@@ -286,6 +372,7 @@ export default function GroupCard({ group, onDelete }) {
             {group.note && <><span className="text-[#2d3148]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
           </div>
         </div>
+        )}
         {/* Your share and what is still owed */}
         {summary.member_count > 0 && (
           <div className="text-right shrink-0">
@@ -295,6 +382,17 @@ export default function GroupCard({ group, onDelete }) {
             </div>
             <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
           </div>
+        )}
+        {!editing && (
+          <button
+            type="button"
+            onClick={startEdit}
+            aria-label={`Edit ${group.name}`}
+            className="text-[#475569] hover:text-[#e2e8f0] transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            title="Edit name, note and labels"
+          >
+            <Pencil size={14} />
+          </button>
         )}
         <button
           type="button"
@@ -311,6 +409,8 @@ export default function GroupCard({ group, onDelete }) {
         <div className="border-t border-[#2d3148]">
           {loading ? (
             <p className="px-4 py-3 text-xs text-[#475569]">Loading…</p>
+          ) : loadError ? (
+            <InlineError what="this group" error={loadError} onRetry={open} className="m-3" />
           ) : (
             <>
               {detail?.members?.length ? (

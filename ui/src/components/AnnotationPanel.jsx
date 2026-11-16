@@ -8,6 +8,7 @@ import TagInput from './TagInput.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
+import InlineError from './InlineError.jsx'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -265,7 +266,10 @@ function ConfidenceBar({ confidence }) {
 
 // ─── AnnotationPanel ──────────────────────────────────────────────────────────
 
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed }) {
+// `loadError` means the payment's own record could not be read, so whether it
+// already has an annotation is unknown: the form is replaced by the error and
+// saving waits for a successful Retry.
+export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, loadError = null, onRetryLoad }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
   const renameButton = useRef(null)
@@ -406,6 +410,10 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
 
         {/* Form */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+          {loadError ? (
+            <InlineError what="this payment's details" error={loadError} onRetry={onRetryLoad} />
+          ) : (
+          <>
           <CategoryPicker
             category={form.category}
             subcategory={form.subcategory}
@@ -420,6 +428,8 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
           </div>
 
           <GroupsSection txnId={txn.id} />
+          </>
+          )}
         </div>
 
         {/* Footer */}
@@ -432,7 +442,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
           </button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !!loadError}
             className="flex-1 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {saving ? 'Saving…' : annotation ? 'Update annotation' : 'Save annotation'}

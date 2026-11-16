@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { X, SlidersHorizontal, Cpu, BarChart3, BookOpen, Database, FolderTree } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -9,6 +9,8 @@ import DataSettings from '../components/DataSettings.jsx'
 import CategorySettings from '../components/CategorySettings.jsx'
 import UserRules from '../components/UserRules.jsx'
 import ReviewPolicies from '../components/ReviewPolicies.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 
 function Toggle({ checked, disabled, onChange }) {
@@ -44,16 +46,9 @@ const ruleId = r => `${r.counterparty_key}|${r.direction}`
 
 function LearnedRules() {
   const toast = useToast()
-  const [rules, setRules] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { data, error, reload, setData: setRules } = useLoad(useCallback(() => api.get('/annotations/learned-rules'), []))
+  const rules = data ?? []
   const [dismissing, setDismissing] = useState(null)
-
-  useEffect(() => {
-    api.get('/annotations/learned-rules')
-      .then(setRules)
-      .catch(e => toast(`Couldn't load learned rules - ${e.message}`, 'error'))
-      .finally(() => setLoading(false))
-  }, [toast])
 
   async function dismiss(rule) {
     setDismissing(ruleId(rule))
@@ -82,7 +77,9 @@ function LearnedRules() {
       </p>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-        {loading ? (
+        {error ? (
+          <InlineError what="what it has learned" error={error} onRetry={reload} className="m-3" />
+        ) : data == null ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
         ) : rules.length === 0 ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">
@@ -248,6 +245,10 @@ export default function Settings() {
   const [devMode, setDevMode] = useState(false)
   const [threshold, setThreshold] = useState(0.85)
   const [loading, setLoading] = useState(true)
+  // General and Insights show these values: when they did not load, saying so
+  // beats showing defaults that look like the saved settings.
+  const [configError, setConfigError] = useState(null)
+  const [attempt, setAttempt] = useState(0)
   const [saving, setSaving] = useState(false)
   const [version, setVersion] = useState(null)
   const mounted = useRef(true)
@@ -255,15 +256,20 @@ export default function Settings() {
   useEffect(() => {
     mounted.current = true
     api.get('/health').then(h => setVersion(h.version)).catch(() => {})
+    setConfigError(null)
     api.get('/config')
       .then(cfg => {
         setDevMode(!!cfg.dev_mode)
         if (typeof cfg.confidence_threshold === 'number') setThreshold(cfg.confidence_threshold)
       })
-      .catch(e => toast(`Couldn't load settings - ${e.message}`, 'error'))
+      .catch(setConfigError)
       .finally(() => setLoading(false))
     return () => { mounted.current = false }
-  }, [toast])
+  }, [attempt])
+
+  const configFailed = (
+    <InlineError what="your settings" error={configError} onRetry={() => setAttempt(n => n + 1)} />
+  )
 
   async function setDev(next) {
     setSaving(true)
@@ -314,7 +320,8 @@ export default function Settings() {
         <p className="text-sm text-[#475569]">Loading…</p>
       ) : (
         <>
-          {tab === 'general' && (
+          {tab === 'general' && configError && configFailed}
+          {tab === 'general' && !configError && (
             <div className="bg-[#13151f] border border-[#2d3148] rounded-xl divide-y divide-[#2d3148]">
               <div className="flex items-center justify-between gap-6 px-5 py-4">
                 <div>
@@ -333,7 +340,8 @@ export default function Settings() {
 
           {tab === 'ai' && <ModelSettings />}
 
-          {tab === 'insights' && (
+          {tab === 'insights' && configError && configFailed}
+          {tab === 'insights' && !configError && (
             <InsightsSettings devMode={devMode} threshold={threshold} onSave={saveThreshold} />
           )}
 

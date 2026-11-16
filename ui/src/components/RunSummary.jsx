@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
-import { useToast } from '../contexts/ToastContext.jsx'
+import InlineError from './InlineError.jsx'
 import { count } from '../lib/plural.js'
 
 // Per-stage accent colours - one hue per pipeline stage, reused across the funnel
@@ -154,23 +154,28 @@ function NearMissList({ title, items, band, gate, valueKey, gateLabel }) {
 // endpoint so the review rate, confidence histogram marker, and near-miss lists
 // recompute live as the Settings slider moves, without persisting the value.
 export default function RunSummary({ threshold }) {
-  const toast = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     const qs = threshold != null ? `?threshold=${threshold}` : ''
+    setError(null)
     api.get(`/annotations/run-summary${qs}`)
       .then(setData)
       .catch(e => {
         // 404 = dev mode off; the section just won't render (parent gates it too).
-        if (e.status !== 404) toast(`Couldn't load run summary - ${e.message}`, 'error')
+        if (e.status !== 404) setError(e)
       })
       .finally(() => setLoading(false))
-  }, [toast, threshold])
+  }, [threshold, attempt])
 
   if (loading) {
     return <p className="px-5 py-4 text-sm text-[#64748b]">Loading run summary…</p>
+  }
+  if (error) {
+    return <InlineError what="the run summary" error={error} onRetry={() => setAttempt(n => n + 1)} className="m-3" />
   }
   if (!data || data.total === 0) {
     return (

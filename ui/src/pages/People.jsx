@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Search, HelpCircle } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -10,6 +10,8 @@ import EmptyState from '../components/EmptyState.jsx'
 import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import PersonNet from '../components/PersonNet.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 
 // Curated relationship choices. Family ones (dad/mom/…) make this person's
 // transfers land in Transfers › Family instead of the generic Peer Transfer;
@@ -24,46 +26,41 @@ const RELATIONSHIP_LABELS = { self: 'Me (my other account)' }
 export default function People() {
   const toast = useToast()
   const navigate = useNavigate()
-  const [people, setPeople] = useState([])
-  const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [newName, setNewName] = useState('')
   const [newUpi, setNewUpi] = useState('')
   const [newRel, setNewRel] = useState('')
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
   const [addOpen, setAddOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editValue, setEditValue] = useState('')
   const editRef = useRef(null)
 
-  const load = useCallback(async (q = '') => {
-    try {
-      const data = await api.get(`/people${q ? `?q=${encodeURIComponent(q)}` : ''}`)
-      setPeople(data)
-    } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [toast])
-
-  useEffect(() => { load() }, [load])
+  // The list follows the search box; an answer to an older keystroke is dropped.
+  const { data, error, reload, setData } = useLoad(useCallback(
+    () => api.get(`/people${search ? `?q=${encodeURIComponent(search)}` : ''}`), [search],
+  ))
+  const people = data ?? []
+  const setPeople = update => setData(prev => update(prev ?? []))
 
   async function create(e) {
     e.preventDefault()
     if (!newName.trim()) return
     setCreating(true)
+    setCreateError('')
     try {
       await api.post('/people', { name: newName.trim(), upi: newUpi.trim() || null, relationship: newRel || null })
       setNewName('')
       setNewUpi('')
       setNewRel('')
       setAddOpen(false)
-      load(search)
+      reload()
       toast('Person added', 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      // Shown in the dialog beside the fields that caused it, e.g. a duplicate.
+      setCreateError(e.message)
     } finally {
       setCreating(false)
     }
@@ -83,7 +80,6 @@ export default function People() {
 
   function handleSearch(q) {
     setSearch(q)
-    load(q)
   }
 
   function startEdit(p) {
@@ -148,7 +144,7 @@ export default function People() {
           />
         </div>
         <button
-          onClick={() => setAddOpen(true)}
+          onClick={() => { setCreateError(''); setAddOpen(true) }}
           className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 transition-opacity"
         >
           <Plus size={14} />
@@ -157,7 +153,9 @@ export default function People() {
       </div>
 
       {/* Table */}
-      {loading ? (
+      {error ? (
+        <InlineError what="your people" error={error} onRetry={reload} />
+      ) : data == null ? (
         <p className="text-sm text-[#475569]">Loading…</p>
       ) : people.length === 0 ? (
         <EmptyState
@@ -284,7 +282,7 @@ export default function People() {
             <input
               autoFocus
               value={newName}
-              onChange={e => setNewName(e.target.value)}
+              onChange={e => { setNewName(e.target.value); setCreateError('') }}
               placeholder="e.g. Karabi"
               className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
             />
@@ -293,7 +291,7 @@ export default function People() {
             <label className="block text-xs text-[#94a3b8] mb-1">Statement match <span className="text-[#475569]">(to help us match their transactions)</span></label>
             <input
               value={newUpi}
-              onChange={e => setNewUpi(e.target.value)}
+              onChange={e => { setNewUpi(e.target.value); setCreateError('') }}
               placeholder="UPI id or name as it appears"
               className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]"
             />
@@ -311,6 +309,7 @@ export default function People() {
               ))}
             </select>
           </div>
+          {createError && <p role="alert" className="text-sm text-[#fca5a5]">{createError}</p>}
           <div className="flex gap-3 justify-end pt-2">
             <button
               type="button"

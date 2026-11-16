@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
@@ -13,6 +13,8 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -162,11 +164,17 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub, hint }) {
 // One ranked list of things worth doing, each a sentence and a doorway into
 // the page where it gets done. Never more than four; an empty list is a
 // reward ("all caught up"), not blank space.
-function AttentionList({ items }) {
+function AttentionList({ items, countsError, onRetryCounts }) {
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>Needs your attention</p>
-      {items.length === 0 ? (
+      {countsError && (
+        <InlineError
+          what="the guesses waiting in Teach Me" error={countsError} onRetry={onRetryCounts}
+          className="m-3"
+        />
+      )}
+      {items.length === 0 && countsError ? null : items.length === 0 ? (
         <div className="flex items-center gap-3 px-4 py-6">
           <CheckCircle2 size={20} className="shrink-0 text-emerald-400" />
           <p className="text-sm text-[#94a3b8]">All caught up - nothing needs you right now.</p>
@@ -403,14 +411,16 @@ function TopSpendingCard({ categories, breakdown, month }) {
 // changed, weakest first, each with the sample size behind it (4.19). Clicking
 // through opens those transactions so you can teach it. Replaces the old filler
 // "most of your money went to…" card with something actionable.
-function AccuracyCard({ rows }) {
+function AccuracyCard({ rows, error, onRetry }) {
   const weak = rows.slice(0, 4)
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
         Where I need your help most
       </p>
-      {weak.length === 0 ? (
+      {error ? (
+        <InlineError what="the accuracy figures" error={error} onRetry={onRetry} className="m-3" />
+      ) : weak.length === 0 ? (
         <p className="px-4 py-4 text-sm text-[#475569] leading-relaxed">
           Not enough corrections yet to spot weak categories. Verify a few in Teach Me
           and the shakiest ones will surface here.
@@ -451,47 +461,28 @@ export default function Dashboard() {
   const toast = useToast()
   const { refresh: refreshDemoData } = useDemoData()
   const { month: periodMonth } = usePeriod()
-  const [data, setData] = useState(null)
-  // Low-confidence guesses waiting in Teach Me (every month, not just this one).
-  const [guessCount, setGuessCount] = useState(0)
-  const [accuracy, setAccuracy] = useState([])
-  const [loading, setLoading] = useState(true)
+  // Each block loads on its own, so one that fails says so in its own place
+  // (with Retry) and never reads as "you have no data".
+  // Month-anchored like Money Map: "All time" falls back to the latest month
+  // with data (the server's default), and the picker (allowAll={false}) shows
+  // that month rather than a value the figures do not honour.
+  const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
+  const summaryLoad = useLoad(useCallback(
+    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
+  ))
+  // Counts only: the queue itself can be thousands of rows long. Low-confidence
+  // guesses waiting in Teach Me span every month, not just this one.
+  const countsLoad = useLoad(useCallback(() => api.get('/annotations/review-queue/counts'), []))
+  const accuracyLoad = useLoad(useCallback(() => api.get('/annotations/accuracy'), []))
+  const data = summaryLoad.data
+  const loading = summaryLoad.loading
+  const guessCount = countsLoad.data?.guesses ?? 0
+  const accuracy = accuracyLoad.data ?? []
   // Any tracked run (this page, another page, or re-attached after a reload)
   // holds the single job slot, so the sort button waits for it.
   const { job, startAnnotation } = useAnnotationJob()
   const [annotating, setAnnotating] = useState(false)
   const [seedingDemo, setSeedingDemo] = useState(false)
-  const [reloadKey, setReloadKey] = useState(0)
-
-  // Month-anchored like Money Map: "All time" falls back to the latest month
-  // with data (the server's default), and the picker (allowAll={false}) shows
-  // that month rather than a value the figures do not honour.
-  const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      try {
-        const [summary, counts, acc] = await Promise.all([
-          api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
-          // Counts only: the queue itself can be thousands of rows long.
-          api.get('/annotations/review-queue/counts').catch(() => null),
-          api.get('/annotations/accuracy').catch(() => []),
-        ])
-        if (cancelled) return
-        setData(summary)
-        setGuessCount(counts?.guesses ?? 0)
-        setAccuracy(acc)
-      } catch (e) {
-        if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [requestMonth, toast, reloadKey])
 
   // Sweep every pending transaction, not just one statement: a multi-statement
   // upload should still resolve with one click. On success the refetch flips
@@ -502,7 +493,7 @@ export default function Dashboard() {
       const result = await startAnnotation({})
       const summary = annotationSummary(result)
       toast(summary.message, summary.type, summaryDuration(summary))
-      setReloadKey(k => k + 1)
+      summaryLoad.reload()
     } catch (e) {
       toast(`Sorting failed - ${e.message}`, 'error')
     } finally {
@@ -516,7 +507,7 @@ export default function Dashboard() {
       const s = await api.post('/data/demo')
       toast(`Demo loaded: ${count(s.transactions, 'transaction')} across ${count(s.months, 'month')}`, 'success', 5000)
       refreshDemoData()
-      setReloadKey(k => k + 1)
+      summaryLoad.reload()
     } catch (e) {
       toast(`Couldn't load demo data - ${e.message}`, 'error')
     } finally {
@@ -609,6 +600,8 @@ export default function Dashboard() {
 
       {loading ? (
         <p className="text-sm text-[#475569]">Pulling it together…</p>
+      ) : summaryLoad.error ? (
+        <InlineError what="your dashboard" error={summaryLoad.error} onRetry={summaryLoad.reload} />
       ) : !data?.month ? (
         <div className={`${card} p-8 text-center`}>
           <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>
@@ -670,7 +663,7 @@ export default function Dashboard() {
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
             <div className="lg:col-span-3">
-              <AttentionList items={attention.slice(0, 4)} />
+              <AttentionList items={attention.slice(0, 4)} countsError={countsLoad.error} onRetryCounts={countsLoad.reload} />
             </div>
             <div className="lg:col-span-2">
               <BalanceCard balance={data.balance} month={data.month} />
@@ -682,7 +675,7 @@ export default function Dashboard() {
             <TopSpendingCard categories={data.categories} breakdown={data.breakdown} month={data.month} />
           </div>
 
-          <AccuracyCard rows={accuracy} />
+          <AccuracyCard rows={accuracy} error={accuracyLoad.error} onRetry={accuracyLoad.reload} />
         </>
       )}
     </div>

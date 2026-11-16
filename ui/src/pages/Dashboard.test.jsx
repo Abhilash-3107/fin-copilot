@@ -617,3 +617,50 @@ describe('privacy mode', () => {
     expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
   })
 })
+
+describe('Dashboard when the API fails', () => {
+  const failOn = (prefix, fixed) => {
+    let failing = true
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (failing && path.startsWith(prefix)) return Promise.reject(new TypeError('Failed to fetch'))
+      return base(path)
+    })
+    return () => { failing = false; fixed?.() }
+  }
+
+  it('says the page could not load, never "Welcome", and recovers on Retry', async () => {
+    const heal = failOn('/insights')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your dashboard.")
+    expect(screen.queryByText(/Welcome!/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Where I need your help most')).not.toBeInTheDocument()
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Balance over time')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed accuracy block in its own place while the rest stays', async () => {
+    const heal = failOn('/annotations/accuracy')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the accuracy figures.")
+    expect(screen.getByText('Balance over time')).toBeInTheDocument()
+    expect(screen.queryByText(/Not enough corrections yet/)).not.toBeInTheDocument()
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText(/Not enough corrections yet/)).toBeInTheDocument()
+  })
+
+  it('says so when the count of guesses waiting could not load', async () => {
+    const heal = failOn('/annotations/review-queue/counts')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the guesses waiting in Teach Me.")
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+})

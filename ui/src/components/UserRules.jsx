@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
@@ -6,6 +6,8 @@ import { count } from '../lib/plural.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
+import InlineError from './InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
 const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
@@ -47,20 +49,13 @@ function PreviewSummary({ preview }) {
 
 export default function UserRules() {
   const toast = useToast()
-  const [rules, setRules] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { data, error, reload, setData: setRules } = useLoad(useCallback(() => api.get('/rules'), []))
+  const rules = data ?? []
   const [draft, setDraft] = useState(EMPTY)
   const [preview, setPreview] = useState(null)
   const [applyNow, setApplyNow] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState(null)
-
-  useEffect(() => {
-    api.get('/rules')
-      .then(setRules)
-      .catch(e => toast(`Couldn't load your rules - ${e.message}`, 'error'))
-      .finally(() => setLoading(false))
-  }, [toast])
 
   // Live preview while typing, debounced so each keystroke isn't a scan.
   const ready = draft.pattern.trim() && draft.category
@@ -210,7 +205,9 @@ export default function UserRules() {
       </form>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-        {loading ? (
+        {error ? (
+          <InlineError what="your rules" error={error} onRetry={reload} className="m-3" />
+        ) : data == null ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
         ) : rules.length === 0 ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">No rules yet. Add one above.</p>

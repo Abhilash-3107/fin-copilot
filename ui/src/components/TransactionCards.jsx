@@ -23,6 +23,7 @@ export default function TransactionCards({
         return (
           <li
             key={txn.id}
+            data-txn-id={txn.id}
             onClick={() => onSelect?.(txn)}
             className={`flex gap-3 px-4 py-3 cursor-pointer transition-colors ${
               isActive ? 'bg-[#1e2440]' : isSelected ? 'bg-[#171a2e]' : 'active:bg-[#1a1d27]'

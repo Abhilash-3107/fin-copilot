@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { count } from '../lib/plural.js'
@@ -6,40 +6,36 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import GroupCard from '../components/GroupCard.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 
 export default function Groups() {
   const toast = useToast()
-  const [groups, setGroups] = useState([])
   const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState('')
+  const [createError, setCreateError] = useState('')
   const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState(null)
 
-  const loadGroups = useCallback(async (q = '') => {
-    try {
-      const data = await api.get(`/groups${q ? `?q=${encodeURIComponent(q)}` : ''}`)
-      setGroups(data)
-    } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [toast])
-
-  useEffect(() => { loadGroups() }, [loadGroups])
+  // The list follows the search box; an answer to an older keystroke is dropped.
+  const { data, error, reload, setData } = useLoad(useCallback(
+    () => api.get(`/groups${search ? `?q=${encodeURIComponent(search)}` : ''}`), [search],
+  ))
+  const groups = data ?? []
 
   async function createGroup(e) {
     e.preventDefault()
     if (!newName.trim()) return
     setCreating(true)
+    setCreateError('')
     try {
       await api.post('/groups', { name: newName.trim() })
       setNewName('')
-      loadGroups(search)
+      reload()
       toast('Group created', 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      // Beside the field that caused it, e.g. a name that already exists.
+      setCreateError(e.message)
     } finally {
       setCreating(false)
     }
@@ -49,17 +45,12 @@ export default function Groups() {
     if (!deleteTarget) return
     try {
       await api.delete(`/groups/${deleteTarget.id}`)
-      setGroups(gs => gs.filter(g => g.id !== deleteTarget.id))
+      setData(gs => (gs ?? []).filter(g => g.id !== deleteTarget.id))
       toast(`Deleted "${deleteTarget.name}"`, 'info')
       setDeleteTarget(null)
     } catch (e) {
       toast(`Delete failed: ${e.message}`, 'error')
     }
-  }
-
-  function handleSearch(q) {
-    setSearch(q)
-    loadGroups(q)
   }
 
   return (
@@ -75,7 +66,7 @@ export default function Groups() {
           <Search size={14} className="text-[#475569] shrink-0" />
           <input
             value={search}
-            onChange={e => handleSearch(e.target.value)}
+            onChange={e => setSearch(e.target.value)}
             placeholder="Search groups…"
             className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
           />
@@ -83,7 +74,8 @@ export default function Groups() {
         <form onSubmit={createGroup} className="flex gap-2">
           <input
             value={newName}
-            onChange={e => setNewName(e.target.value)}
+            aria-label="New group name"
+            onChange={e => { setNewName(e.target.value); setCreateError('') }}
             placeholder="New group name…"
             className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] flex-1 sm:flex-none sm:w-52 min-w-0 placeholder:text-[#475569]"
           />
@@ -98,8 +90,12 @@ export default function Groups() {
         </form>
       </div>
 
+      {createError && <p role="alert" className="text-sm text-[#fca5a5]">{createError}</p>}
+
       {/* Group list */}
-      {loading ? (
+      {error ? (
+        <InlineError what="your groups" error={error} onRetry={reload} />
+      ) : data == null ? (
         <p className="text-sm text-[#475569]">Loading…</p>
       ) : groups.length === 0 ? (
         <EmptyState
@@ -113,6 +109,7 @@ export default function Groups() {
               key={g.id}
               group={g}
               onDelete={setDeleteTarget}
+              onUpdate={updated => setData(gs => (gs ?? []).map(x => (x.id === updated.id ? { ...x, ...updated } : x)))}
             />
           ))}
         </div>

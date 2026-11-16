@@ -8,6 +8,7 @@ import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
 import { DemoDataProvider } from './contexts/DemoDataContext.jsx'
 import Layout from './components/Layout.jsx'
 import TokenGate from './components/TokenGate.jsx'
+import NotFound from './pages/NotFound.jsx'
 
 // Route-level code splitting: each page is its own chunk, so the ~150 KB
 // Chart.js bundle only loads on the pages that render a chart (Dashboard,
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="upload" element={<Suspense fallback={<PageFallback />}><Upload /></Suspense>} />
             <Route path="insights" element={<Suspense fallback={<PageFallback />}><Insights /></Suspense>} />
             <Route path="settings" element={<Suspense fallback={<PageFallback />}><Settings /></Suspense>} />
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
       </HashRouter>

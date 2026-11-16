@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Copy, Sparkles, Undo2 } from 'lucide-react'
 import dayjs from 'dayjs'
@@ -8,10 +8,12 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import Amount, { formatRupees } from '../components/Amount.jsx'
 import SortCard from '../components/SortCard.jsx'
+import InlineError from '../components/InlineError.jsx'
 import { groupName } from '../components/PayeeHeading.jsx'
 import { resetCategoryPickerCache } from '../components/CategoryPicker.jsx'
 import { labelOf } from '../lib/categoryOptions.js'
 import { count } from '../lib/plural.js'
+import { useDialog } from '../lib/useDialog.js'
 
 // Module-level category cache
 let _catCache = null
@@ -19,6 +21,13 @@ let _catCache = null
 function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
   const { label, items } = propagate
   const [selected, setSelected] = useState(() => new Set(items.map(i => i.transaction_id)))
+  const titleId = useId()
+  const canApply = !applying && selected.size > 0
+  // Escape is "No thanks"; Enter applies to what is ticked.
+  const dialog = useDialog({
+    onCancel: onDismiss,
+    onConfirm: () => { if (canApply) onApply([...selected]) },
+  })
 
   function toggle(id) {
     setSelected(s => {
@@ -30,9 +39,15 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
-      <div className="bg-[#13151f] border border-[#2d3148] rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col">
+      <div
+        {...dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="bg-[#13151f] border border-[#2d3148] rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col outline-none"
+      >
         <div className="px-5 py-4 border-b border-[#2d3148]">
-          <div className="flex items-center gap-2 text-[#e2e8f0] text-sm font-semibold">
+          <div id={titleId} className="flex items-center gap-2 text-[#e2e8f0] text-sm font-semibold">
             <Copy size={15} className="text-[#818cf8]" />
             Apply "{label}" to similar transactions?
           </div>
@@ -65,7 +80,7 @@ function PropagateDialog({ propagate, onApply, onDismiss, applying }) {
         <div className="px-5 py-4 border-t border-[#2d3148] flex gap-3">
           <button
             onClick={() => onApply([...selected])}
-            disabled={applying || selected.size === 0}
+            disabled={!canApply}
             className="flex-1 py-2 rounded-lg bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {applying ? 'Applying…' : `Apply to ${selected.size} transaction${selected.size !== 1 ? 's' : ''}`}
@@ -224,35 +239,43 @@ export default function ReviewQueue() {
     } catch (e) {
       // Never "done": the server was not asked successfully, so nothing is known.
       toast(`Couldn't load the review list - ${e.message}`, 'error')
-      setLoadError(e.message || 'Something went wrong')
+      setLoadError(e)
       return e.message || 'Something went wrong'
     }
   }, [toast])
 
-  useEffect(() => {
-    refresh().finally(() => setLoading(false))
+  useEffect(() => { refresh().finally(() => setLoading(false)) }, [refresh])
 
-    if (!_catCache) {
-      api.get('/categories').then(data => {
+  // What the card needs beside the queue itself. A failure here is said out
+  // loud (with Retry) instead of leaving a card with no categories to pick from.
+  const [sideFailures, setSideFailures] = useState([])
+  const loadSide = useCallback(async () => {
+    const failures = []
+    const note = (what, error) => { failures.push({ what, error }) }
+    await Promise.all([
+      _catCache ? null : api.get('/categories').then(data => {
         _catCache = data
         setTree(data)
-      }).catch(() => {})
-    }
+      }).catch(e => note('the categories', e)),
 
-    // Fetch fresh each mount so a toggle on the Settings page takes effect.
-    api.get('/config').then(cfg => {
-      setDevMode(!!cfg.dev_mode)
-      setAiActive(!!cfg.ai_active)
-    }).catch(() => {})
+      // Fetch fresh each mount so a toggle on the Settings page takes effect.
+      api.get('/config').then(cfg => {
+        setDevMode(!!cfg.dev_mode)
+        setAiActive(!!cfg.ai_active)
+      }).catch(e => note('your settings', e)),
 
-    api.get('/policies')
-      .then(ps => setHasPolicy(Array.isArray(ps) && ps.some(p => p.enabled)))
-      .catch(() => {})
+      api.get('/policies')
+        .then(ps => setHasPolicy(Array.isArray(ps) && ps.some(p => p.enabled)))
+        .catch(e => note('your policies', e)),
 
-    api.get('/annotations/learned-rules')
-      .then(rules => { if (Array.isArray(rules)) baselineRules.current = new Set(rules.map(ruleId)) })
-      .catch(() => {})
-  }, [refresh])
+      // Only the "taught N payees" line reads these; a failure just drops the line.
+      api.get('/annotations/learned-rules')
+        .then(rules => { if (Array.isArray(rules)) baselineRules.current = new Set(rules.map(ruleId)) })
+        .catch(() => {}),
+    ])
+    setSideFailures(failures)
+  }, [])
+  useEffect(() => { loadSide() }, [loadSide])
 
   // The counts (set aside, still waiting) follow the server after every answer
   // and skip, never a local tally that an answer to a skipped card could leave stale.
@@ -714,20 +737,17 @@ export default function ReviewQueue() {
 
   if (outOfCards && loadError) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-6" role="alert">
-        <h2 className="text-lg font-semibold text-[#e2e8f0]">Couldn't load your review list</h2>
-        <p className="text-sm text-[#94a3b8] max-w-sm">{loadError}</p>
-        <button
-          disabled={retrying}
-          onClick={async () => {
+      <div className="max-w-3xl mx-auto w-full px-4 py-10">
+        <InlineError
+          what="your review list"
+          error={loadError}
+          retrying={retrying}
+          onRetry={async () => {
             setRetrying(true)
             await refresh()
             setRetrying(false)
           }}
-          className="rounded-lg bg-[#6366f1] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {retrying ? 'Retrying…' : 'Retry'}
-        </button>
+        />
       </div>
     )
   }
@@ -839,6 +859,15 @@ export default function ReviewQueue() {
   return (
     <div className="flex flex-col h-full px-4 py-5">
       {propagateDialog}
+      {sideFailures.length > 0 && (
+        <div className="max-w-3xl mx-auto w-full mb-4">
+          <InlineError
+            what={sideFailures.map(f => f.what).join(' and ')}
+            error={sideFailures[0].error}
+            onRetry={loadSide}
+          />
+        </div>
+      )}
       {/* Progress */}
       <div className="max-w-3xl mx-auto w-full mb-5">
         <div className="flex justify-between text-xs text-[#64748b] mb-1.5">

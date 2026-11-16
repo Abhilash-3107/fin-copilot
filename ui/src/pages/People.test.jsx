@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 const { mockApi } = vi.hoisted(() => ({
@@ -118,5 +118,37 @@ describe('People', () => {
     expect(screen.queryByText('Add a person')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Add Person/i }))
     expect(screen.getByText('Add a person')).toBeInTheDocument()
+  })
+})
+
+describe('People when the API fails', () => {
+  it('says the list could not load, never "No people yet", and recovers on Retry', async () => {
+    mockApi.get.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderPeople()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your people.")
+    expect(screen.queryByText('No people yet')).not.toBeInTheDocument()
+    mockApi.get.mockResolvedValue(PEOPLE)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Karabi')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('People duplicates', () => {
+  it('shows the refusal inside the add dialog and keeps it open', async () => {
+    mockApi.get.mockResolvedValue(PEOPLE)
+    mockApi.post.mockRejectedValue(Object.assign(new Error('You already have Karabi with the match "karabi".'), { status: 409 }))
+    renderPeople()
+    await screen.findByText('Karabi')
+    fireEvent.click(screen.getByRole('button', { name: /Add Person/i }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a person' })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Karabi'), { target: { value: 'Karabi' } })
+    fireEvent.change(within(dialog).getByPlaceholderText(/UPI id or name/), { target: { value: 'karabi' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add Person' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('You already have Karabi with the match "karabi".')
+    expect(screen.getByRole('dialog', { name: 'Add a person' })).toBeInTheDocument()
+    // Typing again clears the message.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Karabi'), { target: { value: 'Karabi B' } })
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
   })
 })

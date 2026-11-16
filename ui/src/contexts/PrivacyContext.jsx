@@ -1,5 +1,7 @@
 import { createContext, useContext, useCallback, useEffect, useState } from 'react'
 
+import { readStored, writeStored } from '../lib/storage.js'
+
 const PrivacyContext = createContext(null)
 
 const STORAGE_KEY = 'fc_privacy_hidden'
@@ -11,12 +13,12 @@ function isEditableTarget(el) {
 }
 
 export function PrivacyProvider({ children }) {
-  const [hidden, setHidden] = useState(() => localStorage.getItem(STORAGE_KEY) === '1')
+  const [hidden, setHidden] = useState(() => readStored(STORAGE_KEY) === '1')
 
   const toggle = useCallback(() => {
     setHidden(prev => {
       const next = !prev
-      localStorage.setItem(STORAGE_KEY, next ? '1' : '0')
+      writeStored(STORAGE_KEY, next ? '1' : '0')
       return next
     })
   }, [])

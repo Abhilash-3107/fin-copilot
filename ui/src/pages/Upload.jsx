@@ -6,6 +6,7 @@ import { api, pollAnnotationJob } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import InlineError from '../components/InlineError.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
@@ -121,6 +122,8 @@ export default function Upload() {
   // The files of this drop, one entry each, and the ones refused up front.
   const [entries, setEntries] = useState([])
   const [refused, setRefused] = useState([])
+  // Until the list answers, "No statements yet" would be a guess; a failure says so with Retry.
+  const [listState, setListState] = useState({ loaded: false, error: null })
   const [password, setPassword] = useState('')
   const [uploading, setUploading] = useState(false)
   const nextId = useRef(0)
@@ -139,12 +142,13 @@ export default function Upload() {
     try {
       const data = await api.get('/statements')
       setStatements(data)
+      setListState({ loaded: true, error: null })
       return data
     } catch (e) {
-      toast(`Couldn't load your statements - ${e.message}`, 'error')
+      setListState({ loaded: true, error: e })
       return null
     }
-  }, [toast])
+  }, [])
 
   useEffect(() => { loadStatements() }, [loadStatements])
 
@@ -509,7 +513,11 @@ export default function Upload() {
         <p className="text-xs font-semibold uppercase tracking-wider text-[#64748b] px-4 py-3 border-b border-[#2d3148]">
           Your Statements
         </p>
-        {statements.length === 0 ? (
+        {listState.error ? (
+          <InlineError what="your statements" error={listState.error} onRetry={loadStatements} className="m-3" />
+        ) : !listState.loaded ? (
+          <p className="px-4 py-5 text-sm text-[#475569]">Loading…</p>
+        ) : statements.length === 0 ? (
           <p className="px-4 py-5 text-sm text-[#475569]">No statements yet - drop one above to get started</p>
         ) : (
           <table className="w-full text-sm">

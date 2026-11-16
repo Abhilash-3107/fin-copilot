@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
@@ -7,10 +7,11 @@ import {
 import { Line } from 'react-chartjs-2'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
-import { useToast } from '../contexts/ToastContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import RecurringPanel from '../components/RecurringPanel.jsx'
@@ -405,32 +406,15 @@ function MerchantsPanel({ merchants, heading, month }) {
 }
 
 export default function Insights() {
-  const toast = useToast()
   const { month: periodMonth } = usePeriod()
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
 
   // The page is month-anchored: every number answers "how was this month".
   // "All time" falls back to the latest month with data (the server's default),
   // and the picker (allowAll={false}) shows that month.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      try {
-        const summary = await api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`)
-        if (!cancelled) setData(summary)
-      } catch (e) {
-        if (!cancelled) toast(`Couldn't load your insights - ${e.message}`, 'error')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [requestMonth, toast])
+  const { data, loading, error, reload } = useLoad(useCallback(
+    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
+  ))
 
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
@@ -455,6 +439,8 @@ export default function Insights() {
 
       {loading ? (
         <p className="text-sm text-[#475569]">Crunching your numbers…</p>
+      ) : error ? (
+        <InlineError what="your Money Map" error={error} onRetry={reload} />
       ) : !data?.month ? (
         <p className="text-sm text-[#475569]">Nothing here yet - upload a statement to get started.</p>
       ) : (

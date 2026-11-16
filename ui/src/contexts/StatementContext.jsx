@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
+import { readStored, writeStored } from '../lib/storage.js'
 
 const StatementContext = createContext(null)
 
@@ -9,8 +10,13 @@ export function StatementProvider({ children }) {
   const [statements, setStatements] = useState([])
   const [activeStatement, setActiveStatementRaw] = useState(null)
   const [loading, setLoading] = useState(true)
+  // The list everything else is scoped by: when it fails the app says so, with Retry.
+  const [error, setError] = useState(null)
+  const [attempt, setAttempt] = useState(0)
+  const reload = useCallback(() => setAttempt(n => n + 1), [])
 
   useEffect(() => {
+    setError(null)
     api.get('/statements')
       .then(data => {
         // Sort newest statement_month first, then by uploaded_at for same month
@@ -21,23 +27,22 @@ export function StatementProvider({ children }) {
         })
         setStatements(sorted)
 
-        const savedId = localStorage.getItem(STORAGE_KEY)
+        const savedId = readStored(STORAGE_KEY)
         const saved = savedId ? sorted.find(s => s.id === savedId) : null
         // Default to most recent if nothing saved or saved no longer exists
         setActiveStatementRaw(saved ?? sorted[0] ?? null)
       })
-      .catch(() => {})
+      .catch(setError)
       .finally(() => setLoading(false))
-  }, [])
+  }, [attempt])
 
   function setActiveStatement(stmt) {
     setActiveStatementRaw(stmt)
-    if (stmt) localStorage.setItem(STORAGE_KEY, stmt.id)
-    else localStorage.removeItem(STORAGE_KEY)
+    writeStored(STORAGE_KEY, stmt ? stmt.id : null)
   }
 
   return (
-    <StatementContext.Provider value={{ statements, activeStatement, setActiveStatement, loading }}>
+    <StatementContext.Provider value={{ statements, activeStatement, setActiveStatement, loading, error, reload }}>
       {children}
     </StatementContext.Provider>
   )

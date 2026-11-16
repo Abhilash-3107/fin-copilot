@@ -3,6 +3,7 @@ import { Plus, Pencil, GitMerge, Check, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import TaxonomyHealth from './TaxonomyHealth.jsx'
+import InlineError from './InlineError.jsx'
 
 // Category management (4.13): add / rename / merge subcategories under each
 // top-level category. Top-level categories are fixed; subcategories are the
@@ -17,19 +18,21 @@ export default function CategorySettings() {
   const [editName, setEditName] = useState('')
   const [merging, setMerging] = useState(null)    // subcategory id being merged
   const [health, setHealth] = useState(null)
+  const [loadError, setLoadError] = useState(null)
 
   async function load() {
     try {
       const [categories, tidy] = await Promise.all([api.get('/categories'), api.get('/categories/tidy-up')])
       setCats(categories)
       setHealth(tidy)
+      setLoadError(null)
     } catch (e) {
-      toast(`Couldn't load categories - ${e.message}`, 'error')
+      setLoadError(e)
     } finally {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [])
 
   const parents = cats.filter(c => c.parent_id === null)
   const subsOf = pid => cats.filter(c => c.parent_id === pid)
@@ -72,6 +75,7 @@ export default function CategorySettings() {
   }
 
   if (loading) return <p className="text-sm text-[#475569]">Loading…</p>
+  if (loadError && cats.length === 0) return <InlineError what="your categories" error={loadError} onRetry={load} />
 
   return (
     <div className="space-y-5">

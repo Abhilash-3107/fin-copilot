@@ -14,6 +14,7 @@ import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Amount from '../components/Amount.jsx'
+import InlineError from '../components/InlineError.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 
@@ -113,8 +114,8 @@ function buildAnnotationMap(txns) {
 
 export default function Transactions() {
   const toast = useToast()
-  const { statements, activeStatement, setActiveStatement } = useStatement()
-  const { month: periodMonth, setMonth } = usePeriod()
+  const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
+  const { month: periodMonth, setMonth, months } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const selectedStmt = activeStatement?.id ?? ''
@@ -143,8 +144,16 @@ export default function Transactions() {
   const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
+  // Each fetch that can fail keeps its error, so the block says so (with Retry)
+  // instead of reading as "no transactions".
+  const [loadError, setLoadError] = useState(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [moreError, setMoreError] = useState(null)
+  const [facetsError, setFacetsError] = useState(null)
+  const [categoriesError, setCategoriesError] = useState(null)
+  const [detailError, setDetailError] = useState(null)
+  const [linkError, setLinkError] = useState(false)
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   // Any tracked run holds the single job slot, so Auto-annotate waits for it.
@@ -190,6 +199,7 @@ export default function Transactions() {
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
     setLoading(true)
+    setLoadError(null)
     try {
       const [txns, totals] = await Promise.all([
         api.get(`/transactions?${buildFilterParams()}`),
@@ -202,16 +212,17 @@ export default function Transactions() {
       setHasMore(txns.length === PAGE_SIZE)
       setSelected(new Set()) // a fresh result set invalidates the old selection
     } catch (e) {
-      toast(`Failed to load: ${e.message}`, 'error')
+      if (id === loadRef.current) setLoadError(e)
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
-  }, [buildFilterParams, buildScopeParams, toast])
+  }, [buildFilterParams, buildScopeParams])
 
   async function loadMore() {
     const last = transactions.at(-1)
     if (!last) return
     setLoadingMore(true)
+    setMoreError(null)
     try {
       const params = buildFilterParams()
       params.set('after', last.id)
@@ -220,7 +231,7 @@ export default function Transactions() {
       setAnnotationMap(prev => ({ ...prev, ...buildAnnotationMap(more) }))
       setHasMore(more.length === PAGE_SIZE)
     } catch (e) {
-      toast(`Failed to load more: ${e.message}`, 'error')
+      setMoreError(e)
     } finally {
       setLoadingMore(false)
     }
@@ -284,8 +295,10 @@ export default function Transactions() {
     if (month) params.set('month', month)
     try {
       setFacets(await api.get(`/transactions/facets?${params}`))
-    } catch (_) {
-      // Non-fatal: dropdowns just keep their previous options.
+      setFacetsError(null)
+    } catch (e) {
+      // The dropdowns keep their previous options; the bar says so, with Retry.
+      setFacetsError(e)
     }
   }, [selectedStmt, month])
 
@@ -293,9 +306,11 @@ export default function Transactions() {
 
   // Full taxonomy for the bulk set-category picker (facets only list categories
   // already present in data; here the user can assign any of them).
-  useEffect(() => {
-    api.get('/categories').then(setCategoryTree).catch(() => {})
+  const loadCategories = useCallback(() => {
+    setCategoriesError(null)
+    api.get('/categories').then(setCategoryTree).catch(setCategoriesError)
   }, [])
+  useEffect(() => { loadCategories() }, [loadCategories])
 
   const bulkOptions = (() => {
     const byId = Object.fromEntries(categoryTree.map(c => [c.id, c]))
@@ -311,6 +326,8 @@ export default function Transactions() {
   // writeback below also changes searchParams - the ref lets us tell the two
   // apart so a writeback never re-seeds (or clears the statement scope).
   const lastWrittenParams = useRef(null)
+  const pendingPayment = useRef(null)
+  const scrollTarget = useRef(null)
   useEffect(() => {
     if (searchParams.toString() === lastWrittenParams.current) return
     const category = searchParams.get('category')
@@ -334,7 +351,10 @@ export default function Transactions() {
     if (m && m !== periodMonth) setMonth(m)
     // A deep link means "this slice of everything": a lingering statement
     // selection would AND with the link's month and silently empty the list.
-    if (category || source || merchant || payeeKeys.length || person || q || m) clearStatementForDeepLink.current = true
+    // A payment link (the palette) names one payment: the effect below opens it once it can.
+    const linked = searchParams.get('txn')
+    if (linked) pendingPayment.current = linked
+    if (category || source || merchant || payeeKeys.length || person || q || m || linked) clearStatementForDeepLink.current = true
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -403,41 +423,96 @@ export default function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodMonth, activeStatement])
 
-  // Keyboard navigation
+  // Escape closes the open payment. While the user is typing in it, the first
+  // Escape only leaves the field, so a half-typed edit is not thrown away.
+  const panelOpen = activeTxn != null
   useEffect(() => {
     function handler(e) {
-      if (e.key === 'Escape') setActiveTxn(null)
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const t = e.target
+      const typing = t?.tagName === 'INPUT' || t?.tagName === 'TEXTAREA' || t?.tagName === 'SELECT' || t?.isContentEditable
+      if (typing && panelOpen) { t.blur?.(); return }
+      setActiveTxn(null)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [panelOpen])
+
+  // The payment's own record decides what the panel shows: its annotation, if any.
+  function showRecord(full) {
+    setActiveTxn(prev => (prev?.id === full.id ? { ...prev, ...nameFields(full) } : prev))
+    if (full.annotation_id) {
+      setActiveAnnotation({
+        id: full.annotation_id,
+        category: full.category,
+        subcategory: full.subcategory,
+        merchant: full.merchant,
+        tags: full.tags,
+        confidence: full.confidence,
+        source: full.source,
+        // dev mode only: backend attaches the reasoning trace when DEV_MODE is on
+        reasoning: full.reasoning ?? null,
+      })
+    } else {
+      setActiveAnnotation(null)
+    }
+  }
 
   async function openAnnotationPanel(txn) {
     setActiveTxn(txn)
     setActiveAnnotation(undefined) // sentinel: loading
-    // Fetch full transaction to get annotation fields
+    setDetailError(null)
+    setLinkError(false)
+    // Fetch full transaction to get annotation fields. When that fails the panel
+    // must not pose as a new annotation for a payment that may already have one.
     try {
-      const full = await api.get(`/transactions/${txn.id}`)
-      setActiveTxn(prev => (prev?.id === txn.id ? { ...prev, ...nameFields(full) } : prev))
-      if (full.annotation_id) {
-        setActiveAnnotation({
-          id: full.annotation_id,
-          category: full.category,
-          subcategory: full.subcategory,
-          merchant: full.merchant,
-          tags: full.tags,
-          confidence: full.confidence,
-          source: full.source,
-          // dev mode only: backend attaches the reasoning trace when DEV_MODE is on
-          reasoning: full.reasoning ?? null,
-        })
-      } else {
-        setActiveAnnotation(null)
-      }
-    } catch (_) {
-      setActiveAnnotation(null)
+      showRecord(await api.get(`/transactions/${txn.id}`))
+    } catch (e) {
+      setDetailError(e)
     }
   }
+
+  // A link to one payment (the palette): show the month it is in, drop a statement
+  // scope that would hide it, and open it. Waits for the statements so the month
+  // can be matched against the ones the period picker knows.
+  useEffect(() => {
+    const id = pendingPayment.current
+    if (!id || statementsLoading) return
+    pendingPayment.current = null
+    setLinkError(false)
+    api.get(`/transactions/${id}`)
+      .then(full => {
+        const m = String(full.txn_date).slice(0, 7)
+        setMonth(months.includes(m) ? m : ALL_TIME)
+        setActiveStatement(null)
+        scrollTarget.current = full.id
+        setDetailError(null)
+        setActiveTxn(full)
+        showRecord(full)
+      })
+      .catch(() => setLinkError(true))
+      .finally(() => {
+        setSearchParams(prev => {
+          const next = new URLSearchParams(prev)
+          next.delete('txn')
+          return next
+        }, { replace: true })
+      })
+    // showRecord and the setters are stable in effect: only a new link or the
+    // statements finishing their load should run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, statementsLoading])
+
+  // Bring the linked payment's row into view once its month has loaded.
+  useEffect(() => {
+    if (!scrollTarget.current || loading) return
+    const rows = [...document.querySelectorAll(`[data-txn-id="${scrollTarget.current}"]`)]
+    const row = rows.find(el => el.offsetParent !== null) ?? rows[0]
+    if (row) {
+      row.scrollIntoView?.({ block: 'center' })
+      scrollTarget.current = null
+    }
+  }, [transactions, loading])
 
   async function autoAnnotate() {
     if (!selectedStmt) {
@@ -582,6 +657,10 @@ export default function Transactions() {
           onChange={setCategoryFilter}
         />
 
+        {facetsError && (
+          <InlineError what="the filter options" error={facetsError} onRetry={loadFacets} compact />
+        )}
+
         {merchantFilter && (
           <button
             onClick={() => setMerchantFilter('')}
@@ -658,6 +737,9 @@ export default function Transactions() {
             Clear
           </button>
           <div className="flex items-center gap-2 ml-auto">
+            {categoriesError && (
+              <InlineError what="the categories" error={categoriesError} onRetry={loadCategories} compact className="text-[#fecaca]" />
+            )}
             <select
               value={bulkCategory}
               onChange={e => setBulkCategory(e.target.value)}
@@ -679,7 +761,14 @@ export default function Transactions() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
-        {!loading && transactions.length === 0 ? (
+        {linkError && (
+          <p role="alert" className="m-4 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
+            Couldn't find that payment. It may have been removed.
+          </p>
+        )}
+        {loadError ? (
+          <InlineError what="your transactions" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
+        ) : !loading && transactions.length === 0 ? (
           <EmptyState
             title="No transactions"
             description={filtersActive ? 'No transactions match the current filters.' : 'Upload a statement to get started.'}
@@ -713,6 +802,9 @@ export default function Transactions() {
                 onToggle={toggleSelect}
               />
             </div>
+            {moreError && (
+              <InlineError what="more transactions" error={moreError} onRetry={loadMore} retrying={loadingMore} className="mx-4 mt-3" />
+            )}
             {hasMore && (
               <div className="flex justify-center py-4">
                 <button
@@ -733,9 +825,11 @@ export default function Transactions() {
         <AnnotationPanel
           txn={activeTxn}
           annotation={activeAnnotation}
-          onClose={() => { setActiveTxn(null); setActiveAnnotation(null) }}
+          onClose={() => { setActiveTxn(null); setActiveAnnotation(null); setDetailError(null); scrollTarget.current = null }}
           onSaved={applySavedAnnotation}
           onRenamed={applyRename}
+          loadError={detailError}
+          onRetryLoad={() => openAnnotationPanel(activeTxn)}
         />
       )}
     </div>

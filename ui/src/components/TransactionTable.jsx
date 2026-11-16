@@ -64,6 +64,7 @@ export default function TransactionTable({
           return (
             <tr
               key={txn.id}
+              data-txn-id={txn.id}
               onClick={() => onSelect?.(txn)}
               className={`border-b border-[#1a1d27] cursor-pointer transition-colors duration-100 ${
                 isActive

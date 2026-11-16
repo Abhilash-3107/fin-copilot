@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 export default function PeoplePicker({ selectedIds = [], allPeople = [], onChange, onCreatePerson, compact = false }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
+  // Which option the keyboard is on; -1 until there is something to pick.
+  const [active, setActive] = useState(-1)
   const ref = useRef(null)
+  const listId = useId()
 
   useEffect(() => {
     function handler(e) {
@@ -21,6 +24,40 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
     p => !selectedIds.includes(p.id) && p.name.toLowerCase().includes(query.toLowerCase())
   )
   const showCreate = query.trim() && !allPeople.some(p => p.name.toLowerCase() === query.toLowerCase())
+
+  // One ordered list for the mouse and the keyboard: the matches, then "Create".
+  const matches = filtered.slice(0, 8)
+  const options = [
+    ...matches.map(p => ({ kind: 'person', person: p })),
+    ...(showCreate ? [{ kind: 'create' }] : []),
+  ]
+  const menuOpen = open && options.length > 0
+  const optionId = i => `${listId}-${i}`
+
+  function choose(option) {
+    if (option.kind === 'person') add(option.person)
+    else create()
+  }
+
+  function onKeyDown(e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!options.length) return
+      e.preventDefault()
+      setOpen(true)
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      setActive(a => Math.min(Math.max(a + step, 0), options.length - 1))
+    } else if (e.key === 'Enter') {
+      const option = menuOpen ? options[active] : null
+      if (!option) return
+      e.preventDefault()
+      choose(option)
+    } else if (e.key === 'Escape' && menuOpen) {
+      // Only closes the menu; the typing stays and nothing behind it reacts.
+      e.preventDefault()
+      e.stopPropagation()
+      setOpen(false)
+    }
+  }
 
   function add(person) {
     onChange([...selectedIds, person.id])
@@ -53,35 +90,51 @@ export default function PeoplePicker({ selectedIds = [], allPeople = [], onChang
         ))}
         <input
           value={query}
-          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onChange={e => { setQuery(e.target.value); setOpen(true); setActive(e.target.value.trim() ? 0 : -1) }}
           onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          role="combobox"
+          aria-expanded={menuOpen}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={menuOpen && active >= 0 ? optionId(active) : undefined}
           placeholder={selected.length === 0 ? (compact ? 'Tag people…' : 'Search people…') : ''}
           aria-label="Search people"
           className={`bg-transparent border-none outline-none text-[#e2e8f0] flex-1 placeholder:text-[#475569] ${compact ? 'text-xs min-w-[60px]' : 'text-sm min-w-[80px]'}`}
         />
       </div>
-      {open && (filtered.length > 0 || showCreate) && (
-        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-[#1a1d27] border border-[#2d3148] rounded-md shadow-xl overflow-hidden">
-          {filtered.slice(0, 8).map(p => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => add(p)}
-              className="w-full text-left px-3 py-2 text-sm text-[#e2e8f0] hover:bg-[#1e2440] transition-colors"
+      {menuOpen && (
+        <div
+          id={listId}
+          role="listbox"
+          aria-label="People"
+          className="absolute z-20 top-full left-0 right-0 mt-1 bg-[#1a1d27] border border-[#2d3148] rounded-md shadow-xl overflow-hidden"
+        >
+          {options.map((option, i) => (
+            <div
+              key={option.kind === 'person' ? option.person.id : 'create'}
+              id={optionId(i)}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={e => e.preventDefault()}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => choose(option)}
+              className={
+                option.kind === 'person'
+                  ? `w-full text-left px-3 py-2 text-sm text-[#e2e8f0] cursor-pointer transition-colors ${i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1e2440]'}`
+                  : `w-full text-left px-3 py-2 text-sm text-[#6366f1] cursor-pointer transition-colors border-t border-[#2d3148] ${i === active ? 'bg-[#1e2440]' : 'hover:bg-[#1e2440]'}`
+              }
             >
-              {p.name}
-              {p.upi && <span className="ml-2 text-xs text-[#64748b]">@{p.upi}</span>}
-            </button>
+              {option.kind === 'person' ? (
+                <>
+                  {option.person.name}
+                  {option.person.upi && <span className="ml-2 text-xs text-[#64748b]">{option.person.upi}</span>}
+                </>
+              ) : (
+                <>+ Create "{query.trim()}"</>
+              )}
+            </div>
           ))}
-          {showCreate && (
-            <button
-              type="button"
-              onClick={create}
-              className="w-full text-left px-3 py-2 text-sm text-[#6366f1] hover:bg-[#1e2440] transition-colors border-t border-[#2d3148]"
-            >
-              + Create "{query.trim()}"
-            </button>
-          )}
         </div>
       )}
     </div>

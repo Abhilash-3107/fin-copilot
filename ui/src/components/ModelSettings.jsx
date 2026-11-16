@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, XCircle, Loader2, Plug } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import InlineError from './InlineError.jsx'
 
 const PROVIDERS = [
   { id: 'ollama', label: 'Ollama', hint: 'Local models on your machine (default). Private, no API key.' },
@@ -137,13 +138,16 @@ export default function ModelSettings() {
   // Missing field (older server) or health not loaded yet: assume available.
   const builtinAvailable = health?.local_embeddings_available !== false
 
-  useEffect(() => {
+  const [loadError, setLoadError] = useState(null)
+  const loadConfig = useCallback(() => {
+    setLoadError(null)
     api.get('/config/llm')
       .then(c => setCfg({ ...c, llm_api_key: '' }))
-      .catch(e => toast(`Couldn't load model settings - ${e.message}`, 'error'))
+      .catch(setLoadError)
       .finally(() => setLoading(false))
     api.get('/health').then(setHealth).catch(() => {})
-  }, [toast])
+  }, [])
+  useEffect(() => { loadConfig() }, [loadConfig])
 
   function set(key, value) {
     setCfg(c => ({ ...c, [key]: value }))
@@ -207,6 +211,7 @@ export default function ModelSettings() {
     }
   }
 
+  if (loadError) return <InlineError what="your model settings" error={loadError} onRetry={loadConfig} />
   if (loading || !cfg) return <p className="text-sm text-[#475569]">Loading…</p>
 
   const provider = cfg.llm_provider

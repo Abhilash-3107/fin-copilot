@@ -1,5 +1,6 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useState } from 'react'
 import { useStatement } from './StatementContext.jsx'
+import { readStored, writeStored } from '../lib/storage.js'
 
 const PeriodContext = createContext(null)
 
@@ -10,7 +11,7 @@ export const ALL_TIME = 'all'
 
 export function PeriodProvider({ children }) {
   const { statements } = useStatement()
-  const [month, setMonthRaw] = useState(() => localStorage.getItem(STORAGE_KEY) || null)
+  const [month, setMonthRaw] = useState(() => readStored(STORAGE_KEY) || null)
 
   // The months the user actually has data for, newest first.
   const months = useMemo(() => {
@@ -26,8 +27,7 @@ export function PeriodProvider({ children }) {
 
   const setMonth = useCallback(next => {
     setMonthRaw(next)
-    if (next) localStorage.setItem(STORAGE_KEY, next)
-    else localStorage.removeItem(STORAGE_KEY)
+    writeStored(STORAGE_KEY, next || null)
   }, [])
 
   return (

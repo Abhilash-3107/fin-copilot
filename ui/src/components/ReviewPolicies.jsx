@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
+import InlineError from './InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import { formatRupees } from './Amount.jsx'
 
 const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
@@ -19,18 +21,11 @@ function sortedMessage(resolved) {
 // one kind today: small UPI payments to people who aren't on the People page.
 export default function ReviewPolicies() {
   const toast = useToast()
-  const [policies, setPolicies] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { data, error, reload, setData: setPolicies } = useLoad(useCallback(() => api.get('/policies'), []))
+  const policies = data ?? []
   const [draft, setDraft] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState(null)
-
-  useEffect(() => {
-    api.get('/policies')
-      .then(setPolicies)
-      .catch(e => toast(`Couldn't load your policies - ${e.message}`, 'error'))
-      .finally(() => setLoading(false))
-  }, [toast])
 
   const amount = Number(draft.max_amount)
   const ready = draft.category && amount > 0
@@ -146,7 +141,9 @@ export default function ReviewPolicies() {
       </form>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-        {loading ? (
+        {error ? (
+          <InlineError what="your policies" error={error} onRetry={reload} className="m-3" />
+        ) : data == null ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
         ) : policies.length === 0 ? (
           <p className="px-5 py-4 text-sm text-[#64748b]">No policies yet.</p>

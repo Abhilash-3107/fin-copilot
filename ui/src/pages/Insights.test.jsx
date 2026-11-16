@@ -353,3 +353,20 @@ describe('privacy mode', () => {
     expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
   })
 })
+
+describe('Insights when the API fails', () => {
+  it('says the Money Map could not load, never "Nothing here yet", and recovers on Retry', async () => {
+    const base = mockApi.get.getMockImplementation()
+    let failing = true
+    mockApi.get.mockImplementation(path => (
+      failing && path.startsWith('/insights') ? Promise.reject(new TypeError('Failed to fetch')) : base(path)
+    ))
+    renderInsights()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your Money Map.")
+    expect(screen.queryByText(/Nothing here yet/)).not.toBeInTheDocument()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText(/What changed/i)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
