@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const { mockApi, toastSpy } = vi.hoisted(() => ({
@@ -401,5 +401,101 @@ describe('AnnotationPanel note', () => {
     await user.type(screen.getByRole('textbox', { name: 'Your note' }), 'x{Enter}')
     expect(toastSpy).toHaveBeenCalledWith("Couldn't save the note. Finance Copilot isn't answering.", 'error')
     expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveValue('x')
+  })
+})
+
+describe('AnnotationPanel switching payments', () => {
+  const OTHER = { ...TXN, id: 200, payee: 'Zomato', payee_all: 'Zomato', counterparty_key: 'ZOMATO', note: 'pizza night' }
+
+  function renderSwitchable() {
+    const wrap = txn => (
+      <PrivacyProvider>
+        <ToastProvider>
+          <AnnotationPanel txn={txn} annotation={null} onClose={() => {}} onSaved={() => {}} />
+        </ToastProvider>
+      </PrivacyProvider>
+    )
+    const view = render(wrap(TXN))
+    return { switchTo: txn => view.rerender(wrap(txn)) }
+  }
+
+  it('drops a note being typed when the panel moves to another payment', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({})
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), ' MEANT FOR SWIGGY')
+
+    switchTo(OTHER)
+    await act(async () => {})
+
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Zomato' })).toBeInTheDocument()
+    expect(mockApi.put).not.toHaveBeenCalled()
+  })
+
+  it('drops a name being typed when the panel moves to another payment', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({})
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), ' MEANT FOR SWIGGY')
+
+    switchTo(OTHER)
+    await act(async () => {})
+
+    expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument()
+    expect(mockApi.put).not.toHaveBeenCalled()
+  })
+
+  it('a note opened on the new payment starts from that payment, not the last one', async () => {
+    const user = userEvent.setup()
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), ' extra')
+    switchTo(OTHER)
+    await act(async () => {})
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveValue('pizza night')
+  })
+})
+
+describe('AnnotationPanel focus between forms', () => {
+  it('moves focus into the note field when Edit note replaces an open rename form', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveFocus()
+  })
+
+  it('moves focus into the name field when Rename replaces an open note form', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus()
+  })
+
+  it('still returns focus to Rename on cancel and to the note button on cancel', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.click(within(screen.getByRole('textbox', { name: 'Your note' }).closest('form')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Edit note' })).toHaveFocus()
+  })
+
+  it('returns focus to Rename after a rename is saved', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({ ...TXN, payee: 'Swiggy Instamart' })
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), ' Instamart{Enter}')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
   })
 })

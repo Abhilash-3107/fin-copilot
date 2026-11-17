@@ -331,25 +331,33 @@ function ConfidenceBar({ confidence }) {
 // `loadError` means the payment's own record could not be read, so whether it
 // already has an annotation is unknown: the form is replaced by the error and
 // saving waits for a successful Retry.
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, loadError = null, onRetryLoad }) {
+export default function AnnotationPanel(props) {
+  // Everything the panel holds belongs to one payment: a half-typed name or note,
+  // the loaded groups, the scroll position. Keying on the id starts it fresh when
+  // another payment opens (the palette can jump to one while a form is open), so
+  // text typed for one payment can never be saved onto another.
+  return <PaymentPanel key={props.txn?.id} {...props} />
+}
+
+function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, loadError = null, onRetryLoad }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
   const [noting, setNoting] = useState(false)
   const renameButton = useRef(null)
   const noteButton = useRef(null)
-  const wasRenaming = useRef(false)
-  const wasNoting = useRef(false)
+  const openForm = renaming ? 'rename' : noting ? 'note' : null
+  const lastForm = useRef(null)
 
-  // A form takes its button's place while open; when it closes, focus goes back
-  // to the button so a keyboard user is not left at the top of the page.
+  // A form takes its button's place while open; when the last one closes, focus
+  // goes back to that form's button so a keyboard user is not left at the top
+  // of the page. Switching straight from one form to the other leaves focus
+  // where the newly opened form put it.
   useEffect(() => {
-    if (wasRenaming.current && !renaming) renameButton.current?.focus()
-    wasRenaming.current = renaming
-  }, [renaming])
-  useEffect(() => {
-    if (wasNoting.current && !noting) noteButton.current?.focus()
-    wasNoting.current = noting
-  }, [noting])
+    if (!openForm && lastForm.current) {
+      (lastForm.current === 'rename' ? renameButton : noteButton).current?.focus()
+    }
+    lastForm.current = openForm
+  }, [openForm])
   const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
