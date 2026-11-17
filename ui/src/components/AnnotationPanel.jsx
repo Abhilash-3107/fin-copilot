@@ -11,6 +11,11 @@ import ReasoningPanel from './ReasoningPanel.jsx'
 import InlineError from './InlineError.jsx'
 import { couldnt } from '../lib/errors.js'
 import { noteLabel } from './PayeeHeading.jsx'
+import { capCharacters } from '../lib/text.js'
+
+// Same limits as the API, counted in characters the same way.
+const MAX_NAME = 80
+const MAX_NOTE = 500
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -205,8 +210,7 @@ function RenameForm({ txn, onRenamed, onCancel }) {
         id="rename-input"
         autoFocus
         value={name}
-        maxLength={80}
-        onChange={e => setName(e.target.value)}
+        onChange={e => setName(capCharacters(e.target.value, MAX_NAME))}
         onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
         className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
       />
@@ -264,7 +268,9 @@ function NoteForm({ txn, onNoted, onCancel }) {
 
   async function save(value) {
     const text = value.trim()
-    if (text === (txn.note ?? '')) { onCancel(); return }
+    // Nothing to change: the text is what the row shows already, or there is no
+    // note of the user's to clear.
+    if (text === (txn.note ?? '') || (!text && !txn.note_is_yours)) { onCancel(); return }
     setSaving(true)
     try {
       onNoted(await api.put(`/transactions/${txn.id}/note`, { note: text || null }))
@@ -285,8 +291,7 @@ function NoteForm({ txn, onNoted, onCancel }) {
         id="note-input"
         autoFocus
         value={note}
-        maxLength={500}
-        onChange={e => setNote(e.target.value)}
+        onChange={e => setNote(capCharacters(e.target.value, MAX_NOTE))}
         onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
         className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
       />
@@ -469,7 +474,7 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, l
             <div className="mt-2 flex items-start gap-3">
               {txn.note && (
                 <div className="flex-1 min-w-0 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc] break-words">
-                  <span className="text-[#94a3b8] mr-1.5">{noteLabel(txn)}</span>{txn.note}
+                  <span className="text-[#94a3b8] mr-1.5 whitespace-nowrap">{noteLabel(txn)}</span>{txn.note}
                 </div>
               )}
               <button

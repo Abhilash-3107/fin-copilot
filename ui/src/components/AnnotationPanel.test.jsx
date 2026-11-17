@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, act, within } from '@testing-library/react'
+import { render, screen, waitFor, act, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const { mockApi, toastSpy } = vi.hoisted(() => ({
@@ -348,6 +348,47 @@ describe('AnnotationPanel note', () => {
     await user.clear(screen.getByRole('textbox', { name: 'Your note' }))
     await user.click(screen.getByRole('button', { name: 'Save note' }))
     expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: null })
+  })
+
+  it('emptying a UPI note that is not yours writes nothing, since it would change nothing', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Your note' }))
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+  })
+
+  it('counts a note in characters like the API, so emoji fit up to 500', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null, txn: NO_NOTE })
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    const grin = '\u{1F600}'
+    fireEvent.change(input, { target: { value: grin.repeat(500) } })
+    expect(Array.from(input.value)).toHaveLength(500)
+    fireEvent.change(input, { target: { value: grin.repeat(501) } })
+    expect(Array.from(input.value)).toHaveLength(500)
+  })
+
+  it('counts a name in characters too, so 80 emoji fit and the 81st does not', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    const grin = '\u{1F600}'
+    fireEvent.change(input, { target: { value: grin.repeat(80) } })
+    expect(Array.from(input.value)).toHaveLength(80)
+    fireEvent.change(input, { target: { value: grin.repeat(81) } })
+    expect(Array.from(input.value)).toHaveLength(80)
+  })
+
+  it('keeps a long unbroken note from splitting its label', async () => {
+    renderPanel({ annotation: null, txn: { ...TXN, note: 'x'.repeat(500), note_is_yours: true } })
+    await act(async () => {})
+    expect(screen.getByText('Your note')).toHaveClass('whitespace-nowrap')
   })
 
   it('has a Clear note button only for a note the user wrote', async () => {
