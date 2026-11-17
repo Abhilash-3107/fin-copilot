@@ -35,4 +35,15 @@ describe('useLoad', () => {
     await new Promise(r => setTimeout(r, 0))
     expect(result.current.data).toBe('new')
   })
+
+  it('holds the first request until it is enabled, then asks once', async () => {
+    const fetcher = vi.fn().mockResolvedValue('a')
+    const { result, rerender } = renderHook(({ on }) => useLoad(fetcher, { enabled: on }), { initialProps: { on: false } })
+    await new Promise(r => setTimeout(r, 0))
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(result.current.loading).toBe(true)
+    rerender({ on: true })
+    await waitFor(() => expect(result.current.data).toBe('a'))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
 })
