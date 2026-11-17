@@ -337,7 +337,9 @@ test.describe('J4 the keyboard outside Teach Me', () => {
     await page.getByRole('button', { name: 'Edit Hill cabin' }).click()
     await page.getByLabel('Group name', { exact: true }).fill('FLAT')
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
+    // Scoped to the edit form: the refusal from the create field above may still be showing.
+    const editForm = page.locator('div', { has: page.getByLabel('Group name', { exact: true }) }).last()
+    await expect(editForm.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByLabel('Group name', { exact: true })).toHaveCount(0)
     expect((await app.api.get(`/groups/${trip.id}`)).name).toBe('Hill cabin')
