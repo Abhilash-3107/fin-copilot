@@ -571,3 +571,51 @@ class TestUploadResponse:
         assert again.status_code == 409
         assert "HDFC ··2222" in again.json()["detail"]
         assert "(auto)" not in again.json()["detail"]
+
+
+class TestTheSameFileAtOnce:
+    def test_two_identical_uploads_at_once_give_one_statement_and_one_duplicate_refusal(self, tmp_path):
+        """Both pass the "already added?" look before either writes; the loser is a
+        duplicate (the page's 409), not a foreign-key crash."""
+        import threading
+
+        from finance_copilot.db.connection import get_connection
+        from finance_copilot.pipeline.ingest import DuplicateStatementError
+
+        db = str(tmp_path / "ledger.db")
+        init_db(get_connection(db))
+        pdf = tmp_path / "s.pdf"
+        pdf.write_bytes(b"%PDF same file")
+        parser = _FakeParser("kotak", "1111", _rows(10000, 1))
+        both_looked = threading.Barrier(2)
+        original_detect = parser.detect
+
+        def detect(path, password=None):
+            both_looked.wait(timeout=10)  # after the duplicate look, before the write
+            return original_detect(path, password)
+
+        parser.detect = detect
+        results: list = []
+
+        def upload():
+            conn = get_connection(db)
+            try:
+                with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
+                    results.append(ingest_pdf(str(pdf), conn=conn))
+            except Exception as exc:  # noqa: BLE001
+                results.append(exc)
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=upload) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        errors = [r for r in results if isinstance(r, Exception)]
+        assert len(results) == 2
+        assert len(errors) == 1 and isinstance(errors[0], DuplicateStatementError), results
+        check = get_connection(db)
+        assert check.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 1
+        assert check.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1

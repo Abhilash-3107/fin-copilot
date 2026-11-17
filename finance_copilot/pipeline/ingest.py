@@ -260,6 +260,17 @@ def _sane_printed_period(
     return None
 
 
+def _refuse_duplicate(conn: sqlite3.Connection, file_sha256: str) -> None:
+    """Raise DuplicateStatementError when this exact file is already a statement."""
+    existing = conn.execute(
+        "SELECT * FROM statements WHERE file_sha256 = ?", (file_sha256,)
+    ).fetchone()
+    if existing:
+        raise DuplicateStatementError(
+            dict(existing), label_for_statement(account_labels(conn), existing)
+        )
+
+
 def ingest_pdf(
     pdf_path: str,
     password: str | None = None,
@@ -274,13 +285,7 @@ def ingest_pdf(
 
     _conn = conn or get_migrated_db()
     try:
-        existing = _conn.execute(
-            "SELECT * FROM statements WHERE file_sha256 = ?", (file_sha256,)
-        ).fetchone()
-        if existing:
-            raise DuplicateStatementError(
-                dict(existing), label_for_statement(account_labels(_conn), existing)
-            )
+        _refuse_duplicate(_conn, file_sha256)  # the quick refusal, before any parsing
 
         _check_unlocks(pdf_path, password)
         parser = detect_parser(pdf_path, password=password)
@@ -322,6 +327,10 @@ def ingest_pdf(
         # write lock: two statements arriving together for a new account must
         # not each start one.
         with write_transaction(_conn):
+            # Looked again under the lock: the same file arriving twice at once
+            # passed the look above in both requests, and the loser would
+            # otherwise write against the winner's account.
+            _refuse_duplicate(_conn, file_sha256)
             statement.account_id, statement.account_is_new = resolve_account(
                 _conn, statement.bank_name, statement.account_ref
             )
