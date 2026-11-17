@@ -17,6 +17,10 @@ export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }
 
+export function uploadFixtureNov(api) {
+  return api.upload('/statements/upload', 'sample_statement_nov.pdf', readFileSync(FIXTURE_PDF_NOV), 'application/pdf')
+}
+
 /**
  * Wait for the sorting job the server queued for a statement when it landed,
  * and return its result. Nothing here starts a run: sorting begins by itself.

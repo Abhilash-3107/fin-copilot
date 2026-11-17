@@ -437,6 +437,11 @@ const regressions = {
     (a, b) => addStatement(a, b, 's2'), // same bank and number, an account of its own
     /statements of one account \(Bank ··0000\) were split across/,
   ],
+  'a renamed statement is not folded into the account of its real bank': [
+    // The old Rename typed text on October; the same number's other statement still names the bank.
+    (a, b) => addStatement(a, b, 's2', { bank_name: 'Salary account' }),
+    /statements of one account \(Salary account\) were split across/,
+  ],
   'a statement ends up in no account': [
     (a) => {
       a.facts.statements[0].account_id = null

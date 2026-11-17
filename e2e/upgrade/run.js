@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { TEMP_PREFIX, installWheel, wheelPath } from '../global-setup.js'
 import { killTree, makeApi, startServer } from '../lib/server.js'
 import { derivedFigures, storedFacts } from '../lib/snapshot.js'
-import { uploadFixture } from '../lib/statement.js'
+import { uploadFixture, uploadFixtureNov } from '../lib/statement.js'
 import { compareSnapshots } from './compare.js'
 import { plantLegacyRows, storedColumns } from './db.js'
 import { categorise } from './previous-release.js'
@@ -61,8 +61,12 @@ async function buildLedger(api) {
   if (today !== dayBefore) throw new Error(`Midnight passed while the demo was being seeded (${dayBefore} -> ${today}): run the journey again.`)
 
   const statement = await uploadFixture(api)
-  // The old Rename wrote text into the statement's bank (there was no account to name):
-  // the upgrade must keep the words as the account's name.
+  // The same account a month later, left as the parser read it.
+  await uploadFixtureNov(api)
+  // The old Rename wrote text into the statement's bank (there was no account to name).
+  // It is planted on October only: the upgrade must fold that statement into the
+  // account of the real bank that November's statement still carries, and keep
+  // the words as the account's name.
   await api.patch(`/statements/${statement.id}`, { bank_name: RENAMED_BANK })
   await categorise(api, statement.id)
 

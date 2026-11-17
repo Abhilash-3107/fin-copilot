@@ -612,7 +612,7 @@
         "removed"
       ],
       "from": "XXXX0000",
-      "reason": "The statement list no longer carries the whole account number, only its last four digits. The number stays in the ledger as the account's key. This is the uploaded sample statement, which prints XXXX0000."
+      "reason": "The statement list no longer carries the whole account number, only its last four digits. The number stays in the ledger as the account's key. These are the two uploaded sample statements, which print XXXX0000."
     },
     {
       "id": "stored-statements-account-number-whole-none",
