@@ -39,6 +39,7 @@ from finance_copilot.api.routes import (
     rules,
     statements,
     transactions,
+    transfers,
 )
 from finance_copilot.db.connection import get_connection
 
@@ -158,6 +159,7 @@ app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(statements.router, prefix="/api/statements", tags=["statements"])
 app.include_router(transactions.router, prefix="/api/transactions", tags=["transactions"])
 app.include_router(annotations.router, prefix="/api/annotations", tags=["annotations"])
+app.include_router(transfers.router, prefix="/api/transfers", tags=["transfers"])
 app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
 app.include_router(people.router, prefix="/api/people", tags=["people"])
 app.include_router(rules.router, prefix="/api/rules", tags=["rules"])

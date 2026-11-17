@@ -7,8 +7,9 @@ lists but not others). This module is the single source of truth; it imports
 nothing from the pipeline so any layer can depend on it without a cycle.
 
 - TRUSTED: labels trustworthy enough to seed learning at full weight (human
-  edits, deterministic rules, imports). Machine guesses are downweighted so a
-  recurring mislabel can't bootstrap its own bad prior.
+  edits, deterministic rules, imports, and a pair: a fact two statements agree
+  on). Machine guesses are downweighted so a recurring mislabel can't bootstrap
+  its own bad prior.
 - MACHINE: machine-produced labels eligible to be overwritten by "apply to
   similar" (a human decision propagates onto them). Never includes human sources.
 - MODEL: sources whose outcomes feed calibration. Corrections/confirmations to
@@ -18,10 +19,12 @@ from __future__ import annotations
 
 # Deterministic or human-verified; full weight in every learning loop. user_rule
 # is a rule the user wrote, so it is both.
-TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imported"})
+TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imported", "pair"})
 
 # Labels a human authored or vouched for: the only ones that may promote a
-# learned rule or count as the user's own history for a payee.
+# learned rule or count as the user's own history for a payee. A pair is not
+# here: two statements agreeing says this one payment moved between the user's
+# accounts, not that every payment to that payee does.
 VERIFIED_SOURCES: frozenset[str] = frozenset({"manual", "imported"})
 
 # Labels that are the user's own work: typed, imported from their file, or from
@@ -42,3 +45,9 @@ MODEL_SOURCES: frozenset[str] = MACHINE_SOURCES | {"rule", "user_rule"}
 # Sources that can appear in the low-confidence review queue. Includes the legacy
 # "model" value from pre-split annotations still present in long-lived databases.
 REVIEWABLE_SOURCES: frozenset[str] = MODEL_SOURCES | {"model"}
+
+# "pair" (db/queries/transfers.py) is in TRUSTED_SOURCES only. It is not VERIFIED
+# (above), not MACHINE (apply-to-similar and every re-evaluation must never
+# overwrite it, so the sorting pipeline cannot re-decide a pair), not MODEL (no
+# calibration feedback: it is not a guess) and not REVIEWABLE (Teach Me never asks
+# about it; only Unpair undoes it).

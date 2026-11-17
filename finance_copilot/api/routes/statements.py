@@ -32,6 +32,7 @@ from finance_copilot.db.queries.transactions import (
     merge_duplicate_payments,
     statement_balance_checks,
 )
+from finance_copilot.db.queries.transfers import release_transfers, unpair_same_account
 from finance_copilot.demo_seed import has_demo_data
 from finance_copilot.pipeline.dedup import payments_account_already_has
 from finance_copilot.pipeline.ingest import (
@@ -41,6 +42,7 @@ from finance_copilot.pipeline.ingest import (
     check_description_formats,
     ingest_pdf,
 )
+from finance_copilot.pipeline.pairing import pair_transfers_locked
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,7 @@ def upload_statement(
         "sorting_job_id": sorting_job_id,
         "account_label": label_for_statement(account_labels(conn), statement.model_dump()),
         "account_is_new": statement.account_is_new,
+        "transfers_paired": statement.transfers_paired,
     }
 
 
@@ -364,6 +367,11 @@ def patch_statement(
             else:
                 conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
             delete_empty_accounts(conn)
+            # Which payments are transfers between accounts depends on which
+            # accounts they sit in: a pair now inside one account is no transfer,
+            # and payments now in different accounts may be one.
+            unpair_same_account(conn)
+            pair_transfers_locked(conn)
     labels = account_labels(conn)
     return {
         "id": statement_id,
@@ -437,11 +445,18 @@ def reset_statement_data(
         annotations_deleted = 0
         if txn_ids:
             placeholders = ",".join("?" * len(txn_ids))
-            cur = conn.execute(
-                f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
-            )
-            annotations_deleted = cur.rowcount
+            # A pair with a payment in another statement is taken apart on both
+            # sides (the other statement's payment goes back to To sort), and
+            # pairing runs again once the labels are cleared: what two statements
+            # agree on is a fact, so a signed, unambiguous pair comes back, and
+            # one the user took apart stays apart.
+            annotations_deleted = conn.execute(
+                f"SELECT COUNT(*) FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
+            ).fetchone()[0]
+            release_transfers(conn, txn_ids, drop_decisions=False)
+            conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
             delete_embeddings(conn, txn_ids)
+            pair_transfers_locked(conn)
 
     return {"reset": statement_id, "annotations_deleted": annotations_deleted}
 

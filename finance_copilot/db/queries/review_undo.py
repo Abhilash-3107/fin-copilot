@@ -2,7 +2,9 @@
 
 An answer (confirm, correct, hand label, group label, skip) changes three kinds
 of stored state: annotation rows, a payment's snooze, and the review feedback
-counters. Learned rules are computed from annotations, so restoring the rows
+counters. Pairing two payments as a transfer (and unpairing them) also changes the
+transfer link between them and the pairs the user took apart, so those are part of
+a payment's snapshot too. Learned rules are computed from annotations, so restoring the rows
 restores them too. `UndoCapture` snapshots that state before an answer and, once
 the answer (and the re-decisions it caused) is done, stores what changed under a
 token. `undo` restores it exactly, or refuses when a payment has changed since.
@@ -40,16 +42,39 @@ def _chunks(ids: list[str]):
 
 
 def _snapshot(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, dict]:
-    """{transaction_id: {"annotation": whole row or None, "snoozed_at": str or None}}
-    for every payment that exists."""
+    """{transaction_id: {"annotation": whole row or None, "snoozed_at": str or None,
+    "link": the transfer link row or None, "unpaired": [partner ids]}} for every
+    payment that exists."""
     out: dict[str, dict] = {}
     for chunk in _chunks(transaction_ids):
         marks = ",".join("?" * len(chunk))
         for row in conn.execute(f"SELECT id, review_snoozed_at FROM transactions WHERE id IN ({marks})", chunk):
-            out[row["id"]] = {"annotation": None, "snoozed_at": row["review_snoozed_at"]}
+            out[row["id"]] = {"annotation": None, "snoozed_at": row["review_snoozed_at"], "link": None, "unpaired": []}
         for row in conn.execute(f"SELECT * FROM annotations WHERE transaction_id IN ({marks})", chunk):
             out[row["transaction_id"]]["annotation"] = dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM transaction_links WHERE link_type = 'transfer' AND (txn_a IN ({marks}) OR txn_b IN ({marks}))",
+            (*chunk, *chunk),
+        ):
+            for side in (row["txn_a"], row["txn_b"]):
+                if side in out:
+                    out[side]["link"] = dict(row)
+        for row in conn.execute(
+            f"SELECT txn_a, txn_b FROM transfer_unpaired WHERE txn_a IN ({marks}) OR txn_b IN ({marks}) "
+            "ORDER BY txn_a, txn_b",
+            (*chunk, *chunk),
+        ):
+            for side, partner in ((row["txn_a"], row["txn_b"]), (row["txn_b"], row["txn_a"])):
+                if side in out:
+                    out[side]["unpaired"].append(partner)
     return out
+
+
+def _complete(state: dict | None) -> dict | None:
+    """A snapshot stored before pairing existed has no link or unpaired entry."""
+    if state is None:
+        return None
+    return {"link": None, "unpaired": [], **state}
 
 
 class UndoCapture:
@@ -134,6 +159,27 @@ def _write_annotation(conn: sqlite3.Connection, transaction_id: str, row: dict |
     )
 
 
+def _restore_transfers(conn: sqlite3.Connection, states: list[tuple[str, dict]]) -> None:
+    """Put the transfer links and the user's unpairings of these payments back as
+    they were: first clear what is there, then write what each had before."""
+    for tid, _ in states:
+        conn.execute(
+            "DELETE FROM transaction_links WHERE link_type = 'transfer' AND (txn_a = ? OR txn_b = ?)", (tid, tid)
+        )
+        conn.execute("DELETE FROM transfer_unpaired WHERE txn_a = ? OR txn_b = ?", (tid, tid))
+    for tid, before in states:
+        link = before["link"]
+        if link:
+            conn.execute(
+                "INSERT OR IGNORE INTO transaction_links (id, txn_a, txn_b, link_type, note, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (link["id"], link["txn_a"], link["txn_b"], link["link_type"], link["note"], link["created_at"]),
+            )
+        for partner in before["unpaired"]:
+            low, high = sorted((tid, partner))
+            conn.execute("INSERT OR IGNORE INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high))
+
+
 def undo(conn: sqlite3.Connection, token: str) -> list[str]:
     """Restore the state an answer changed; returns the payments put back.
     Raises UndoError when the token is unknown, expired, already used, or a
@@ -151,9 +197,10 @@ def undo(conn: sqlite3.Connection, token: str) -> list[str]:
         changes = json.loads(record["changes"])
 
         now = _snapshot(conn, [row["transaction_id"] for row in changes["rows"]])
-        if any(now.get(row["transaction_id"]) != row["after"] for row in changes["rows"]):
+        if any(now.get(row["transaction_id"]) != _complete(row["after"]) for row in changes["rows"]):
             raise UndoError("Those payments have changed since, so this answer can't be undone.")
 
+        _restore_transfers(conn, [(row["transaction_id"], _complete(row["before"])) for row in changes["rows"]])
         for row in changes["rows"]:
             tid, before = row["transaction_id"], row["before"]
             _write_annotation(conn, tid, before["annotation"])

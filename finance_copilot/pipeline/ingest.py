@@ -24,6 +24,7 @@ from finance_copilot.parsers.description import KNOWN_SHAPES
 from finance_copilot.parsers.period import MAX_PERIOD_DAYS
 from finance_copilot.parsers.registry import detect_parser
 from finance_copilot.pipeline.dedup import split_new_rows
+from finance_copilot.pipeline.pairing import pair_transfers
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +380,22 @@ def _refuse_duplicate(conn: sqlite3.Connection, file_sha256: str) -> None:
         )
 
 
+def _pair_transfers(conn: sqlite3.Connection, statement: Statement) -> int:
+    """Pair transfers between the user's accounts now that this statement's payments
+    are in, and say how many pairs involve it. It runs before the sorting job is
+    queued, so sorting skips what is paired. A failure here must not fail an upload
+    that already landed: the statement is there and the next upload pairs it."""
+    try:
+        made = pair_transfers(conn)
+        if not made:
+            return 0
+        ids = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE statement_id = ?", (statement.id,))}
+        return sum(1 for debit, credit in made if debit in ids or credit in ids)
+    except Exception:
+        logger.exception("could not pair transfers after statement %s", statement.id)
+        return 0
+
+
 def ingest_pdf(
     pdf_path: str,
     password: str | None = None,
@@ -471,6 +488,10 @@ def ingest_pdf(
             raise NothingNewError(
                 nothing.count, account_labels(_conn)[nothing.account_id]
             ) from None
+        # The file landed (a refusal above raised before here, so pairing never runs
+        # for a file that added nothing). Pairing sees the rows just inserted and
+        # runs before the sorting job is queued.
+        statement.transfers_paired = _pair_transfers(_conn, statement)
     finally:
         if conn is None:
             _conn.close()

@@ -59,3 +59,5 @@ class Statement(BaseModel):
     # ingest noticed about the file that the person should read (shown on its row).
     account_is_new: bool = Field(default=False, exclude=True)
     notices: list[str] = Field(default_factory=list, exclude=True)
+    # Not stored: how many transfers to or from the user's other accounts ingest paired.
+    transfers_paired: int = Field(default=0, exclude=True)

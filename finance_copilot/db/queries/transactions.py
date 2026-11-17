@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 from finance_copilot.db.queries.embeddings import delete_embeddings
+from finance_copilot.db.queries.transfers import release_transfers
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
 from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
@@ -112,10 +113,15 @@ def _check_result(checked: int, consistent: int) -> dict:
 
 def delete_payments(conn: sqlite3.Connection, txn_ids: list[str]) -> None:
     """Remove payments with everything that hangs off them: their labels, their
-    embeddings and their links. Call it inside the caller's write transaction."""
+    embeddings and their links. A payment paired with one of them goes back to To
+    sort (it must not stay Self Transfers with nobody on the other end) and the
+    user's recorded unpairings of these payments go too. Call it inside the
+    caller's write transaction; pairing may now be unambiguous elsewhere, so the
+    caller runs it again afterwards."""
     if not txn_ids:
         return
     placeholders = ",".join("?" * len(txn_ids))
+    release_transfers(conn, txn_ids, drop_decisions=True)
     conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
     delete_embeddings(conn, txn_ids)
     # transaction_links references transactions(id) without ON DELETE CASCADE, so

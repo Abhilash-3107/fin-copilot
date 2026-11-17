@@ -27,6 +27,7 @@ from finance_copilot.db.queries.transactions import (
     payment_months,
     summarize_transactions,
 )
+from finance_copilot.db.queries.transfers import with_transfer
 
 router = APIRouter()
 
@@ -89,7 +90,7 @@ def get_transactions(
     if include == "annotation":
         for row in rows:
             row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
-    return with_payee(conn, rows)
+    return with_transfer(conn, with_payee(conn, rows))
 
 
 @router.get("/summary")
@@ -207,7 +208,7 @@ def get_transaction(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Payment not found")
-    result = with_payee(conn, [dict(row)])[0]
+    result = with_transfer(conn, with_payee(conn, [dict(row)]))[0]
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])
     result["tags"] = parse_string_list(result.get("tags")) if result.get("annotation_id") else []
