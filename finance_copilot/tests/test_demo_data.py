@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from finance_copilot.db.connection import MIGRATIONS_DIR as MIGRATIONS
 from finance_copilot.db.connection import init_db
 
 
@@ -83,7 +83,6 @@ class TestLoadDemoData:
         assert "real statements" in r.json()["detail"]
 
 
-MIGRATIONS = Path(__file__).parents[1] / "db" / "migrations"
 
 
 class TestSeededCategoryIds:

@@ -3,11 +3,11 @@ snapping, and the unused-duplicate cleanup (findings/.../06)."""
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from finance_copilot.db.connection import MIGRATIONS_DIR as MIGRATIONS
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.categories import CategoryError, merge_subcategory
@@ -19,8 +19,6 @@ from finance_copilot.db.queries.taxonomy import (
     taxonomy_health,
 )
 from finance_copilot.models.annotation import Annotation
-
-MIGRATIONS = Path(__file__).parents[1] / "db" / "migrations"
 
 
 @pytest.fixture

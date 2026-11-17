@@ -8,17 +8,15 @@ three.
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from finance_copilot.db.connection import MIGRATIONS_DIR as MIGRATIONS
 from finance_copilot.db.connection import _iter_statements, get_connection, init_db
 from finance_copilot.db.queries.annotations import count_snoozed, list_review_queue
 from finance_copilot.pipeline.annotate import rescore_review_queue
-
-MIGRATIONS = Path(__file__).parents[1] / "db" / "migrations"
 
 
 @pytest.fixture

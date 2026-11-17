@@ -7,10 +7,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from source_tree import NOT_A_CHECKOUT, source_root
+
+ROOT = source_root()
+if ROOT is None:
+    pytest.skip(NOT_A_CHECKOUT, allow_module_level=True)
+
 EM_DASH = chr(0x2014)
 FORMS = (EM_DASH, "\\" + "u2014", "&md" + "ash;", "&#" + "8212;")
-
-ROOT = Path(__file__).resolve().parents[2]
 
 # LLM prompt text is sent to a model, and changing a character there changes
 # what the model reads and the eval results. List every such file here.

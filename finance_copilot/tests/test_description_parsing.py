@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from finance_copilot.config import settings
-from finance_copilot.db.connection import init_db
+from finance_copilot.db.connection import MIGRATIONS_DIR, init_db
 from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.transactions import insert_transaction
 from finance_copilot.models.annotation import Annotation
@@ -385,8 +385,7 @@ class TestBalanceLabelLeak:
              ("b", "Closing Balance"),
              ("c", "UPI/SWIGGY/122406278841/UPI")],
         )
-        sql = (Path(__file__).parents[1] / "db" / "migrations"
-               / "027_strip_balance_label_from_descriptions.sql").read_text()
+        sql = (MIGRATIONS_DIR / "027_strip_balance_label_from_descriptions.sql").read_text()
         conn.executescript(sql)
         got = dict(conn.execute("SELECT id, raw_description FROM transactions").fetchall())
         assert got == {"a": "UPI/ZOMATO/122406278840/UPI", "b": "Closing Balance",

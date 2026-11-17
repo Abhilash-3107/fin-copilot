@@ -3,14 +3,12 @@ merchants (findings/2026-11-09-pipeline-robustness/02)."""
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
+from finance_copilot.db.connection import MIGRATIONS_DIR as MIGRATIONS
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.learned_rules import list_learned_rules, suppress_learned_rule
 from finance_copilot.pipeline.llm import AnnotationResponse
-
-MIGRATIONS = Path(__file__).parents[1] / "db" / "migrations"
 
 
 def _conn() -> sqlite3.Connection:

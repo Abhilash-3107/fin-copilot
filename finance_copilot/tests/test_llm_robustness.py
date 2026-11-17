@@ -9,6 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from test_annotation_pipeline import (
+    _insert_statement,
+    _insert_txn,
+    _make_conn,
+)
 
 from finance_copilot.config import settings
 from finance_copilot.pipeline.llm import (
@@ -17,11 +22,6 @@ from finance_copilot.pipeline.llm import (
     LLMUnavailableError,
     annotate_transaction_llm,
     call_budget_s,
-)
-from finance_copilot.tests.test_annotation_pipeline import (
-    _insert_statement,
-    _insert_txn,
-    _make_conn,
 )
 
 _URL = "http://localhost:11434/api/chat"
