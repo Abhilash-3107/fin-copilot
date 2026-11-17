@@ -19,6 +19,7 @@ from finance_copilot.db.queries.accounts import (
     account_labels,
     delete_empty_accounts,
     label_for_statement,
+    ref_last4,
 )
 from finance_copilot.db.queries.annotations import sorted_counts_by_statement
 from finance_copilot.db.queries.app_settings import get_confidence_threshold
@@ -39,6 +40,14 @@ router = APIRouter()
 # Bank statements are a few MB at most; refuse anything larger so a bad or hostile
 # upload can't exhaust memory (the file is buffered to read it).
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _public(statement: dict) -> dict:
+    """A statement row as the API shows it: the account number only as its last
+    four digits. The full number is the key to the account; it stays in the ledger."""
+    shown = {k: v for k, v in statement.items() if k != "account_ref"}
+    shown["account_ref_last4"] = ref_last4(statement.get("account_ref"))
+    return shown
 
 
 @router.post("/upload")
@@ -120,7 +129,7 @@ def upload_statement(
         statement.id, {"checked": 0, "consistent": 0, "balanced": True}
     )
     return {
-        **statement.model_dump(),
+        **_public(statement.model_dump()),
         "warnings": warnings,
         "transaction_count": transaction_count,
         "balance_check": balance_check,
@@ -159,6 +168,7 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     for row in rows:
         d = dict(row)
         d["account_label"] = label_for_statement(labels, d)
+        d = _public(d)
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
         result.append(d)

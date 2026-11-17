@@ -560,6 +560,20 @@ class TestUploadResponse:
         assert a["account_id"] == b["account_id"]
         assert a["account_label"] == b["account_label"] == "Kotak ··1111"
 
+    def test_neither_the_upload_nor_the_list_carries_the_full_account_number(self, api):
+        client, conn = api
+        parser = _FakeParser("kotak", "5551111", _rows(10000, 1))
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser), \
+                patch("finance_copilot.api.routes.annotations._run_annotation_job"):
+            uploaded = client.post(
+                "/api/statements/upload", files={"file": ("a.pdf", b"%PDF one", "application/pdf")}
+            ).json()
+        listed = client.get("/api/statements").json()[0]
+        for body in (uploaded, listed):
+            assert "account_ref" not in body
+            assert body["account_ref_last4"] == "1111"
+            assert "5551111" not in str(body)
+
     def test_the_duplicate_message_names_the_account_not_the_parser_key(self, api):
         client, conn = api
         parser = _FakeParser("hdfc (auto)", "XXXX2222", _rows(10000, 1))
