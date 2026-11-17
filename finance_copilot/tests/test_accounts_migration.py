@@ -7,6 +7,7 @@ before accounts existed, so no existing ledger splinters.
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -137,6 +138,35 @@ def test_the_automatic_marker_is_not_part_of_the_bank(ledger_040):
     assert mapping["h1"][1] == "hdfc"
 
 
+def test_a_state_bank_read_by_the_generic_parser_is_sbi_with_no_name(ledger_040):
+    """0.1.2's generic parser wrote the text it matched, "state bank (auto)": a key for SBI."""
+    ledger_040.statement("s1", "state bank (auto)", "3250508074")
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
+    assert mapping["s1"][1:] == ("sbi", "3250508074")
+    assert set(_names(ledger.conn).values()) == {None}
+
+
+def test_state_bank_and_sbi_with_one_number_are_one_account(ledger_040):
+    ledger_040.statement("s1", "state bank (auto)", "3250508074", "2026-01")
+    ledger_040.statement("s2", "sbi (auto)", "3250508074", "2026-02")
+    ledger_040.statement("s3", "sbi", "3250508074", "2026-03")
+    ledger = ledger_040.migrate()
+    assert _groups(ledger.accounts_of()) == {frozenset({"s1", "s2", "s3"})}
+    assert {v[1] for v in ledger.accounts_of().values()} == {"sbi"}
+    assert set(_names(ledger.conn).values()) == {None}
+
+
+def test_a_marked_bank_the_list_does_not_know_is_still_a_key_and_text_on_its_number_joins_it(ledger_040):
+    ledger_040.statement("a", "foo bank (auto)", "777", "2026-01")
+    ledger_040.statement("b", "My salary", "777", "2026-02")
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
+    assert _groups(mapping) == {frozenset({"a", "b"})}
+    assert mapping["a"][1] == "foo bank"
+    assert set(_names(ledger.conn).values()) == {"My salary"}
+
+
 def _names(conn):
     return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM accounts")}
 
@@ -209,7 +239,14 @@ def test_an_upper_case_automatic_marker_is_not_part_of_the_bank(ledger_040):
     mapping = ledger.accounts_of()
     assert _groups(mapping) == {frozenset({"a", "b"})}
     assert mapping["a"][1] == "foo"
+    # "Foo" without the marker is what someone typed; the marked one is a parser's key.
     assert set(_names(ledger.conn).values()) == {"Foo"}
+
+
+def test_a_marked_bank_name_alone_is_a_parser_key_and_names_nothing(ledger_040):
+    ledger_040.statement("a", "Foo (AUTO)", None, "2026-01")
+    ledger = ledger_040.migrate()
+    assert set(_names(ledger.conn).values()) == {None}
 
 
 def test_a_blank_bank_name_is_a_bank_called_bank_with_no_name(ledger_040):
@@ -279,3 +316,38 @@ def test_the_printed_period_starts_empty(ledger_040):
     ledger_040.statement("s", "kotak", "1")
     row = ledger_040.migrate().conn.execute("SELECT printed_start, printed_end FROM statements").fetchone()
     assert (row["printed_start"], row["printed_end"]) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        [("kotak", "1111", 1), ("kotak", "1111", 2)],
+        [("kotak", None, 1), ("kotak", "1111", 2), ("kotak", None, 3)],
+        [("kotak", "1111", 1), ("kotak", "2222", 2), ("kotak", None, 3), ("kotak", None, 4)],
+        [("kotak", "1111", 1), ("hdfc (auto)", "2222", 2), ("kotak", None, 3), ("hdfc", None, 4)],
+        [("kotak", None, 1), ("kotak", None, 2)],
+    ],
+)
+def test_a_ledger_built_by_uploading_groups_the_statements_as_the_migration_does(ledger_040, shape, monkeypatch):
+    """The same statements, once uploaded one by one and once migrated together, end up in
+    the same accounts: ingest and the migration are one rule, not two."""
+    from finance_copilot.tests.test_accounts import _FakeParser, _ingest, _make_conn, _rows
+
+    # The fixture holds migrations at 040; the uploading side runs the whole set.
+    real = connection.MIGRATIONS_DIR
+    monkeypatch.setattr(connection, "MIGRATIONS_DIR", Path(connection.__file__).parent / "migrations")
+    live = _make_conn()
+    monkeypatch.setattr(connection, "MIGRATIONS_DIR", real)
+    for bank, ref, month in shape:
+        _ingest(live, _FakeParser(bank, ref, _rows(10000, 1, month=month)), f"m{month}")
+    built: dict[str, set[str]] = {}
+    for row in live.execute("SELECT statement_month, account_id FROM statements"):
+        built.setdefault(row["account_id"], set()).add(row["statement_month"])
+
+    for bank, ref, month in shape:
+        ledger_040.statement(f"m{month}", bank, ref, f"2026-{month:02d}")
+    migrated = _groups(ledger_040.migrate().accounts_of())
+
+    assert {frozenset(months) for months in built.values()} == {
+        frozenset(f"2026-{m[1:].zfill(2)}" for m in ids) for ids in migrated
+    }

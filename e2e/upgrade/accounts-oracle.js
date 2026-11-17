@@ -5,7 +5,9 @@
 //
 // The rules, as release notes would say them:
 //   * A bank is the stored bank_name trimmed, lower case, without " (auto)".
-//   * Text that is not a bank key a parser reports is what a user typed with the
+//     The marker means a parser wrote it: a marked value is a bank key, never
+//     typed text, and the generic parser's "state bank (auto)" is SBI.
+//   * Unmarked text that is not a bank key a parser reports is what a user typed with the
 //     old Rename. On a number that a real bank's statements carry, it joins that
 //     bank; either way it becomes the account's name (the latest statement's text).
 //   * Within a bank, one number (or none) is one account holding every statement,
@@ -40,10 +42,11 @@ export function lastFour(ref) {
 export function expectedAccounts(statements) {
   const read = statements.map((s) => {
     let typed = (s.bank_name ?? '').trim()
-    if (typed.toLowerCase().endsWith('(auto)')) typed = typed.slice(0, -6).trim()
+    const marked = typed.toLowerCase().endsWith('(auto)')
+    if (marked) typed = typed.slice(0, -6).trim()
     const ref = (s.account_ref ?? '').trim() || null
-    const bank = typed.toLowerCase()
-    return { ...s, typed, ref, bank, isBank: Object.hasOwn(BANKS, bank) }
+    const bank = marked && typed.toLowerCase() === 'state bank' ? 'sbi' : typed.toLowerCase()
+    return { ...s, typed, ref, bank, isBank: Object.hasOwn(BANKS, bank) || (marked && bank !== ''), marked }
   })
   const placed = read.map((s) => {
     let bank = s.bank
@@ -51,7 +54,7 @@ export function expectedAccounts(statements) {
       const home = read.filter((c) => c.isBank && c.ref === s.ref).sort(newest)[0]
       if (home) bank = home.bank
     }
-    return { ...s, bank, text: !s.isBank && s.typed !== '' ? s.typed : null }
+    return { ...s, bank, text: !s.marked && !s.isBank && s.typed !== '' ? s.typed : null }
   })
   const numbers = new Map()
   for (const s of placed) if (s.ref) numbers.set(s.bank, new Set([...(numbers.get(s.bank) ?? []), s.ref]))

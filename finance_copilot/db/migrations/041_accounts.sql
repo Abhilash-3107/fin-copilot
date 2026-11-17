@@ -14,9 +14,12 @@
 --
 -- A bank is the statement's bank_name trimmed, lower case and without the
 -- generic parser's " (auto)" marker (accounts.bank_key does the same in Python).
+-- The marker means a parser wrote the value, so a marked value is a bank key and
+-- never text a person typed. 0.1.2's generic parser wrote the name it matched in
+-- the header, and "state bank (auto)" is SBI.
 --
 -- The old statement rename wrote what the user typed into bank_name ("Kotak
--- salary"). Text that is not a bank key a parser reports:
+-- salary"). Unmarked text that is not a bank key a parser reports:
 --   * on a statement whose account number is the number of a real bank's
 --     statements, belongs to that bank: it joins that bank's account;
 --   * otherwise is its own bank, as typed.
@@ -59,18 +62,26 @@ WITH trimmed AS (
 ),
 unmarked AS (
     SELECT id, statement_month, uploaded_at, ref,
+           lower(raw) LIKE '%(auto)' AS marked,
            CASE WHEN lower(raw) LIKE '%(auto)'
                 THEN trim(substr(raw, 1, length(raw) - 6), ' ' || char(9) || char(10) || char(13))
                 ELSE raw END AS typed
     FROM trimmed
+),
+keyed AS (
+    SELECT id, statement_month, uploaded_at, ref, marked, typed,
+           CASE WHEN marked AND lower(typed) = 'state bank' THEN 'sbi' ELSE lower(typed) END AS bank
+    FROM unmarked
 )
-SELECT id, statement_month, uploaded_at, ref, typed, lower(typed) AS bank,
-       lower(typed) IN (
+SELECT id, statement_month, uploaded_at, ref,
+       CASE WHEN marked THEN NULL ELSE typed END AS typed,
+       bank,
+       bank IN (
            'kotak', 'hdfc', 'icici', 'sbi', 'axis', 'yes bank', 'idfc', 'indusind',
            'punjab national', 'canara', 'union bank', 'bank of baroda', 'federal',
            'rbl', 'au small finance', 'generic'
-       ) AS is_bank
-FROM unmarked;
+       ) OR (marked AND bank != '') AS is_bank
+FROM keyed;
 
 -- Typed text on a number a real bank's statements carry joins that bank.
 CREATE TEMP TABLE _placed AS
