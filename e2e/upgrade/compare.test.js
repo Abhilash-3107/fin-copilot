@@ -400,6 +400,14 @@ const regressions = {
     (a) => (a.facts.transactions.find((t) => t.id === 'R6').display_name = 'Tea'),
     /transactions\[R6\]\.display_name/,
   ],
+  'a payment gets a note of the user\'s own': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R6').user_note = 'x'),
+    /transactions\[R6\]\.user_note/,
+  ],
+  'a payment is said to have a note of the user\'s': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R6').note_is_yours = true),
+    /transactions\[R6\]\.note_is_yours/,
+  ],
   'a group member disagrees with its payment': [
     (a) => (a.facts.groups[0].members[0].payee = 'Other'),
     /group g1 member R1: payee is "Other", its payment says "SWIGGY\/ORDER"/,
