@@ -118,6 +118,20 @@ _EXPORT_COLUMNS = [
 ]
 
 
+# A spreadsheet runs a cell that starts with one of these as a formula, and
+# payees, notes and printed lines are text the user (or a stranger paying them)
+# typed. A leading apostrophe makes the cell plain text; the apostrophe itself is
+# not shown in a spreadsheet.
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value):
+    """A cell safe to open in a spreadsheet. Numbers pass through as numbers."""
+    if isinstance(value, str) and value.startswith(_FORMULA_STARTS):
+        return "'" + value
+    return value
+
+
 @router.get("/export")
 def export_transactions(
     format: str = Query("csv", pattern="^(csv|json)$"),
@@ -158,7 +172,7 @@ def export_transactions(
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=_EXPORT_COLUMNS)
     writer.writeheader()
-    writer.writerows(records)
+    writer.writerows({k: _csv_cell(v) for k, v in r.items()} for r in records)
     buf.seek(0)
     return StreamingResponse(
         iter([buf.getvalue()]),

@@ -5,6 +5,8 @@ line, the stored UPI meta and everything the pipeline reads stay as they are.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sqlite3
 from unittest.mock import patch
@@ -227,6 +229,58 @@ class TestEveryApiResolvesTheNote:
         header = csv_text.splitlines()[0].split(",")
         assert "note" in header
         assert "invoice 12" in csv_text
+
+
+class TestCsvExportIsSafe:
+    """A spreadsheet runs a cell that starts with = + - @ (or tab / CR) as a formula."""
+
+    def _rows(self, client):
+        text = client.get("/api/transactions/export?format=csv").text
+        return list(csv.DictReader(io.StringIO(text)))
+
+    def test_text_cells_that_start_like_a_formula_are_defused(self, conn, client):
+        txn = add_txn(conn, "=HYPERLINK(\"http://evil\",\"x\")", amount=42.5)
+        put_note(client, txn, "@SUM(A1:A9)")
+        client.put(f"/api/transactions/{txn}/name", json={"name": "+cmd|' /C calc'!A0"})
+        conn.execute(
+            "UPDATE annotations SET merchant = '-2+3', subcategory = '\tTab', tags = '[\"=x\"]' WHERE transaction_id = ?",
+            (txn,),
+        )
+        conn.execute("UPDATE annotations SET category = '=Cat' WHERE transaction_id = ?", (txn,))
+        conn.commit()
+
+        (row,) = self._rows(client)
+        assert row["raw_description"] == "'=HYPERLINK(\"http://evil\",\"x\")"
+        assert row["note"] == "'@SUM(A1:A9)"
+        assert row["payee"] == "'+cmd|' /C calc'!A0"
+        assert row["merchant"] == "'-2+3"
+        assert row["subcategory"] == "'\tTab"
+        assert row["category"] == "'=Cat"
+        assert row["tags"] == "'=x"
+
+    def test_carriage_return_start_is_defused_too(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        conn.execute("UPDATE transactions SET raw_description = ? WHERE id = ?", ("\rSneaky", txn))
+        conn.commit()
+        (row,) = self._rows(client)
+        assert row["raw_description"] == "'\rSneaky"
+
+    def test_numbers_stay_numbers_and_ordinary_text_is_untouched(self, conn, client):
+        txn = add_txn(conn, CHAI, amount=250.5)
+        conn.execute("UPDATE transactions SET running_balance = -1200.75 WHERE id = ?", (txn,))
+        conn.commit()
+        (row,) = self._rows(client)
+        assert row["amount"] == "250.5"
+        assert row["running_balance"] == "-1200.75"
+        assert row["debit_credit"] == "debit"
+        assert row["note"] == "chai and samosa"
+        assert not row["payee"].startswith("'")
+
+    def test_json_export_is_unchanged(self, conn, client):
+        txn = add_txn(conn, NEFT)
+        put_note(client, txn, "=1+1")
+        (row,) = client.get("/api/transactions/export?format=json").json()
+        assert row["note"] == "=1+1"
 
 
 class TestSearch:
