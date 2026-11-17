@@ -21,7 +21,7 @@ const MIGRATIONS = [
   '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
   '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
   '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
-  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes', '043_statement_row_counts',
+  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes', '043_statement_row_counts', '044_transfer_pairing',
 ]
 const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
 
@@ -88,7 +88,7 @@ function ledgerBefore() {
     settings: { config: { dev_mode: false, confidence_threshold: 0.85 }, llm: {} },
     schema: {
       appliedMigrations: ['026_user_rules'],
-      tableRows: { payee_names: null, review_undo: null, accounts: null },
+      tableRows: { payee_names: null, review_undo: null, accounts: null, transfer_unpaired: null },
       addedColumns: [],
       jobAttempts: [{ id: 'job1', attempts: null }],
     },
@@ -143,7 +143,7 @@ function upgrade(before) {
   // Release 2: payee labels, the sorted count, and the schema the new migrations add.
   const printed = (t) => t.merchant ?? t.counterparty_key ?? t.raw_description.slice(4)
   for (const t of facts.transactions) {
-    Object.assign(t, { display_name: null, payee_name: null, note: null, user_note: null, note_is_yours: false, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
+    Object.assign(t, { display_name: null, payee_name: null, note: null, user_note: null, note_is_yours: false, transfer: null, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
   }
   Object.assign(byId.R7, { payee: 'ACME LABS PVT LTD/SALARY OCT', channel: 'NEFT' })
   Object.assign(byId.R8, { payee: 'EXAMPLE BOOKSTORE BANGALORE', channel: 'Card' })
@@ -174,7 +174,7 @@ function upgrade(before) {
   facts.learnedRules[0].payee = 'RAHUL'
   facts.schema = {
     appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
-    tableRows: { payee_names: 0, review_undo: 0, accounts: 2 },
+    tableRows: { payee_names: 0, review_undo: 0, accounts: 2, transfer_unpaired: 0 },
     addedColumns: [
       'transactions.display_name', 'transactions.user_note', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
       'statements.account_id', 'statements.printed_start', 'statements.printed_end',
@@ -592,6 +592,52 @@ const regressions = {
   'a table a migration adds starts with rows in it': [
     (a) => (a.facts.schema.tableRows.payee_names = 3),
     /schema\.tableRows\.payee_names/,
+  ],
+  // Migration 044 and pairing. Each case damages one thing the rebuild or a pairing can get wrong.
+  'the upgrade pairs two payments': [
+    (a) => {
+      a.facts.transactions.find((t) => t.id === 'R1').transfer = { transaction_id: 'R2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-08-02', text: 'Moved to SBI savings' }
+    },
+    /payment R1 is paired as a transfer after the upgrade/,
+  ],
+  'the upgrade labels a payment as paired': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R1').source = 'pair'),
+    /payment R1 carries a pair label after the upgrade|payment R1's label changed in the upgrade: source was "manual", is "pair"/,
+  ],
+  'the rebuild drops a label': [
+    (a) => {
+      Object.assign(a.facts.transactions.find((t) => t.id === 'R6'), { annotation_id: null, category: null, subcategory: null, merchant: null, tags: [], confidence: null, source: null, original_source: null })
+      a.facts.annotationCategoryIds = a.facts.annotationCategoryIds.filter((r) => r.transaction_id !== 'R6')
+    },
+    /(payment R6's label changed in the upgrade: annotation_id|\d+ labels after the upgrade, \d+ before)/,
+  ],
+  'the rebuild loses a label but keeps the payment labelled': [
+    (a) => a.facts.annotationCategoryIds.pop(),
+    /\d+ labels after the upgrade, \d+ before/,
+  ],
+  'the rebuild changes a confidence': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R6').confidence = 0.5),
+    /payment R6's label changed in the upgrade: confidence was 1, is 0.5/,
+  ],
+  'the rebuild changes where a label came from': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R6').source = 'llm'),
+    /payment R6's label changed in the upgrade: source was "manual", is "llm"/,
+  ],
+  'the rebuild loses a tag': [
+    (a, b) => (b.facts.transactions.find((t) => t.id === 'R6').tags = ['gift']),
+    /payment R6's label changed in the upgrade: tags was \["gift"\], is \[\]/,
+  ],
+  'the unpaired table starts with a remembered pair': [
+    (a) => (a.facts.schema.tableRows.transfer_unpaired = 1),
+    /1 unpaired transfers are remembered after the upgrade|schema\.tableRows\.transfer_unpaired/,
+  ],
+  'the unpaired table is not there': [
+    (a) => (a.facts.schema.tableRows.transfer_unpaired = null),
+    /"stored-transfer-unpaired-table" \(stored\) did not happen/,
+  ],
+  'the pairing migration does not run': [
+    (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('044'))),
+    /"stored-migration-044" \(stored\) did not happen/,
   ],
   'a sorting job starts with an attempt already counted': [
     (a) => (a.facts.schema.jobAttempts[0].attempts = 1),

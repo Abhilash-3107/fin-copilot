@@ -465,6 +465,38 @@ function statementsSayWhereTheirPaymentsAre(before, after) {
   return problems
 }
 
+/**
+ * Migration 044 rebuilds the table that holds every label, and pairing runs when a
+ * statement is added, never on an upgrade. So each label the ledger had is whole
+ * after it (same id, category, source, confidence, tags), no label counts fewer,
+ * and nothing is paired or remembered as unpaired.
+ */
+function labelsSurviveTheRebuildAndNothingIsPaired(before, after) {
+  const problems = []
+  const now = new Map(after.facts.transactions.map((t) => [t.id, t]))
+  for (const t of before.facts.transactions) {
+    const kept = now.get(t.id)
+    if (!kept || t.annotation_id === null) continue
+    for (const field of ['annotation_id', 'category', 'subcategory', 'confidence', 'source', 'original_source', 'tags']) {
+      if (JSON.stringify(kept[field]) !== JSON.stringify(t[field])) {
+        problems.push(`payment ${t.id}'s label changed in the upgrade: ${field} was ${JSON.stringify(t[field])}, is ${JSON.stringify(kept[field])}`)
+      }
+    }
+  }
+  if (after.facts.annotationCategoryIds.length !== before.facts.annotationCategoryIds.length) {
+    problems.push(
+      `${after.facts.annotationCategoryIds.length} labels after the upgrade, ${before.facts.annotationCategoryIds.length} before`,
+    )
+  }
+  for (const t of after.facts.transactions) {
+    if (t.transfer) problems.push(`payment ${t.id} is paired as a transfer after the upgrade; pairing never runs on upgrade`)
+    if (t.source === 'pair') problems.push(`payment ${t.id} carries a pair label after the upgrade; pairing never runs on upgrade`)
+  }
+  const unpaired = after.facts.schema?.tableRows?.transfer_unpaired
+  if (unpaired) problems.push(`${unpaired} unpaired transfers are remembered after the upgrade, the user took none apart`)
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
@@ -475,6 +507,7 @@ export function checkInvariants(before, after) {
     ...accountNumbersAreOnlyTheirLastFour(before, after),
     ...statementsKeepTheirPaymentsAndBalance(before, after),
     ...statementsSayWhereTheirPaymentsAre(before, after),
+    ...labelsSurviveTheRebuildAndNothingIsPaired(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),

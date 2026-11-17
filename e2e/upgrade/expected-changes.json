@@ -799,6 +799,36 @@
         "added"
       ],
       "reason": "Migration 043 records what each statement's file held and whether its balance checked out. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-payment-transfer-not-paired",
+      "scope": "stored",
+      "path": "transactions[*].transfer",
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "A payment now says when it is paired with a payment in another of your accounts as a transfer (Moved to ..., Moved from ...). Pairing runs when a statement is added, never on upgrade, so every payment starts unpaired."
+    },
+    {
+      "id": "stored-transfer-unpaired-table",
+      "scope": "stored",
+      "path": "schema.tableRows.transfer_unpaired",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 044 adds the table that remembers the transfers you took apart, so they are not paired again. It starts empty."
+    },
+    {
+      "id": "stored-migration-044",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[044_transfer_pairing]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 044 lets a label come from a pair of statements and adds the table of unpaired transfers. It rebuilds the table that holds labels with every label, source, confidence and note as it was, and it runs once, on the first start of the new release."
     }
   ]
 }
