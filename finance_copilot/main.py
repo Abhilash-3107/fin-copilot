@@ -25,6 +25,7 @@ for _noisy in ("httpx", "httpcore"):
 from fastapi.staticfiles import StaticFiles
 
 from finance_copilot.api.routes import (
+    accounts,
     annotations,
     categories,
     config,
@@ -153,6 +154,7 @@ async def require_api_token(request, call_next):
 
 
 # All API routes live under /api so they can never collide with SPA client routes.
+app.include_router(accounts.router, prefix="/api/accounts", tags=["accounts"])
 app.include_router(statements.router, prefix="/api/statements", tags=["statements"])
 app.include_router(transactions.router, prefix="/api/transactions", tags=["transactions"])
 app.include_router(annotations.router, prefix="/api/annotations", tags=["annotations"])

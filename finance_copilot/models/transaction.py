@@ -46,3 +46,8 @@ class Statement(BaseModel):
     opening_balance: float | None = None  # balance before the first transaction
     closing_balance: float | None = None  # balance after the last transaction
     account_ref: str | None = None   # account number as printed on the statement
+    account_id: str | None = None    # the account the statement belongs to, set at ingest
+    printed_start: date | None = None  # first day the statement says it covers (header), if readable
+    printed_end: date | None = None    # last day the statement says it covers (header), if readable
+    # Not stored: whether ingest created the account for this statement.
+    account_is_new: bool = Field(default=False, exclude=True)

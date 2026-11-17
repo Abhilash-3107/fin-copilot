@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from finance_copilot.db.connection import init_db
+from finance_copilot.db.queries.accounts import resolve_account
 from finance_copilot.models.transaction import Transaction
 from finance_copilot.pipeline.ingest import (
     _split_balance_artifacts,
@@ -181,11 +182,13 @@ class TestIngestBalances:
 class TestContinuityCheck:
     def _seed_statement(self, conn, month, start, end, opening, closing,
                         bank="fake", account_ref=None):
+        # In the account ingest would put it: the same resolution, not a copy of it.
+        account_id, _ = resolve_account(conn, bank, account_ref)
         conn.execute(
             """INSERT INTO statements (id, bank_name, parser_version, statement_month,
-               period_start, period_end, opening_balance, closing_balance, account_ref)
-               VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?)""",
-            (f"s-{bank}-{month}", bank, month, start, end, opening, closing, account_ref),
+               period_start, period_end, opening_balance, closing_balance, account_ref, account_id)
+               VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?, ?)""",
+            (f"s-{bank}-{month}", bank, month, start, end, opening, closing, account_ref, account_id),
         )
         conn.commit()
 
@@ -317,10 +320,12 @@ class TestUploadRouteWarnings:
         from finance_copilot.main import app
 
         conn = _make_conn()
+        account_id, _ = resolve_account(conn, "fake", None)
         conn.execute(
             """INSERT INTO statements (id, bank_name, parser_version, statement_month,
-               period_start, period_end, opening_balance, closing_balance)
-               VALUES ('s-apr', 'fake', '1', '2026-04', '2026-04-01', '2026-04-30', 46000.0, 12345.0)"""
+               period_start, period_end, opening_balance, closing_balance, account_id)
+               VALUES ('s-apr', 'fake', '1', '2026-04', '2026-04-01', '2026-04-30', 46000.0, 12345.0, ?)""",
+            (account_id,),
         )
         conn.commit()
         app.dependency_overrides[api_get_db] = lambda: conn

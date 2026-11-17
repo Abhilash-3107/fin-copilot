@@ -50,6 +50,7 @@ from collections import Counter, defaultdict
 from datetime import date
 from statistics import median
 
+from finance_copilot.db.queries.accounts import account_label
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 from finance_copilot.db.queries.payee import payee_labels
 
@@ -759,71 +760,37 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240) -> dict:
 
     running_balance is a per-account chain: each statement continues its own
     account's balance. Interleaving two real accounts by date produces a sawtooth
-    that represents neither, so the series is scoped to one account.
-
-    That scope follows the bank, not the account_ref string. account_ref is
-    best-effort header extraction (see StatementParser.extract_account_ref): the
-    same account can arrive with a number on some statements and NULL on others
-    when older statements omit the header. Treating each distinct account_ref as
-    its own account would then splinter one real account into fragments and drop
-    whichever months don't match the busiest fragment. So within the primary
-    bank, an account_ref only splits the chain when the bank genuinely holds
-    two-plus *identified* accounts; a NULL ("unknown") folds into the single
-    identified account rather than spawning a phantom second one.
+    that represents neither, so the series is scoped to one account: the busiest,
+    meaning the one with the most balance-carrying rows. Which statements belong
+    to an account is decided once, at ingest (db/queries/accounts.py).
 
     Returns {"account": <label or None>, "series": [{date, balance}, ...]}.
     """
-    bank = conn.execute(
+    busiest = conn.execute(
         """
-        SELECT s.bank_name AS bank_name, COUNT(*) AS n
+        SELECT a.id AS id, a.name AS name, a.bank_name AS bank_name,
+               a.account_ref AS account_ref, COUNT(*) AS n
         FROM transactions t
         JOIN statements s ON s.id = t.statement_id
+        JOIN accounts a ON a.id = s.account_id
         WHERE t.running_balance IS NOT NULL
-        GROUP BY s.bank_name
-        ORDER BY n DESC, s.bank_name
+        GROUP BY a.id
+        ORDER BY n DESC, a.id
         LIMIT 1
         """
     ).fetchone()
-    if bank is None:
+    if busiest is None:
         return {"account": None, "series": []}
-    bank_name = bank["bank_name"]
-
-    # Identified accounts within this bank, busiest first. A blank/NULL
-    # account_ref is "unknown", not an account, so it is excluded here.
-    accounts = conn.execute(
-        """
-        SELECT s.account_ref AS account_ref, COUNT(*) AS n
-        FROM transactions t
-        JOIN statements s ON s.id = t.statement_id
-        WHERE t.running_balance IS NOT NULL AND s.bank_name = ?
-          AND s.account_ref IS NOT NULL AND s.account_ref != ''
-        GROUP BY s.account_ref
-        ORDER BY n DESC, s.account_ref
-        """,
-        (bank_name,),
-    ).fetchall()
-
-    if len(accounts) <= 1:
-        # One (or zero) identified account: the whole bank is one chain, so the
-        # unknown-account statements chain with the identified one.
-        account_ref = accounts[0]["account_ref"] if accounts else None
-        where, params = "s.bank_name = ?", (bank_name,)
-    else:
-        # Genuinely multiple accounts at this bank: scope to the busiest and
-        # exclude unknowns, which can't be attributed to a single account.
-        account_ref = accounts[0]["account_ref"]
-        where = "s.bank_name = ? AND s.account_ref = ?"
-        params = (bank_name, account_ref)
 
     rows = conn.execute(
-        f"""
+        """
         SELECT t.txn_date AS date, t.running_balance AS balance
         FROM transactions t
         JOIN statements s ON s.id = t.statement_id
-        WHERE t.running_balance IS NOT NULL AND {where}
+        WHERE t.running_balance IS NOT NULL AND s.account_id = ?
         ORDER BY t.txn_date, t.rowid
         """,
-        params,
+        (busiest["id"],),
     ).fetchall()
     by_day: dict[str, float] = {}
     for row in rows:
@@ -836,9 +803,7 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240) -> dict:
             sampled.append(series[-1])
         series = sampled
 
-    label = bank_name
-    if account_ref:
-        label = f"{label} ····{str(account_ref)[-4:]}"
+    label = account_label(busiest["name"], busiest["bank_name"], busiest["account_ref"])
     return {"account": label, "series": series}
 
 

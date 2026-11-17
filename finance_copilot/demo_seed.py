@@ -41,6 +41,7 @@ from pathlib import Path
 from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.queries.accounts import delete_empty_accounts, resolve_account
 from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.parsers.upi import parse_upi_description
@@ -57,6 +58,9 @@ PEOPLE = [
     ("demo_p03", "Neha Gupta", "neha.gupta@paytm", "friend"),
     ("demo_p04", "Amit Kumar", "amit.landlord@oksbi", "landlord"),
 ]
+
+# The one bank the sample ledger is from.
+DEMO_BANK = "kotak"
 
 # (pattern, category, subcategory, merchant): matches the BMRCL metro top-up in
 # the unannotated batch.
@@ -471,6 +475,9 @@ def wipe(conn) -> int:
     conn.execute("DELETE FROM annotation_jobs WHERE statement_id GLOB 'demo_stmt*'")
     conn.execute(f"DELETE FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})")
     conn.execute("DELETE FROM statements WHERE id GLOB 'demo_stmt*'")
+    # The account only the sample used goes with it; one a real statement
+    # shares (a 0.1.2 ledger can hold both) stays.
+    delete_empty_accounts(conn)
     conn.execute("DELETE FROM people WHERE id GLOB 'demo_p[0-9]*'")
     conn.execute("DELETE FROM user_rules WHERE id GLOB 'demo_rule*'")
     # Review feedback and dismissed learned rules are aggregated per category
@@ -511,9 +518,13 @@ def seed(conn, today: date) -> dict:
 
     # Statements, one per month.
     for stmt_id, ym in sorted({(t["statement_id"], t["month"]) for t in led.txns}):
+        # The account is the one ingest would give a Kotak statement with no
+        # number: the bank's only account, or a new one the first time.
+        account_id, _ = resolve_account(conn, DEMO_BANK, None)
         conn.execute(
-            "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES (?, ?, ?, ?)",
-            (stmt_id, "kotak", "1", ym))
+            "INSERT OR IGNORE INTO statements "
+            "(id, bank_name, parser_version, statement_month, account_id) VALUES (?, ?, ?, ?, ?)",
+            (stmt_id, DEMO_BANK, "1", ym, account_id))
 
     # Transactions in chronological order, with running balances computed as
     # we go. Within a day, insertion order (credits first on the 1st) holds.

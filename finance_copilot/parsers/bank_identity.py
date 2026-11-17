@@ -66,6 +66,13 @@ _TABLE_HEADING_RE = re.compile(
 )
 
 
+def statement_header(page_text: str) -> str:
+    """The text above the transaction table: who the account is, and for when.
+    The whole text when no table heading is found."""
+    heading = _TABLE_HEADING_RE.search(page_text)
+    return page_text[: heading.start()] if heading else page_text
+
+
 def identify_bank(page_text: str) -> str | None:
     """Return the canonical bank key ("kotak", "hdfc", ...) or None if unknown."""
     for match in _IFSC_RE.finditer(page_text):
@@ -73,7 +80,40 @@ def identify_bank(page_text: str) -> str | None:
         if bank:
             return bank
 
-    heading = _TABLE_HEADING_RE.search(page_text)
-    header = page_text[: heading.start()] if heading else page_text
+    header = statement_header(page_text)
     match = _NAME_RE.search(header)
     return _BANK_NAMES[match.group(1).lower()] if match else None
+
+
+# Canonical bank key -> how the bank is written in the interface. Keys that are
+# not here (a bank no parser knows, or text a user typed) are shown as they are,
+# title-cased when they came in lower case.
+_DISPLAY_NAMES: dict[str, str] = {
+    "kotak": "Kotak",
+    "hdfc": "HDFC",
+    "icici": "ICICI",
+    "sbi": "SBI",
+    "axis": "Axis",
+    "yes bank": "Yes Bank",
+    "idfc": "IDFC FIRST",
+    "indusind": "IndusInd",
+    "punjab national": "Punjab National",
+    "canara": "Canara",
+    "union bank": "Union Bank",
+    "bank of baroda": "Bank of Baroda",
+    "federal": "Federal",
+    "rbl": "RBL",
+    "au small finance": "AU Small Finance",
+    # The generic parser's name when it could not tell which bank it was.
+    "generic": "Bank",
+}
+
+
+def bank_display_name(bank_key: str) -> str:
+    """The bank as the interface writes it ("Kotak", "HDFC"), from its canonical key."""
+    key = bank_key.strip()
+    shown = _DISPLAY_NAMES.get(key.lower())
+    if shown:
+        return shown
+    # Something a person typed keeps their capitals; a lower-case key gets them.
+    return key.title() if key == key.lower() else key

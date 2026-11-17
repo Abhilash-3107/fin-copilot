@@ -15,6 +15,11 @@ from pydantic import BaseModel
 from finance_copilot.api.deps import get_db
 from finance_copilot.api.routes.annotations import enqueue_annotation_job
 from finance_copilot.config import settings
+from finance_copilot.db.queries.accounts import (
+    account_labels,
+    delete_empty_accounts,
+    label_for_statement,
+)
 from finance_copilot.db.queries.annotations import sorted_counts_by_statement
 from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.embeddings import delete_embeddings
@@ -120,6 +125,8 @@ def upload_statement(
         "transaction_count": transaction_count,
         "balance_check": balance_check,
         "sorting_job_id": sorting_job_id,
+        "account_label": label_for_statement(account_labels(conn), statement.model_dump()),
+        "account_is_new": statement.account_is_new,
     }
 
 
@@ -147,35 +154,15 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     # trust indicator (4.20). One extra windowed query, merged in by id.
     checks = statement_balance_checks(conn)
     sorted_counts = sorted_counts_by_statement(conn, get_confidence_threshold(conn))
+    labels = account_labels(conn)
     result = []
     for row in rows:
         d = dict(row)
+        d["account_label"] = label_for_statement(labels, d)
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
         result.append(d)
     return result
-
-
-class StatementPatch(BaseModel):
-    bank_name: str
-
-
-@router.patch("/{statement_id}")
-def patch_statement(
-    statement_id: str,
-    body: StatementPatch,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """Update mutable fields on a statement (currently: bank_name)."""
-    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    conn.execute(
-        "UPDATE statements SET bank_name = ? WHERE id = ?",
-        (body.bank_name.strip(), statement_id),
-    )
-    conn.commit()
-    return {"id": statement_id, "bank_name": body.bank_name.strip()}
 
 
 @contextlib.contextmanager
@@ -210,6 +197,39 @@ def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: s
             status_code=409,
             detail=f"This statement is being sorted right now. {action} once sorting finishes.",
         )
+
+
+class StatementPatch(BaseModel):
+    account_id: str
+
+
+@router.patch("/{statement_id}")
+def patch_statement(
+    statement_id: str,
+    body: StatementPatch,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Move a statement to another existing account (when ingest put it in the
+    wrong one). An account left with no statements goes away."""
+    with _exclusive(conn):
+        statement = conn.execute(
+            "SELECT * FROM statements WHERE id = ?", (statement_id,)
+        ).fetchone()
+        if not statement:
+            raise HTTPException(status_code=404, detail="Statement not found")
+        if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (body.account_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Account not found")
+        if statement["account_id"] != body.account_id:
+            _refuse_while_sorting(conn, statement_id, "Move it")
+            conn.execute(
+                "UPDATE statements SET account_id = ? WHERE id = ?", (body.account_id, statement_id)
+            )
+            delete_empty_accounts(conn)
+    return {
+        "id": statement_id,
+        "account_id": body.account_id,
+        "account_label": account_labels(conn)[body.account_id],
+    }
 
 
 @router.delete("/{statement_id}")
@@ -247,6 +267,7 @@ def delete_statement(
             conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
 
         conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+        delete_empty_accounts(conn)
         # Its sort that was still waiting has nothing left to sort.
         conn.execute(
             "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",

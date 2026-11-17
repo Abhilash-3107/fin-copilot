@@ -5,12 +5,14 @@ import hashlib
 import logging
 import re
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pdfplumber
 from pdfminer.pdfdocument import PDFPasswordIncorrect
 
-from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.connection import get_migrated_db, write_transaction
+from finance_copilot.db.queries.accounts import account_labels, label_for_statement, resolve_account
 from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
 from finance_copilot.models.transaction import Statement, Transaction
 from finance_copilot.parsers.description import KNOWN_SHAPES
@@ -136,11 +138,9 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     immediately before it (and symmetrically for the one after, since uploads can
     arrive out of order). A mismatch means a missing statement or a bad parse.
 
-    The chain only exists within one bank account, so neighbours are scoped to
-    the same bank_name and the same account_ref. account_ref uses NULL-safe
-    equality (IS): unknown-account statements chain with each other (the
-    single-account case keeps working without header extraction) but never with
-    a statement from an identified different account.
+    The chain only exists within one account, so neighbours are scoped to the
+    statement's account (db/queries/accounts.py decides which account a
+    statement belongs to, including the "number could not be read" cases).
     """
     warnings: list[str] = []
     if statement.period_start is None or statement.period_end is None:
@@ -151,10 +151,9 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
 
     prev = conn.execute(
         "SELECT statement_month, closing_balance FROM statements "
-        "WHERE period_end < ? AND id != ? AND bank_name = ? AND account_ref IS ? "
+        "WHERE period_end < ? AND id != ? AND account_id = ? "
         "ORDER BY period_end DESC LIMIT 1",
-        (statement.period_start.isoformat(), statement.id,
-         statement.bank_name, statement.account_ref),
+        (statement.period_start.isoformat(), statement.id, statement.account_id),
     ).fetchone()
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
@@ -165,10 +164,9 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
 
     nxt = conn.execute(
         "SELECT statement_month, opening_balance FROM statements "
-        "WHERE period_start > ? AND id != ? AND bank_name = ? AND account_ref IS ? "
+        "WHERE period_start > ? AND id != ? AND account_id = ? "
         "ORDER BY period_start ASC LIMIT 1",
-        (statement.period_end.isoformat(), statement.id,
-         statement.bank_name, statement.account_ref),
+        (statement.period_end.isoformat(), statement.id, statement.account_id),
     ).fetchone()
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
@@ -210,9 +208,9 @@ def check_description_formats(conn: sqlite3.Connection, statement: Statement) ->
 class DuplicateStatementError(ValueError):
     """Raised when the exact same PDF (by content hash) was already uploaded."""
 
-    def __init__(self, existing: dict):
+    def __init__(self, existing: dict, account_label: str):
         super().__init__(
-            f"This statement was already added ({existing['bank_name']}, "
+            f"This statement was already added ({account_label}, "
             f"{existing['statement_month']})"
         )
         self.existing = existing
@@ -245,6 +243,23 @@ def _check_unlocks(pdf_path: str, password: str | None) -> None:
             raise PasswordRequiredError(password_given=bool(password)) from exc
 
 
+def _sane_printed_period(
+    printed: tuple[date, date] | None, first_payment: date, last_payment: date
+) -> tuple[date, date] | None:
+    """The printed period, kept only when every payment falls inside it. One that
+    leaves a payment out was misread (a date from somewhere else on the page), and
+    a wrong period is worse than none."""
+    if printed is None:
+        return None
+    if printed[0] <= first_payment and last_payment <= printed[1]:
+        return printed
+    logger.warning(
+        "ignoring the printed period %s to %s: payments run from %s to %s",
+        printed[0], printed[1], first_payment, last_payment,
+    )
+    return None
+
+
 def ingest_pdf(
     pdf_path: str,
     password: str | None = None,
@@ -263,7 +278,9 @@ def ingest_pdf(
             "SELECT * FROM statements WHERE file_sha256 = ?", (file_sha256,)
         ).fetchone()
         if existing:
-            raise DuplicateStatementError(dict(existing))
+            raise DuplicateStatementError(
+                dict(existing), label_for_statement(account_labels(_conn), existing)
+            )
 
         _check_unlocks(pdf_path, password)
         parser = detect_parser(pdf_path, password=password)
@@ -281,6 +298,9 @@ def ingest_pdf(
 
         period_start = min(t.txn_date for t in transactions)
         period_end = max(t.txn_date for t in transactions)
+        printed = _sane_printed_period(
+            parser.extract_period(pdf_path, password=password), period_start, period_end
+        )
         statement = Statement(
             bank_name=parser.bank_name,
             parser_version=parser.version,
@@ -291,15 +311,23 @@ def ingest_pdf(
             opening_balance=opening_balance,
             closing_balance=closing_balance,
             account_ref=parser.extract_account_ref(pdf_path, password=password),
+            printed_start=printed[0] if printed else None,
+            printed_end=printed[1] if printed else None,
         )
 
         for txn in transactions:
             txn.statement_id = statement.id
 
-        insert_statement(_conn, statement)
-        for txn in transactions:
-            insert_transaction(_conn, txn)
-        _conn.commit()
+        # Choosing the account and writing the statement are one step under the
+        # write lock: two statements arriving together for a new account must
+        # not each start one.
+        with write_transaction(_conn):
+            statement.account_id, statement.account_is_new = resolve_account(
+                _conn, statement.bank_name, statement.account_ref
+            )
+            insert_statement(_conn, statement)
+            for txn in transactions:
+                insert_transaction(_conn, txn)
     finally:
         if conn is None:
             _conn.close()

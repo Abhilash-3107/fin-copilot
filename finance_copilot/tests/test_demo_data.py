@@ -474,3 +474,39 @@ class TestRemoveReapsStaleJobs:
         conn.commit()
         assert client.delete("/api/data/demo").status_code == 200
         assert conn.execute("SELECT status FROM annotation_jobs WHERE id = 'zombie'").fetchone()[0] == "failed"
+
+
+class TestDemoAccounts:
+    def test_the_demo_statements_belong_to_one_account(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM statements WHERE account_id IS NULL").fetchone()[0] == 0
+        accounts = client.get("/api/accounts").json()
+        assert len(accounts) == 1
+        assert accounts[0]["account_label"] == "Kotak"
+        assert accounts[0]["statement_count"] >= 4
+
+    def test_seeding_again_adds_no_second_account(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        client.post("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
+
+    def test_removing_the_sample_data_removes_its_account(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        assert client.delete("/api/data/demo").status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+
+    def test_removing_the_sample_data_keeps_the_account_of_a_real_statement(self, client_conn):
+        """A 0.1.2 ledger can hold both. Migration puts a Kotak sample and a real Kotak
+        statement in one account; the real one keeps it."""
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        account_id = conn.execute("SELECT id FROM accounts").fetchone()[0]
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES ('real1', 'kotak', '1', '2026-05', ?)", (account_id,))
+        conn.commit()
+        client.delete("/api/data/demo")
+        assert [a["id"] for a in client.get("/api/accounts").json()] == [account_id]
