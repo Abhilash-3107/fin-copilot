@@ -8,7 +8,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.app_settings import get_dev_mode
@@ -213,9 +213,22 @@ def get_transaction(
     return result
 
 
+def _within(value: str | None, cap: int) -> str | None:
+    """The cap is on what gets stored: the trimmed text, counted in characters
+    (the page counts the same way, so what it lets you type the API accepts)."""
+    if value is not None and len(value.strip()) > cap:
+        raise ValueError(f"must be at most {cap} characters")
+    return value
+
+
 class NameBody(BaseModel):
     """A name for a payment or a payee; null or blank clears it."""
-    name: str | None = Field(None, max_length=MAX_NAME_LENGTH)
+    name: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_cap(cls, value):
+        return _within(value, MAX_NAME_LENGTH)
 
 
 def _payment_or_404(conn: sqlite3.Connection, transaction_id: str):
@@ -240,7 +253,12 @@ def rename_payment(
 
 class NoteBody(BaseModel):
     """A note on a payment; null or blank clears it."""
-    note: str | None = Field(None, max_length=MAX_NOTE_LENGTH)
+    note: str | None = None
+
+    @field_validator("note")
+    @classmethod
+    def _note_cap(cls, value):
+        return _within(value, MAX_NOTE_LENGTH)
 
 
 @router.put("/{transaction_id}/note")

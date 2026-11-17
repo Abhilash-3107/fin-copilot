@@ -203,11 +203,16 @@ def set_payment_name(conn: sqlite3.Connection, transaction_id: str, name: str | 
 
 def set_payment_note(conn: sqlite3.Connection, transaction_id: str, note: str | None) -> bool:
     """Write a note on one payment (None or blank clears it, and the UPI note
-    shows again). False when it does not exist."""
-    cur = conn.execute(
-        "UPDATE transactions SET user_note = ? WHERE id = ?", (_clean(note), transaction_id)
-    )
-    return cur.rowcount > 0
+    shows again). A note that is exactly the UPI note changes nothing, so it is
+    stored as no note of the user's. False when the payment does not exist."""
+    row = conn.execute("SELECT upi_meta FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+    if row is None:
+        return False
+    note = _clean(note)
+    if note == _note(row[0]):
+        note = None
+    conn.execute("UPDATE transactions SET user_note = ? WHERE id = ?", (note, transaction_id))
+    return True
 
 
 def set_payee_name(conn: sqlite3.Connection, counterparty_key: str, name: str | None) -> None:

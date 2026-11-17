@@ -157,6 +157,29 @@ class TestSetAndClear:
         put_note(client, txn, "invoice 12")
         assert put_note(client, txn, "").json()["note"] is None
 
+    def test_a_note_equal_to_the_upi_note_is_stored_as_none(self, conn, client):
+        """Saving the UPI note back as your own changes nothing, so nothing is stored
+        and "Clear note" never shows for a note that clears to the same text."""
+        txn = add_txn(conn, CHAI)
+        for text in ("chai and samosa", "  chai and samosa  "):
+            row = put_note(client, txn, text).json()
+            assert row["user_note"] is None
+            assert row["note_is_yours"] is False
+            assert row["note"] == "chai and samosa"
+        stored = conn.execute("SELECT user_note FROM transactions WHERE id = ?", (txn,)).fetchone()
+        assert stored["user_note"] is None
+
+    def test_writing_the_upi_note_back_drops_an_earlier_note_of_yours(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        put_note(client, txn, "team tea")
+        row = put_note(client, txn, "chai and samosa").json()
+        assert row["user_note"] is None and row["note_is_yours"] is False
+
+    def test_a_different_note_or_different_case_is_still_yours(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        assert put_note(client, txn, "Chai and samosa").json()["note_is_yours"] is True
+        assert put_note(client, txn, "chai and samosa and more").json()["note_is_yours"] is True
+
     def test_unknown_payment_is_404(self, client):
         assert put_note(client, "nope", "x").status_code == 404
 
@@ -165,6 +188,18 @@ class TestSetAndClear:
         assert put_note(client, txn, "x" * MAX_NOTE_LENGTH).status_code == 200
         assert put_note(client, txn, "x" * (MAX_NOTE_LENGTH + 1)).status_code == 422
         assert MAX_NOTE_LENGTH == 500
+
+    def test_the_cap_counts_the_trimmed_note(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        padded = "  " + "x" * MAX_NOTE_LENGTH + "  "
+        assert put_note(client, txn, padded).status_code == 200
+        assert get_txn(client, txn)["note"] == "x" * MAX_NOTE_LENGTH
+        assert put_note(client, txn, "  " + "x" * (MAX_NOTE_LENGTH + 1)).status_code == 422
+
+    def test_the_cap_counts_characters_not_utf16_units(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        assert put_note(client, txn, "\U0001F600" * MAX_NOTE_LENGTH).status_code == 200
+        assert put_note(client, txn, "\U0001F600" * (MAX_NOTE_LENGTH + 1)).status_code == 422
 
     def test_a_note_belongs_to_that_payment_only(self, conn, client):
         a = add_txn(conn, CHAI, date="2026-01-01")
