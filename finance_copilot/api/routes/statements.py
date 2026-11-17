@@ -16,7 +16,9 @@ from finance_copilot.api.deps import get_db
 from finance_copilot.api.routes.annotations import enqueue_annotation_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.accounts import (
+    NAME_MAX_LENGTH,
     account_labels,
+    create_account,
     delete_empty_accounts,
     label_for_statement,
     ref_last4,
@@ -210,7 +212,12 @@ def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: s
 
 
 class StatementPatch(BaseModel):
-    account_id: str
+    """Where a statement goes: another existing account, or `new_account` to start
+    one for it (bank and number taken from the statement) with an optional name."""
+
+    account_id: str | None = None
+    new_account: bool = False
+    name: str | None = None
 
 
 @router.patch("/{statement_id}")
@@ -219,26 +226,46 @@ def patch_statement(
     body: StatementPatch,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Move a statement to another existing account (when ingest put it in the
-    wrong one). An account left with no statements goes away."""
+    """Move a statement to another account, or to a new one (when ingest put it in
+    the wrong one, say a statement of a second account that printed no number). An
+    account left with no statements goes away."""
+    if bool(body.account_id) == body.new_account:
+        raise HTTPException(status_code=422, detail="Say which account to move it to, or ask for a new one.")
+    name = (body.name or "").strip()
+    if len(name) > NAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422, detail=f"An account name can be at most {NAME_MAX_LENGTH} characters."
+        )
     with _exclusive(conn):
         statement = conn.execute(
             "SELECT * FROM statements WHERE id = ?", (statement_id,)
         ).fetchone()
         if not statement:
             raise HTTPException(status_code=404, detail="Statement not found")
-        if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (body.account_id,)).fetchone():
-            raise HTTPException(status_code=404, detail="Account not found")
-        if statement["account_id"] != body.account_id:
+        if body.new_account:
+            siblings = conn.execute(
+                "SELECT COUNT(*) FROM statements WHERE account_id = ?", (statement["account_id"],)
+            ).fetchone()[0]
+            if siblings <= 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This is the only statement in its account, so it already has an account of its own.",
+                )
             _refuse_while_sorting(conn, statement_id, "Move it")
-            conn.execute(
-                "UPDATE statements SET account_id = ? WHERE id = ?", (body.account_id, statement_id)
-            )
+            target = create_account(conn, statement["bank_name"], statement["account_ref"], name or None)
+        else:
+            target = body.account_id
+            if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (target,)).fetchone():
+                raise HTTPException(status_code=404, detail="Account not found")
+            if statement["account_id"] != target:
+                _refuse_while_sorting(conn, statement_id, "Move it")
+        if statement["account_id"] != target:
+            conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
             delete_empty_accounts(conn)
     return {
         "id": statement_id,
-        "account_id": body.account_id,
-        "account_label": account_labels(conn)[body.account_id],
+        "account_id": target,
+        "account_label": account_labels(conn)[target],
     }
 
 

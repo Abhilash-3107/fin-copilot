@@ -493,6 +493,72 @@ class TestAccountRoutes:
         assert ids == {k1.account_id}
         assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
+    def test_move_a_statement_to_a_new_account(self, api):
+        """Splits a statement out of the account ingest put it in; the new account carries its
+        bank and number, and the name when one is given."""
+        client, conn = api
+        k1, k2, h1 = _two_accounts(conn)
+        r = client.patch(f"/api/statements/{k2.id}", json={"new_account": True, "name": "  Joint account "})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["account_id"] not in (k1.account_id, h1.account_id)
+        assert body["account_label"] == "Joint account"
+        accounts = {a["id"]: a for a in client.get("/api/accounts").json()}
+        assert accounts[body["account_id"]]["statement_count"] == 1
+        assert accounts[body["account_id"]]["bank_name"] == "kotak"
+        assert accounts[body["account_id"]]["account_ref_last4"] == "1111"
+        assert accounts[k1.account_id]["statement_count"] == 1
+        stored = conn.execute("SELECT bank_name, account_ref, name FROM accounts WHERE id = ?", (body["account_id"],)).fetchone()
+        assert tuple(stored) == ("kotak", "5551111", "Joint account")
+
+    def test_a_new_account_without_a_name_is_labelled_from_its_bank_and_number(self, api):
+        client, conn = api
+        k1, k2, _ = _two_accounts(conn)
+        body = client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).json()
+        assert body["account_label"] == "Kotak ··1111"
+        assert conn.execute("SELECT name FROM accounts WHERE id = ?", (body["account_id"],)).fetchone()[0] is None
+
+    def test_a_split_keeps_the_next_statement_of_that_bank_and_number_in_the_new_account(self, api):
+        """The latest statement of the bank and number was moved: its account is where the next one goes."""
+        client, conn = api
+        k1, k2, _ = _two_accounts(conn)
+        new_id = client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).json()["account_id"]
+        k3 = _ingest(conn, _FakeParser("kotak", "5551111", _rows(9400, 20)), "k3")
+        assert k3.account_id == new_id and k3.account_is_new is False
+        assert conn.execute("SELECT COUNT(*) FROM accounts WHERE bank_name = 'kotak'").fetchone()[0] == 2
+
+    def test_a_statement_alone_in_its_account_is_not_moved_to_a_new_one(self, api):
+        client, conn = api
+        _, _, h1 = _two_accounts(conn)
+        r = client.patch(f"/api/statements/{h1.id}", json={"new_account": True})
+        assert r.status_code == 422
+        assert conn.execute("SELECT account_id FROM statements WHERE id = ?", (h1.id,)).fetchone()[0] == h1.account_id
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+
+    def test_a_new_account_name_is_capped(self, api):
+        client, conn = api
+        k1, k2, _ = _two_accounts(conn)
+        r = client.patch(f"/api/statements/{k2.id}", json={"new_account": True, "name": "x" * 61})
+        assert r.status_code == 422
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+
+    def test_an_account_and_a_new_account_together_are_refused(self, api):
+        client, conn = api
+        k1, k2, h1 = _two_accounts(conn)
+        assert client.patch(f"/api/statements/{k2.id}", json={"account_id": h1.account_id, "new_account": True}).status_code == 422
+        assert client.patch(f"/api/statements/{k2.id}", json={}).status_code == 422
+
+    def test_a_new_account_is_refused_while_the_statement_is_being_sorted(self, api):
+        client, conn = api
+        k1, k2, _ = _two_accounts(conn)
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, statement_id, kind) VALUES ('j1', 'running', ?, 'annotate')",
+            (k2.id,),
+        )
+        conn.commit()
+        assert client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).status_code == 409
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+
     def test_moving_to_an_unknown_account_is_404_and_changes_nothing(self, api):
         client, conn = api
         k1, _, _ = _two_accounts(conn)

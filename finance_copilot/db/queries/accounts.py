@@ -114,12 +114,21 @@ def resolve_account(
         if len(unnumbered) == 1:
             return unnumbered[0]["id"], False
 
+    return create_account(conn, bank, ref), True
+
+
+def create_account(
+    conn: sqlite3.Connection, bank_name: str, account_ref: str | None, name: str | None = None
+) -> str:
+    """Start an account for this bank and number. It does not look for an existing
+    one: resolve_account does, and a user splitting a statement out wants a new one
+    even where the same bank and number already has an account."""
     account_id = f"acc_{ulid.ULID()}"
     conn.execute(
-        "INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, ?, ?)",
-        (account_id, bank, ref),
+        "INSERT INTO accounts (id, bank_name, account_ref, name) VALUES (?, ?, ?, ?)",
+        (account_id, bank_key(bank_name), (account_ref or "").strip() or None, (name or "").strip() or None),
     )
-    return account_id, True
+    return account_id
 
 
 def delete_empty_accounts(conn: sqlite3.Connection) -> int:
