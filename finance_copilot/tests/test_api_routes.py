@@ -2088,10 +2088,10 @@ class TestJobRunner:
         client, conn = db
         conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
         conn.commit()
-        before = threading.active_count()
         parser = TestUploadStartsSorting._parser([(5, "zqx vendor")])
         ids = []
-        for i in range(45):
+
+        def upload(i):
             with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
                 r = client.post(
                     "/api/statements/upload",
@@ -2099,6 +2099,15 @@ class TestJobRunner:
                 )
             assert r.status_code == 200
             ids.append(r.json()["sorting_job_id"])
+
+        # The first requests may start the server's reusable worker threads; what
+        # must not happen is a thread per queued statement. So measure after a
+        # warm-up and require the count to stay flat while 40 more queue up.
+        for i in range(5):
+            upload(i)
+        before = threading.active_count()
+        for i in range(5, 45):
+            upload(i)
         assert threading.active_count() == before
         queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
         assert queued == ids
