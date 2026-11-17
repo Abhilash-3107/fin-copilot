@@ -1483,3 +1483,120 @@ describe('an open dialog on Teach Me', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })
+
+describe('Teach Me offers a transfer between your own accounts', () => {
+  const moved = (id, title = 'Moved to SBI savings, 28 Oct') => ({
+    category: 'Self Transfers', subcategory: 'Self Transfer', pair_with: id, title,
+    reason: 'Same amount, 1 day apart. Pairing keeps both out of spending.',
+  })
+  const rameshOut = (extra = {}) => makeCard({
+    annotation_id: null, transaction_id: 200, raw_description: 'NEFT RAMESH', payee: 'RAMESH', category: null,
+    subcategory: null, merchant: null, confidence: 0, source: null,
+    suggestions: [moved(300), { category: 'Transfers', subcategory: 'Peer Transfer', reason: 'You chose this once for RAMESH' }],
+    ...extra,
+  })
+
+  it('lists the candidate first, in words, beside the usual suggestions', async () => {
+    stubGet([rameshOut()])
+    await renderQueue('RAMESH')
+    const buttons = screen.getAllByRole('button', { name: /Moved to SBI savings|Transfers/ })
+    expect(buttons[0]).toHaveTextContent('Moved to SBI savings, 28 Oct')
+    expect(buttons[0]).toHaveTextContent('Same amount, 1 day apart')
+    expect(buttons[0]).toHaveTextContent('1')
+  })
+
+  it('1 chooses it without answering, and Enter pairs the two payments', async () => {
+    mockApi.post.mockResolvedValue({
+      transaction_ids: [200, 300], transfer: { text: 'Moved to SBI savings' }, undo_token: 'tok-pair',
+    })
+    stubGet([rameshOut()])
+    await renderQueue('RAMESH')
+
+    key('1')
+    expect(screen.getByRole('button', { name: /Moved to SBI savings, 28 Oct/ })).toHaveAttribute('aria-pressed', 'true')
+    // The plain category of the same name is not chosen with it.
+    expect(screen.getByRole('button', { name: /Peer Transfer|Transfers/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(mockApi.post).not.toHaveBeenCalled()
+
+    key('Enter')
+    await screen.findByText("You're all done!")
+    expect(mockApi.post).toHaveBeenCalledWith('/transfers/pair', { transaction_id: 200, with_transaction_id: 300 })
+    expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/bulk-label', expect.anything())
+    const [message, type, options] = lastToast()
+    expect(message).toBe('Moved to SBI savings. Paired, so neither counts as spending or income.')
+    expect(type).toBe('success')
+    expect(options.action.label).toBe('Undo')
+  })
+
+  it('the partner leaves the list too when it was waiting in it', async () => {
+    mockApi.post.mockResolvedValue({ transaction_ids: [200, 300], transfer: { text: 'Moved to SBI savings' }, undo_token: 't' })
+    const partner = makeCard({
+      annotation_id: null, transaction_id: 300, raw_description: 'NEFT IN', payee: 'SBI IN', category: null,
+      subcategory: null, confidence: 0, source: null, suggestions: [],
+    })
+    stubGet([rameshOut(), partner])
+    await renderQueue('RAMESH')
+    key('1')
+    key('Enter')
+    await screen.findByText("You're all done!")
+    expect(screen.queryByRole('heading', { name: 'SBI IN' })).not.toBeInTheDocument()
+  })
+
+  it('Z takes the pair back and both payments return', async () => {
+    mockApi.post.mockResolvedValue({ transaction_ids: [200, 300], transfer: { text: 'Moved to SBI savings' }, undo_token: 'tok-pair' })
+    stubGet(() => [rameshOut()])
+    await renderQueue('RAMESH')
+    key('1')
+    key('Enter')
+    await waitFor(() => expect(lastToast()[0]).toMatch(/Paired, so neither counts/))
+    mockApi.post.mockResolvedValue({ restored: [200, 300] })
+    key('z')
+    expect(await heading('RAMESH')).toBeInTheDocument()
+    expect(mockApi.post).toHaveBeenLastCalledWith(UNDO, { token: 'tok-pair' })
+  })
+
+  it('a pair answers for this payment alone: the group box is gone while it is chosen', async () => {
+    stubGet([rameshOut({ group_key: 'R|debit', payee_kind: 'business' }), rameshOut({ transaction_id: 201, group_key: 'R|debit', payee_kind: 'business' })])
+    await renderQueue('RAMESH')
+    expect(screen.getByRole('checkbox')).toBeInTheDocument()
+    key('1')
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    key('2')
+    expect(screen.getByRole('checkbox')).toBeInTheDocument()
+  })
+
+  it('choosing the plain suggestion instead sorts the payment without pairing', async () => {
+    stubGet([rameshOut()])
+    await renderQueue('RAMESH')
+    key('1')
+    key('2')
+    key('Enter')
+    await screen.findByText("You're all done!")
+    expect(mockApi.post).toHaveBeenCalledWith('/annotations/bulk-label', expect.objectContaining({ transaction_ids: [200] }))
+    expect(mockApi.post).not.toHaveBeenCalledWith('/transfers/pair', expect.anything())
+  })
+
+  it('a candidate that no longer fits says so and shows the updated list', async () => {
+    const refused = Object.assign(new Error('These two payments can\'t be paired any more.'), { status: 409 })
+    mockApi.post.mockRejectedValue(refused)
+    stubGet([rameshOut()])
+    await renderQueue('RAMESH')
+    key('1')
+    key('Enter')
+    await waitFor(() => expect(lastToast()[0]).toMatch(/can't be paired any more\. Here's the updated list/))
+    expect(lastToast()[1]).toBe('info')
+  })
+
+  it('a pair chosen on one card never leaks onto the next', async () => {
+    stubGet([rameshOut(), uber()])
+    await renderQueue('RAMESH')
+    key('1')
+    key('s') // skip: the next card appears
+    await heading('UBER')
+    expect(screen.getByRole('button', { name: /Food/ })).toHaveAttribute('aria-pressed', 'true')
+    mockApi.post.mockClear()
+    key('Enter')
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalled())
+    expect(mockApi.post).not.toHaveBeenCalledWith('/transfers/pair', expect.anything())
+  })
+})

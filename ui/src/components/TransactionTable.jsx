@@ -115,7 +115,7 @@ export default function TransactionTable({
                     next to a "manual" pill reads as a contradiction, so show
                     nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
-                {ann?.confidence == null || src === 'manual' ? (
+                {ann?.confidence == null || src === 'manual' || src === 'pair' ? (
                   <span className="text-[#94a3b8]">-</span>
                 ) : ann.confidence >= 0.8 ? (
                   <span className="text-xs tabular-nums text-[#94a3b8]">

@@ -91,7 +91,9 @@ function MultiFilter({ label, options, selected, onChange }) {
 
 // What the server resolves for a payment's name; a row is refreshed from the
 // payment's own read after an edit instead of working the name out here.
-const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel']
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel', 'transfer']
+// What a row holds of its payment's label, beside the names.
+const LABEL_FIELDS = ['annotation_id', 'category', 'subcategory', 'merchant', 'tags', 'confidence', 'source']
 
 function nameFields(txn) {
   return Object.fromEntries(NAME_FIELDS.map(f => [f, txn[f]]))
@@ -180,6 +182,9 @@ export default function Transactions() {
   const [linkError, setLinkError] = useState(null) // {id, status} of a linked payment that could not open
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
+  // The open payment's id, for work that finishes after the panel moved on (an undo from a toast).
+  const activeIdRef = useRef(null)
+  activeIdRef.current = activeTxn?.id ?? null
   // Any tracked run holds the single job slot, so Sort again waits for it.
   const { job, startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
@@ -585,6 +590,51 @@ export default function Transactions() {
     refreshName(txnId) // and a new merchant can change what the row is called
   }
 
+  // Re-read payments whose labels changed together (a pair, an unpair, an undo of
+  // either) and patch the loaded rows and the open panel where they stand, so the
+  // page keeps its place and its selection.
+  async function refreshPayments(ids) {
+    const found = (await Promise.all(ids.map(id => api.get(`/transactions/${id}`).catch(() => null)))).filter(Boolean)
+    const byId = new Map(found.map(full => [full.id, full]))
+    const fieldsOf = full => Object.fromEntries([...NAME_FIELDS, ...LABEL_FIELDS].map(f => [f, full[f]]))
+    setTransactions(prev => prev.map(t => (byId.has(t.id) ? { ...t, ...fieldsOf(byId.get(t.id)) } : t)))
+    setAnnotationMap(prev => {
+      const next = { ...prev }
+      for (const full of found) {
+        if (full.annotation_id) next[full.id] = buildAnnotationMap([full])[full.id]
+        else delete next[full.id]
+      }
+      return next
+    })
+    const open = byId.get(activeIdRef.current)
+    if (open) showRecord(open)
+    loadFacets()
+  }
+
+  // Take this payment's transfer pair apart. Both payments go back to Teach Me;
+  // the toast can bring the pair back.
+  async function unpairPayment(txn) {
+    try {
+      const res = await api.post('/transfers/unpair', { transaction_id: txn.id })
+      await refreshPayments(res.unpaired)
+      toast('Unpaired. Both payments are waiting in Teach Me.', 'success', {
+        action: { label: 'Undo', onClick: () => undoUnpair(res) },
+      })
+    } catch (e) {
+      toast(couldnt('unpair', e), 'error')
+    }
+  }
+
+  async function undoUnpair(res) {
+    try {
+      await api.post('/annotations/review-queue/undo', { token: res.undo_token })
+      await refreshPayments(res.unpaired)
+      toast('Paired again', 'info')
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+
   async function refreshName(txnId) {
     try {
       const fields = nameFields(await api.get(`/transactions/${txnId}`))
@@ -872,6 +922,7 @@ export default function Transactions() {
           onSaved={applySavedAnnotation}
           onRenamed={applyRename}
           onNoted={updated => applyRename(updated, 'payment')}
+          onUnpair={unpairPayment}
           loadError={detailError}
           onRetryLoad={() => openAnnotationPanel(activeTxn)}
         />

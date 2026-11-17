@@ -719,6 +719,25 @@ describe('Upload', () => {
       expect(within(row).queryByText(/Moved to/)).not.toBeInTheDocument()
     })
 
+    it('says how many transfers it paired with the other accounts, and nothing when none', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_label: 'SBI savings', account_is_new: false, transfers_paired: 2 }))
+      const row = await drop()
+      expect(await within(row).findByText('2 transfers paired with your other accounts')).toBeInTheDocument()
+    })
+
+    it('uses the singular for one transfer', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_label: 'SBI savings', account_is_new: false, transfers_paired: 1 }))
+      const row = await drop()
+      expect(await within(row).findByText('1 transfer paired with your other accounts')).toBeInTheDocument()
+    })
+
+    it('says nothing about transfers when none was paired', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_label: 'SBI savings', account_is_new: false, transfers_paired: 0 }))
+      const row = await drop()
+      await within(row).findByText('Added to SBI savings')
+      expect(within(row).queryByText(/paired with your other accounts/)).not.toBeInTheDocument()
+    })
+
     it('says a new account was made, and lets you name it right there with Enter', async () => {
       mockApi.upload.mockResolvedValue(uploaded('s1', { account_id: 'a9', account_label: 'Kotak ··8074', account_is_new: true }))
       mockApi.patch.mockResolvedValue({})

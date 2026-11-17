@@ -345,12 +345,14 @@ export default function ReviewQueue() {
   // Confirm vouches for the machine's label, so it needs a real one. Anything
   // else (no guess, Uncategorized) must be answered by choosing a category.
   const needsPick = !isRealCategory(form.category)
-  const chosen = needsPick ? null : { category: form.category, subcategory: form.subcategory || null }
+  // pairWith: the payment on the other side of a transfer, when the pick is one of the card's pair suggestions.
+  const chosen = needsPick ? null : { category: form.category, subcategory: form.subcategory || null, pairWith: form.pairWith ?? null }
   // Single source of truth for "has the user changed this card?", for the
   // keyboard and the button alike (a tags-only edit still counts).
   const isDirty = useMemo(() => {
     if (!current) return false
     return (
+      !!form.pairWith ||
       form.category !== (current.category ?? '') ||
       form.subcategory !== (current.subcategory ?? '') ||
       JSON.stringify(form.tags) !== JSON.stringify(tagsOf(current))
@@ -559,8 +561,38 @@ export default function ReviewQueue() {
     }
   }
 
+  // The card's pick was a pair suggestion: pair this payment with the one on the
+  // other side of the transfer. It answers for these two payments alone, and the
+  // partner leaves the list too if it was waiting in it.
+  async function pairAnswer() {
+    if (!beginSave()) return
+    try {
+      await writesRef.current
+      const partnerId = form.pairWith
+      const res = await api.post('/transfers/pair', {
+        transaction_id: current.transaction_id, with_transaction_id: partnerId,
+      })
+      record([current], answeredAs)
+      if (res.undo_token) pushUndo({ tokens: [res.undo_token], ids: [current.transaction_id, partnerId] })
+      settle([current, { transaction_id: partnerId }], [])
+      announce(`${res.transfer.text}. Paired, so neither counts as spending or income.`, res)
+      syncCounts()
+    } catch (e) {
+      if (e.status === 409 || e.status === 404) {
+        // One of the two changed since the card was shown: show what is waiting now.
+        toast(`${e.message} Here's the updated list.`, 'info')
+        await refresh()
+        return
+      }
+      toast(couldnt('pair them', e), 'error')
+    } finally {
+      endSave()
+    }
+  }
+
   async function saveEdit() {
     if (needsPick) { toast('Pick a category first', 'error'); return }
+    if (form.pairWith) { await pairAnswer(); return }
     if (!beginSave()) return
     try {
       await writesRef.current
@@ -607,10 +639,10 @@ export default function ReviewQueue() {
 
   // Choose a category for the current card: a suggestion, or a typed pick. The
   // keyboard is handed back to the card so Enter answers it.
-  function choose({ category, subcategory }, event) {
+  function choose({ category, subcategory, pair_with: pairWith = null }, event) {
     if (!current) return
-    const ownLabel = sameLabel(category, subcategory, current)
-    setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: ownLabel ? tagsOf(current) : [] }))
+    const ownLabel = sameLabel(category, subcategory, current) && !pairWith
+    setForm(f => ({ ...f, category, subcategory: subcategory || '', tags: ownLabel ? tagsOf(current) : [], pairWith }))
     if (event?.detail > 0 && !isDialogOpen()) cardRef.current?.focus({ preventScroll: true })
   }
 

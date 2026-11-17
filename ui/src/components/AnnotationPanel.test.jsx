@@ -540,3 +540,51 @@ describe('AnnotationPanel focus between forms', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
   })
 })
+
+describe('AnnotationPanel paired transfer', () => {
+  const PAIRED = {
+    ...TXN, payee: 'To Own Sbi Savings', note: null,
+    transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-10-28', text: 'Moved to SBI savings' },
+  }
+  const PAIR_ANN = { id: 'a1', category: 'Self Transfers', subcategory: 'Self Transfer', source: 'pair', confidence: 1, tags: [] }
+
+  // The panel loads its groups after it opens; let that settle so nothing updates after the test.
+  const settled = () => waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+  it('says what it is paired with and that it is not counted', async () => {
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair: vi.fn() })
+    await settled()
+    expect(screen.getByText(/Moved to SBI savings\./)).toBeInTheDocument()
+    expect(screen.getByText(/Paired with the payment on 28 Oct in SBI savings\. Not counted as spending or income\./)).toBeInTheDocument()
+    expect(screen.getByText('paired')).toBeInTheDocument()
+  })
+
+  it('shows no line on a payment that is not paired', async () => {
+    renderPanel({ annotation: null })
+    await settled()
+    expect(screen.queryByRole('button', { name: 'Unpair' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Paired with/)).not.toBeInTheDocument()
+  })
+
+  it('Unpair hands the payment to the page and keeps focus inside the panel', async () => {
+    const user = userEvent.setup()
+    const onUnpair = vi.fn().mockResolvedValue(undefined)
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair })
+    await settled()
+    await user.click(screen.getByRole('button', { name: 'Unpair' }))
+    expect(onUnpair).toHaveBeenCalledWith(PAIRED)
+    expect(document.body).not.toHaveFocus()
+  })
+
+  it('is off while the unpair is in flight', async () => {
+    const user = userEvent.setup()
+    let finish
+    const onUnpair = vi.fn(() => new Promise(resolve => { finish = resolve }))
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair })
+    await settled()
+    await user.click(screen.getByRole('button', { name: 'Unpair' }))
+    expect(screen.getByRole('button', { name: 'Unpair' })).toBeDisabled()
+    await act(async () => finish())
+    expect(screen.getByRole('button', { name: 'Unpair' })).not.toBeDisabled()
+  })
+})

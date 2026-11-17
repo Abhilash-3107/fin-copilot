@@ -12,7 +12,11 @@ import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
 
 const KBD = 'bg-[#1e2235] px-1.5 py-0.5 rounded text-[10px] text-[#94a3b8]'
 
+// A suggestion that pairs this payment with another (pair_with) is a different answer from the
+// same category chosen plainly, so the two never look chosen together.
 const sameLabel = (a, b) => a.category === b.category && (a.subcategory || null) === (b.subcategory || null)
+const isChosen = (suggestion, chosen) =>
+  !!chosen && sameLabel(suggestion, chosen) && (suggestion.pair_with ?? null) === (chosen.pairWith ?? null)
 
 // One payment to sort: who and what it was, up to three suggestions with the
 // reason for each, a filter over every other category, and the answer keys.
@@ -27,7 +31,7 @@ export default function SortCard({
   useEffect(() => { setShowPrinted(false); setShowTags(false) }, [item.transaction_id])
 
   const suggestions = item.suggestions ?? []
-  const pickedFromList = suggestions.some(s => chosen && sameLabel(s, chosen))
+  const pickedFromList = suggestions.some(s => isChosen(s, chosen))
   // With nothing suggested and nothing chosen yet, say what to do; once a pick is on screen it speaks for itself.
   const heading = suggestions.length ? 'Which is it?' : (chosen ? null : 'No suggestion for this one. Pick a category.')
 
@@ -58,7 +62,8 @@ export default function SortCard({
           )}
         </div>
         {showPrinted && item.payee && <p className="mt-2 text-xs text-[#94a3b8] break-all">{item.raw_description}</p>}
-        {groupSize > 1 && (
+        {/* A pair answers for this payment alone: the group box has nothing to say then. */}
+        {groupSize > 1 && !chosen?.pairWith && (
           <label className="mt-3 flex items-center gap-2 text-xs text-[#94a3b8] cursor-pointer select-none">
             <input
               type="checkbox"
@@ -80,10 +85,10 @@ export default function SortCard({
         {heading && <p className="text-xs text-[#94a3b8] mb-2">{heading}</p>}
         <div className="grid gap-2">
           {suggestions.map((s, i) => {
-            const pressed = !!chosen && sameLabel(s, chosen)
+            const pressed = isChosen(s, chosen)
             return (
               <button
-                key={labelOf(s)}
+                key={s.pair_with ?? labelOf(s)}
                 aria-pressed={pressed}
                 onClick={e => onChoose(s, e)}
                 className={`flex items-center gap-3 text-left rounded-lg border px-3 py-2 min-h-12 transition-colors ${
@@ -92,7 +97,7 @@ export default function SortCard({
               >
                 <kbd className={KBD}>{keyLabel(TEACH_ME_KEYS.choose[i] ?? String(i + 1))}</kbd>
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-[#e2e8f0]">{labelOf(s)}</span>
+                  <span className="block text-sm font-medium text-[#e2e8f0]">{s.title ?? labelOf(s)}</span>
                   <span className="block text-xs text-[#94a3b8]">{s.reason}</span>
                 </span>
               </button>

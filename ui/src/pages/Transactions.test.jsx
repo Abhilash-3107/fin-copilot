@@ -4,8 +4,9 @@ import { Routes, Route, useNavigate } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 
-const { mockApi } = vi.hoisted(() => ({
-  mockApi: { get: vi.fn(), put: vi.fn() },
+const { mockApi, toastSpy } = vi.hoisted(() => ({
+  mockApi: { get: vi.fn(), put: vi.fn(), post: vi.fn() },
+  toastSpy: vi.fn(),
 }))
 vi.mock('../lib/api.js', () => ({
   api: mockApi,
@@ -14,13 +15,10 @@ vi.mock('../lib/api.js', () => ({
   getActiveAnnotationJob: vi.fn().mockResolvedValue(null),
   ApiError: class ApiError extends Error {},
 }))
-vi.mock('../contexts/ToastContext.jsx', () => {
-  const noop = () => {}
-  return {
-    ToastProvider: ({ children }) => children,
-    useToast: () => noop,
-  }
-})
+vi.mock('../contexts/ToastContext.jsx', () => ({
+  ToastProvider: ({ children }) => children,
+  useToast: () => toastSpy,
+}))
 
 // A full page is 500 rows, and drawing all of them is what made the "next page
 // fails" test slow. The tables draw at most CAP rows; the page still holds, counts
@@ -580,5 +578,70 @@ describe('Transactions on open', () => {
     release()
     await screen.findAllByLabelText('Select payment')
     expect(callsTo('/transactions?')).toHaveLength(1)
+  })
+})
+
+describe('Transactions unpairing a transfer', () => {
+  const out = (paired) => ({
+    id: 'p1', statement_id: 's2', txn_date: '2026-11-03', amount: 5000, debit_credit: 'debit',
+    raw_description: 'IMPS/P2P/TRANSFER/TO OWN SBI SAVINGS', counterparty_key: 'TO OWN', payee: 'To Own Sbi Savings',
+    payee_all: 'To Own Sbi Savings', note: null, channel: 'IMPS', tags: [],
+    ...(paired
+      ? { annotation_id: 'a1', category: 'Self Transfers', subcategory: 'Self Transfer', merchant: null, confidence: 1, source: 'pair',
+          transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-11-03', text: 'Moved to SBI savings' } }
+      : { annotation_id: null, transfer: null }),
+  })
+  let paired
+
+  beforeEach(() => {
+    paired = true
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/p1') return Promise.resolve(out(paired))
+      if (path === '/transactions/p2') return Promise.resolve({ ...out(paired), id: 'p2', debit_credit: 'credit', payee: 'From Kotak' })
+      if (path.startsWith('/transactions?')) return Promise.resolve([out(paired)])
+      return base(path)
+    })
+    mockApi.post.mockImplementation(async path => {
+      if (path === '/transfers/unpair') { paired = false; return { unpaired: ['p1', 'p2'], undo_token: 'tok' } }
+      if (path === '/annotations/review-queue/undo') { paired = true; return { restored: ['p1', 'p2'] } }
+      return {}
+    })
+  })
+
+  it('says it is paired on the row and in the panel, and Unpair takes both away', async () => {
+    renderPage(['/transactions?txn=p1'])
+    expect(await screen.findByText(/Paired with the payment on 3 Nov in SBI savings/)).toBeInTheDocument()
+    expect(screen.getAllByText('Moved to SBI savings').length).toBeGreaterThan(1) // the row and the panel line
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(screen.queryByText(/Paired with the payment/)).not.toBeInTheDocument())
+    expect(mockApi.post).toHaveBeenCalledWith('/transfers/unpair', { transaction_id: 'p1' })
+    // The row does not say it is moved any more, and the open panel offers to sort it.
+    expect(screen.queryByText('Moved to SBI savings')).not.toBeInTheDocument()
+    expect(await screen.findByText('Sort this payment')).toBeInTheDocument()
+    const [message, type, options] = toastSpy.mock.calls.at(-1)
+    expect(message).toBe('Unpaired. Both payments are waiting in Teach Me.')
+    expect(type).toBe('success')
+    expect(options.action.label).toBe('Undo')
+  })
+
+  it('Undo from the toast pairs them again and the row says so again', async () => {
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await screen.findByText('Sort this payment')
+    const { action } = toastSpy.mock.calls.at(-1)[2]
+    await act(async () => action.onClick())
+    expect(mockApi.post).toHaveBeenLastCalledWith('/annotations/review-queue/undo', { token: 'tok' })
+    expect(await screen.findByText(/Paired with the payment on 3 Nov in SBI savings/)).toBeInTheDocument()
+    expect(toastSpy.mock.calls.at(-1)[0]).toBe('Paired again')
+  })
+
+  it('says so when the unpair fails and leaves the pair as it was', async () => {
+    mockApi.post.mockRejectedValue(Object.assign(new Error('That payment is not paired.'), { status: 409 }))
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(toastSpy.mock.calls.at(-1)[1]).toBe('error'))
+    expect(screen.getByText(/Paired with the payment on 3 Nov/)).toBeInTheDocument()
   })
 })

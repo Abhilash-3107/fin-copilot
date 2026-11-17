@@ -256,6 +256,11 @@ function FileRow({ entry, onRemove, accountLabel, onNameAccount }) {
             onName={name => onNameAccount(statement.account_id, name)}
           />
         )}
+        {statement?.transfers_paired > 0 && (
+          <p className="text-xs text-[#94a3b8] mt-0.5">
+            {count(statement.transfers_paired, 'transfer')} paired with your other accounts
+          </p>
+        )}
         {/* Warnings belong to the file they came from, so they sit on its row instead of in a toast. */}
         {statement?.warnings?.map(w => <p key={w} className="text-xs text-[#fdba74] mt-0.5">{w}</p>)}
         {['sorting', 'sorted', 'sortFailed'].includes(status) && (

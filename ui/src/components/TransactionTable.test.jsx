@@ -66,6 +66,38 @@ describe.each([['TransactionTable', TransactionTable], ['TransactionCards', Tran
   })
 })
 
+describe.each([['TransactionTable', TransactionTable], ['TransactionCards', TransactionCards]])('%s paired rows', (_name, Component) => {
+  const PAIRED = [
+    {
+      ...BASE, id: 'p1', raw_description: 'IMPS/P2P/TRANSFER/TO OWN SBI SAVINGS', payee: 'To Own Sbi Savings',
+      channel: 'IMPS', note: null,
+      transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-01-15', text: 'Moved to SBI savings' },
+    },
+    {
+      ...BASE, id: 'p2', raw_description: 'IMPS/FROM KOTAK', payee: 'From Kotak', debit_credit: 'credit', channel: 'IMPS', note: 'monthly',
+      transfer: { transaction_id: 'p1', direction: 'from', account_label: 'Kotak savings', txn_date: '2026-01-15', text: 'Moved from Kotak savings' },
+    },
+  ]
+
+  it('says where the money went before the note and channel', () => {
+    render(<PrivacyProvider><Component transactions={PAIRED} onSelect={() => {}} /></PrivacyProvider>)
+    expect(screen.getByText('Moved to SBI savings').parentElement).toHaveTextContent('Moved to SBI savings · IMPS')
+    expect(screen.getByText('Moved from Kotak savings').parentElement).toHaveTextContent('Moved from Kotak savings · monthly · IMPS')
+  })
+
+  it('says nothing extra on a payment that is not paired', () => {
+    renderTable({}, Component)
+    expect(screen.queryByText(/Moved/)).not.toBeInTheDocument()
+  })
+
+  it('shows no confidence for a pair, as for a hand label', () => {
+    const annotationMap = { p1: { category: 'Self Transfers', subcategory: 'Self Transfer', source: 'pair', confidence: 1 } }
+    render(<PrivacyProvider><Component transactions={PAIRED} annotationMap={annotationMap} onSelect={() => {}} /></PrivacyProvider>)
+    expect(screen.getByText('paired')).toBeInTheDocument()
+    expect(screen.queryByText('100%')).not.toBeInTheDocument()
+  })
+})
+
 describe('TransactionTable header', () => {
   it('names the first column Payee', () => {
     renderTable()

@@ -344,12 +344,14 @@ export default function AnnotationPanel(props) {
   return <PaymentPanel key={props.txn?.id} {...props} />
 }
 
-function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, loadError = null, onRetryLoad }) {
+function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, onUnpair, loadError = null, onRetryLoad }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
   const [noting, setNoting] = useState(false)
   const renameButton = useRef(null)
   const noteButton = useRef(null)
+  const pairedRef = useRef(null)
+  const [unpairing, setUnpairing] = useState(false)
   const openForm = renaming ? 'rename' : noting ? 'note' : null
   const lastForm = useRef(null)
 
@@ -415,6 +417,17 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, l
       toast(couldnt('save', e), 'error')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleUnpair() {
+    setUnpairing(true)
+    try {
+      await onUnpair(txn)
+    } finally {
+      setUnpairing(false)
+      // The line this button sat on is gone: keep the keyboard in the panel.
+      pairedRef.current?.focus()
     }
   }
 
@@ -487,6 +500,26 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, l
               </button>
             </div>
           )}
+          {/* Focus parks here after Unpair, which removes the line above it. */}
+          <div ref={pairedRef} tabIndex={-1} className="outline-none">
+            {txn.transfer && (
+              <div className="mt-3 flex items-start gap-3 rounded-md border border-[#2d3148] bg-[#1a1d27] px-3 py-2">
+                <p className="flex-1 min-w-0 text-xs text-[#cbd5e1] break-words">
+                  <span className="font-medium text-[#a5b4fc]">{txn.transfer.text}.</span>{' '}
+                  Paired with the payment on {dayjs(txn.transfer.txn_date).format('D MMM')} in {txn.transfer.account_label}.
+                  Not counted as spending or income.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleUnpair}
+                  disabled={unpairing || !onUnpair}
+                  className="shrink-0 text-xs text-[#a5b4fc] hover:text-[#e2e8f0] underline disabled:opacity-50"
+                >
+                  Unpair
+                </button>
+              </div>
+            )}
+          </div>
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>
           <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
           {annotation && (
@@ -494,9 +527,9 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, l
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
                 {sourceLabel(src)}
               </span>
-              {/* Manual annotations are human truth; a leftover model
-                  confidence next to "manual" reads as a contradiction. */}
-              {src !== 'manual' && (
+              {/* Manual annotations are human truth, and a pair is a fact: a
+                  confidence next to either reads as a contradiction. */}
+              {src !== 'manual' && src !== 'pair' && (
                 <div className="flex-1">
                   <ConfidenceBar confidence={annotation.confidence} />
                 </div>
