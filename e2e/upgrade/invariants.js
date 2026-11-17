@@ -8,6 +8,8 @@
 // each payment's upi_meta already parsed by compare.js) and returns the problems
 // it finds, as sentences.
 
+import { expectedAccounts, lastFour } from './accounts-oracle.js'
+
 const cents = (n) => Math.round(n * 100) / 100
 const sum = (rows, pick) => cents(rows.reduce((total, row) => total + pick(row), 0))
 const isSample = (id) => id.startsWith('demo_')
@@ -321,10 +323,105 @@ function accountsHoldEveryStatement(before, after) {
   return problems
 }
 
+/**
+ * Migration 041 groups the statements the previous release held by the rule the
+ * balance chart used, folding text typed with the old Rename into its bank. The
+ * grouping is worked out again here from the statements before the upgrade
+ * (accounts-oracle.js), and each upgraded account must be exactly one such group:
+ * no split, no merge, the bank and last four digits the group has, a name only
+ * where somebody typed one, and a label that is a name or a display name, never a
+ * raw bank key.
+ */
+function accountsFollowTheOldStatements(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts || !before.facts.statements.every((s) => 'bank_name' in s)) return []
+  const problems = []
+  const expected = expectedAccounts(before.facts.statements)
+  const byId = new Map(accounts.map((a) => [a.id, a]))
+  const afterStatements = new Map(after.facts.statements.map((s) => [s.id, s]))
+  const idOfGroup = new Map()
+  const groupOfId = new Map()
+  for (const [statementId, want] of expected) {
+    const now = afterStatements.get(statementId)
+    if (!now) continue
+    if (idOfGroup.has(want.key) && idOfGroup.get(want.key) !== now.account_id) {
+      problems.push(`statements of one account (${want.label}) were split across ${idOfGroup.get(want.key)} and ${now.account_id}`)
+    }
+    idOfGroup.set(want.key, idOfGroup.get(want.key) ?? now.account_id)
+    if (groupOfId.has(now.account_id) && groupOfId.get(now.account_id) !== want.key) {
+      problems.push(`account ${now.account_id} holds statements of different accounts (${want.label} and another)`)
+    }
+    groupOfId.set(now.account_id, want.key)
+    const account = byId.get(now.account_id)
+    if (!account) continue
+    if (account.bank_name !== want.bank) problems.push(`account ${account.id} is at bank "${account.bank_name}", its statements say "${want.bank}"`)
+    if (account.account_ref_last4 !== lastFour(want.ref)) {
+      problems.push(`account ${account.id} ends in ${account.account_ref_last4}, its statements' number ends in ${lastFour(want.ref)}`)
+    }
+    if (account.name !== want.name) problems.push(`account ${account.id} is named ${JSON.stringify(account.name)}, expected ${JSON.stringify(want.name)}: only text typed with the old Rename may become a name`)
+    if (account.account_label !== want.label) problems.push(`account ${account.id} is labelled "${account.account_label}", expected "${want.label}"`)
+    if (account.name === null && (account.account_label === account.bank_name || /^[a-z]/.test(account.account_label))) {
+      problems.push(`account ${account.id} is labelled by a raw key, "${account.account_label}"`)
+    }
+  }
+  if (accounts.length !== idOfGroup.size) problems.push(`${accounts.length} accounts after the upgrade, the statements before make ${idOfGroup.size}`)
+  return problems
+}
+
+/**
+ * An account's balance is the closing balance of its statement with the latest
+ * period end, as of that day: worked out again here from the statements.
+ */
+function accountBalancesAreTheirLatestStatements(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts || !after.facts.statements.every((s) => 'closing_balance' in s)) return []
+  const problems = []
+  for (const a of accounts) {
+    const latest = after.facts.statements
+      .filter((s) => s.account_id === a.id && s.closing_balance !== null && s.period_end !== null)
+      .sort((x, y) => `${y.period_end}|${y.uploaded_at}` < `${x.period_end}|${x.uploaded_at}` ? -1 : 1)[0]
+    const [balance, asOf] = latest ? [latest.closing_balance, latest.period_end] : [null, null]
+    if (a.balance !== balance || a.balance_as_of !== asOf) {
+      problems.push(`account ${a.id} shows balance ${a.balance} as of ${a.balance_as_of}, its latest statement closes at ${balance} on ${asOf}`)
+    }
+  }
+  return problems
+}
+
+/** The accounts table holds exactly the accounts the API lists. */
+function accountsTableMatchesTheList(before, after) {
+  const rows = after.facts.schema?.tableRows?.accounts
+  const accounts = after.facts.accounts
+  if (accounts == null || rows == null) return []
+  return rows === accounts.length ? [] : [`the accounts table has ${rows} rows, the API lists ${accounts.length} accounts`]
+}
+
+/**
+ * /statements stops carrying the whole account number and carries its last four
+ * digits instead: each statement's new last four are the last four of the old number.
+ */
+function accountNumbersAreOnlyTheirLastFour(before, after) {
+  const problems = []
+  const now = new Map(after.facts.statements.map((s) => [s.id, s]))
+  for (const s of before.facts.statements) {
+    const kept = now.get(s.id)
+    if (!kept || !('account_ref' in s)) continue
+    if ('account_ref' in kept) problems.push(`statement ${s.id} still carries its whole account number`)
+    if (kept.account_ref_last4 !== lastFour(s.account_ref)) {
+      problems.push(`statement ${s.id} shows last four digits ${JSON.stringify(kept.account_ref_last4)}, its number ends in ${JSON.stringify(lastFour(s.account_ref))}`)
+    }
+  }
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
     ...accountsHoldEveryStatement(before, after),
+    ...accountsFollowTheOldStatements(before, after),
+    ...accountsTableMatchesTheList(before, after),
+    ...accountBalancesAreTheirLatestStatements(before, after),
+    ...accountNumbersAreOnlyTheirLastFour(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),

@@ -41,6 +41,7 @@ const CLOSING_BALANCE_ROW = 'UPI/ZEPTO/ORDER/400112235/UPI'
 const BANK_LINE_MERCHANT = 'UPI/RAVI KUMAR SHA/120777386275/self'
 const TYPED_MERCHANT = 'Chai/Stall/Koramangala'
 const DUPLICATE_SUBCATEGORY = 'legacy-copy-of-restaurants'
+const RENAMED_BANK = 'Salary account'
 
 /**
  * Build the ledger the way a user of the previous release builds one: the demo
@@ -60,6 +61,9 @@ async function buildLedger(api) {
   if (today !== dayBefore) throw new Error(`Midnight passed while the demo was being seeded (${dayBefore} -> ${today}): run the journey again.`)
 
   const statement = await uploadFixture(api)
+  // The old Rename wrote text into the statement's bank (there was no account to name):
+  // the upgrade must keep the words as the account's name.
+  await api.patch(`/statements/${statement.id}`, { bank_name: RENAMED_BANK })
   await categorise(api, statement.id)
 
   const queue = await api.get('/annotations/review-queue')

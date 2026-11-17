@@ -584,14 +584,65 @@
       "scope": "stored",
       "path": [
         "statements[*].account_id",
-        "statements[*].account_label",
+        "statements[*].account_label"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Every statement now belongs to an account, found by the bank and the account number printed on the statement, and carries the account's name as the app words it (the bank and the last four digits until you name it, or the words you typed in the old Rename)."
+    },
+    {
+      "id": "stored-statements-printed-period",
+      "scope": "stored",
+      "path": [
         "statements[*].printed_start",
         "statements[*].printed_end"
       ],
       "kinds": [
         "added"
       ],
-      "reason": "Every statement now belongs to an account, found by the bank and the account number printed on the statement, and carries the account's name as the app words it (the bank and the last four digits until you name it). The period a statement prints in its header is kept beside the dates of its first and last payment; statements added before it existed have none, so it starts empty."
+      "to": null,
+      "reason": "The period a statement prints in its header is kept beside the dates of its first and last payment. Statements added before it existed have none, and the upgrade does not guess one: it starts empty."
+    },
+    {
+      "id": "stored-statements-account-number-whole",
+      "scope": "stored",
+      "path": "statements[*].account_ref",
+      "kinds": [
+        "removed"
+      ],
+      "from": "XXXX0000",
+      "reason": "The statement list no longer carries the whole account number, only its last four digits. The number stays in the ledger as the account's key. This is the uploaded sample statement, which prints XXXX0000."
+    },
+    {
+      "id": "stored-statements-account-number-whole-none",
+      "scope": "stored",
+      "path": "statements[*].account_ref",
+      "kinds": [
+        "removed"
+      ],
+      "from": null,
+      "reason": "The same, for the sample statements, which print no number."
+    },
+    {
+      "id": "stored-statements-account-last-four",
+      "scope": "stored",
+      "path": "statements[*].account_ref_last4",
+      "kinds": [
+        "added"
+      ],
+      "to": "0000",
+      "reason": "The last four digits of the account number replace the whole number in the statement list. The journey checks each is the last four of the number it had."
+    },
+    {
+      "id": "stored-statements-account-last-four-none",
+      "scope": "stored",
+      "path": "statements[*].account_ref_last4",
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "The same, for the sample statements, which have no number to shorten."
     },
     {
       "id": "stored-accounts-readable",

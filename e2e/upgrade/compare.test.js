@@ -60,7 +60,11 @@ function ledgerBefore() {
     payment('R10', { raw_description: 'UPI/BIGBASKET/GROCERIES', counterparty_key: 'BIGBASKET', merchant: 'BigBasket' }),
   ]
   const facts = {
-    statements: [{ id: 's', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 }],
+    statements: [
+      { id: 's', bank_name: 'generic', account_ref: 'XXXX0000', statement_month: '2026-08', uploaded_at: '2026-08-03 10:00:00', closing_balance: 0, period_end: '2026-08-02', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 },
+      // A sample statement: a bank, and no account number.
+      { id: 'demo_s', bank_name: 'kotak', account_ref: null, statement_month: '2026-08', uploaded_at: '2026-08-04 10:00:00', closing_balance: null, period_end: null, txn_count: 0, annotated_count: 0, embedded_count: 0 },
+    ],
     accounts: null,
     transactions,
     groups: [{ id: 'g1', members: [member(transactions[0]), member(transactions[5]), member(transactions[6])] }],
@@ -148,18 +152,25 @@ function upgrade(before) {
     const t = byId[m.id]
     for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) m[field] = t[field]
   }
-  facts.statements = facts.statements.map(({ id, txn_count }) => ({
-    id, txn_count, sorted_count: sortedPayments(facts.transactions),
-    account_id: 'acc_s', account_label: 'Bank ··0000', printed_start: null, printed_end: null,
+  const owner = { s: { id: 'acc_s', label: 'Bank ··0000', last4: '0000' }, demo_s: { id: 'acc_demo_s', label: 'Kotak', last4: null } }
+  facts.statements = facts.statements.map(({ id, txn_count, bank_name, statement_month, uploaded_at, closing_balance, period_end }) => ({
+    id, bank_name, statement_month, uploaded_at, closing_balance, period_end, txn_count, sorted_count: id === 's' ? sortedPayments(facts.transactions) : 0,
+    account_id: owner[id].id, account_label: owner[id].label, account_ref_last4: owner[id].last4, printed_start: null, printed_end: null,
   }))
-  facts.accounts = [{
-    id: 'acc_s', account_label: 'Bank ··0000', name: null, bank_name: 'generic', account_ref_last4: '0000', statement_count: 1,
-    first_date: '2026-08-02', last_date: '2026-08-02', balance: 0, balance_as_of: '2026-08-02',
-  }]
+  facts.accounts = [
+    {
+      id: 'acc_s', account_label: 'Bank ··0000', name: null, bank_name: 'generic', account_ref_last4: '0000', statement_count: 1,
+      first_date: '2026-08-02', last_date: '2026-08-02', balance: 0, balance_as_of: '2026-08-02',
+    },
+    {
+      id: 'acc_demo_s', account_label: 'Kotak', name: null, bank_name: 'kotak', account_ref_last4: null, statement_count: 1,
+      first_date: null, last_date: null, balance: null, balance_as_of: null,
+    },
+  ]
   facts.learnedRules[0].payee = 'RAHUL'
   facts.schema = {
     appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
-    tableRows: { payee_names: 0, review_undo: 0, accounts: 1 },
+    tableRows: { payee_names: 0, review_undo: 0, accounts: 2 },
     addedColumns: [
       'transactions.display_name', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
       'statements.account_id', 'statements.printed_start', 'statements.printed_end',
@@ -191,6 +202,19 @@ test('the ledger before and the ledger after 0.2.0 agree on every figure the rel
   const before = ledgerBefore()
   assert.deepEqual(compare(before, upgrade(before)), [])
 })
+
+/** A second statement of the ledger, on both sides of the upgrade, in its own account unless the case says otherwise. */
+function addStatement(after, before, id, fields = {}) {
+  const base = { id, bank_name: 'generic', account_ref: 'XXXX0000', statement_month: '2026-09', uploaded_at: '2026-09-03 10:00:00', ...fields }
+  before.facts.statements.push({ ...base, closing_balance: null, period_end: null, txn_count: 0, annotated_count: 0, embedded_count: 0 })
+  const { account_ref: ref, ...shown } = base
+  after.facts.statements.push({
+    ...shown, closing_balance: null, period_end: null, txn_count: 0, sorted_count: 0, account_id: `acc_${id}`, account_label: 'Bank ··0000',
+    account_ref_last4: ref ? ref.slice(-4) : null, printed_start: null, printed_end: null,
+  })
+  after.facts.accounts.push({ ...after.facts.accounts[0], id: `acc_${id}`, statement_count: 1 })
+  after.facts.schema.tableRows.accounts = after.facts.accounts.length
+}
 
 /** Each regression: what is damaged, and what the comparison must say about it. */
 const regressions = {
@@ -408,6 +432,91 @@ const regressions = {
     (a) => (a.figures.months['2026-09'].recurring = []),
     /2026-09: 1 recurring rows before and 0 after/,
   ],
+  // The accounts migration 041 makes. Each case damages one thing a split, a fold or a label can get wrong.
+  'a bank splits into two accounts': [
+    (a, b) => addStatement(a, b, 's2'), // same bank and number, an account of its own
+    /statements of one account \(Bank ··0000\) were split across/,
+  ],
+  'a statement ends up in no account': [
+    (a) => {
+      a.facts.statements[0].account_id = null
+      a.facts.accounts = []
+      a.facts.schema.tableRows.accounts = 0
+    },
+    /statement s belongs to account null, which is not in the ledger/,
+  ],
+  'two banks merge into one account': [
+    (a, b) => {
+      addStatement(a, b, 's2', { bank_name: 'hdfc', account_ref: 'XXXX1111' })
+      a.facts.statements[1].account_id = 'acc_s'
+      a.facts.accounts[0].statement_count = 2
+    },
+    /account acc_s holds statements of different accounts/,
+  ],
+  'the accounts table count is not the list': [
+    (a) => (a.facts.schema.tableRows.accounts = 7),
+    /the accounts table has 7 rows, the API lists 2 accounts/,
+  ],
+  'an account shows a balance its statements do not close at': [
+    (a) => (a.facts.accounts[0].balance = 999),
+    /account acc_s shows balance 999 as of 2026-08-02, its latest statement closes at 0 on 2026-08-02/,
+  ],
+  'an account shows a balance with no statement behind it': [
+    (a) => (a.facts.accounts[1].balance = 5),
+    /account acc_demo_s shows balance 5 as of null, its latest statement closes at null on null/,
+  ],
+  'an account is labelled by the parser key': [
+    (a) => {
+      a.facts.accounts[0].account_label = 'generic ··0000'
+      a.facts.statements[0].account_label = 'generic ··0000'
+    },
+    /account acc_s is labelled "generic ··0000", expected "Bank ··0000"/,
+  ],
+  'an account is labelled by a bare lower-case key': [
+    (a) => {
+      a.facts.accounts[0].account_label = 'generic'
+      a.facts.statements[0].account_label = 'generic'
+    },
+    /account acc_s is labelled by a raw key, "generic"/,
+  ],
+  'an account takes a name nobody typed': [
+    (a) => {
+      a.facts.accounts[0].name = 'Oops'
+      a.facts.accounts[0].account_label = 'Oops'
+      a.facts.statements[0].account_label = 'Oops'
+    },
+    /account acc_s is named "Oops", expected null/,
+  ],
+  'an account loses the name that was typed': [
+    (a, b) => {
+      b.facts.statements[0].bank_name = 'Salary account'
+      a.facts.statements[0].bank_name = 'Salary account'
+    },
+    /account acc_s is named null, expected "Salary account"/,
+  ],
+  'a printed period is invented for an old statement': [
+    (a) => {
+      a.facts.statements[0].printed_start = '2026-08-01'
+      a.facts.statements[0].printed_end = '2026-08-31'
+    },
+    /statements\[s\]\.printed_start/,
+  ],
+  'the statement list keeps the whole account number': [
+    (a) => (a.facts.statements[0].account_ref = 'XXXX0000'),
+    /statement s still carries its whole account number|statements\[s\]\.account_ref/,
+  ],
+  'the last four digits are the wrong ones': [
+    (a) => (a.facts.statements[0].account_ref_last4 = '9999'),
+    /statement s shows last four digits "9999", its number ends in "0000"/,
+  ],
+  'the account ends in the wrong digits': [
+    (a) => (a.facts.accounts[0].account_ref_last4 = '1234'),
+    /account acc_s ends in 1234, its statements' number ends in 0000/,
+  ],
+  'the account sits at another bank': [
+    (a) => (a.facts.accounts[0].bank_name = 'hdfc'),
+    /account acc_s is at bank "hdfc", its statements say "generic"/,
+  ],
   'a migration does not run': [
     (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('040'))),
     /"stored-migration-040" \(stored\) did not happen/,
@@ -431,7 +540,7 @@ for (const [name, [damage, message, preparation]] of Object.entries(regressions)
     const before = ledgerBefore()
     preparation?.(before)
     const after = upgrade(before)
-    damage(after)
+    damage(after, before)
     const problems = compare(before, after)
     assert.ok(problems.length > 0, 'the comparison passed a damaged upgrade')
     assert.ok(problems.some((p) => message.test(p)), `no problem matches ${message}:\n${problems.join('\n')}`)
