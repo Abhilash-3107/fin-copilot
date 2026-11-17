@@ -343,9 +343,9 @@ describe('Upload', () => {
       expect(screen.queryByText('Your accounts')).not.toBeInTheDocument()
     })
 
-    it('offers Move to account only when there is another account to move to', async () => {
+    it('offers Move to account only when there is another account or something to split out', async () => {
       ledger.statements = [stmt]
-      ledger.accounts = [kotak]
+      ledger.accounts = [{ ...kotak, statement_count: 1 }]
       renderUpload()
       fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
       expect(screen.queryByRole('menuitem', { name: /Move to account/ })).not.toBeInTheDocument()
@@ -368,6 +368,43 @@ describe('Upload', () => {
       await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { account_id: 'a2' }))
       await waitFor(() => expect(reloadAppStatements).toHaveBeenCalled())
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('offers a new account as a target, with an optional name, when the account holds other statements', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ ...kotak, statement_count: 2 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a9', account_label: 'Joint account' })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      // No other account, but a new one can be split out.
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      const dialog = screen.getByRole('dialog', { name: 'Move to account' })
+      expect(within(dialog).getByText('A new account')).toBeInTheDocument()
+      fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name for the new account' }), { target: { value: 'Joint account' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Move to a new account' }))
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { new_account: true, name: 'Joint account' }))
+      await waitFor(() => expect(reloadAppStatements).toHaveBeenCalled())
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('moves to a new account with Enter in the name field, and a blank name is sent as blank', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ ...kotak, statement_count: 2 }, hdfc]
+      mockApi.patch.mockResolvedValue({ account_id: 'a9', account_label: 'Kotak ··8074' })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Name for the new account' }), { key: 'Enter' })
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { new_account: true, name: '' }))
+    })
+
+    it('offers no new account for the only statement of an account', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ ...kotak, statement_count: 1 }, hdfc]
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      expect(screen.queryByText('A new account')).not.toBeInTheDocument()
     })
 
     it('closes the move dialog with Escape and moves nothing', async () => {

@@ -106,6 +106,36 @@ function NameField({ initial, onSave, onCancel, autoFocus = true }) {
   )
 }
 
+// "A new account" as a place to move a statement to: for one that ingest put in
+// the wrong account (a second account that printed no number joins the bank's
+// only account). The name is optional; blank leaves the bank and last digits.
+function NewAccountForm({ onMove }) {
+  const [name, setName] = useState('')
+  return (
+    <div className="mt-4 pt-4 border-t border-[#2d3148]">
+      <p className="text-sm font-medium text-[#e2e8f0] mb-2">A new account</p>
+      <div className="flex items-center gap-2">
+        <input
+          aria-label="Name for the new account"
+          placeholder="Name (optional)"
+          value={name}
+          maxLength={60}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') onMove(name) }}
+          className="flex-1 bg-[#1e2235] border border-[#2d3148] focus:border-[#6366f1] text-[#e2e8f0] px-2 py-1.5 rounded text-sm focus:outline-none placeholder:text-[#94a3b8]"
+        />
+        <button
+          type="button"
+          onClick={() => onMove(name)}
+          className="px-3 py-1.5 rounded-md bg-[#6366f1] text-sm text-white hover:bg-[#4f46e5] transition-colors"
+        >
+          Move to a new account
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Where the statement went: into an account the ledger already had, or a new
 // one, which is the moment to give it a name. Focus follows the keyboard: Escape
 // returns to "Name it", saving lands on the line that now says the name.
@@ -412,12 +442,26 @@ export default function Upload() {
     if (name.trim() === s.account_label || await nameAccount(s.account_id, name)) endEditName(s.id)
   }
 
-  async function moveStatement(account) {
+  // Somewhere to move it: another account, or a new one split out of an account
+  // that holds more than this statement.
+  function canMove(s) {
+    return accounts.some(a => a.id !== s.account_id) || canSplit(s)
+  }
+
+  function canSplit(s) {
+    return (accounts.find(a => a.id === s.account_id)?.statement_count ?? 0) > 1
+  }
+
+  // `target` is an existing account, or { name } for a new one.
+  async function moveStatement(target) {
     const s = moveTarget
     setMoveTarget(null)
     try {
-      await api.patch(`/statements/${s.id}`, { account_id: account.id })
-      toast(`Moved ${formatMonth(s.statement_month)} to ${account.account_label}`, 'info')
+      const made = await api.patch(
+        `/statements/${s.id}`,
+        target.id ? { account_id: target.id } : { new_account: true, name: target.name },
+      )
+      toast(`Moved ${formatMonth(s.statement_month)} to ${target.id ? target.account_label : made?.account_label ?? 'a new account'}`, 'info')
       refresh()
     } catch (e) {
       toast(couldnt('move this statement', e), 'error')
@@ -711,7 +755,7 @@ export default function Upload() {
                         items={[
                           { label: 'Name this account', onSelect: () => setEditingId(s.id) },
                           // Only when there is somewhere else to put it.
-                          ...(accounts.some(a => a.id !== s.account_id)
+                          ...(canMove(s)
                             ? [{ label: 'Move to account…', onSelect: () => setMoveTarget(s) }]
                             : []),
                           { label: 'Start over', onSelect: () => setResetTarget(s) },
@@ -744,6 +788,9 @@ export default function Upload() {
             </li>
           ))}
         </ul>
+        {moveTarget && canSplit(moveTarget) && (
+          <NewAccountForm onMove={name => moveStatement({ name })} />
+        )}
       </Modal>
 
       <ConfirmDialog
