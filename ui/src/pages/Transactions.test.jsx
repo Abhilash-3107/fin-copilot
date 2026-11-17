@@ -41,8 +41,8 @@ import { AnnotationJobProvider } from '../contexts/AnnotationJobContext.jsx'
 import Transactions from './Transactions.jsx'
 
 const STATEMENTS = [
-  { id: 's2', bank_name: 'kotak', statement_month: '2026-11', uploaded_at: '2026-11-15' },
-  { id: 's1', bank_name: 'kotak', statement_month: '2026-10', uploaded_at: '2026-11-01' },
+  { id: 's2', bank_name: 'kotak', account_label: 'Kotak savings', statement_month: '2026-11', uploaded_at: '2026-11-15' },
+  { id: 's1', bank_name: 'kotak', account_label: 'Kotak savings', statement_month: '2026-10', uploaded_at: '2026-11-01' },
 ]
 
 const TXNS = [
@@ -112,6 +112,14 @@ describe('Transactions', () => {
     // Pagination and ordering belong to the list only.
     expect(summary.has('limit')).toBe(false)
     expect(summary.has('sort')).toBe(false)
+  })
+
+  it('names each statement in the picker by its account, as the server words it', async () => {
+    renderPage()
+    const [statementSelect] = await screen.findAllByRole('combobox')
+    expect([...statementSelect.options].map(o => o.textContent)).toEqual([
+      'All statements', 'Kotak savings - Nov 2026', 'Kotak savings - Oct 2026',
+    ])
   })
 
   it('All time clears the statement scope so the list really shows everything', async () => {

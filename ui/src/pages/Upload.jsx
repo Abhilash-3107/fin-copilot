@@ -9,6 +9,9 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import InlineError from '../components/InlineError.jsx'
 import ActionMenu from '../components/ActionMenu.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
+import { useStatement } from '../contexts/StatementContext.jsx'
+import Amount from '../components/Amount.jsx'
+import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatMonth } from '../lib/dates.js'
 import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
@@ -74,11 +77,74 @@ function sortLine(entry) {
   return total ? `Sorting ${processed} of ${total}` : 'Sorting'
 }
 
-function FileRow({ entry, onRemove }) {
+// Naming an account, in place: Enter saves, Escape cancels. A blank name goes
+// back to the bank and last digits.
+function NameField({ initial, onSave, onCancel, autoFocus = true }) {
+  const [value, setValue] = useState(initial)
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        autoFocus={autoFocus}
+        aria-label="Name this account"
+        placeholder="For example, Kotak savings"
+        value={value}
+        maxLength={60}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') onSave(value)
+          if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
+        }}
+        className="bg-[#1e2235] border border-[#6366f1] text-[#e2e8f0] px-2 py-0.5 rounded text-sm focus:outline-none w-52 placeholder:text-[#94a3b8]"
+      />
+      <button type="button" onClick={() => onSave(value)} aria-label="Save name" className="text-[#86efac] hover:opacity-80">
+        <Check size={13} />
+      </button>
+      <button type="button" onClick={onCancel} aria-label="Cancel naming" className="text-[#94a3b8] hover:text-[#e2e8f0]">
+        <X size={13} />
+      </button>
+    </div>
+  )
+}
+
+// Where the statement went: into an account the ledger already had, or a new
+// one, which is the moment to give it a name.
+function AccountLine({ statement, label, onName }) {
+  const [naming, setNaming] = useState(false)
+  const [named, setNamed] = useState(false)
+  if (!statement.account_is_new) return <p className="text-xs text-[#94a3b8] mt-0.5">Added to {label}</p>
+  if (naming) {
+    return (
+      <div className="mt-1">
+        <NameField
+          initial=""
+          onSave={async name => {
+            if (await onName(name)) { setNaming(false); setNamed(true) }
+          }}
+          onCancel={() => setNaming(false)}
+        />
+      </div>
+    )
+  }
+  return (
+    <p className="text-xs text-[#94a3b8] mt-0.5">
+      Added to a new account, {label}.
+      {!named && (
+        <>
+          {' '}
+          <button type="button" onClick={() => setNaming(true)} className="text-[#818cf8] hover:underline">
+            Name it
+          </button>
+        </>
+      )}
+    </p>
+  )
+}
+
+function FileRow({ entry, onRemove, accountLabel, onNameAccount }) {
   const { file, status, statement } = entry
   const added = statement && (
     <>
-      {statement.bank_name} - {formatMonth(statement.statement_month)}
+      {formatMonth(statement.statement_month)}
       {' - '}{count(statement.transaction_count, 'payment')} added
       {' - '}{balanceLine(statement.balance_check)}
     </>
@@ -92,6 +158,13 @@ function FileRow({ entry, onRemove }) {
         {status === 'uploading' && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
         {status === 'failed' && <p className="text-xs text-[#fca5a5] mt-0.5">{entry.message}</p>}
         {added && <p className="text-xs text-[#94a3b8] mt-0.5">{added}</p>}
+        {statement?.account_id && (
+          <AccountLine
+            statement={statement}
+            label={accountLabel ?? statement.account_label}
+            onName={name => onNameAccount(statement.account_id, name)}
+          />
+        )}
         {/* Warnings belong to the file they came from, so they sit on its row instead of in a toast. */}
         {statement?.warnings?.map(w => <p key={w} className="text-xs text-[#fdba74] mt-0.5">{w}</p>)}
         {['sorting', 'sorted', 'sortFailed'].includes(status) && (
@@ -120,7 +193,11 @@ export default function Upload() {
   // re-attached after a reload): one run at a time, so every Sort again waits.
   const { job, startAnnotation, watchJobs } = useAnnotationJob()
   const hosted = useDemoData().hosted
+  // The app-wide statement list (the Transactions picker reads it): told when
+  // anything here changes a statement or its account's name.
+  const { reload: reloadAppStatements } = useStatement()
   const [statements, setStatements] = useState([])
+  const [accounts, setAccounts] = useState([])
   // The files of this drop, one entry each, and the ones refused up front.
   const [entries, setEntries] = useState([])
   const [refused, setRefused] = useState([])
@@ -134,8 +211,9 @@ export default function Upload() {
   const [resetTarget, setResetTarget] = useState(null)
   const [annotatingId, setAnnotatingId] = useState(null)
   const [lastResult, setLastResult] = useState(null)
+  // The statement whose account is being named from its menu, and the one being moved.
   const [editingId, setEditingId] = useState(null)
-  const [editingName, setEditingName] = useState('')
+  const [moveTarget, setMoveTarget] = useState(null)
   // Each row's More button, to hand focus back to after a rename.
   const moreButtons = useRef({})
   const fileRef = useRef(null)
@@ -152,7 +230,22 @@ export default function Upload() {
     }
   }, [])
 
-  useEffect(() => { loadStatements() }, [loadStatements])
+  // The accounts are a small list beside the statements; if it cannot be read
+  // the statements still show, so it keeps its last answer quietly.
+  const loadAccounts = useCallback(async () => {
+    try {
+      setAccounts(await api.get('/accounts'))
+    } catch { /* the statements list carries the error and its Retry */ }
+  }, [])
+
+  // Everything that depends on which statements exist and what their accounts are called.
+  const refresh = useCallback(async () => {
+    const [rows] = await Promise.all([loadStatements(), loadAccounts()])
+    reloadAppStatements()
+    return rows
+  }, [loadStatements, loadAccounts, reloadAppStatements])
+
+  useEffect(() => { loadStatements(); loadAccounts() }, [loadStatements, loadAccounts])
 
   const patchEntry = useCallback((id, patch) => {
     setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
@@ -222,7 +315,7 @@ export default function Upload() {
         } else {
           patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued" })
         }
-        loadStatements()
+        refresh()
       } catch (e) {
         patchEntry(entry.id, { status: 'failed', message: couldnt('read this file', e) })
       }
@@ -234,9 +327,9 @@ export default function Upload() {
     if (!deleteTarget) return
     try {
       await api.delete(`/statements/${deleteTarget.id}`)
-      toast(`Deleted ${deleteTarget.bank_name}`, 'info')
+      toast(`Deleted ${deleteTarget.account_label} - ${formatMonth(deleteTarget.statement_month)}`, 'info')
       setDeleteTarget(null)
-      loadStatements()
+      refresh()
       refreshDemoData()
     } catch (e) {
       toast(couldnt('delete', e), 'error')
@@ -247,7 +340,7 @@ export default function Upload() {
     if (!resetTarget) return
     try {
       await api.delete(`/statements/${resetTarget.id}/data`)
-      toast(`Started over with ${resetTarget.bank_name} - ${formatMonth(resetTarget.statement_month)}`, 'info')
+      toast(`Started over with ${resetTarget.account_label} - ${formatMonth(resetTarget.statement_month)}`, 'info')
       setResetTarget(null)
       loadStatements()
       refreshDemoData()
@@ -274,34 +367,45 @@ export default function Upload() {
     }
   }
 
-  function startEditName(s) {
-    setEditingId(s.id)
-    setEditingName(s.bank_name)
+  // Naming an account, from a file's row or from a statement's menu. Resolves
+  // true when it was saved, so the caller knows whether to close its input.
+  async function nameAccount(accountId, name) {
+    try {
+      await api.patch(`/accounts/${accountId}`, { name })
+      await refresh()
+      return true
+    } catch (e) {
+      toast(couldnt('name this account', e), 'error')
+      return false
+    }
   }
 
-  // The rename ended (saved or cancelled): the menu that started it gets focus
+  // The naming ended (saved or cancelled): the menu that started it gets focus
   // back, so the keyboard picks up where it left off.
   function endEditName(id) {
     setEditingId(null)
-    setEditingName('')
     moreButtons.current[id]?.focus()
   }
 
-  function cancelEditName() {
-    endEditName(editingId)
+  async function saveEditName(s, name) {
+    // Saving the words already shown is no change, and must not turn a derived
+    // label into a name that would stop following the bank and digits.
+    if (name.trim() === s.account_label || await nameAccount(s.account_id, name)) endEditName(s.id)
   }
 
-  async function saveEditName(id) {
-    const name = editingName.trim()
-    if (!name) return
+  async function moveStatement(account) {
+    const s = moveTarget
+    setMoveTarget(null)
     try {
-      await api.patch(`/statements/${id}`, { bank_name: name })
-      endEditName(id)
-      loadStatements()
+      await api.patch(`/statements/${s.id}`, { account_id: account.id })
+      toast(`Moved ${formatMonth(s.statement_month)} to ${account.account_label}`, 'info')
+      refresh()
     } catch (e) {
-      toast(couldnt('rename', e), 'error')
+      toast(couldnt('move this statement', e), 'error')
     }
   }
+
+  const accountLabels = new Map(accounts.map(a => [a.id, a.account_label]))
 
   // The account of a drop, once nothing in it is still being read or sorted.
   const sortedEntries = entries.filter(e => e.status === 'sorted')
@@ -394,6 +498,8 @@ export default function Upload() {
               <FileRow
                 key={entry.id}
                 entry={entry}
+                accountLabel={accountLabels.get(entry.statement?.account_id)}
+                onNameAccount={nameAccount}
                 onRemove={entry.status === 'ready' || entry.status === 'failed'
                   ? () => setEntries(list => list.filter(e => e.id !== entry.id))
                   : null}
@@ -496,6 +602,28 @@ export default function Upload() {
         </div>
       )}
 
+      {accounts.length > 0 && (
+        <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
+            Your accounts
+          </p>
+          <ul>
+            {accounts.map(a => (
+              <li key={a.id} className="flex items-center gap-4 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 text-sm">
+                <span className="text-[#e2e8f0] min-w-0 flex-1 truncate">{a.account_label}</span>
+                <span className="text-[#94a3b8] whitespace-nowrap">{count(a.statement_count, 'statement')}</span>
+                {a.balance != null && (
+                  <span className="text-[#94a3b8] whitespace-nowrap">
+                    <Amount value={a.balance} decimals={0} className="text-[#e2e8f0]" />
+                    {' '}as of {dayjs(a.balance_as_of).format('D MMM YYYY')}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Statement history */}
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-x-auto">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
@@ -511,7 +639,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Bank', 'Month', 'Balanced', 'Sorted', 'Added'].map(h => (
+                {['Account', 'Month', 'Balanced', 'Sorted', 'Added'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                 ))}
                 <th className="px-4 py-2.5 border-b border-[#1e2235]"><span className="sr-only">Actions</span></th>
@@ -522,28 +650,15 @@ export default function Upload() {
                 <tr key={s.id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27] transition-colors">
                   <td className="px-4 py-3 text-[#e2e8f0]">
                     {editingId === s.id ? (
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          autoFocus
-                          value={editingName}
-                          onChange={e => setEditingName(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') saveEditName(s.id)
-                            if (e.key === 'Escape') cancelEditName()
-                          }}
-                          className="bg-[#1e2235] border border-[#6366f1] text-[#e2e8f0] px-2 py-0.5 rounded text-sm focus:outline-none w-40"
-                        />
-                        <button onClick={() => saveEditName(s.id)} className="text-[#86efac] hover:opacity-80">
-                          <Check size={13} />
-                        </button>
-                        <button onClick={cancelEditName} className="text-[#94a3b8] hover:text-[#e2e8f0]">
-                          <X size={13} />
-                        </button>
-                      </div>
+                      <NameField
+                        initial={s.account_label}
+                        onSave={name => saveEditName(s, name)}
+                        onCancel={() => endEditName(s.id)}
+                      />
                     ) : (
                       <div className="flex items-center gap-2">
                         <FileText size={14} className="text-[#818cf8] shrink-0" />
-                        <span>{s.bank_name}</span>
+                        <span>{s.account_label}</span>
                       </div>
                     )}
                   </td>
@@ -570,10 +685,14 @@ export default function Upload() {
                         </button>
                       </Tooltip>
                       <ActionMenu
-                        label={`More for ${s.bank_name} - ${formatMonth(s.statement_month)}`}
+                        label={`More for ${s.account_label} - ${formatMonth(s.statement_month)}`}
                         triggerRef={node => { moreButtons.current[s.id] = node }}
                         items={[
-                          { label: 'Rename', onSelect: () => startEditName(s) },
+                          { label: 'Name this account', onSelect: () => setEditingId(s.id) },
+                          // Only when there is somewhere else to put it.
+                          ...(accounts.some(a => a.id !== s.account_id)
+                            ? [{ label: 'Move to account…', onSelect: () => setMoveTarget(s) }]
+                            : []),
                           { label: 'Start over', onSelect: () => setResetTarget(s) },
                           { label: 'Delete', onSelect: () => setDeleteTarget(s), danger: true },
                         ]}
@@ -587,10 +706,29 @@ export default function Upload() {
         )}
       </div>
 
+      <Modal open={!!moveTarget} title="Move to account" onClose={() => setMoveTarget(null)}>
+        <p className="text-sm text-[#94a3b8] mb-4">
+          {moveTarget && `${formatMonth(moveTarget.statement_month)} is in ${moveTarget.account_label}. Move it to:`}
+        </p>
+        <ul className="space-y-2">
+          {moveTarget && accounts.filter(a => a.id !== moveTarget.account_id).map(a => (
+            <li key={a.id}>
+              <button
+                type="button"
+                onClick={() => moveStatement(a)}
+                className="w-full text-left px-3 py-2 rounded-md bg-[#1e2235] text-sm text-[#e2e8f0] hover:bg-[#252a40] transition-colors"
+              >
+                {a.account_label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
+
       <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This removes every category and tag on "${resetTarget?.bank_name} - ${formatMonth(resetTarget?.statement_month)}". Your payments stay, and you can sort them again any time. This can't be undone.`}
+        description={`This removes every category and tag on "${resetTarget?.account_label} - ${formatMonth(resetTarget?.statement_month)}". Your payments stay, and you can sort them again any time. This can't be undone.`}
         confirmLabel="Start over"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}
@@ -600,7 +738,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this statement?"
-        description={`This will permanently remove "${deleteTarget?.bank_name} - ${formatMonth(deleteTarget?.statement_month)}" and all its payments. This can't be undone.`}
+        description={`This will permanently remove "${deleteTarget?.account_label} - ${formatMonth(deleteTarget?.statement_month)}" and all its payments. This can't be undone.`}
         confirmLabel="Delete"
         onConfirm={deleteStatement}
         onCancel={() => setDeleteTarget(null)}

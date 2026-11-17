@@ -618,7 +618,7 @@ export default function Transactions() {
         >
           <option value="">All statements</option>
           {statements.map(s => (
-            <option key={s.id} value={s.id}>{s.bank_name} - {formatMonth(s.statement_month)}</option>
+            <option key={s.id} value={s.id}>{s.account_label} - {formatMonth(s.statement_month)}</option>
           ))}
         </select>
 

@@ -167,6 +167,12 @@ describe('Dashboard', () => {
     expect(screen.queryByText(/earlier months/)).not.toBeInTheDocument()
   })
 
+  it('says which account the balance chart draws', async () => {
+    renderDashboard()
+    expect(await screen.findByText('Balance over time')).toBeInTheDocument()
+    expect(screen.getByText('Kotak', { selector: 'span' })).toBeInTheDocument()
+  })
+
   it('shows a month-scoped balance-over-time chart with no headline number', async () => {
     renderDashboard()
     // The month-anchored chart renders (two+ points inside May), titled like

@@ -264,7 +264,10 @@ function BalanceCard({ balance, month }) {
   }
   return (
     <Link to="/insights" className={`${card} group flex flex-col p-4 transition-colors hover:border-[#6366f1]`}>
-      <p className={`${cardTitle} mb-3`}>Balance over time</p>
+      <div className="flex items-baseline justify-between mb-3">
+        <p className={cardTitle}>Balance over time</p>
+        {balance.account && <span className="text-xs text-[#94a3b8]">{balance.account}</span>}
+      </div>
       <div className={`h-52 flex-1 ${hidden ? 'blur-[6px] select-none' : ''}`}>
         {points.length > 1 ? (
           <Line data={data} options={options} />
