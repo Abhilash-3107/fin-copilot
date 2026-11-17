@@ -50,6 +50,11 @@ test('a backup restores the ledger exactly after everything is deleted', async (
   expect(original.rules).toHaveLength(1)
   expect(original.groups[0].members).toHaveLength(2)
   expect(original.reviewCounts.set_aside).toBe(1)
+  // The account the statement sits in is part of what is restored, and the statement
+  // list shows its number only as the last four digits.
+  expect(original.accounts).toHaveLength(1)
+  expect(original.statements[0]).toMatchObject({ account_id: original.accounts[0].id, account_ref_last4: '0000' })
+  expect(original.statements[0]).not.toHaveProperty('account_ref')
   expect(originalFigures.groups[0].settleUp).toBeTruthy()
   expect(original.transactions.some((t) => t.source === 'manual')).toBe(true)
   await open(page, '/dashboard')
