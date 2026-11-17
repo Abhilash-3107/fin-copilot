@@ -128,7 +128,8 @@ function AccountLine({ statement, label, onName }) {
   return (
     <p className="text-xs text-[#94a3b8] mt-0.5">
       Added to a new account, {label}.
-      {!named && (
+      {/* Named here, or from the statement list: either way there is nothing left to offer. */}
+      {!named && label === statement.account_label && (
         <>
           {' '}
           <button type="button" onClick={() => setNaming(true)} className="text-[#818cf8] hover:underline">
@@ -611,13 +612,15 @@ export default function Upload() {
             {accounts.map(a => (
               <li key={a.id} className="flex items-center gap-4 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 text-sm">
                 <span className="text-[#e2e8f0] min-w-0 flex-1 truncate">{a.account_label}</span>
-                <span className="text-[#94a3b8] whitespace-nowrap">{count(a.statement_count, 'statement')}</span>
-                {a.balance != null && (
-                  <span className="text-[#94a3b8] whitespace-nowrap">
-                    <Amount value={a.balance} decimals={0} className="text-[#e2e8f0]" />
-                    {' '}as of {dayjs(a.balance_as_of).format('D MMM YYYY')}
-                  </span>
-                )}
+                <span className="w-28 text-right text-[#94a3b8] whitespace-nowrap">{count(a.statement_count, 'statement')}</span>
+                <span className="w-56 text-right text-[#94a3b8] whitespace-nowrap">
+                  {a.balance != null && (
+                    <>
+                      <Amount value={a.balance} decimals={0} className="text-[#e2e8f0]" />
+                      {' '}as of {dayjs(a.balance_as_of).format('D MMM YYYY')}
+                    </>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -648,7 +651,7 @@ export default function Upload() {
             <tbody>
               {statements.map(s => (
                 <tr key={s.id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27] transition-colors">
-                  <td className="px-4 py-3 text-[#e2e8f0]">
+                  <td className="px-4 py-3 text-[#e2e8f0] min-w-[16rem]">
                     {editingId === s.id ? (
                       <NameField
                         initial={s.account_label}
