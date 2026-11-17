@@ -127,7 +127,7 @@ function NewAccountForm({ onMove }) {
         <button
           type="button"
           onClick={() => onMove(name)}
-          className="px-3 py-1.5 rounded-md bg-[#6366f1] text-sm text-white hover:bg-[#4f46e5] transition-colors"
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-sm font-medium text-white hover:opacity-90 transition-opacity"
         >
           Move to a new account
         </button>
