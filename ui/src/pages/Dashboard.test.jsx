@@ -173,6 +173,43 @@ describe('Dashboard', () => {
     expect(screen.getByText('Kotak', { selector: 'span' })).toBeInTheDocument()
   })
 
+  it('says which account has no balance in the month, rather than asking for statements', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({
+          ...SUMMARY,
+          balance: { account: 'Salary account', series: [{ date: '2026-04-10', balance: 71000 }, { date: '2026-04-30', balance: 72000 }] },
+        })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('No balance for Salary account in May 2026')).toBeInTheDocument()
+    expect(screen.queryByText(/appears once statements are imported/)).not.toBeInTheDocument()
+  })
+
+  it('says so when the month holds a single balance reading, too few to draw', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: 'Kotak', series: [{ date: '2026-05-10', balance: 80000 }] } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('Only one balance reading for Kotak in May 2026')).toBeInTheDocument()
+  })
+
+  it('keeps the import message for a ledger with no balance history at all', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: null, series: [] } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('Balance history appears once statements are imported')).toBeInTheDocument()
+  })
+
   it('shows a month-scoped balance-over-time chart with no headline number', async () => {
     renderDashboard()
     // The month-anchored chart renders (two+ points inside May), titled like

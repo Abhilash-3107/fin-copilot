@@ -415,6 +415,21 @@ describe('Upload', () => {
       expect(await within(row).findByText(/Added to a new account, Kotak savings\./)).toBeInTheDocument()
       expect(within(row).queryByRole('textbox')).not.toBeInTheDocument()
       expect(within(row).queryByRole('button', { name: 'Name it' })).not.toBeInTheDocument()
+      // Focus lands on the line that now says the name, not on the page.
+      expect(within(row).getByText(/Added to a new account, Kotak savings\./)).toHaveFocus()
+    })
+
+    it('keeps Name it when a blank name is saved, and still puts focus on the line', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_id: 'a9', account_label: 'Kotak ··8074', account_is_new: true }))
+      mockApi.patch.mockResolvedValue({})
+      const row = await drop()
+      fireEvent.click(await within(row).findByRole('button', { name: 'Name it' }))
+      const input = within(row).getByRole('textbox', { name: 'Name this account' })
+      fireEvent.change(input, { target: { value: '   ' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/accounts/a9', { name: '   ' }))
+      expect(await within(row).findByRole('button', { name: 'Name it' })).toBeInTheDocument()
+      expect(within(row).getByText(/Added to a new account, Kotak ··8074\./)).toHaveFocus()
     })
 
     it('offers no naming once the account has been named from the statement list', async () => {
@@ -432,7 +447,16 @@ describe('Upload', () => {
       fireEvent.keyDown(within(row).getByRole('textbox', { name: 'Name this account' }), { key: 'Escape' })
       expect(within(row).queryByRole('textbox')).not.toBeInTheDocument()
       expect(within(row).getByRole('button', { name: 'Name it' })).toBeInTheDocument()
+      expect(within(row).getByRole('button', { name: 'Name it' })).toHaveFocus()
       expect(mockApi.patch).not.toHaveBeenCalled()
+    })
+
+    it('does not take focus when the row is only drawn', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_id: 'a9', account_label: 'Kotak ··8074', account_is_new: true }))
+      const row = await drop()
+      await within(row).findByRole('button', { name: 'Name it' })
+      expect(within(row).getByText(/Added to a new account/)).not.toHaveFocus()
+      expect(within(row).getByRole('button', { name: 'Name it' })).not.toHaveFocus()
     })
   })
 

@@ -107,10 +107,23 @@ function NameField({ initial, onSave, onCancel, autoFocus = true }) {
 }
 
 // Where the statement went: into an account the ledger already had, or a new
-// one, which is the moment to give it a name.
+// one, which is the moment to give it a name. Focus follows the keyboard: Escape
+// returns to "Name it", saving lands on the line that now says the name.
 function AccountLine({ statement, label, onName }) {
   const [naming, setNaming] = useState(false)
   const [named, setNamed] = useState(false)
+  const lineRef = useRef(null)
+  const nameItRef = useRef(null)
+  // Where focus goes when the input closes. Null until the input has been used,
+  // so a row that is only drawn never takes focus.
+  const returnTo = useRef(null)
+  useEffect(() => {
+    if (naming || !returnTo.current) return
+    const target = returnTo.current === 'button' ? nameItRef.current ?? lineRef.current : lineRef.current
+    target?.focus()
+    returnTo.current = null
+  }, [naming])
+
   if (!statement.account_is_new) return <p className="text-xs text-[#94a3b8] mt-0.5">Added to {label}</p>
   if (naming) {
     return (
@@ -118,21 +131,26 @@ function AccountLine({ statement, label, onName }) {
         <NameField
           initial=""
           onSave={async name => {
-            if (await onName(name)) { setNaming(false); setNamed(true) }
+            if (await onName(name)) {
+              returnTo.current = 'line'
+              // A blank name clears it: nothing was named, so "Name it" stays.
+              if (name.trim()) setNamed(true)
+              setNaming(false)
+            }
           }}
-          onCancel={() => setNaming(false)}
+          onCancel={() => { returnTo.current = 'button'; setNaming(false) }}
         />
       </div>
     )
   }
   return (
-    <p className="text-xs text-[#94a3b8] mt-0.5">
+    <p ref={lineRef} tabIndex={-1} className="text-xs text-[#94a3b8] mt-0.5 outline-none">
       Added to a new account, {label}.
       {/* Named here, or from the statement list: either way there is nothing left to offer. */}
       {!named && label === statement.account_label && (
         <>
           {' '}
-          <button type="button" onClick={() => setNaming(true)} className="text-[#818cf8] hover:underline">
+          <button ref={nameItRef} type="button" onClick={() => setNaming(true)} className="text-[#818cf8] hover:underline">
             Name it
           </button>
         </>
