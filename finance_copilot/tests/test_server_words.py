@@ -11,9 +11,14 @@ from __future__ import annotations
 import ast
 import json
 import re
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+import pytest
+from source_tree import NOT_A_CHECKOUT, source_root
+
+ROOT = source_root()
+if ROOT is None:
+    pytest.skip(NOT_A_CHECKOUT, allow_module_level=True)
+
 PACKAGE = ROOT / "finance_copilot"
 WORDS = json.loads((ROOT / "ui/src/lib/bannedWords.json").read_text(encoding="utf-8"))
 

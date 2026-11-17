@@ -117,6 +117,18 @@ jobs:
       - name: Build wheel
         run: uv build
 
+      - name: Test against the installed wheel
+        # The same step the release job runs on a tag. Tests run from a copy
+        # outside the checkout so `import finance_copilot` resolves to the
+        # installed wheel, which catches missing package data and tests that
+        # lean on the source tree, on every PR instead of on the tag.
+        run: |
+          uv venv wheel-test-env
+          uv pip install --python wheel-test-env/bin/python dist/*.whl pytest
+          cp -r finance_copilot/tests "$RUNNER_TEMP/wheel-tests"
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/wheel-test-env/bin/python" -m pytest wheel-tests -q
+
       - name: Install Playwright and Chromium
         working-directory: e2e
         run: |

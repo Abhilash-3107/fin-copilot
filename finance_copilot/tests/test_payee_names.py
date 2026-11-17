@@ -12,7 +12,7 @@ import pytest
 import ulid
 from fastapi.testclient import TestClient
 
-from finance_copilot.db.connection import init_db
+from finance_copilot.db.connection import MIGRATIONS_DIR, init_db
 from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.insights import summarize_insights
 from finance_copilot.db.queries.payee import clean_note
@@ -88,7 +88,7 @@ class TestMigration:
         assert "display_name" in {r["name"] for r in conn.execute("PRAGMA table_info(transactions)")}
 
     def test_file_is_numbered_037(self):
-        names = [p.name for p in (Path(__file__).parents[1] / "db" / "migrations").glob("037_*.sql")]
+        names = [p.name for p in MIGRATIONS_DIR.glob("037_*.sql")]
         assert names == ["037_payee_names.sql"]
 
 

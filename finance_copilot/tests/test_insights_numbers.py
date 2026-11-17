@@ -11,10 +11,10 @@ import sqlite3
 
 import pytest
 import ulid
+from test_insights import seed_txn
 
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.insights import summarize_insights
-from finance_copilot.tests.test_insights import seed_txn
 
 
 @pytest.fixture

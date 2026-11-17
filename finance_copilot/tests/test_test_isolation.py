@@ -4,13 +4,24 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
-from finance_copilot.config import settings
+from finance_copilot.config import default_data_dir, settings
 from finance_copilot.db import connection as dbc
 
-REPO_LEDGER = Path(__file__).resolve().parents[2] / "data" / "finance.db"
+
+def _default_ledger() -> Path:
+    """Where the app keeps its ledger with no override: <repo>/data in a checkout,
+    the platform app-data folder for the installed wheel. FC_DATA_DIR is ignored
+    here, since the suite points it at a temp folder."""
+    with mock.patch.dict(os.environ):
+        os.environ.pop("FC_DATA_DIR", None)
+        return default_data_dir().resolve() / "finance.db"
+
+
+REPO_LEDGER = _default_ledger()
 TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
 
 
