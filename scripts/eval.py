@@ -181,6 +181,7 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
                 "local": settings.local_llm_model,
                 "ollama": settings.ollama_model,
             }.get(settings.llm_provider),
+            "llm_reasoning_effort": settings.llm_reasoning_effort or None,
             "ollama_num_ctx": settings.ollama_num_ctx,
             "llm_logprob_confidence": settings.llm_logprob_confidence,
         },

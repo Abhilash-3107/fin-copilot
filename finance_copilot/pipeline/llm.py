@@ -188,8 +188,8 @@ def _post_chat(
 
 # Request settings a model refused, per (chat URL, model), learned from the
 # provider's own 400s. OpenAI's reasoning models reject `max_tokens` (they take
-# `max_completion_tokens`) and any temperature but the default, and the error
-# body names the setting. The first refusal teaches the fix; later calls send
+# `max_completion_tokens`) and any temperature but the default; other models
+# reject `reasoning_effort`. The error body names the setting. The first refusal teaches the fix; later calls send
 # the accepted form straight away. Process-local: after a restart one extra
 # request re-learns it.
 _REFUSED_SETTINGS: dict[tuple[str, str], set[str]] = {}
@@ -203,6 +203,9 @@ def _apply_setting_fix(payload: dict, setting: str) -> bool:
         return True
     if setting == "temperature" and "temperature" in payload:
         del payload["temperature"]  # the model's default; seed still applies
+        return True
+    if setting == "reasoning_effort" and "reasoning_effort" in payload:
+        del payload["reasoning_effort"]  # not a reasoning model
         return True
     return False
 
@@ -561,6 +564,8 @@ def _build_provider_request(
             },
             "messages": messages,
         }
+        if settings.llm_reasoning_effort:
+            payload["reasoning_effort"] = settings.llm_reasoning_effort
         for setting in _REFUSED_SETTINGS.get((url, settings.llm_model), ()):
             _apply_setting_fix(payload, setting)
         return url, headers, payload

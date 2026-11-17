@@ -1013,3 +1013,19 @@ class TestRefusedSettings:
         with patch("httpx.post", return_value=refused) as p, pytest.raises(LLMRequestRejected):
             annotate_transaction_llm(_TXN, _CATS)
         assert p.call_count == 2
+
+    def test_reasoning_effort_is_sent_when_set_and_dropped_when_refused(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_reasoning_effort", "none")
+        side = [self._openai_ok(), self._refused("reasoning_effort", "unsupported_parameter"), self._openai_ok()]
+        with patch("httpx.post", side_effect=side) as p:
+            annotate_transaction_llm(_TXN, _CATS)
+            monkeypatch.setattr(settings, "llm_model", "classic")
+            annotate_transaction_llm(_TXN, _CATS)
+        sent = [c.kwargs["json"] for c in p.call_args_list]
+        assert sent[0]["reasoning_effort"] == "none"
+        assert "reasoning_effort" not in sent[2]
+
+    def test_reasoning_effort_is_not_sent_by_default(self):
+        with patch("httpx.post", return_value=self._openai_ok()) as p:
+            annotate_transaction_llm(_TXN, _CATS)
+        assert "reasoning_effort" not in p.call_args.kwargs["json"]
