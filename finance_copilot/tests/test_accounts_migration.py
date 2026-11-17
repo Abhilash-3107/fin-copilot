@@ -7,7 +7,6 @@ before accounts existed, so no existing ledger splinters.
 from __future__ import annotations
 
 import shutil
-import sqlite3
 
 import pytest
 
