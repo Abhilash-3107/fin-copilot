@@ -134,14 +134,17 @@ def _post_chat(
     def _send() -> httpx.Response:
         # Short connect (a stopped Ollama refuses at once), long read
         # (generation), and never past the call's deadline.
-        read = max(0.1, min(settings.llm_timeout_s, deadline - time.monotonic()))
-        timeout = httpx.Timeout(read, connect=min(_CONNECT_TIMEOUT_S, read))
-        response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        def timeout() -> httpx.Timeout:
+            read = max(0.1, min(settings.llm_timeout_s, deadline - time.monotonic()))
+            return httpx.Timeout(read, connect=min(_CONNECT_TIMEOUT_S, read))
+
+        response = httpx.post(url, json=payload, headers=headers, timeout=timeout())
         # A model that refuses one of our settings by name gets the request
         # again in the form it accepts. Each fix removes the refused setting,
-        # so this resends at most once per known fix.
+        # so this resends at most once per known fix, and every resend waits
+        # only for what is left of the call's deadline.
         while response.status_code == 400 and _learn_refused_setting(url, payload, response, log_prefix):
-            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+            response = httpx.post(url, json=payload, headers=headers, timeout=timeout())
         response.raise_for_status()
         return response
 

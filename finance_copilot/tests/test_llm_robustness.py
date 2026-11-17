@@ -989,6 +989,23 @@ class TestRefusedSettings:
             assert sent["max_completion_tokens"] == 512 and sent["seed"] == 42
         assert p.call_args_list[0].args[0] == self._OPENAI_URL
 
+    def test_a_resend_gets_only_what_is_left_of_the_call_budget(self):
+        """Resending in the accepted form shares the per-call deadline: the
+        second request may only wait for the time the first one left."""
+        def side(*_a, **kwargs):
+            if side.n == 0:
+                side.n += 1
+                time.sleep(0.6)
+                return self._refused("max_tokens", "unsupported_parameter")
+            return self._openai_ok()
+        side.n = 0
+        with patch("finance_copilot.pipeline.llm.call_budget_s", return_value=1.0), \
+             patch("httpx.post", side_effect=side) as p:
+            assert annotate_transaction_llm(_TXN, _CATS).category == "Shopping"
+        first, resend = (c.kwargs["timeout"].read for c in p.call_args_list)
+        assert first <= 1.0
+        assert resend <= 0.45  # 1.0 budget minus the 0.6s the refusal took
+
     def test_memory_is_per_model(self, monkeypatch):
         side = [self._refused("temperature", "unsupported_value"), self._openai_ok(), self._openai_ok()]
         with patch("httpx.post", side_effect=side) as p:
