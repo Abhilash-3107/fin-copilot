@@ -121,9 +121,19 @@ export default function Transactions() {
   const { month: periodMonth, setMonth, months } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const selectedStmt = activeStatement?.id ?? ''
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
+  // The statement scope is whatever the period allows. StatementContext defaults to
+  // the newest statement when /statements arrives, possibly after the user (or a
+  // previous session) already holds All time or another month, so the default is
+  // never read as a scope that contradicts the period: not for a render, a list
+  // request or the select. The effects below then clear the stored selection.
+  const scopedStatement = activeStatement
+    && periodMonth !== ALL_TIME
+    && (!month || activeStatement.statement_month === month)
+    ? activeStatement
+    : null
+  const selectedStmt = scopedStatement?.id ?? ''
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
@@ -163,6 +173,7 @@ export default function Transactions() {
   const { job, startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const loadRef = useRef(0)
+  const facetsRef = useRef(0)
 
   // Stable serializations of the Set filters, for effect deps and API params.
   const sourceCsv = [...sourceFilter].sort().join(',')
@@ -293,15 +304,18 @@ export default function Transactions() {
   // loaded page, so options that first appear beyond the current page (or that
   // an active filter would hide) are still offered.
   const loadFacets = useCallback(async () => {
+    const id = ++facetsRef.current
     const params = new URLSearchParams()
     if (selectedStmt) params.set('statement_id', selectedStmt)
     if (month) params.set('month', month)
     try {
-      setFacets(await api.get(`/transactions/facets?${params}`))
+      const next = await api.get(`/transactions/facets?${params}`)
+      if (id !== facetsRef.current) return // a newer scope was asked for meanwhile
+      setFacets(next)
       setFacetsError(null)
     } catch (e) {
       // The dropdowns keep their previous options; the bar says so, with Retry.
-      setFacetsError(e)
+      if (id === facetsRef.current) setFacetsError(e)
     }
   }, [selectedStmt, month])
 
