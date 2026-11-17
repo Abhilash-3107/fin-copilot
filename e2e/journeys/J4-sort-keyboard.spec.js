@@ -13,14 +13,23 @@ const answers = /\/api\/annotations\/(bulk-label|[^/]+\/confirm)$/
 
 /** How many payments have been answered, as the progress line says it, or 'done' on the finish screen. */
 async function where(page) {
-  if (await done(page).isVisible()) return 'done'
-  const [handled] = (await progress(page).innerText()).split('/')
-  return handled.trim()
+  // allInnerTexts does not wait for the element: once the card is replaced by the
+  // finish screen the progress line is gone, and innerText() would sit out the
+  // whole action timeout on it.
+  const [line] = await progress(page).allInnerTexts()
+  if (line === undefined) return (await done(page).isVisible()) ? 'done' : 'between'
+  return line.split('/')[0].trim()
 }
 
 /** Wait for the page to move on from `before`: another card answered, or the finish. */
 async function movedOn(page, before) {
-  await expect.poll(() => where(page), { message: 'Teach Me should move on' }).not.toBe(before)
+  // 'between' is the instant one card has gone and the next has not drawn: not yet moved on.
+  await expect
+    .poll(async () => {
+      const now = await where(page)
+      return now === 'between' ? before : now
+    }, { message: 'Teach Me should move on' })
+    .not.toBe(before)
 }
 
 /** Answer the card on screen with the keyboard alone, and wait until the page has moved on. */
@@ -337,7 +346,11 @@ test.describe('J4 the keyboard outside Teach Me', () => {
     await page.getByRole('button', { name: 'Edit Hill cabin' }).click()
     await page.getByLabel('Group name', { exact: true }).fill('FLAT')
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
+    // The refusal shows inside the card being edited. The new-group field's own
+    // alert from above is still on the page, so the assertion is scoped to the form.
+    const editForm = page.getByLabel('Group name', { exact: true }).locator('..')
+    await expect(editForm.getByRole('alert')).toHaveText('You already have a group called "Flat".')
+    expect((await app.api.get(`/groups/${trip.id}`)).name).toBe('Hill cabin')
     await page.keyboard.press('Escape')
     await expect(page.getByLabel('Group name', { exact: true })).toHaveCount(0)
     expect((await app.api.get(`/groups/${trip.id}`)).name).toBe('Hill cabin')
