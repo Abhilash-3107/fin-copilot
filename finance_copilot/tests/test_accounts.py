@@ -54,6 +54,8 @@ class TestLabel:
         ("Kotak", "3250508074", "Kotak ··8074"),
         ("kotak ", None, "Kotak"),
         ("Foo (AUTO)", None, "Foo"),
+        ("state bank (auto)", "1234", "SBI ··1234"),
+        ("State Bank (AUTO)", None, "SBI"),
     ])
     def test_derived_from_the_bank_and_the_last_four_digits(self, bank, ref, expected):
         assert account_label(None, bank, ref) == expected
@@ -111,6 +113,14 @@ class TestResolveAccount:
         second, created = resolve_account(conn, "hdfc", "5010")
         assert (second, created) == (first, False)
         assert _row(conn, first)["bank_name"] == "hdfc"
+
+    def test_a_state_bank_read_by_the_generic_parser_is_sbi(self):
+        """0.1.2 wrote "state bank (auto)" for an SBI statement: the same bank as "sbi"."""
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "state bank (auto)", "5010")
+        second, created = resolve_account(conn, "sbi", "5010")
+        assert (second, created) == (first, False)
+        assert _row(conn, first)["bank_name"] == "sbi"
 
     def test_another_number_at_the_same_bank_is_another_account(self):
         conn = _make_conn()
@@ -198,6 +208,114 @@ class TestResolveAccount:
         assert account_id.startswith("acc_") and len(account_id) > 10
 
 
+def _period_statement(conn, stmt_id, bank, ref, account_id, month, uploaded="2026-01-01 10:00:00"):
+    """A statement whose period is its month, uploaded when it says."""
+    conn.execute(
+        "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref, account_id, "
+        "period_start, period_end, uploaded_at) VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?)",
+        (stmt_id, bank, month, ref, account_id, f"{month}-01", f"{month}-28", uploaded),
+    )
+    conn.commit()
+
+
+class TestTheLatestMonthDecides:
+    """The next statement continues the account that holds the latest month, not the one
+    uploaded last: re-uploading an old month must not drag the chain after it."""
+
+    def test_an_old_month_uploaded_late_does_not_decide(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        joint = "acc_joint"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '1111')", (joint,))
+        _period_statement(conn, "mar", "kotak", "1111", joint, "2026-03", "2026-03-31 10:00:00")
+        _period_statement(conn, "jan", "kotak", "1111", a, "2026-01", "2026-06-01 10:00:00")
+        assert resolve_account(conn, "kotak", "1111") == (joint, False)
+
+    def test_the_same_month_in_two_accounts_goes_to_the_one_uploaded_last(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        b = "acc_b"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '1111')", (b,))
+        _period_statement(conn, "x", "kotak", "1111", a, "2026-03", "2026-03-31 10:00:00")
+        _period_statement(conn, "y", "kotak", "1111", b, "2026-03", "2026-04-02 10:00:00")
+        assert resolve_account(conn, "kotak", "1111") == (b, False)
+
+    def test_a_statement_with_no_payments_has_no_period_and_never_beats_one_that_has(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        b = "acc_b"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '1111')", (b,))
+        _period_statement(conn, "dated", "kotak", "1111", a, "2026-02", "2026-02-28 10:00:00")
+        _statement(conn, "empty", "kotak", "1111", b, "2026-05")
+        assert resolve_account(conn, "kotak", "1111") == (a, False)
+
+    def test_split_the_latest_month_fix_an_old_one_and_the_next_still_follows_the_latest(self, api):
+        """The reviewer's sequence: Jan, Feb, Mar; Mar split to Joint; Apr goes to Joint;
+        Jan deleted, uploaded again and moved back; May still goes to Joint."""
+        client, conn = api
+        jan = _ingest(conn, _FakeParser("kotak", "1111", _rows(10000, 1, month=1)), "jan")
+        feb = _ingest(conn, _FakeParser("kotak", "1111", _rows(9700, 1, month=2)), "feb")
+        mar = _ingest(conn, _FakeParser("kotak", "1111", _rows(9400, 1, month=3)), "mar")
+        assert client.patch(f"/api/statements/{mar.id}", json={"new_account": True, "name": "Joint"}).status_code == 200
+        joint = conn.execute("SELECT account_id FROM statements WHERE id = ?", (mar.id,)).fetchone()[0]
+        apr = _ingest(conn, _FakeParser("kotak", "1111", _rows(9100, 1, month=4)), "apr")
+        assert apr.account_id == joint
+        assert client.delete(f"/api/statements/{jan.id}").status_code == 200
+        jan2 = _ingest(conn, _FakeParser("kotak", "1111", _rows(10000, 1, month=1)), "jan2")
+        assert client.patch(f"/api/statements/{jan2.id}", json={"account_id": feb.account_id}).status_code == 200
+        may = _ingest(conn, _FakeParser("kotak", "1111", _rows(8800, 1, month=5)), "may")
+        assert may.account_id == joint and may.account_is_new is False
+
+
+class TestAStatementWithNoNumber:
+    """A statement that printed no number follows an earlier unnumbered one only into an
+    account that has no number either."""
+
+    def test_it_does_not_follow_an_unnumbered_statement_into_a_numbered_account_of_a_bank_with_several(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", None)
+        _period_statement(conn, "u1", "kotak", None, a, "2026-01")
+        assert resolve_account(conn, "kotak", "1111") == (a, False)  # adopted: the number is a
+        _period_statement(conn, "n1", "kotak", "1111", a, "2026-02")
+        b, created = resolve_account(conn, "kotak", "2222")
+        assert created is True
+        _period_statement(conn, "n2", "kotak", "2222", b, "2026-03")
+        # Two accounts, neither unnumbered: the unnumbered statement gets one of its own.
+        u2, created = resolve_account(conn, "kotak", None)
+        assert created is True and u2 not in (a, b)
+        assert _row(conn, u2)["account_ref"] is None
+        # And the one after it follows that one.
+        _period_statement(conn, "u2", "kotak", None, u2, "2026-04")
+        assert resolve_account(conn, "kotak", None) == (u2, False)
+
+    def test_it_still_follows_the_banks_only_account(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        _period_statement(conn, "n1", "kotak", "1111", a, "2026-01")
+        _period_statement(conn, "u1", "kotak", None, a, "2026-02")
+        assert resolve_account(conn, "kotak", None) == (a, False)
+
+    def test_it_joins_the_banks_single_unnumbered_account(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        b, _ = resolve_account(conn, "kotak", "2222")
+        unnumbered = "acc_unnumbered"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', NULL)", (unnumbered,))
+        assert resolve_account(conn, "kotak", None) == (unnumbered, False)
+        assert unnumbered not in (a, b)
+
+    def test_a_moved_unnumbered_statement_is_followed_into_an_account_without_a_number(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        resolve_account(conn, "kotak", "2222")
+        elsewhere = "acc_elsewhere"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', NULL)", (elsewhere,))
+        _period_statement(conn, "u1", "kotak", None, elsewhere, "2026-01")
+        # Another unnumbered account appears; the user's last move still decides.
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('acc_other', 'kotak', NULL)")
+        assert resolve_account(conn, "kotak", None) == (elsewhere, False)
+
+
 def _statement(conn, stmt_id, bank, ref, account_id, month="2026-01"):
     conn.execute(
         "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref, account_id) "
@@ -213,9 +331,10 @@ class TestAMoveIsRemembered:
         conn = _make_conn()
         landed, _ = resolve_account(conn, "kotak", ref)
         _statement(conn, "s1", "kotak", ref, landed, "2026-01")
-        other = "acc_other"  # an account to move into
-        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '9999999999')", (other,))
-        _statement(conn, "s2", "kotak", "9999999999", other, "2026-01")
+        other = "acc_other"  # an account to move into; a statement with no number only follows to an account with none
+        other_ref = "9999999999" if ref else None
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', ?)", (other, other_ref))
+        _statement(conn, "s2", "kotak", other_ref, other, "2026-01")
         conn.execute("UPDATE statements SET account_id = ? WHERE id = 's1'", (other,))
         conn.commit()
         nxt, created = resolve_account(conn, "kotak", ref)

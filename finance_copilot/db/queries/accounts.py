@@ -24,8 +24,12 @@ MASK = "··"
 NAME_MAX_LENGTH = 60
 
 # The generic parser marks a bank it read by its columns, not by a dedicated
-# parser, as "hdfc (auto)". That is how it was read, not which bank it is.
+# parser, as "hdfc (auto)". That is how it was read, not which bank it is: a
+# value carrying the marker is a parser's key, never text a person typed.
+# Released 0.1.2 wrote the name it matched in the header, and one of those
+# names is not the bank key: "state bank (auto)" is SBI.
 _AUTO_MARKER = "(auto)"
+_MARKED_ALIASES = {"state bank": "sbi"}
 
 # The bank key of a statement the generic parser could not place. It is not one
 # bank, so a numbered statement of it never guesses which account it belongs to.
@@ -35,9 +39,13 @@ UNKNOWN_BANK = "generic"
 def bank_key(bank_name: str) -> str:
     """The bank an account belongs to: a statement's bank_name trimmed, lower case
     and without the generic parser's marker, so "hdfc (auto)", "HDFC " and a later
-    dedicated "hdfc" parser are one bank. Migration 041 groups with the same rule."""
+    dedicated "hdfc" parser are one bank, and "state bank (auto)" is "sbi".
+    Migration 041 and e2e/upgrade/accounts-oracle.js group with the same rule."""
     key = bank_name.strip().lower()
-    return key[: -len(_AUTO_MARKER)].strip() if key.endswith(_AUTO_MARKER) else key
+    if not key.endswith(_AUTO_MARKER):
+        return key
+    key = key[: -len(_AUTO_MARKER)].strip()
+    return _MARKED_ALIASES.get(key, key)
 
 
 def ref_last4(account_ref: str | None) -> str | None:
@@ -58,12 +66,16 @@ def account_label(name: str | None, bank_name: str, account_ref: str | None) -> 
 
 
 def _remembered_account(conn: sqlite3.Connection, bank: str, ref: str | None) -> str | None:
-    """The account of the most recent statement with this bank and number (an
-    unknown number matches an unknown number), when it still exists. A statement
-    the user moved keeps the next one of its bank and number company."""
+    """The account of the statement with this bank and number that holds the latest
+    month (an unknown number matches an unknown number), when it still exists. The
+    month decides, not the upload time: a statement a person re-uploads for an old
+    month must not pull the next one after it. A month held twice goes by upload
+    time. A statement the user moved keeps the next one of its bank and number
+    company."""
     rows = conn.execute(
         "SELECT s.bank_name, s.account_id FROM statements s JOIN accounts a ON a.id = s.account_id "
-        "WHERE NULLIF(TRIM(s.account_ref), '') IS ? ORDER BY s.uploaded_at DESC, s.rowid DESC",
+        "WHERE NULLIF(TRIM(s.account_ref), '') IS ? "
+        "ORDER BY s.period_end DESC, s.uploaded_at DESC, s.rowid DESC",
         (ref,),
     )
     for row in rows:
@@ -77,9 +89,11 @@ def resolve_account(
 ) -> tuple[str, bool]:
     """The account a new statement belongs to, and whether this call created it.
 
-    What the user has done wins: the account of the latest statement with the
-    same bank and number, wherever they put it. Otherwise, never guess between
-    accounts:
+    What the user has done wins: the account of the statement with the same bank
+    and number that holds the latest month, wherever they put it. A statement
+    with no number follows it only into an account that has no number either:
+    which of several numbered accounts it belongs to is not something to guess.
+    Otherwise, never guess between accounts:
     - Same bank and same number: that account.
     - A number and the bank's only account has none (older statements printed no
       number): that account takes the number. Not for an unknown bank, where an
@@ -93,7 +107,10 @@ def resolve_account(
     ref = (account_ref or "").strip() or None
 
     remembered = _remembered_account(conn, bank, ref)
-    if remembered:
+    if remembered and (
+        ref is not None
+        or conn.execute("SELECT account_ref FROM accounts WHERE id = ?", (remembered,)).fetchone()[0] is None
+    ):
         return remembered, False
 
     accounts = conn.execute(

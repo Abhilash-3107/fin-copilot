@@ -245,7 +245,9 @@ def _check_unlocks(pdf_path: str, password: str | None) -> None:
 
 
 # A statement can start a little before its first payment and end a little after
-# its last, not by months.
+# its last, not by months. A quiet account, whose payments cover a few days of a
+# month it printed in full, can have its real period dropped by this window; that
+# is deliberate: a wrong period is worse than none.
 _PRINTED_PERIOD_SLACK_DAYS = 31
 
 
