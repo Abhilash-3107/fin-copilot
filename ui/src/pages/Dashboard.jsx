@@ -272,7 +272,7 @@ function BalanceCard({ balance, month }) {
         {points.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
-          <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[#94a3b8]">
+          <div className="flex h-full min-h-52 items-center justify-center px-4 text-center text-sm text-[#94a3b8]">
             {balance.account
               ? `${points.length === 1 ? 'Only one balance reading for' : 'No balance for'} ${balance.account} in ${dayjs(month).format('MMMM YYYY')}`
               : 'Balance history appears once statements are imported'}
