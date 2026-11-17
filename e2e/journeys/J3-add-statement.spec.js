@@ -236,6 +236,8 @@ test.describe('J3 accounts', () => {
     await name.press('Enter')
     await expect(row).toContainText('Added to a new account, Salary account.')
     await expect(row.getByRole('button', { name: 'Name it' })).toHaveCount(0)
+    // Focus lands on the line that now says the name, not on the page body.
+    await expect(row.getByText('Added to a new account, Salary account.')).toBeFocused()
 
     // The list says it too, and so does the server.
     await expect(page.getByRole('row').filter({ hasText: 'Salary account' })).toHaveCount(1)
@@ -258,8 +260,54 @@ test.describe('J3 accounts', () => {
     await name.press('Escape')
     await expect(name).toHaveCount(0)
     await expect(row).toContainText('Added to a new account, Bank ··0000.')
+    await expect(row.getByRole('button', { name: 'Name it' })).toBeFocused()
     const [account] = await app.api.get('/accounts')
     expect(account.name).toBeNull()
+  })
+
+  test('a blank name leaves Name it on offer, with focus on the line', async ({ page, app }) => {
+    await drop(page, FIXTURE_PDF)
+    const row = fileRow(page, 'sample_statement.pdf')
+    await row.getByRole('button', { name: 'Name it' }).click()
+    const name = row.getByRole('textbox', { name: 'Name this account' })
+    await name.fill('   ')
+    await name.press('Enter')
+    await expect(name).toHaveCount(0)
+    await expect(row.getByRole('button', { name: 'Name it' })).toBeVisible()
+    await expect(row.getByText('Added to a new account, Bank ··0000.')).toBeFocused()
+    expect((await app.api.get('/accounts'))[0].name).toBeNull()
+  })
+
+  test('a statement is split out of its account into a new one, and the dialog keeps Tab inside', async ({ page, app }) => {
+    await drop(page, FIXTURE_PDF)
+    await expect(summaryOf(page)).toContainText('Finished:')
+    await drop(page, FIXTURE_PDF_NOV)
+    await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Added to Bank ··0000')
+    expect(await app.api.get('/accounts')).toHaveLength(1)
+
+    await page.getByRole('button', { name: 'More for Bank ··0000 - Nov 2026' }).click()
+    await page.getByRole('menuitem', { name: 'Move to account…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Move to account' })
+    await expect(dialog.getByText('A new account', { exact: true })).toBeVisible()
+
+    // Tab and Shift+Tab never leave the dialog, however long the lap.
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('Tab')
+      expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+    }
+    for (let i = 0; i < 6; i++) {
+      await page.keyboard.press('Shift+Tab')
+      expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+    }
+
+    await dialog.getByRole('textbox', { name: 'Name for the new account' }).fill('Joint account')
+    await dialog.getByRole('button', { name: 'Move to a new account' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
+    const accounts = await app.api.get('/accounts')
+    expect(accounts.map((a) => [a.account_label, a.statement_count]).sort()).toEqual([['Bank ··0000', 1], ['Joint account', 1]])
+    // Both carry the same bank and number, which the ledger now lets stand.
+    expect(accounts.map((a) => a.account_ref_last4)).toEqual(['0000', '0000'])
   })
 
   test('the next statement of a named account says so, and there is still one account', async ({ page, app }) => {
