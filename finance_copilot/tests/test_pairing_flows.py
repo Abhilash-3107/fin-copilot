@@ -516,3 +516,36 @@ class TestTheMoneyMath:
         conn.execute("UPDATE transaction_links SET link_type = 'transfer'")
         conn.commit()
         assert _spend_offsets(conn) == ({}, set())
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class TestTheFixtureStatements:
+    """The two fictional statements the browser journey uploads, read by the real parser."""
+
+    def test_the_signed_transfer_pairs_and_the_unsigned_one_waits_for_the_user(self, api):
+        client, conn = api
+        out = ingest_pdf(str(FIXTURES / "sample_statement_transfer_out.pdf"), conn=conn)
+        assert out.transfers_paired == 0
+        inn = ingest_pdf(str(FIXTURES / "sample_statement_transfer_in.pdf"), conn=conn)
+        assert inn.transfers_paired == 1
+        assert out.account_id != inn.account_id
+        labels = {a["account_label"] for a in client.get("/api/accounts").json()}
+        assert labels == {"ICICI ··7788", "Axis ··1234"}
+        # The 12,000 pair: the debit names the other account's number, the credit lands a day later.
+        debit = _ids(conn, out.id, "debit", 12000.0)
+        credit = _ids(conn, inn.id, "credit", 12000.0)
+        assert client.get(f"/api/transactions/{debit}").json()["transfer"]["text"] == "Moved to Axis ··1234"
+        assert client.get(f"/api/transactions/{credit}").json()["transfer"]["text"] == "Moved from ICICI ··7788"
+        # The 7,000 pair has no sign in either line: nothing is paired, Teach Me offers it.
+        lone_out, lone_in = _ids(conn, out.id, "debit", 7000.0), _ids(conn, inn.id, "credit", 7000.0)
+        assert client.get(f"/api/transactions/{lone_out}").json()["transfer"] is None
+        queue = {i["transaction_id"]: i for i in client.get("/api/annotations/review-queue").json()}
+        assert queue[lone_out]["suggestions"][0]["pair_with"] == lone_in
+        assert queue[lone_in]["suggestions"][0]["pair_with"] == lone_out
+
+    def test_the_existing_fixtures_pair_nothing_with_the_new_ones_or_each_other(self, api):
+        client, conn = api
+        for name in ("sample_statement", "sample_statement_nov", "sample_statement_other_bank"):
+            assert ingest_pdf(str(FIXTURES / f"{name}.pdf"), conn=conn).transfers_paired == 0

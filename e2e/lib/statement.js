@@ -20,6 +20,15 @@ export const FIXTURE_PDF_OTHER_BANK = path.resolve(here, '../../finance_copilot/
  */
 export const FIXTURE_PDF_OVERLAP = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_overlap.pdf')
 
+/**
+ * Two accounts of one person (October 2026, two fictional banks). Rs 12,000 leaves the first on the
+ * 14th with "TO OWN ACCOUNT XX1234" and lands in the second on the 15th: it pairs by itself.
+ * Rs 7,000 leaves on the 20th and lands on the 21st with nothing that says it is their own money:
+ * it does not pair, and Teach Me offers the candidate.
+ */
+export const FIXTURE_PDF_TRANSFER_OUT = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_out.pdf')
+export const FIXTURE_PDF_TRANSFER_IN = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_in.pdf')
+
 export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }

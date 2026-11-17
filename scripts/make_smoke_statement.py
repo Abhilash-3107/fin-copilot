@@ -11,6 +11,14 @@ of November, with the same running balances, and adds three payments after
 November's last one (10, 12 and 15 November). Added after both months, it brings
 only those three; added first, the months bring the rest.
 
+sample_statement_transfer_out.pdf (ICICI, account ending 7788) and
+sample_statement_transfer_in.pdf (Axis, account ending 1234) are two accounts of
+one person, October 2026. Rs 12,000 leaves the first on the 14th ("TO OWN ACCOUNT
+XX1234") and arrives in the second on the 15th: a transfer that pairs by itself.
+Rs 7,000 leaves the first on the 20th and Rs 7,000 arrives in the second on the
+21st with nothing in either line that says they are the same person's money, so
+nothing pairs and Teach Me offers the candidate.
+
 A small, entirely fictional bank statement that the generic parser accepts:
 a ruled table (pdfplumber's default lines strategy) with date / narration /
 withdrawal / deposit / balance columns whose running balance checks out on
@@ -82,6 +90,27 @@ OVERLAP_NEW_ROWS = [
 ]
 
 
+# Two accounts of one fictional person at two fictional-bank IFSCs. The numbers
+# the lines name (XX1234) are the other account's, which is what lets a pair be
+# made without asking.
+TRANSFER_OUT_ROWS = [
+    ("02/10/2026", "NEFT/ACME LABS PVT LTD/SALARY OCT", None, 90000.00),
+    ("06/10/2026", "UPI/SWIGGY/ORDER/700112233/UPI", 480.00, None),
+    ("09/10/2026", "POS/EXAMPLE BOOKSTORE BANGALORE", 650.00, None),
+    ("14/10/2026", "IMPS/TO OWN ACCOUNT XX1234/SAVINGS", 12000.00, None),
+    ("20/10/2026", "UPI/QUARTZ INFRA/700112235/DEPOSIT", 7000.00, None),
+    ("22/10/2026", "UPI/ELECTRICITY BOARD/BILL/700112234", 1730.00, None),
+]
+
+TRANSFER_IN_ROWS = [
+    ("05/10/2026", "UPI/ZEPTO/ORDER/800112233/UPI", 310.00, None),
+    ("15/10/2026", "IMPS/INWARD/400999111", None, 12000.00),
+    ("18/10/2026", "ACH/SIP/SAMPLE INDEX FUND", 2000.00, None),
+    ("21/10/2026", "UPI/HELIX TRADERS/800112234/INVOICE", None, 7000.00),
+    ("27/10/2026", "POS/EXAMPLE PHARMACY BANGALORE", 245.50, None),
+]
+
+
 def build(
     out: Path, opening: float, rows: list, period: str,
     account: str = "XXXX0000", ifsc: str | None = None,
@@ -142,6 +171,19 @@ def main() -> None:
         "01/10/2026 - 31/10/2026", account="XXXX4321", ifsc="HDFC0000123",
     )
     build_overlap(FIXTURES / "sample_statement_overlap.pdf")
+    build_transfer_pair()
+
+
+def build_transfer_pair() -> None:
+    """The two accounts of one person: a signed transfer between them and an unsigned one."""
+    build(
+        FIXTURES / "sample_statement_transfer_out.pdf", 40000.00, TRANSFER_OUT_ROWS,
+        "01/10/2026 - 31/10/2026", account="XXXX7788", ifsc="ICIC0000456",
+    )
+    build(
+        FIXTURES / "sample_statement_transfer_in.pdf", 15000.00, TRANSFER_IN_ROWS,
+        "01/10/2026 - 31/10/2026", account="XXXX1234", ifsc="UTIB0000789",
+    )
 
 
 if __name__ == "__main__":

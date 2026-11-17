@@ -3,7 +3,9 @@
 import { readFileSync } from 'node:fs'
 import { test, expect } from '../fixtures.js'
 import { open } from '../lib/ui.js'
-import { FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK, FIXTURE_PDF_OVERLAP } from '../lib/statement.js'
+import {
+  FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK, FIXTURE_PDF_OVERLAP, FIXTURE_PDF_TRANSFER_IN, FIXTURE_PDF_TRANSFER_OUT,
+} from '../lib/statement.js'
 
 async function drop(page, files) {
   await open(page, '/upload')
@@ -459,5 +461,124 @@ test.describe('J3 overlapping statements', () => {
     expect(moved.account_id).toBe(first.id)
     const everything = asPayments(await app.api.get('/transactions'))
     expect(new Set(everything).size).toBe(everything.length)
+  })
+})
+
+// Two accounts of one person: a transfer between them is not spending. No model, so
+// what pairing does not settle is left for Teach Me.
+test.describe('J3 a transfer between your own accounts', () => {
+  test.use({ modelMode: 'none' })
+
+  const both = [FIXTURE_PDF_TRANSFER_OUT, FIXTURE_PDF_TRANSFER_IN]
+  const rows = (app) => app.api.get('/transactions?include=annotation&limit=1000')
+  const byAmount = (all, dc, amount) => all.find((t) => t.debit_credit === dc && t.amount === amount)
+
+  test('the pair is made when the second statement lands, says so on both rows, and stays out of Out', async ({ page, app }) => {
+    await drop(page, both)
+    await expect(fileRow(page, 'sample_statement_transfer_out.pdf')).toContainText('Added to a new account, ICICI ··7788.')
+    await expect(fileRow(page, 'sample_statement_transfer_in.pdf')).toContainText('Added to a new account, Axis ··1234.')
+    // Only the second file finds the other side, and it says how many.
+    await expect(fileRow(page, 'sample_statement_transfer_in.pdf')).toContainText('1 transfer paired with your other accounts')
+    await expect(fileRow(page, 'sample_statement_transfer_out.pdf')).not.toContainText('paired with your other accounts')
+
+    const all = await rows(app)
+    const out = byAmount(all, 'debit', 12000)
+    const inn = byAmount(all, 'credit', 12000)
+    expect(out.transfer).toMatchObject({ direction: 'to', account_label: 'Axis ··1234', text: 'Moved to Axis ··1234' })
+    expect(inn.transfer).toMatchObject({ direction: 'from', account_label: 'ICICI ··7788', text: 'Moved from ICICI ··7788' })
+    expect([out.category, out.source, inn.category, inn.source]).toEqual(['Self Transfers', 'pair', 'Self Transfers', 'pair'])
+
+    // In and Out leave it out: Out is the other payments' debits, In the other credits.
+    const spent = all
+      .filter((t) => t.debit_credit === 'debit' && !['Self Transfers', 'Investments'].includes(t.category))
+      .reduce((sum, t) => sum + t.amount, 0)
+    const earned = all.filter((t) => t.debit_credit === 'credit' && t.category !== 'Self Transfers').reduce((sum, t) => sum + t.amount, 0)
+    const { verdict } = await app.api.get('/insights?month=2026-10')
+    expect(verdict.money_out).toBeCloseTo(spent, 2)
+    expect(verdict.money_in).toBeCloseTo(earned, 2)
+    expect(verdict.money_out, 'the 12,000 is not spending').toBeLessThan(spent + 12000)
+
+    // The ledger says it on both rows, in words.
+    await open(page, '/transactions')
+    await page.getByRole('combobox').first().selectOption({ label: 'All statements' })
+    await expect(page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' })).toHaveCount(1)
+    await expect(page.getByRole('row').filter({ hasText: 'Moved from ICICI ··7788' })).toHaveCount(1)
+  })
+
+  test('Unpair takes both payments back to Teach Me, and Undo pairs them again', async ({ page, app }) => {
+    await drop(page, both)
+    await expect(fileRow(page, 'sample_statement_transfer_in.pdf')).toContainText('1 transfer paired')
+    await open(page, '/transactions')
+    await page.getByRole('combobox').first().selectOption({ label: 'All statements' })
+    await page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' }).click()
+
+    const panel = page.locator('aside').filter({ hasText: 'As printed on the statement' })
+    await expect(panel).toContainText('Paired with the payment on 15 Oct in Axis ··1234. Not counted as spending or income.')
+    await panel.getByRole('button', { name: 'Unpair' }).click()
+    await expect(panel.getByRole('button', { name: 'Unpair' })).toHaveCount(0)
+    await expect(panel).toContainText('Sort this payment')
+    const toast = page.getByRole('status').filter({ hasText: 'Unpaired. Both payments are waiting in Teach Me.' })
+    await expect(toast).toBeVisible()
+
+    let all = await rows(app)
+    expect(byAmount(all, 'debit', 12000).transfer).toBeNull()
+    expect(byAmount(all, 'credit', 12000).category ?? null).toBeNull()
+    const queue = (await app.api.get('/annotations/review-queue')).map((q) => q.transaction_id)
+    expect(queue).toEqual(expect.arrayContaining([byAmount(all, 'debit', 12000).id, byAmount(all, 'credit', 12000).id]))
+    // The row no longer says it moved, and Out counts the 12,000 again until it is sorted.
+    await expect(page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' })).toHaveCount(0)
+    expect(await app.api.get('/insights?month=2026-10').then((i) => i.verdict.money_out)).toBeGreaterThanOrEqual(12000)
+
+    await toast.getByRole('button', { name: 'Undo' }).click()
+    await expect(panel).toContainText('Paired with the payment on 15 Oct in Axis ··1234.')
+    await expect(page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' })).toHaveCount(1)
+    all = await rows(app)
+    expect(byAmount(all, 'debit', 12000).source).toBe('pair')
+  })
+
+  test('a same-amount pair with no sign is offered in Teach Me and paired from the keyboard', async ({ page, app }) => {
+    await drop(page, both)
+    await expect(fileRow(page, 'sample_statement_transfer_in.pdf')).toContainText('1 transfer paired')
+    const all = await rows(app)
+    const lone = byAmount(all, 'debit', 7000)
+    expect(lone.transfer, 'nothing pairs without a sign').toBeNull()
+
+    await open(page, '/review')
+    // Skip to the 7,000 payment to Quartz Infra; the other cards are not this journey's business.
+    const quartz = page.getByRole('group', { name: /^Payment to .*quartz infra/i })
+    const anyCard = page.getByRole('group', { name: /^Payment to / })
+    await expect(anyCard).toBeVisible()
+    for (let i = 0; i < 12; i++) {
+      const label = await anyCard.getAttribute('aria-label')
+      if (/quartz infra/i.test(label)) break
+      await page.keyboard.press('s')
+      await expect(anyCard).not.toHaveAttribute('aria-label', label)
+    }
+    await expect(quartz).toBeVisible()
+
+    const candidate = page.getByRole('button', { name: /Moved to Axis ··1234, 21 Oct/ })
+    await expect(candidate).toBeVisible()
+    await expect(candidate).toContainText('Same amount, 1 day apart')
+    await page.keyboard.press('1')
+    await expect(candidate).toHaveAttribute('aria-pressed', 'true')
+    // Choosing is not answering.
+    expect((await rows(app)).find((t) => t.id === lone.id).transfer).toBeNull()
+
+    await page.keyboard.press('Enter')
+    const toast = page.getByRole('status').filter({ hasText: 'Moved to Axis ··1234. Paired, so neither counts as spending or income.' })
+    await expect(toast).toBeVisible()
+    const after = await rows(app)
+    const partner = byAmount(after, 'credit', 7000)
+    expect(after.find((t) => t.id === lone.id).transfer).toMatchObject({ transaction_id: partner.id, text: 'Moved to Axis ··1234' })
+    expect([partner.category, partner.source]).toEqual(['Self Transfers', 'pair'])
+    // The other side left the list with it.
+    const queue = (await app.api.get('/annotations/review-queue')).map((q) => q.transaction_id)
+    expect(queue).not.toContain(lone.id)
+    expect(queue).not.toContain(partner.id)
+
+    // Z takes it back: both are unpaired and waiting again.
+    await page.keyboard.press('z')
+    await expect(quartz).toBeVisible()
+    expect((await rows(app)).find((t) => t.id === lone.id).transfer).toBeNull()
   })
 })
