@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 
@@ -118,12 +118,59 @@ describe('Transactions', () => {
     localStorage.setItem('fc_period_month', 'all')
     renderPage()
     const statementSelect = (await screen.findAllByRole('combobox'))[0]
-    await waitFor(() => expect(statementSelect).toHaveValue(''))
+    // Wait for the statements to arrive (the select gains its two statements) so
+    // the check below runs against the settled page, not the one before they load.
+    await waitFor(() => expect(within(statementSelect).getAllByRole('option')).toHaveLength(1 + STATEMENTS.length))
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(statementSelect).toHaveValue('')
     expect(statementSelect).toHaveDisplayValue('All statements')
-    await waitFor(() => {
-      const last = callsTo('/transactions?').at(-1)
-      expect(last).not.toMatch(/statement_id=/)
-      expect(last).not.toMatch(/month=/)
+    const last = callsTo('/transactions?').at(-1)
+    expect(last).not.toMatch(/statement_id=/)
+    expect(last).not.toMatch(/month=/)
+  })
+
+  // The statements arrive after the page is up. Whatever period the user already
+  // holds (All time, or a month) is theirs: the newest statement the context picks
+  // as a default must not scope a list, a summary or the select, even for a moment.
+  describe('statements that arrive after the period is chosen', () => {
+    function holdStatements() {
+      let release
+      const gate = new Promise(resolve => { release = () => resolve(STATEMENTS) })
+      const fallback = mockApi.get.getMockImplementation()
+      mockApi.get.mockImplementation(path => (path === '/statements' ? gate : fallback(path)))
+      return release
+    }
+    const scopedCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => /statement_id=/.test(p))
+
+    it('All time chosen before they load is never overridden by the newest statement', async () => {
+      localStorage.setItem('fc_period_month', 'all')
+      const release = holdStatements()
+      renderPage()
+      const [statementSelect, periodSelect] = await screen.findAllByRole('combobox')
+      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
+      expect(periodSelect).toHaveValue('all')
+
+      await act(async () => { release() })
+      await waitFor(() => expect(within(statementSelect).getAllByRole('option')).toHaveLength(1 + STATEMENTS.length))
+      await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+      expect(statementSelect).toHaveValue('')
+      expect(periodSelect).toHaveValue('all')
+      expect(scopedCalls()).toEqual([])
+    })
+
+    it('a month chosen before they load keeps its month and is not also scoped to the newest statement', async () => {
+      localStorage.setItem('fc_period_month', '2026-10')
+      const release = holdStatements()
+      renderPage()
+      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
+
+      await act(async () => { release() })
+      await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/month=2026-10/))
+      await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+      expect(screen.getAllByRole('combobox')[1]).toHaveValue('2026-10')
+      expect(scopedCalls().filter(p => /statement_id=s2/.test(p))).toEqual([])
     })
   })
 
