@@ -414,7 +414,7 @@ class TestMovingAStatement:
         # Not the user's decision about the pair, so nothing is remembered ...
         assert conn.execute("SELECT COUNT(*) FROM transfer_unpaired").fetchone()[0] == 0
         # ... and putting the statement in an account of its own makes them a transfer again.
-        assert client.patch(f"/api/statements/{s.id}", json={"new_account": True}).status_code == 200
+        assert client.patch(f"/api/statements/{s.id}", json={"new_account": True, "name": "Joint"}).status_code == 200
         assert conn.execute("SELECT COUNT(*) FROM transaction_links WHERE link_type = 'transfer'").fetchone()[0] == 1
 
 
