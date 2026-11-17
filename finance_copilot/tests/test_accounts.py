@@ -284,6 +284,25 @@ class TestFixtures:
         assert (label["bank_name"], label["account_ref"]) == ("generic", "XXXX0000")
         assert account_label(None, label["bank_name"], label["account_ref"]) == "Bank ··0000"
 
+    def test_the_other_bank_fixture_is_its_own_account_with_a_full_month_printed(self):
+        conn = _make_conn()
+        first = ingest_pdf(str(FIXTURES / "sample_statement.pdf"), conn=conn)
+        other = ingest_pdf(str(FIXTURES / "sample_statement_other_bank.pdf"), conn=conn)
+        assert other.account_id != first.account_id
+        row = conn.execute(
+            "SELECT s.bank_name, s.period_start, s.period_end, s.printed_start, s.printed_end, "
+            "a.bank_name AS account_bank, a.account_ref FROM statements s "
+            "JOIN accounts a ON a.id = s.account_id WHERE s.id = ?", (other.id,)
+        ).fetchone()
+        assert row["bank_name"] == "hdfc (auto)"
+        assert (row["account_bank"], row["account_ref"]) == ("hdfc", "XXXX4321")
+        assert account_label(None, row["account_bank"], row["account_ref"]) == "HDFC ··4321"
+        # The month is printed in full; the payments stop on the 12th.
+        assert (row["printed_start"], row["printed_end"]) == ("2026-10-01", "2026-10-31")
+        assert (row["period_start"], row["period_end"]) == ("2026-10-02", "2026-10-12")
+        # Opening 60,000, six payments, balanced: no continuity warning against the first account.
+        assert check_continuity(conn, other) == []
+
 
 # --- the routes -------------------------------------------------------------
 

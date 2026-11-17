@@ -578,6 +578,62 @@
         "active": true
       },
       "reason": "The same row under its new name. Its amount, cadence and category are unchanged, which the journey checks for every recurring row: a name may change in case and nothing else."
+    },
+    {
+      "id": "stored-statements-account",
+      "scope": "stored",
+      "path": [
+        "statements[*].account_id",
+        "statements[*].account_label",
+        "statements[*].printed_start",
+        "statements[*].printed_end"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Every statement now belongs to an account, found by the bank and the account number printed on the statement, and carries the account's name as the app words it (the bank and the last four digits until you name it). The period a statement prints in its header is kept beside the dates of its first and last payment; statements added before it existed have none, so it starts empty."
+    },
+    {
+      "id": "stored-accounts-readable",
+      "scope": "stored",
+      "path": "accounts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "reason": "0.1.2 has no accounts to read. The upgraded ledger has one account for each bank (and each account number a bank printed), made from its existing statements, with no name until you give one."
+    },
+    {
+      "id": "stored-accounts-table",
+      "scope": "stored",
+      "path": "schema.tableRows.accounts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "reason": "Migration 041 adds the table that holds your accounts and fills it from the statements you already have."
+    },
+    {
+      "id": "stored-column-statement-account",
+      "scope": "stored",
+      "path": [
+        "schema.addedColumns[statements_account_id]",
+        "schema.addedColumns[statements_printed_start]",
+        "schema.addedColumns[statements_printed_end]"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 041 gives each statement the account it belongs to and the period it prints."
+    },
+    {
+      "id": "stored-migration-041",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[041_accounts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 041 adds accounts. It runs once, on the first start of the new release."
     }
   ]
 }

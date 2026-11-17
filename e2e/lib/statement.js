@@ -10,6 +10,9 @@ export const FIXTURE_PDF = path.resolve(here, '../../finance_copilot/tests/fixtu
 /** The same bank and account a month later: 8 rows, balanced, opens where October closes. */
 export const FIXTURE_PDF_NOV = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_nov.pdf')
 
+/** A second account at another bank: October 2026, six payments, balanced; its header prints the whole month. */
+export const FIXTURE_PDF_OTHER_BANK = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_other_bank.pdf')
+
 export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }

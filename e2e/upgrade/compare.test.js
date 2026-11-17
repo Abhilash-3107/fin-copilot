@@ -21,7 +21,7 @@ const MIGRATIONS = [
   '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
   '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
   '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
-  '039_annotation_job_scope', '040_annotation_job_attempts',
+  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts',
 ]
 const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
 
@@ -61,6 +61,7 @@ function ledgerBefore() {
   ]
   const facts = {
     statements: [{ id: 's', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 }],
+    accounts: null,
     transactions,
     groups: [{ id: 'g1', members: [member(transactions[0]), member(transactions[5]), member(transactions[6])] }],
     annotationCategoryIds: transactions
@@ -83,7 +84,7 @@ function ledgerBefore() {
     settings: { config: { dev_mode: false, confidence_threshold: 0.85 }, llm: {} },
     schema: {
       appliedMigrations: ['026_user_rules'],
-      tableRows: { payee_names: null, review_undo: null },
+      tableRows: { payee_names: null, review_undo: null, accounts: null },
       addedColumns: [],
       jobAttempts: [{ id: 'job1', attempts: null }],
     },
@@ -147,12 +148,22 @@ function upgrade(before) {
     const t = byId[m.id]
     for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) m[field] = t[field]
   }
-  facts.statements = facts.statements.map(({ id, txn_count }) => ({ id, txn_count, sorted_count: sortedPayments(facts.transactions) }))
+  facts.statements = facts.statements.map(({ id, txn_count }) => ({
+    id, txn_count, sorted_count: sortedPayments(facts.transactions),
+    account_id: 'acc_s', account_label: 'Bank ··0000', printed_start: null, printed_end: null,
+  }))
+  facts.accounts = [{
+    id: 'acc_s', account_label: 'Bank ··0000', name: null, bank_name: 'generic', account_ref_last4: '0000', statement_count: 1,
+    first_date: '2026-08-02', last_date: '2026-08-02', balance: 0, balance_as_of: '2026-08-02',
+  }]
   facts.learnedRules[0].payee = 'RAHUL'
   facts.schema = {
     appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
-    tableRows: { payee_names: 0, review_undo: 0 },
-    addedColumns: ['transactions.display_name', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts'],
+    tableRows: { payee_names: 0, review_undo: 0, accounts: 1 },
+    addedColumns: [
+      'transactions.display_name', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
+      'statements.account_id', 'statements.printed_start', 'statements.printed_end',
+    ],
     jobAttempts: [{ id: 'job1', attempts: 0 }],
   }
 
@@ -279,6 +290,22 @@ const regressions = {
   'Teach Me newly holds a payment that had a category': [
     (a) => a.facts.reviewQueue.push('R5'),
     /Teach Me newly holds payment R5/,
+  ],
+  'a statement names an account that is not there': [
+    (a) => (a.facts.statements[0].account_id = 'acc_gone'),
+    /statement s belongs to account acc_gone, which is not in the ledger/,
+  ],
+  'an account holds no statement': [
+    (a) => a.facts.accounts.push({ ...a.facts.accounts[0], id: 'acc_empty' }),
+    /account acc_empty holds no statement/,
+  ],
+  'an account miscounts its statements': [
+    (a) => (a.facts.accounts[0].statement_count = 3),
+    /account acc_s says it has 3 statements, 1 belong to it/,
+  ],
+  'an account is shown by its whole number': [
+    (a) => (a.facts.accounts[0].account_label = 'Bank 3250508074'),
+    /account acc_s shows more than the last four digits of its number/,
   ],
   'a statement counts an unsorted payment as sorted': [
     (a) => (a.facts.statements[0].sorted_count += 1),

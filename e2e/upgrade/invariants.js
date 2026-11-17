@@ -291,9 +291,40 @@ function topPayeesAreNamedLikeTheirPayments(before, after) {
   return problems
 }
 
+/**
+ * Migration 041 puts every statement in an account: each statement names an account
+ * that exists, no account is empty, the counts add up, and the label an account is
+ * shown by never carries a full account number (only the last four digits).
+ */
+function accountsHoldEveryStatement(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts) return []
+  const problems = []
+  const byId = new Map(accounts.map((a) => [a.id, a]))
+  const held = new Map()
+  for (const s of after.facts.statements) {
+    const account = byId.get(s.account_id)
+    if (!account) {
+      problems.push(`statement ${s.id} belongs to account ${s.account_id}, which is not in the ledger`)
+      continue
+    }
+    held.set(account.id, (held.get(account.id) ?? 0) + 1)
+    if (s.account_label !== account.account_label) {
+      problems.push(`statement ${s.id} calls its account "${s.account_label}", the account is called "${account.account_label}"`)
+    }
+  }
+  for (const a of accounts) {
+    if ((held.get(a.id) ?? 0) === 0) problems.push(`account ${a.id} holds no statement`)
+    else if (a.statement_count !== held.get(a.id)) problems.push(`account ${a.id} says it has ${a.statement_count} statements, ${held.get(a.id)} belong to it`)
+    if (/\d{5,}/.test(a.account_label) || (a.account_ref_last4 ?? '').length > 4) problems.push(`account ${a.id} shows more than the last four digits of its number`)
+  }
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
+    ...accountsHoldEveryStatement(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),

@@ -2,6 +2,9 @@
 
 sample_statement.pdf is October 2026; sample_statement_nov.pdf is November 2026
 and opens on October's closing balance, so uploading both raises no gap warning.
+sample_statement_other_bank.pdf is a second account at another bank (its IFSC
+names HDFC), October 2026, whose printed period covers the whole month although
+its last payment is on the 12th.
 
 A small, entirely fictional bank statement that the generic parser accepts:
 a ruled table (pdfplumber's default lines strategy) with date / narration /
@@ -55,7 +58,20 @@ NOV_ROWS = [
 ]
 
 
-def build(out: Path, opening: float, rows: list, period: str) -> float:
+OTHER_BANK_ROWS = [
+    ("02/10/2026", "UPI/SWIGGY/ORDER/600112233/UPI", 530.00, None),
+    ("03/10/2026", "NEFT/ORBIT CONSULTING LLP/FEES OCT", None, 42000.00),
+    ("05/10/2026", "UPI/BMRCL METRO/RECHARGE/600112234", 300.00, None),
+    ("08/10/2026", "POS/EXAMPLE PHARMACY BANGALORE", 215.50, None),
+    ("10/10/2026", "UPI/RAHUL MEHTA/600112235/TICKETS", 1200.00, None),
+    ("12/10/2026", "ACH/SIP/SAMPLE INDEX FUND", 3000.00, None),
+]
+
+
+def build(
+    out: Path, opening: float, rows: list, period: str,
+    account: str = "XXXX0000", ifsc: str | None = None,
+) -> float:
     """Write one statement PDF and return its closing balance."""
     styles = getSampleStyleSheet()
     data = [["Date", "Narration", "Withdrawal", "Deposit", "Balance"]]
@@ -80,7 +96,12 @@ def build(out: Path, opening: float, rows: list, period: str) -> float:
     doc = SimpleDocTemplate(str(out), pagesize=A4, title="Sample statement (fictional)")
     doc.build([
         Paragraph("Example Bank - Statement of Account (fictional test data)", styles["Title"]),
-        Paragraph(f"Account: XXXX0000 &nbsp; Period: {period} &nbsp; Opening balance: {opening:,.2f}", styles["Normal"]),
+        Paragraph(
+            f"Account: {account} &nbsp; "
+            + (f"IFSC: {ifsc} &nbsp; " if ifsc else "")
+            + f"Period: {period} &nbsp; Opening balance: {opening:,.2f}",
+            styles["Normal"],
+        ),
         Spacer(1, 12),
         table,
     ])
@@ -91,6 +112,10 @@ def build(out: Path, opening: float, rows: list, period: str) -> float:
 def main() -> None:
     closing = build(FIXTURES / "sample_statement.pdf", OPENING, ROWS, "01/10/2026 - 08/10/2026")
     build(FIXTURES / "sample_statement_nov.pdf", closing, NOV_ROWS, "01/11/2026 - 08/11/2026")
+    build(
+        FIXTURES / "sample_statement_other_bank.pdf", 60000.00, OTHER_BANK_ROWS,
+        "01/10/2026 - 31/10/2026", account="XXXX4321", ifsc="HDFC0000123",
+    )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { test, expect } from '../fixtures.js'
 import { open } from '../lib/ui.js'
-import { FIXTURE_PDF, FIXTURE_PDF_NOV } from '../lib/statement.js'
+import { FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK } from '../lib/statement.js'
 
 async function drop(page, files) {
   await open(page, '/upload')
@@ -15,7 +15,8 @@ const asUpload = (name, path) => ({ name, mimeType: 'application/pdf', buffer: r
 const fileRow = (page, name) => page.getByRole('listitem').filter({ hasText: name })
 // The toast live region is also a status, so pick the drop's own summary.
 const summaryOf = (page) => page.getByRole('status').filter({ hasText: 'Finished:' })
-const statementRows = (page) => page.getByRole('row').filter({ hasText: 'generic' })
+// The fixture header has no bank name, so its account reads "Bank" and the last digits of its number.
+const statementRows = (page) => page.getByRole('row').filter({ hasText: 'Bank ··0000' })
 
 test.describe('J3 add a statement', () => {
   test('the page says what it supports before the first upload', async ({ page }) => {
@@ -49,7 +50,7 @@ test.describe('J3 add a statement', () => {
     await expect(row.getByRole('button', { name: /Sort again/ })).toBeVisible()
     await expect(page.getByText(/memory|rebuild/i)).toHaveCount(0)
     await row.getByRole('button', { name: /^More for / }).click()
-    await expect(page.getByRole('menuitem')).toHaveText(['Rename', 'Start over', 'Delete'])
+    await expect(page.getByRole('menuitem')).toHaveText(['Name this account', 'Start over', 'Delete'])
     // The keys work: Escape closes the menu and puts focus back on its button.
     await page.keyboard.press('Escape')
     await expect(page.getByRole('menu')).toHaveCount(0)
@@ -216,5 +217,91 @@ test.describe('J3 with no model connected', () => {
     expect(unsorted.length, 'rows nobody decided').toBeGreaterThan(0)
     await summary.getByRole('link', { name: /Teach Me/ }).click()
     await expect(page.getByText(new RegExp(`0\\s*/\\s*\\d+`))).toBeVisible()
+  })
+})
+
+test.describe('J3 accounts', () => {
+  const accountRows = (page) => page.getByRole('row').filter({ has: page.getByRole('button', { name: /^More for / }) })
+  const picker = (page) => page.getByRole('combobox').first()
+
+  test('a statement lands in a new account that can be named on its row, and the name follows it to Transactions', async ({ page, app }) => {
+    await drop(page, FIXTURE_PDF)
+    const row = fileRow(page, 'sample_statement.pdf')
+    await expect(row).toContainText('Added to a new account, Bank ··0000.')
+
+    await row.getByRole('button', { name: 'Name it' }).click()
+    const name = row.getByRole('textbox', { name: 'Name this account' })
+    await expect(name).toBeFocused()
+    await name.fill('Salary account')
+    await name.press('Enter')
+    await expect(row).toContainText('Added to a new account, Salary account.')
+    await expect(row.getByRole('button', { name: 'Name it' })).toHaveCount(0)
+
+    // The list says it too, and so does the server.
+    await expect(page.getByRole('row').filter({ hasText: 'Salary account' })).toHaveCount(1)
+    const [account] = await app.api.get('/accounts')
+    expect(account).toMatchObject({ name: 'Salary account', account_label: 'Salary account', account_ref_last4: '0000', statement_count: 1 })
+    expect(JSON.stringify(account)).not.toContain('XXXX0000')
+
+    // Move on inside the app, without a reload: the picker already has the new name.
+    await page.getByRole('link', { name: 'Transactions' }).first().click()
+    await expect(page.getByRole('button', { name: 'Sort again' })).toBeVisible()
+    await expect(picker(page).locator('option')).toHaveText(['All statements', 'Salary account - Oct 2026'])
+  })
+
+  test('naming is cancelled with Escape and saves nothing', async ({ page, app }) => {
+    await drop(page, FIXTURE_PDF)
+    const row = fileRow(page, 'sample_statement.pdf')
+    await row.getByRole('button', { name: 'Name it' }).click()
+    const name = row.getByRole('textbox', { name: 'Name this account' })
+    await name.fill('Never saved')
+    await name.press('Escape')
+    await expect(name).toHaveCount(0)
+    await expect(row).toContainText('Added to a new account, Bank ··0000.')
+    const [account] = await app.api.get('/accounts')
+    expect(account.name).toBeNull()
+  })
+
+  test('the next statement of a named account says so, and there is still one account', async ({ page, app }) => {
+    await drop(page, FIXTURE_PDF)
+    await fileRow(page, 'sample_statement.pdf').getByRole('button', { name: 'Name it' }).click()
+    await page.getByRole('textbox', { name: 'Name this account' }).fill('Salary account')
+    await page.keyboard.press('Enter')
+    await expect(summaryOf(page)).toContainText('Finished:')
+
+    await drop(page, FIXTURE_PDF_NOV)
+    await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Added to Salary account')
+    await expect(fileRow(page, 'sample_statement_nov.pdf').getByRole('button', { name: 'Name it' })).toHaveCount(0)
+    expect(await app.api.get('/accounts')).toHaveLength(1)
+    const list = page.getByText('Your accounts').locator('..')
+    await expect(list).toContainText('Salary account')
+    await expect(list).toContainText('2 statements')
+    // The latest closing balance, with the day it is as of.
+    await expect(list).toContainText(/₹[\d,]+ as of 8 Nov 2026/)
+  })
+
+  test('a statement from another bank is its own account, and can be moved between accounts', async ({ page, app }) => {
+    await drop(page, [FIXTURE_PDF, FIXTURE_PDF_OTHER_BANK])
+    await expect(summaryOf(page)).toContainText('Finished:')
+    await expect(fileRow(page, 'sample_statement.pdf')).toContainText('Added to a new account, Bank ··0000.')
+    await expect(fileRow(page, 'sample_statement_other_bank.pdf')).toContainText('Added to a new account, HDFC ··4321.')
+
+    const accounts = await app.api.get('/accounts')
+    expect(accounts.map((a) => a.account_label).sort()).toEqual(['Bank ··0000', 'HDFC ··4321'])
+    const statements = await app.api.get('/statements')
+    const other = statements.find((s) => s.account_label === 'HDFC ··4321')
+    // The header prints the whole month; the payments stop on the 12th.
+    expect([other.printed_start, other.printed_end]).toEqual(['2026-10-01', '2026-10-31'])
+    expect([other.period_start, other.period_end]).toEqual(['2026-10-02', '2026-10-12'])
+
+    // Move the other bank's statement into the first account: the emptied account goes away.
+    await accountRows(page).filter({ hasText: 'HDFC ··4321' }).getByRole('button', { name: /^More for / }).click()
+    await page.getByRole('menuitem', { name: 'Move to account…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Move to account' })
+    await expect(dialog.getByRole('button', { name: 'HDFC ··4321' })).toHaveCount(0)
+    await dialog.getByRole('button', { name: 'Bank ··0000' }).click()
+    await expect(accountRows(page).filter({ hasText: 'HDFC ··4321' })).toHaveCount(0)
+    await expect(accountRows(page).filter({ hasText: 'Bank ··0000' })).toHaveCount(2)
+    expect((await app.api.get('/accounts')).map((a) => a.account_label)).toEqual(['Bank ··0000'])
   })
 })

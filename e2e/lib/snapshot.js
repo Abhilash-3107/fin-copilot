@@ -22,10 +22,12 @@ export const VOLATILE = [
  * journey. A version not listed here is read through the current shape, so a
  * new release needs no entry until its API changes again.
  *
- * 0.1.2 has no /policies, no /categories/tidy-up and no
+ * 0.1.2 has no /policies, no /categories/tidy-up, no /accounts and no
  * /annotations/review-queue/counts (the set-aside figure is /snoozed-count).
+ * 0.2.0 has all of those but /accounts.
  */
 const LEGACY_0_1_2 = '0.1.2'
+const RELEASE_WITHOUT_ACCOUNTS = '0.2.0'
 
 const PAGE = 1000
 
@@ -55,14 +57,16 @@ async function releaseSpecificReads(api, version) {
   if (version === LEGACY_0_1_2) {
     const { count } = await api.get('/annotations/review-queue/snoozed-count')
     // What the release cannot report is null, so a later release that can shows as a change.
-    return { policies: null, tidyUp: null, queueCounts: { set_aside: count } }
+    return { policies: null, tidyUp: null, queueCounts: { set_aside: count }, accounts: null }
   }
-  const [policies, tidyUp, queueCounts] = await Promise.all([
+  const [policies, tidyUp, queueCounts, accounts] = await Promise.all([
     api.get('/policies'),
     api.get('/categories/tidy-up'),
     api.get('/annotations/review-queue/counts'),
+    // 0.2.0 has everything above and no accounts.
+    version === RELEASE_WITHOUT_ACCOUNTS ? null : api.get('/accounts'),
   ])
-  return { policies, tidyUp, queueCounts }
+  return { policies, tidyUp, queueCounts, accounts }
 }
 
 /**
@@ -87,11 +91,14 @@ export async function storedFacts(api, { ignore = [], version } = {}) {
       api.get('/annotations/review-queue'),
       releaseSpecificReads(api, version),
     ])
-  const { policies, tidyUp, queueCounts } = specific
+  const { policies, tidyUp, queueCounts, accounts } = specific
   const groups = await Promise.all(groupList.map(({ id }) => api.get(`/groups/${id}`)))
 
   const facts = {
     statements: statements.sort(byId),
+    // Where money sits: what each statement belongs to, and what the user called it.
+    // null where the release has no accounts, so a release that has them shows as a change.
+    accounts: accounts === null ? null : accounts.sort(byId),
     transactions: transactions.sort(byId),
     people: people.sort(byId),
     groups: groups.map((g) => ({ ...g, members: [...g.members].sort((a, b) => (a.transaction_id < b.transaction_id ? -1 : 1)) })).sort(byId),
