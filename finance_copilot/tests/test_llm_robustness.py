@@ -944,3 +944,72 @@ class TestNoWriteLockAcrossSlowCalls:
         assert seen == [False, False, False]
         assert result.llm_annotated == 3
         conn.close()
+
+
+class TestRefusedSettings:
+    """OpenAI reasoning models refuse `max_tokens` and temperature 0 with a 400
+    that names the setting; the client resends in the accepted form and
+    remembers it for that endpoint and model."""
+
+    _OPENAI_URL = "https://api.example.com/v1/chat/completions"
+
+    @pytest.fixture(autouse=True)
+    def _openai(self, monkeypatch):
+        from finance_copilot.pipeline import llm
+
+        monkeypatch.setattr(settings, "llm_provider", "openai")
+        monkeypatch.setattr(settings, "llm_base_url", "https://api.example.com/v1")
+        monkeypatch.setattr(settings, "llm_api_key", "k")
+        monkeypatch.setattr(settings, "llm_model", "reasoner")
+        monkeypatch.setattr(llm, "_REFUSED_SETTINGS", {})
+
+    @staticmethod
+    def _refused(param: str, code: str) -> httpx.Response:
+        return _resp(400, {"error": {"message": f"{param} refused", "type": "invalid_request_error",
+                                     "param": param, "code": code}})
+
+    @staticmethod
+    def _openai_ok() -> httpx.Response:
+        content = json.dumps({"category": "Shopping", "confidence": 0.8})
+        return _resp(200, {"choices": [{"message": {"content": content}}]})
+
+    def test_refused_settings_are_fixed_and_remembered(self):
+        side = [self._refused("max_tokens", "unsupported_parameter"),
+                self._refused("temperature", "unsupported_value"),
+                self._openai_ok(),
+                self._openai_ok()]
+        with patch("httpx.post", side_effect=side) as p, patch("time.sleep") as sleep:
+            assert annotate_transaction_llm(_TXN, _CATS).category == "Shopping"
+            assert annotate_transaction_llm(_TXN, _CATS).category == "Shopping"
+        assert p.call_count == 4  # two refusals, then one request per row
+        sleep.assert_not_called()
+        for call in p.call_args_list[2:]:
+            sent = call.kwargs["json"]
+            assert "max_tokens" not in sent and "temperature" not in sent
+            assert sent["max_completion_tokens"] == 512 and sent["seed"] == 42
+        assert p.call_args_list[0].args[0] == self._OPENAI_URL
+
+    def test_memory_is_per_model(self, monkeypatch):
+        side = [self._refused("temperature", "unsupported_value"), self._openai_ok(), self._openai_ok()]
+        with patch("httpx.post", side_effect=side) as p:
+            annotate_transaction_llm(_TXN, _CATS)
+            monkeypatch.setattr(settings, "llm_model", "classic")
+            annotate_transaction_llm(_TXN, _CATS)
+        assert p.call_args_list[-1].kwargs["json"]["temperature"] == 0
+
+    @pytest.mark.parametrize("body", [
+        {"error": {"message": "bad", "param": "messages", "code": "unsupported_parameter"}},
+        {"error": {"message": "context_length_exceeded", "param": "max_tokens", "code": "context_length_exceeded"}},
+        {"error": "max_tokens refused"},
+    ])
+    def test_unknown_refusal_still_rejects_the_request(self, body):
+        with patch("httpx.post", return_value=_resp(400, body)) as p, pytest.raises(LLMRequestRejected):
+            annotate_transaction_llm(_TXN, _CATS)
+        assert p.call_count == 1
+
+    def test_a_setting_refused_again_after_its_fix_is_not_resent(self):
+        """A server that keeps naming the same setting can't loop the client."""
+        refused = self._refused("temperature", "unsupported_value")
+        with patch("httpx.post", return_value=refused) as p, pytest.raises(LLMRequestRejected):
+            annotate_transaction_llm(_TXN, _CATS)
+        assert p.call_count == 2

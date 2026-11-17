@@ -174,7 +174,13 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
         "name": name,
         "n": n,
         "settings": {
-            "ollama_model": settings.ollama_model,
+            "llm_provider": settings.llm_provider,
+            # The model that answered, whichever provider served it.
+            "llm_model": {
+                "openai": settings.llm_model,
+                "local": settings.local_llm_model,
+                "ollama": settings.ollama_model,
+            }.get(settings.llm_provider),
             "ollama_num_ctx": settings.ollama_num_ctx,
             "llm_logprob_confidence": settings.llm_logprob_confidence,
         },

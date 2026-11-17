@@ -137,6 +137,11 @@ def _post_chat(
         read = max(0.1, min(settings.llm_timeout_s, deadline - time.monotonic()))
         timeout = httpx.Timeout(read, connect=min(_CONNECT_TIMEOUT_S, read))
         response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        # A model that refuses one of our settings by name gets the request
+        # again in the form it accepts. Each fix removes the refused setting,
+        # so this resends at most once per known fix.
+        while response.status_code == 400 and _learn_refused_setting(url, payload, response, log_prefix):
+            response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
         response.raise_for_status()
         return response
 
@@ -179,6 +184,47 @@ def _post_chat(
         after = f" after {tries} attempt(s)" if _is_transient(e) else ""
         raise LLMUnavailableError(f"can't reach the provider{after}: {type(e).__name__}: {e}") from e
     return response.json()
+
+
+# Request settings a model refused, per (chat URL, model), learned from the
+# provider's own 400s. OpenAI's reasoning models reject `max_tokens` (they take
+# `max_completion_tokens`) and any temperature but the default, and the error
+# body names the setting. The first refusal teaches the fix; later calls send
+# the accepted form straight away. Process-local: after a restart one extra
+# request re-learns it.
+_REFUSED_SETTINGS: dict[tuple[str, str], set[str]] = {}
+
+
+def _apply_setting_fix(payload: dict, setting: str) -> bool:
+    """Rewrite `payload` without the refused `setting`. False when there is no
+    known fix, or it is applied already."""
+    if setting == "max_tokens" and "max_tokens" in payload:
+        payload["max_completion_tokens"] = payload.pop("max_tokens")
+        return True
+    if setting == "temperature" and "temperature" in payload:
+        del payload["temperature"]  # the model's default; seed still applies
+        return True
+    return False
+
+
+def _learn_refused_setting(url: str, payload: dict, response: httpx.Response, log_prefix: str) -> bool:
+    """When an OpenAI-style 400 names a setting this model refuses and we know
+    the fix, apply it to `payload`, remember it for this URL and model, and
+    return True so the caller resends."""
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    err = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(err, dict) or err.get("code") not in ("unsupported_parameter", "unsupported_value"):
+        return False
+    setting = err.get("param")
+    if not isinstance(setting, str) or not _apply_setting_fix(payload, setting):
+        return False
+    model = str(payload.get("model"))
+    _REFUSED_SETTINGS.setdefault((url, model), set()).add(setting)
+    logger.info("%s | model=%s refuses %r; resending without it", log_prefix, model, setting)
+    return True
 
 
 def _error_detail(response: httpx.Response) -> str:
@@ -515,6 +561,8 @@ def _build_provider_request(
             },
             "messages": messages,
         }
+        for setting in _REFUSED_SETTINGS.get((url, settings.llm_model), ()):
+            _apply_setting_fix(payload, setting)
         return url, headers, payload
 
     if settings.llm_provider == "local":
