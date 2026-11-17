@@ -272,6 +272,17 @@ describe('Upload', () => {
       expect(mockApi.patch).not.toHaveBeenCalled()
     })
 
+    it('keeps its Enter to itself, and ignores a held one', async () => {
+      mockApi.patch.mockResolvedValue({})
+      const input = await name()
+      fireEvent.change(input, { target: { value: 'HDFC salary' } })
+      expect(fireEvent.keyDown(input, { key: 'Enter', repeat: true })).toBe(false)
+      expect(fireEvent.keyDown(input, { key: 'Enter', isComposing: true })).toBe(false)
+      expect(mockApi.patch).not.toHaveBeenCalled()
+      expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false)
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1))
+    })
+
     it('saving the words already shown changes nothing, so a derived label stays derived', async () => {
       const input = await name()
       fireEvent.keyDown(input, { key: 'Enter' })
@@ -387,15 +398,52 @@ describe('Upload', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
-    it('moves to a new account with Enter in the name field, and a blank name is sent as blank', async () => {
+    const openSplit = async () => {
       ledger.statements = [stmt]
       ledger.accounts = [{ ...kotak, statement_count: 2 }, hdfc]
-      mockApi.patch.mockResolvedValue({ account_id: 'a9', account_label: 'Kotak ··8074' })
+      mockApi.patch.mockResolvedValue({ account_id: 'a9', account_label: 'Joint' })
       renderUpload()
       fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
-      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Name for the new account' }), { key: 'Enter' })
-      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { new_account: true, name: '' }))
+      return screen.getByRole('textbox', { name: 'Name for the new account' })
+    }
+
+    it('moves to a new account with Enter in the name field, and that Enter does nothing else', async () => {
+      const input = await openSplit()
+      fireEvent.change(input, { target: { value: 'Joint' } })
+      // The Enter is the field's alone: its default action must not reach the
+      // "More for" button the dialog hands focus back to.
+      expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false)
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { new_account: true, name: 'Joint' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'More for Kotak savings - Jul 2026' })).toHaveFocus()
+    })
+
+    it('does not move on a held Enter or one that confirms an input method', async () => {
+      const input = await openSplit()
+      fireEvent.change(input, { target: { value: 'Joint' } })
+      expect(fireEvent.keyDown(input, { key: 'Enter', repeat: true })).toBe(false)
+      expect(fireEvent.keyDown(input, { key: 'Enter', isComposing: true })).toBe(false)
+      expect(mockApi.patch).not.toHaveBeenCalled()
+    })
+
+    it('needs a name for a new account: the button waits, Enter does nothing, and a hint says why', async () => {
+      const input = await openSplit()
+      const dialog = screen.getByRole('dialog', { name: 'Move to account' })
+      const move = within(dialog).getByRole('button', { name: 'Move to a new account' })
+      expect(move).toBeDisabled()
+      expect(input).toBeRequired()
+      expect(within(dialog).getByText('Give it a name, so you can tell the two accounts apart.')).toBeInTheDocument()
+      fireEvent.keyDown(input, { key: 'Enter' })
+      fireEvent.change(input, { target: { value: '   ' } })
+      expect(move).toBeDisabled()
+      fireEvent.keyDown(input, { key: 'Enter' })
+      fireEvent.click(move)
+      expect(mockApi.patch).not.toHaveBeenCalled()
+      expect(screen.getByRole('dialog', { name: 'Move to account' })).toBeInTheDocument()
+      fireEvent.change(input, { target: { value: 'Joint' } })
+      expect(move).toBeEnabled()
     })
 
     it('offers no new account for the only statement of an account', async () => {

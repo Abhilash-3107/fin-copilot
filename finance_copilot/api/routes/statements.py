@@ -213,7 +213,7 @@ def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: s
 
 class StatementPatch(BaseModel):
     """Where a statement goes: another existing account, or `new_account` to start
-    one for it (bank and number taken from the statement) with an optional name."""
+    one for it (bank and number taken from the statement), which needs a name."""
 
     account_id: str | None = None
     new_account: bool = False
@@ -232,6 +232,11 @@ def patch_statement(
     if bool(body.account_id) == body.new_account:
         raise HTTPException(status_code=422, detail="Say which account to move it to, or ask for a new one.")
     name = (body.name or "").strip()
+    if body.new_account and not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Give the new account a name, so you can tell the two accounts apart.",
+        )
     if len(name) > NAME_MAX_LENGTH:
         raise HTTPException(
             status_code=422, detail=f"An account name can be at most {NAME_MAX_LENGTH} characters."
@@ -252,7 +257,7 @@ def patch_statement(
                     detail="This is the only statement in its account, so it already has an account of its own.",
                 )
             _refuse_while_sorting(conn, statement_id, "Move it")
-            target = create_account(conn, statement["bank_name"], statement["account_ref"], name or None)
+            target = create_account(conn, statement["bank_name"], statement["account_ref"], name)
         else:
             target = body.account_id
             if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (target,)).fetchone():

@@ -77,6 +77,16 @@ function sortLine(entry) {
   return total ? `Sorting ${processed} of ${total}` : 'Sorting'
 }
 
+// An Enter that is this field's alone. Whatever the Enter does moves focus (the
+// dialog hands it back to its opener), and the browser would then press the
+// button that has it: so the default action is always cancelled. A held key
+// and one that only confirms an input method's composition do nothing.
+function isFieldEnter(e) {
+  if (e.key !== 'Enter') return false
+  e.preventDefault()
+  return !e.repeat && !e.nativeEvent.isComposing
+}
+
 // Naming an account, in place: Enter saves, Escape cancels. A blank name goes
 // back to the bank and last digits.
 function NameField({ initial, onSave, onCancel, autoFocus = true }) {
@@ -91,7 +101,7 @@ function NameField({ initial, onSave, onCancel, autoFocus = true }) {
         maxLength={60}
         onChange={e => setValue(e.target.value)}
         onKeyDown={e => {
-          if (e.key === 'Enter') onSave(value)
+          if (isFieldEnter(e)) onSave(value)
           if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
         }}
         className="bg-[#1e2235] border border-[#6366f1] text-[#e2e8f0] px-2 py-0.5 rounded text-sm focus:outline-none w-52 placeholder:text-[#94a3b8]"
@@ -108,30 +118,38 @@ function NameField({ initial, onSave, onCancel, autoFocus = true }) {
 
 // "A new account" as a place to move a statement to: for one that ingest put in
 // the wrong account (a second account that printed no number joins the bank's
-// only account). The name is optional; blank leaves the bank and last digits.
+// only account). It needs a name: without one, the two accounts would read the
+// same everywhere.
 function NewAccountForm({ onMove }) {
   const [name, setName] = useState('')
+  const ready = name.trim() !== ''
   return (
     <div className="mt-4 pt-4 border-t border-[#2d3148]">
       <p className="text-sm font-medium text-[#e2e8f0] mb-2">A new account</p>
       <div className="flex items-center gap-2">
         <input
           aria-label="Name for the new account"
-          placeholder="Name (optional)"
+          aria-describedby="new-account-hint"
+          placeholder="Name"
+          required
           value={name}
           maxLength={60}
           onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') onMove(name) }}
+          onKeyDown={e => { if (isFieldEnter(e) && ready) onMove(name) }}
           className="flex-1 bg-[#1e2235] border border-[#2d3148] focus:border-[#6366f1] text-[#e2e8f0] px-2 py-1.5 rounded text-sm focus:outline-none placeholder:text-[#94a3b8]"
         />
         <button
           type="button"
           onClick={() => onMove(name)}
-          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-sm font-medium text-white hover:opacity-90 transition-opacity"
+          disabled={!ready}
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:hover:opacity-50"
         >
           Move to a new account
         </button>
       </div>
+      <p id="new-account-hint" className="text-xs text-[#94a3b8] mt-1.5">
+        Give it a name, so you can tell the two accounts apart.
+      </p>
     </div>
   )
 }

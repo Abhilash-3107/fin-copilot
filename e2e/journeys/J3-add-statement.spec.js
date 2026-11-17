@@ -300,9 +300,24 @@ test.describe('J3 accounts', () => {
       expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true)
     }
 
-    await dialog.getByRole('textbox', { name: 'Name for the new account' }).fill('Joint account')
-    await dialog.getByRole('button', { name: 'Move to a new account' }).click()
+    // A new account needs a name: the button waits, and Enter in the empty field does nothing.
+    const nameField = dialog.getByRole('textbox', { name: 'Name for the new account' })
+    await expect(dialog.getByRole('button', { name: 'Move to a new account' })).toBeDisabled()
+    await expect(dialog).toContainText('Give it a name, so you can tell the two accounts apart.')
+    await nameField.fill('   ')
+    await nameField.press('Enter')
+    await expect(dialog).toBeVisible()
+    expect(await app.api.get('/accounts')).toHaveLength(1)
+
+    // Enter in the field moves the statement and does nothing else: no menu opens
+    // on the button the dialog hands focus back to, and focus is on that button.
+    await nameField.fill('Joint account')
+    await expect(dialog.getByRole('button', { name: 'Move to a new account' })).toBeEnabled()
+    await nameField.press('Enter')
     await expect(dialog).toHaveCount(0)
+    await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
+    await expect(page.getByRole('menu')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'More for Joint account - Nov 2026' })).toBeFocused()
     await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
     const accounts = await app.api.get('/accounts')
     expect(accounts.map((a) => [a.account_label, a.statement_count]).sort()).toEqual([['Bank ··0000', 1], ['Joint account', 1]])

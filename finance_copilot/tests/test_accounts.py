@@ -511,18 +511,23 @@ class TestAccountRoutes:
         stored = conn.execute("SELECT bank_name, account_ref, name FROM accounts WHERE id = ?", (body["account_id"],)).fetchone()
         assert tuple(stored) == ("kotak", "5551111", "Joint account")
 
-    def test_a_new_account_without_a_name_is_labelled_from_its_bank_and_number(self, api):
+    @pytest.mark.parametrize("body", [{}, {"name": None}, {"name": ""}, {"name": "   "}])
+    def test_a_new_account_needs_a_name(self, api, body):
+        """Two accounts of one bank and number would read the same everywhere, so a split
+        without a name is refused in plain words and nothing changes."""
         client, conn = api
         k1, k2, _ = _two_accounts(conn)
-        body = client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).json()
-        assert body["account_label"] == "Kotak ··1111"
-        assert conn.execute("SELECT name FROM accounts WHERE id = ?", (body["account_id"],)).fetchone()[0] is None
+        r = client.patch(f"/api/statements/{k2.id}", json={"new_account": True, **body})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "Give the new account a name, so you can tell the two accounts apart."
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+        assert conn.execute("SELECT account_id FROM statements WHERE id = ?", (k2.id,)).fetchone()[0] == k1.account_id
 
     def test_a_split_keeps_the_next_statement_of_that_bank_and_number_in_the_new_account(self, api):
         """The latest statement of the bank and number was moved: its account is where the next one goes."""
         client, conn = api
         k1, k2, _ = _two_accounts(conn)
-        new_id = client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).json()["account_id"]
+        new_id = client.patch(f"/api/statements/{k2.id}", json={"new_account": True, "name": "Joint"}).json()["account_id"]
         k3 = _ingest(conn, _FakeParser("kotak", "5551111", _rows(9400, 20)), "k3")
         assert k3.account_id == new_id and k3.account_is_new is False
         assert conn.execute("SELECT COUNT(*) FROM accounts WHERE bank_name = 'kotak'").fetchone()[0] == 2
@@ -530,7 +535,7 @@ class TestAccountRoutes:
     def test_a_statement_alone_in_its_account_is_not_moved_to_a_new_one(self, api):
         client, conn = api
         _, _, h1 = _two_accounts(conn)
-        r = client.patch(f"/api/statements/{h1.id}", json={"new_account": True})
+        r = client.patch(f"/api/statements/{h1.id}", json={"new_account": True, "name": "Joint"})
         assert r.status_code == 422
         assert conn.execute("SELECT account_id FROM statements WHERE id = ?", (h1.id,)).fetchone()[0] == h1.account_id
         assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
@@ -556,7 +561,7 @@ class TestAccountRoutes:
             (k2.id,),
         )
         conn.commit()
-        assert client.patch(f"/api/statements/{k2.id}", json={"new_account": True}).status_code == 409
+        assert client.patch(f"/api/statements/{k2.id}", json={"new_account": True, "name": "Joint"}).status_code == 409
         assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
 
     def test_moving_to_an_unknown_account_is_404_and_changes_nothing(self, api):
