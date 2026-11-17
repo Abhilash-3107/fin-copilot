@@ -11,21 +11,34 @@ const card = (page) => page.getByRole('group', { name: /^Payment to / })
 const done = (page) => page.getByText("You're all done!")
 const answers = /\/api\/annotations\/(bulk-label|[^/]+\/confirm)$/
 
-/** How many payments have been answered, as the progress line says it, or 'done' on the finish screen. */
+/** How many payments have been answered, as the progress line says it, 'done' on the finish screen, or null while the page is between the two. */
 async function where(page) {
-  if (await done(page).isVisible()) return 'done'
-  const [handled] = (await progress(page).innerText()).split('/')
-  return handled.trim()
+  // allInnerTexts() does not wait: the progress line goes away the moment the
+  // last card is answered, and innerText() on it would then wait out the whole
+  // action timeout between the two checks.
+  const [line] = await progress(page).allInnerTexts()
+  if (line === undefined) return (await done(page).isVisible()) ? 'done' : null
+  return line.split('/')[0].trim()
 }
 
 /** Wait for the page to move on from `before`: another card answered, or the finish. */
 async function movedOn(page, before) {
-  await expect.poll(() => where(page), { message: 'Teach Me should move on' }).not.toBe(before)
+  await expect.poll(async () => (await where(page)) ?? before, { message: 'Teach Me should move on' }).not.toBe(before)
+}
+
+/** The page's own state once it has settled on a card or the finish. */
+async function settled(page) {
+  let state = null
+  await expect(async () => {
+    state = await where(page)
+    expect(state, 'Teach Me should show a card or the finish').not.toBeNull()
+  }).toPass()
+  return state
 }
 
 /** Answer the card on screen with the keyboard alone, and wait until the page has moved on. */
 async function sortWithKeys(page) {
-  const before = await where(page)
+  const before = await settled(page)
   if (await page.getByText('Which is it?').isVisible()) {
     await page.keyboard.press('1') // the best suggestion
   } else {
@@ -95,7 +108,7 @@ test.describe('J4 sort from the keyboard', () => {
 
     // Now the whole queue, one card at a time, from the keyboard.
     let sawChaiWala = false
-    for (let i = 0; i < waiting + 5 && (await where(page)) !== 'done'; i++) {
+    for (let i = 0; i < waiting + 5 && (await settled(page)) !== 'done'; i++) {
       if ((await card(page).getAttribute('aria-label')) === 'Payment to CHAI WALA CORNER') {
         sawChaiWala = true
         // The payee's own history is the first suggestion, with its reason.
@@ -337,7 +350,9 @@ test.describe('J4 the keyboard outside Teach Me', () => {
     await page.getByRole('button', { name: 'Edit Hill cabin' }).click()
     await page.getByLabel('Group name', { exact: true }).fill('FLAT')
     await page.keyboard.press('Enter')
-    await expect(page.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
+    // Scoped to the edit form: the refusal from the create field above may still be showing.
+    const editForm = page.locator('div', { has: page.getByLabel('Group name', { exact: true }) }).last()
+    await expect(editForm.getByRole('alert').filter({ hasText: 'You already have a group called "Flat".' })).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(page.getByLabel('Group name', { exact: true })).toHaveCount(0)
     expect((await app.api.get(`/groups/${trip.id}`)).name).toBe('Hill cabin')
