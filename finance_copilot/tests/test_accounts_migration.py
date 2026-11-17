@@ -138,14 +138,111 @@ def test_the_automatic_marker_is_not_part_of_the_bank(ledger_040):
     assert mapping["h1"][1] == "hdfc"
 
 
-def test_a_renamed_bank_is_its_own_bank(ledger_040):
-    """The old statement rename wrote free text into bank_name: it groups as it stands."""
+def _names(conn):
+    return {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM accounts")}
+
+
+def test_text_typed_on_a_real_banks_number_joins_that_bank_and_names_the_account(ledger_040):
+    """The old statement rename wrote free text into bank_name; the same number says which bank it is."""
     ledger_040.statement("k1", "kotak", "3250508074", "2026-01")
-    ledger_040.statement("k2", "Kotak savings", "3250508074", "2026-02")
+    ledger_040.statement("k2", "Kotak salary", "3250508074", "2026-02")
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
+    assert _groups(mapping) == {frozenset({"k1", "k2"})}
+    assert mapping["k2"][1] == "kotak"
+    assert set(_names(ledger.conn).values()) == {"Kotak salary"}
+
+
+def test_typed_text_without_a_number_has_nothing_to_fold_on(ledger_040):
+    """No number, no way to tell which bank: it stays apart (as typed), and the user can move it."""
+    ledger_040.statement("k1", "kotak", "3250508074", "2026-01")
+    ledger_040.statement("k3", "Kotak salary", None, "2026-03")
+    ledger = ledger_040.migrate()
+    assert _groups(ledger.accounts_of()) == {frozenset({"k1"}), frozenset({"k3"})}
+
+
+def test_the_most_recent_typed_text_names_the_account(ledger_040):
+    ledger_040.statement("k1", "kotak", "3250508074", "2026-01")
+    ledger_040.statement("k2", "Old name", "3250508074", "2026-02")
+    ledger_040.statement("k3", "Salary account", "3250508074", "2026-03")
+    ledger = ledger_040.migrate()
+    assert set(_names(ledger.conn).values()) == {"Salary account"}
+
+
+def test_typed_text_with_no_matching_number_is_its_own_bank_named_as_typed(ledger_040):
+    ledger_040.statement("k1", "kotak", "3250508074", "2026-01")
+    ledger_040.statement("k2", "Kotak savings", "1111111111", "2026-02")
     ledger_040.statement("k3", "Kotak savings", None, "2026-03")
-    mapping = ledger_040.migrate().accounts_of()
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
     assert _groups(mapping) == {frozenset({"k1"}), frozenset({"k2", "k3"})}
-    assert mapping["k2"][1] == "Kotak savings"
+    assert mapping["k2"][1] == "kotak savings"
+    assert _names(ledger.conn)[mapping["k2"][0]] == "Kotak savings"
+    assert _names(ledger.conn)[mapping["k1"][0]] is None
+
+
+def test_every_statement_renamed_keeps_its_text_as_the_name(ledger_040):
+    """All of a bank's statements renamed "Kotak salary": still one account, called what they typed."""
+    for i in range(3):
+        ledger_040.statement(f"k{i}", "Kotak salary", "3250508074", f"2026-0{i + 1}")
+    ledger = ledger_040.migrate()
+    assert len(_groups(ledger.accounts_of())) == 1
+    assert set(_names(ledger.conn).values()) == {"Kotak salary"}
+
+
+def test_bank_keys_group_ignoring_case_and_spaces(ledger_040):
+    """"Kotak" beside "kotak" with the same number, and "kotak " with a trailing space, are one bank."""
+    ledger_040.statement("a", "Kotak", "3250508074", "2026-01")
+    ledger_040.statement("b", "kotak", "3250508074", "2026-02")
+    ledger_040.statement("c", "kotak ", "3250508074", "2026-03")
+    ledger_040.statement("d", "KOTAK (auto)", None, "2026-04")
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
+    assert _groups(mapping) == {frozenset({"a", "b", "c", "d"})}
+    assert {v[1] for v in mapping.values()} == {"kotak"}
+    assert set(_names(ledger.conn).values()) == {None}
+
+
+def test_an_upper_case_automatic_marker_is_not_part_of_the_bank(ledger_040):
+    ledger_040.statement("a", "Foo (AUTO)", None, "2026-01")
+    ledger_040.statement("b", "Foo", None, "2026-02")
+    ledger = ledger_040.migrate()
+    mapping = ledger.accounts_of()
+    assert _groups(mapping) == {frozenset({"a", "b"})}
+    assert mapping["a"][1] == "foo"
+    assert set(_names(ledger.conn).values()) == {"Foo"}
+
+
+def test_a_blank_bank_name_is_a_bank_called_bank_with_no_name(ledger_040):
+    from finance_copilot.db.queries.accounts import account_labels
+
+    ledger_040.statement("a", "", None, "2026-01")
+    ledger_040.statement("b", "  ", None, "2026-02")
+    ledger_040.statement("c", " (auto)", None, "2026-03")
+    ledger = ledger_040.migrate()
+    assert len(_groups(ledger.accounts_of())) == 1
+    assert set(_names(ledger.conn).values()) == {None}
+    assert set(account_labels(ledger.conn).values()) == {"Bank"}
+
+
+def test_a_blank_bank_name_with_a_known_number_joins_that_bank(ledger_040):
+    ledger_040.statement("a", "kotak", "3250508074", "2026-01")
+    ledger_040.statement("b", "", "3250508074", "2026-02")
+    ledger = ledger_040.migrate()
+    assert _groups(ledger.accounts_of()) == {frozenset({"a", "b"})}
+    assert set(_names(ledger.conn).values()) == {None}
+
+
+def test_the_sql_list_of_banks_is_the_list_the_parsers_use(ledger_040):
+    """Typed text on a bank's number folds into it, for every bank key. A key missing from
+    the migration's list would not be a bank there and the text would stay apart."""
+    from finance_copilot.parsers.bank_identity import CANONICAL_BANKS
+
+    for i, bank in enumerate(sorted(CANONICAL_BANKS)):
+        ledger_040.statement(f"b{i}", bank, f"NUM{i}", "2026-01")
+        ledger_040.statement(f"t{i}", "typed", f"NUM{i}", "2026-02")
+    mapping = ledger_040.migrate().accounts_of()
+    assert len(_groups(mapping)) == len(CANONICAL_BANKS)
 
 
 def test_no_statement_is_left_without_an_account_and_no_account_is_empty(ledger_040):
@@ -158,7 +255,8 @@ def test_no_statement_is_left_without_an_account_and_no_account_is_empty(ledger_
     assert conn.execute(
         "SELECT COUNT(*) FROM accounts WHERE id NOT IN (SELECT account_id FROM statements)"
     ).fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM accounts WHERE name IS NOT NULL").fetchone()[0] == 0
+    # Only text the user typed becomes a name: "weird bank" was one.
+    assert [r["name"] for r in conn.execute("SELECT name FROM accounts WHERE name IS NOT NULL")] == ["weird bank"]
 
 
 def test_the_account_ids_do_not_depend_on_the_run(ledger_040, tmp_path):
@@ -169,12 +267,11 @@ def test_the_account_ids_do_not_depend_on_the_run(ledger_040, tmp_path):
     assert ids == ["acc_s1", "acc_s2"]
 
 
-def test_the_account_number_is_unique_within_a_bank(ledger_040):
+def test_a_number_may_hold_several_accounts_once_the_user_splits_it(ledger_040):
+    """A statement moved to a new account leaves two with the same bank and number."""
     ledger_040.statement("s1", "kotak", "1")
     conn = ledger_040.migrate().conn
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('x', 'kotak', '1')")
-    # An unknown number is not a number: any count of those may exist.
+    conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('x', 'kotak', '1')")
     conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('y', 'kotak', NULL)")
     conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('z', 'kotak', NULL)")
 

@@ -25,15 +25,19 @@ NAME_MAX_LENGTH = 60
 
 # The generic parser marks a bank it read by its columns, not by a dedicated
 # parser, as "hdfc (auto)". That is how it was read, not which bank it is.
-_AUTO_MARKER = " (auto)"
+_AUTO_MARKER = "(auto)"
+
+# The bank key of a statement the generic parser could not place. It is not one
+# bank, so a numbered statement of it never guesses which account it belongs to.
+UNKNOWN_BANK = "generic"
 
 
 def bank_key(bank_name: str) -> str:
-    """The bank an account belongs to: a statement's bank_name without the
-    generic parser's marker, so "hdfc (auto)" and a later dedicated "hdfc" parser
-    are one bank. Anything else (a name a user typed) is its own bank as it stands."""
-    name = bank_name.strip()
-    return name.removesuffix(_AUTO_MARKER) if name.endswith(_AUTO_MARKER) else name
+    """The bank an account belongs to: a statement's bank_name trimmed, lower case
+    and without the generic parser's marker, so "hdfc (auto)", "HDFC " and a later
+    dedicated "hdfc" parser are one bank. Migration 041 groups with the same rule."""
+    key = bank_name.strip().lower()
+    return key[: -len(_AUTO_MARKER)].strip() if key.endswith(_AUTO_MARKER) else key
 
 
 def ref_last4(account_ref: str | None) -> str | None:
@@ -53,15 +57,33 @@ def account_label(name: str | None, bank_name: str, account_ref: str | None) -> 
     return f"{bank} {MASK}{last4}" if last4 else bank
 
 
+def _remembered_account(conn: sqlite3.Connection, bank: str, ref: str | None) -> str | None:
+    """The account of the most recent statement with this bank and number (an
+    unknown number matches an unknown number), when it still exists. A statement
+    the user moved keeps the next one of its bank and number company."""
+    rows = conn.execute(
+        "SELECT s.bank_name, s.account_id FROM statements s JOIN accounts a ON a.id = s.account_id "
+        "WHERE NULLIF(TRIM(s.account_ref), '') IS ? ORDER BY s.uploaded_at DESC, s.rowid DESC",
+        (ref,),
+    )
+    for row in rows:
+        if bank_key(row["bank_name"]) == bank:
+            return row["account_id"]
+    return None
+
+
 def resolve_account(
     conn: sqlite3.Connection, bank_name: str, account_ref: str | None
 ) -> tuple[str, bool]:
     """The account a new statement belongs to, and whether this call created it.
 
-    Same bank and same number: that account. Otherwise, never guess between
+    What the user has done wins: the account of the latest statement with the
+    same bank and number, wherever they put it. Otherwise, never guess between
     accounts:
+    - Same bank and same number: that account.
     - A number and the bank's only account has none (older statements printed no
-      number): that account takes the number.
+      number): that account takes the number. Not for an unknown bank, where an
+      unnumbered account may be a different bank's.
     - No number and the bank has one account: that account. With several, the
       statements whose number could not be read gather in one "unknown number"
       account, which the user can move them out of.
@@ -69,6 +91,11 @@ def resolve_account(
     """
     bank = bank_key(bank_name)
     ref = (account_ref or "").strip() or None
+
+    remembered = _remembered_account(conn, bank, ref)
+    if remembered:
+        return remembered, False
+
     accounts = conn.execute(
         "SELECT id, account_ref FROM accounts WHERE bank_name = ?", (bank,)
     ).fetchall()
@@ -77,7 +104,7 @@ def resolve_account(
         for account in accounts:
             if account["account_ref"] == ref:
                 return account["id"], False
-        if len(accounts) == 1 and accounts[0]["account_ref"] is None:
+        if bank != UNKNOWN_BANK and len(accounts) == 1 and accounts[0]["account_ref"] is None:
             conn.execute("UPDATE accounts SET account_ref = ? WHERE id = ?", (ref, accounts[0]["id"]))
             return accounts[0]["id"], False
     else:

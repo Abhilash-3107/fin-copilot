@@ -109,11 +109,14 @@ _DISPLAY_NAMES: dict[str, str] = {
 }
 
 
+# Every bank key a parser can report (without the generic parser's " (auto)"
+# marker). A stored bank_name outside this set is text somebody typed. Migration
+# 041 holds the same list in SQL; a test keeps the two equal.
+CANONICAL_BANKS: frozenset[str] = frozenset(_DISPLAY_NAMES)
+
+
 def bank_display_name(bank_key: str) -> str:
-    """The bank as the interface writes it ("Kotak", "HDFC"), from its canonical key."""
+    """The bank as the interface writes it ("Kotak", "HDFC"), from its key.
+    An empty key reads "Bank"."""
     key = bank_key.strip()
-    shown = _DISPLAY_NAMES.get(key.lower())
-    if shown:
-        return shown
-    # Something a person typed keeps their capitals; a lower-case key gets them.
-    return key.title() if key == key.lower() else key
+    return _DISPLAY_NAMES.get(key.lower()) or key.title() or _DISPLAY_NAMES["generic"]

@@ -48,7 +48,12 @@ class TestLabel:
         ("generic", "XXXX0000", "Bank ··0000"),
         ("generic", None, "Bank"),
         ("some small bank", None, "Some Small Bank"),
-        ("Kotak savings", None, "Kotak savings"),
+        ("", None, "Bank"),
+        ("   ", "XXXX0000", "Bank ··0000"),
+        (" (auto)", None, "Bank"),
+        ("Kotak", "3250508074", "Kotak ··8074"),
+        ("kotak ", None, "Kotak"),
+        ("Foo (AUTO)", None, "Foo"),
     ])
     def test_derived_from_the_bank_and_the_last_four_digits(self, bank, ref, expected):
         assert account_label(None, bank, ref) == expected
@@ -162,10 +167,89 @@ class TestResolveAccount:
         assert (again, created_again) == (unknown, False)
         assert _account_count(conn) == 3
 
+    def test_bank_keys_compare_trimmed_and_ignoring_case(self):
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "Kotak", "3250508074")
+        for spelling in ("kotak", " KOTAK ", "kotak (AUTO)", "Kotak (auto) "):
+            again, created = resolve_account(conn, spelling, "3250508074")
+            assert (again, created) == (first, False), spelling
+        assert _row(conn, first)["bank_name"] == "kotak"
+
+    def test_a_numbered_unknown_bank_never_adopts_the_only_account(self):
+        """"generic" is not one bank: a numbered statement of it joins only on the same number."""
+        conn = _make_conn()
+        old, _ = resolve_account(conn, "generic", None)
+        _give(conn, old)
+        new, created = resolve_account(conn, "generic", "XXXX1234")
+        assert created is True and new != old
+        assert _row(conn, old)["account_ref"] is None
+        again, created_again = resolve_account(conn, "generic", "XXXX1234")
+        assert (again, created_again) == (new, False)
+
+    def test_a_known_bank_still_adopts_the_only_unnumbered_account(self):
+        conn = _make_conn()
+        old, _ = resolve_account(conn, "hdfc", None)
+        _give(conn, old)
+        assert resolve_account(conn, "hdfc", "XXXX1234") == (old, False)
+
     def test_an_account_gets_a_ulid_style_id(self):
         conn = _make_conn()
         account_id, _ = resolve_account(conn, "kotak", "1")
         assert account_id.startswith("acc_") and len(account_id) > 10
+
+
+def _statement(conn, stmt_id, bank, ref, account_id, month="2026-01"):
+    conn.execute(
+        "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref, account_id) "
+        "VALUES (?, ?, '1', ?, ?, ?)", (stmt_id, bank, month, ref, account_id))
+    conn.commit()
+
+
+class TestAMoveIsRemembered:
+    """The next statement of the same bank and number goes where the user put the last one."""
+
+    @pytest.mark.parametrize("ref", ["3250508074", None])
+    def test_the_next_statement_joins_the_account_the_last_one_was_moved_to(self, ref):
+        conn = _make_conn()
+        landed, _ = resolve_account(conn, "kotak", ref)
+        _statement(conn, "s1", "kotak", ref, landed, "2026-01")
+        other = "acc_other"  # an account to move into
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '9999999999')", (other,))
+        _statement(conn, "s2", "kotak", "9999999999", other, "2026-01")
+        conn.execute("UPDATE statements SET account_id = ? WHERE id = 's1'", (other,))
+        conn.commit()
+        nxt, created = resolve_account(conn, "kotak", ref)
+        assert (nxt, created) == (other, False)
+
+    def test_it_is_the_most_recent_statement_that_decides(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        b = "acc_b"
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, 'kotak', '1111')", (b,))
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref, account_id, uploaded_at) "
+            "VALUES ('old', 'kotak', '1', '2026-01', '1111', ?, '2026-01-01 10:00:00')", (a,))
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref, account_id, uploaded_at) "
+            "VALUES ('new', 'kotak (auto)', '1', '2026-02', '1111', ?, '2026-02-01 10:00:00')", (b,))
+        conn.commit()
+        assert resolve_account(conn, "kotak", "1111") == (b, False)
+
+    def test_a_split_leaves_two_accounts_with_the_same_bank_and_number(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        _statement(conn, "s1", "kotak", "1111", a)
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('acc_split', 'kotak', '1111')")
+        conn.execute("UPDATE statements SET account_id = 'acc_split' WHERE id = 's1'")
+        conn.commit()
+        assert resolve_account(conn, "kotak", "1111") == ("acc_split", False)
+
+    def test_another_bank_or_number_is_not_remembered_across(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1111")
+        _statement(conn, "s1", "kotak", "1111", a)
+        assert resolve_account(conn, "hdfc", "1111")[1] is True
+        assert resolve_account(conn, "kotak", "2222")[1] is True
 
 
 # --- ingest ----------------------------------------------------------------
