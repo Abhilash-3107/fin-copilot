@@ -5,6 +5,7 @@ line, the stored UPI meta and everything the pipeline reads stay as they are.
 """
 from __future__ import annotations
 
+import ast
 import csv
 import io
 import json
@@ -18,7 +19,15 @@ from source_tree import NOT_A_CHECKOUT, source_root
 
 from finance_copilot.db.connection import MIGRATIONS_DIR, init_db
 from finance_copilot.db.queries.annotations import insert_annotation
+from finance_copilot.db.queries.learned_rules import lookup_learned_rule, verified_labels
 from finance_copilot.db.queries.payee import MAX_NOTE_LENGTH
+from finance_copilot.db.queries.people import matched_transaction_ids, person_token_matches
+from finance_copilot.db.queries.user_rules import (
+    _matching_rows,
+    create_user_rule,
+    list_user_rules,
+    match_user_rule,
+)
 from finance_copilot.models.annotation import Annotation
 from finance_copilot.parsers.description import parse_description
 from finance_copilot.pipeline.counterparty import normalize_identity
@@ -328,6 +337,46 @@ class TestSearch:
         assert res[0]["note"] == "Plumber advance"
 
 
+def _reaches_payee_labels(source: str) -> list[str]:
+    """Imports of db.queries.payee, and any use of with_payee, in a module's code
+    (docstrings and comments that merely mention them do not count)."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.endswith("queries.payee"):
+                found.append(f"imports {module}")
+            if module.endswith("db.queries") or module == "queries":
+                found += [f"imports {module}.{a.name}" for a in node.names if a.name == "payee"]
+            found += [f"imports {a.name}" for a in node.names if a.name == "with_payee"]
+        elif isinstance(node, ast.Import):
+            found += [f"imports {a.name}" for a in node.names if a.name.endswith("queries.payee")]
+        elif isinstance(node, ast.Name) and node.id == "with_payee":
+            found.append("uses with_payee")
+        elif isinstance(node, ast.Attribute) and node.attr == "with_payee":
+            found.append("uses with_payee")
+    return found
+
+
+class TestTheGuardCatchesWhatItShould:
+    @pytest.mark.parametrize("source", [
+        "from finance_copilot.db.queries.payee import with_payee",
+        "from finance_copilot.db.queries import payee",
+        "import finance_copilot.db.queries.payee",
+        "from finance_copilot.db.queries.payee import load_payee_names",
+        "rows = payee.with_payee(conn, rows)",
+    ])
+    def test_flags_a_reach_for_the_labels(self, source):
+        assert _reaches_payee_labels(source)
+
+    def test_ignores_docstrings_and_the_parsers_payee_module(self):
+        source = (
+            '"""added by db.queries.payee.with_payee"""\n'
+            "from finance_copilot.parsers.payee import classify_payee\n"
+        )
+        assert _reaches_payee_labels(source) == []
+
+
 class TestThePipelineNeverReadsTheNote:
     """A note is a label: nothing that matches, sorts or embeds may change when one is set."""
 
@@ -359,6 +408,59 @@ class TestThePipelineNeverReadsTheNote:
         put_note(client, txn, "team tea")
         after = dict(conn.execute("SELECT * FROM annotations WHERE transaction_id = ?", (txn,)).fetchone())
         assert after == before
+
+    def test_people_and_rule_matching_return_the_same_after_a_note(self, conn, client):
+        txn = add_txn(conn, CHAI)
+        other = add_txn(conn, NEFT)
+        create_user_rule(conn, "chai", "Shopping")
+        create_user_rule(conn, "zebra", "Shopping")
+        conn.commit()
+        key = self._row(conn, txn)["counterparty_key"]
+
+        def snapshot():
+            row = self._row(conn, txn)
+            rules = list_user_rules(conn)
+            return {
+                "people_by_name": matched_transaction_ids(conn, "chai"),
+                "people_by_note_word": matched_transaction_ids(conn, "zebra"),
+                "token_match": person_token_matches("chai", None, row["counterparty_key"], row["raw_description"].lower()),
+                "token_note_word": person_token_matches("zebra", None, row["counterparty_key"], row["raw_description"].lower()),
+                "user_rule": (match_user_rule(rules, row) or {}).get("pattern"),
+                "other_user_rule": match_user_rule(rules, self._row(conn, other)),
+                "preview": sorted(r["id"] for r in _matching_rows(conn, "zebra")),
+                "preview_chai": sorted(r["id"] for r in _matching_rows(conn, "chai")),
+                "labels": verified_labels(conn, key, "debit", before_txn_date=None),
+                "learned": lookup_learned_rule(conn, key, "debit", before_txn_date=None),
+            }
+
+        before = snapshot()
+        assert before["people_by_name"] == [txn]
+        assert before["user_rule"] == "chai"
+        put_note(client, txn, "zebra crossing salary")
+        put_note(client, other, "chai zebra")
+        assert snapshot() == before
+        assert before["people_by_note_word"] == [] and before["preview"] == []
+
+    @pytest.mark.parametrize("folder", ["pipeline", "parsers"])
+    def test_no_pipeline_or_parser_code_reads_the_labels_layer(self, folder):
+        """Notes and names are labels. Neither the pipeline nor the parsers may import
+        db.queries.payee or call with_payee, which is where labels are resolved."""
+        root = source_root()
+        if root is None:
+            pytest.skip(NOT_A_CHECKOUT)
+        offenders = []
+        for path in sorted((root / "finance_copilot" / folder).rglob("*.py")):
+            offenders += [f"{path.relative_to(root)}: {why}" for why in _reaches_payee_labels(path.read_text())]
+        assert offenders == [], f"labels are for display; these reach for them: {offenders}"
+
+    @pytest.mark.parametrize("name", ["people", "learned_rules", "user_rules"])
+    def test_the_matching_queries_never_touch_the_note(self, name):
+        root = source_root()
+        if root is None:
+            pytest.skip(NOT_A_CHECKOUT)
+        text = (root / "finance_copilot" / "db" / "queries" / f"{name}.py").read_text()
+        assert "user_note" not in text
+        assert _reaches_payee_labels(text) == []
 
     def test_no_pipeline_or_parser_source_mentions_the_user_note(self):
         root = source_root()
