@@ -160,12 +160,13 @@ def _filter_conditions(
             "LOWER(t.raw_description) LIKE ? ESCAPE '\\'",
             "LOWER(a.merchant) LIKE ? ESCAPE '\\'",
             "(json_valid(t.upi_meta) AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')",
-            # The names the user gave: this payment's own, or its payee's.
+            # What the user wrote: the name of this payment or its payee, and its note.
             "LOWER(t.display_name) LIKE ? ESCAPE '\\'",
+            "LOWER(t.user_note) LIKE ? ESCAPE '\\'",
             "t.counterparty_key IN (SELECT counterparty_key FROM payee_names "
             "WHERE LOWER(name) LIKE ? ESCAPE '\\')",
         ]
-        params += [pattern] * 5
+        params += [pattern] * 6
         # A numeric query also matches on amount (exact or, for a whole-rupee
         # query, the rupee part), so "1200" finds the ₹1,200 transaction.
         amount = _parse_amount_query(q)
@@ -263,7 +264,7 @@ def list_transactions(
     include_annotation joins each row's annotation (same shape as the per-id
     endpoint: annotation_id, category, ...) so list pages need one round-trip.
     q is a case-insensitive substring match over the raw description, the
-    annotated merchant, the UPI note and the names the user gave. payee_keys
+    annotated merchant, the UPI note and the names and notes the user wrote. payee_keys
     are the grouping keys insights rows carry (counterparty key, else merchant).
     sources/merchant filter on annotation fields, so they only ever match annotated rows; the category filter does
     too, except that Uncategorized also matches rows with no annotation.

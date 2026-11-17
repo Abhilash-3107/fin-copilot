@@ -21,7 +21,7 @@ const MIGRATIONS = [
   '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
   '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
   '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
-  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts',
+  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes',
 ]
 const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
 
@@ -143,14 +143,14 @@ function upgrade(before) {
   // Release 2: payee labels, the sorted count, and the schema the new migrations add.
   const printed = (t) => t.merchant ?? t.counterparty_key ?? t.raw_description.slice(4)
   for (const t of facts.transactions) {
-    Object.assign(t, { display_name: null, payee_name: null, note: null, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
+    Object.assign(t, { display_name: null, payee_name: null, note: null, user_note: null, note_is_yours: false, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
   }
   Object.assign(byId.R7, { payee: 'ACME LABS PVT LTD/SALARY OCT', channel: 'NEFT' })
   Object.assign(byId.R8, { payee: 'EXAMPLE BOOKSTORE BANGALORE', channel: 'Card' })
   Object.assign(byId.R9, { payee: '9988776655@okaxis', payee_all: '9988776655@okaxis' }) // a UPI handle is shown lower-cased
   for (const m of facts.groups[0].members) {
     const t = byId[m.id]
-    for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) m[field] = t[field]
+    for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note', 'user_note', 'note_is_yours']) m[field] = t[field]
   }
   const owner = { s: { id: 'acc_s', label: 'Bank ··0000', last4: '0000' }, demo_s: { id: 'acc_demo_s', label: 'Kotak', last4: null } }
   facts.statements = facts.statements.map(({ id, txn_count, bank_name, statement_month, uploaded_at, closing_balance, period_end }) => ({
@@ -172,7 +172,7 @@ function upgrade(before) {
     appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
     tableRows: { payee_names: 0, review_undo: 0, accounts: 2 },
     addedColumns: [
-      'transactions.display_name', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
+      'transactions.display_name', 'transactions.user_note', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
       'statements.account_id', 'statements.printed_start', 'statements.printed_end',
     ],
     jobAttempts: [{ id: 'job1', attempts: 0 }],

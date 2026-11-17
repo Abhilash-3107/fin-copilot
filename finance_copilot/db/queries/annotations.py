@@ -213,7 +213,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT t.id AS transaction_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
-               t.counterparty_key, t.display_name, t.upi_meta,
+               t.counterparty_key, t.display_name, t.user_note, t.upi_meta,
                a.id AS annotation_id, a.merchant, a.category, a.subcategory, a.tags,
                COALESCE(a.confidence, 0.0) AS confidence, a.source, a.original_source,
                a.annotated_at, a.reasoning

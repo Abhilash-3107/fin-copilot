@@ -91,7 +91,7 @@ function MultiFilter({ label, options, selected, onChange }) {
 
 // What the server resolves for a payment's name; a row is refreshed from the
 // payment's own read after an edit instead of working the name out here.
-const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'channel']
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel']
 
 function nameFields(txn) {
   return Object.fromEntries(NAME_FIELDS.map(f => [f, txn[f]]))
@@ -848,6 +848,7 @@ export default function Transactions() {
           onClose={() => { setActiveTxn(null); setActiveAnnotation(null); setDetailError(null); scrollTarget.current = null }}
           onSaved={applySavedAnnotation}
           onRenamed={applyRename}
+          onNoted={updated => applyRename(updated, 'payment')}
           loadError={detailError}
           onRetryLoad={() => openAnnotationPanel(activeTxn)}
         />

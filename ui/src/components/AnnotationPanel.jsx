@@ -10,6 +10,7 @@ import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
 import InlineError from './InlineError.jsx'
 import { couldnt } from '../lib/errors.js'
+import { noteLabel } from './PayeeHeading.jsx'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -250,6 +251,66 @@ function RenameForm({ txn, onRenamed, onCancel }) {
   )
 }
 
+// ─── NoteForm ─────────────────────────────────────────────────────────────────
+
+// A note of the user's own on this one payment. It starts from the note the row
+// shows (the UPI note when nothing of theirs is there yet), replaces it, and a
+// save with the field emptied clears it so the UPI note shows again. Like a
+// name it is a label: the printed line, category and learned rules are untouched.
+function NoteForm({ txn, onNoted, onCancel }) {
+  const toast = useToast()
+  const [note, setNote] = useState(txn.note ?? '')
+  const [saving, setSaving] = useState(false)
+
+  async function save(value) {
+    const text = value.trim()
+    if (text === (txn.note ?? '')) { onCancel(); return }
+    setSaving(true)
+    try {
+      onNoted(await api.put(`/transactions/${txn.id}/note`, { note: text || null }))
+    } catch (e) {
+      toast(couldnt('save the note', e), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="mt-3 flex flex-col gap-2.5 bg-[#1a1d27] border border-[#2d3148] rounded-md p-3"
+      onSubmit={e => { e.preventDefault(); save(note) }}
+    >
+      <label className="text-xs text-[#94a3b8]" htmlFor="note-input">Your note</label>
+      <input
+        id="note-input"
+        autoFocus
+        value={note}
+        maxLength={500}
+        onChange={e => setNote(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
+        className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={saving}
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          Save note
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0]">
+          Cancel
+        </button>
+        {txn.note_is_yours && (
+          <button type="button" disabled={saving} onClick={() => save('')} className="ml-auto text-xs text-[#94a3b8] hover:text-[#e2e8f0] underline">
+            Clear note
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}
+
 // ─── Confidence bar ───────────────────────────────────────────────────────────
 
 function ConfidenceBar({ confidence }) {
@@ -270,18 +331,25 @@ function ConfidenceBar({ confidence }) {
 // `loadError` means the payment's own record could not be read, so whether it
 // already has an annotation is unknown: the form is replaced by the error and
 // saving waits for a successful Retry.
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, loadError = null, onRetryLoad }) {
+export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, loadError = null, onRetryLoad }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
+  const [noting, setNoting] = useState(false)
   const renameButton = useRef(null)
+  const noteButton = useRef(null)
   const wasRenaming = useRef(false)
+  const wasNoting = useRef(false)
 
-  // The form takes the Rename button's place while open; when it closes, focus
-  // goes back to the button so a keyboard user is not left at the top of the page.
+  // A form takes its button's place while open; when it closes, focus goes back
+  // to the button so a keyboard user is not left at the top of the page.
   useEffect(() => {
     if (wasRenaming.current && !renaming) renameButton.current?.focus()
     wasRenaming.current = renaming
   }, [renaming])
+  useEffect(() => {
+    if (wasNoting.current && !noting) noteButton.current?.focus()
+    wasNoting.current = noting
+  }, [noting])
   const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
@@ -369,7 +437,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               <button
                 type="button"
                 ref={renameButton}
-                onClick={() => setRenaming(true)}
+                onClick={() => { setNoting(false); setRenaming(true) }}
                 className="shrink-0 inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
               >
                 <Pencil size={12} />Rename
@@ -383,9 +451,27 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               onCancel={() => setRenaming(false)}
             />
           )}
-          {txn.note && (
-            <div className="mt-2 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc]">
-              <span className="text-[#94a3b8] mr-1.5">{txn.debit_credit === 'credit' ? 'Note' : 'Your note'}</span>{txn.note}
+          {noting ? (
+            <NoteForm
+              txn={txn}
+              onNoted={updated => { setNoting(false); onNoted?.(updated) }}
+              onCancel={() => setNoting(false)}
+            />
+          ) : (
+            <div className="mt-2 flex items-start gap-3">
+              {txn.note && (
+                <div className="flex-1 min-w-0 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc] break-words">
+                  <span className="text-[#94a3b8] mr-1.5">{noteLabel(txn)}</span>{txn.note}
+                </div>
+              )}
+              <button
+                type="button"
+                ref={noteButton}
+                onClick={() => { setRenaming(false); setNoting(true) }}
+                className={`inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors ${txn.note ? 'shrink-0 mt-1.5' : ''}`}
+              >
+                <Pencil size={12} />{txn.note ? 'Edit note' : 'Add a note'}
+              </button>
             </div>
           )}
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>

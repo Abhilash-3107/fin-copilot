@@ -20,8 +20,12 @@ Levels 2, 4 and 5 are the payee's name, without any one payment's: payee_labels
 is the one place they are worked out, for the Ledger (payee_all) and insights
 alike, so the same payee is never called two things.
 
+A payment's note resolves the same way, in two steps: the note the user wrote
+on it (transactions.user_note), else the UPI note cleaned for display. It is a
+label too: nothing in the pipeline reads user_note.
+
 Rows are transactions as the query helpers return them (display_name,
-counterparty_key, raw_description, upi_meta), with the annotation's merchant
+user_note, counterparty_key, raw_description, upi_meta), with the annotation's merchant
 when the query joined it; with_payee looks it up when it did not and adds the
 display fields in place.
 """
@@ -43,6 +47,8 @@ from finance_copilot.parsers.description import (
 # Long enough for any real name, short enough that a paste of a whole bank
 # line is a mistake the form can refuse.
 MAX_NAME_LENGTH = 80
+# A note is a sentence or two, not a document.
+MAX_NOTE_LENGTH = 500
 
 
 def load_payee_names(conn: sqlite3.Connection) -> dict[str, str]:
@@ -161,7 +167,8 @@ def with_payee(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
       payee_all   what every payment to this payee is called (no payment name);
                   None for a payment with no payee key, where "every payment" means nothing
       payee_name  the name the user gave the payee, if any
-      note        the user's UPI note
+      note        the user's own note on the payment, else the UPI note they typed
+      note_is_yours  True when `note` is the one the user wrote on this payment
       channel     UPI, NEFT, Card ...; None when the line does not say
     """
     names = load_payee_names(conn)
@@ -179,7 +186,9 @@ def with_payee(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
         )
         row["payee_all"] = labels.get(key) if key else None
         row["payee_name"] = names.get(key or "")
-        row["note"] = _note(row.get("upi_meta"))
+        own_note = _clean(row.get("user_note"))
+        row["note"] = own_note or _note(row.get("upi_meta"))
+        row["note_is_yours"] = own_note is not None
         row["channel"] = channel_of(row.get("raw_description"))
     return rows
 
@@ -188,6 +197,15 @@ def set_payment_name(conn: sqlite3.Connection, transaction_id: str, name: str | 
     """Name one payment (None or blank clears it). False when it does not exist."""
     cur = conn.execute(
         "UPDATE transactions SET display_name = ? WHERE id = ?", (_clean(name), transaction_id)
+    )
+    return cur.rowcount > 0
+
+
+def set_payment_note(conn: sqlite3.Connection, transaction_id: str, note: str | None) -> bool:
+    """Write a note on one payment (None or blank clears it, and the UPI note
+    shows again). False when it does not exist."""
+    cur = conn.execute(
+        "UPDATE transactions SET user_note = ? WHERE id = ?", (_clean(note), transaction_id)
     )
     return cur.rowcount > 0
 

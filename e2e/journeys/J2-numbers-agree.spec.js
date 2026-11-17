@@ -285,4 +285,56 @@ test.describe('J2 renaming', () => {
     expect(renamed[0].counterparty_key).toBe(original.counterparty_key)
     expect(renamed[0].raw_description).toBe(original.raw_description)
   })
+
+  // A note is a label too: the person's own words replace the UPI note on the
+  // row, the search finds them, clearing brings the UPI note back, and no
+  // figure and no printed line moves.
+  test('a note on a payment shows on its row, is found by search, and clearing it brings the UPI note back', async ({ page, app }) => {
+    const [swiggy] = (await app.api.get('/transactions?include=annotation')).filter((t) => t.payee === 'Swiggy')
+    const upiNote = swiggy.note
+    expect(upiNote, 'a Swiggy payment with a UPI note').toBeTruthy()
+    const figures = () => app.api.get('/transactions/summary')
+    const before = await figures()
+
+    await startRename(page, /Swiggy/)
+    // Opening the note form closes the rename form, and starts from the note the row shows.
+    await page.getByRole('button', { name: 'Edit note' }).click()
+    await expect(page.getByRole('textbox', { name: 'Name' })).toHaveCount(0)
+    await expect(page.getByRole('textbox', { name: 'Your note' })).toHaveValue(upiNote)
+    await page.getByRole('textbox', { name: 'Your note' }).fill('Zebra crossing party')
+    await page.keyboard.press('Enter')
+    const panel = page.locator('aside').filter({ hasText: 'As printed on the statement' })
+    await expect(panel).toContainText('Your noteZebra crossing party')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('row', { name: /Swiggy Zebra crossing party\s*·\s*UPI/ })).toHaveCount(1)
+
+    // The line as printed, the key and the figures are as they were.
+    const noted = await app.api.get(`/transactions/${swiggy.id}`)
+    expect(noted.note).toBe('Zebra crossing party')
+    expect(noted.raw_description).toBe(swiggy.raw_description)
+    expect(noted.counterparty_key).toBe(swiggy.counterparty_key)
+    expect(await figures()).toEqual(before)
+
+    // The palette finds the payment by the note, and the Ledger search lists it.
+    await open(page, '/dashboard')
+    await page.keyboard.press('Control+K')
+    await page.getByRole('combobox', { name: 'Search' }).fill('zebra crossing')
+    await page.getByRole('option', { name: /Swiggy/ }).click()
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    await expect(panel).toContainText(swiggy.raw_description)
+    await expect(panel).toContainText('Zebra crossing party')
+    await page.keyboard.press('Escape')
+    await open(page, '/transactions?q=zebra')
+    await waitForRows(page)
+    await expect(page.getByRole('row')).toHaveCount(2)
+
+    // Clear it: the UPI note is back on the row, and the search no longer finds it.
+    await page.getByRole('row', { name: /Zebra crossing party/ }).click()
+    await page.getByRole('button', { name: 'Edit note' }).click()
+    await page.getByRole('button', { name: 'Clear note' }).click()
+    await expect(page.getByRole('button', { name: 'Edit note' })).toBeVisible()
+    await expect(panel).toContainText(upiNote)
+    expect((await app.api.get(`/transactions/${swiggy.id}`)).note).toBe(upiNote)
+    expect(await app.api.get('/transactions?q=zebra')).toEqual([])
+  })
 })

@@ -335,6 +335,32 @@
       "reason": "A payment can now carry a name you gave it (display_name), and its payee a name you gave the payee (payee_name). The journey renames nothing, so both are empty, and so is the cleaned-up note, which no sample or fixture payment has."
     },
     {
+      "id": "stored-payment-notes-not-set",
+      "scope": "stored",
+      "path": [
+        "transactions[*].user_note",
+        "groups[*].members[*].user_note"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "A payment can now carry a note you wrote on it (user_note). The journey writes none, so every payment starts with none."
+    },
+    {
+      "id": "stored-payment-note-is-not-yours",
+      "scope": "stored",
+      "path": [
+        "transactions[*].note_is_yours",
+        "groups[*].members[*].note_is_yours"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": false,
+      "reason": "Each payment now says whether the note it shows is one you wrote. None is, because you wrote none."
+    },
+    {
       "id": "stored-payee-label-fields",
       "scope": "stored",
       "path": [
@@ -391,6 +417,15 @@
         "added"
       ],
       "reason": "Migration 037 adds the column that holds the name you give to a single payment. Every payment starts with none."
+    },
+    {
+      "id": "stored-column-user-note",
+      "scope": "stored",
+      "path": "schema.addedColumns[transactions_user_note]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 042 adds the column that holds the note you write on a payment. Every payment starts with none."
     },
     {
       "id": "stored-column-job-scope",
@@ -546,6 +581,15 @@
         "added"
       ],
       "reason": "Migration 040 counts how many times a sorting job has been started. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-042",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[042_payment_notes]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 042 adds notes on payments. It runs once, on the first start of the new release."
     },
     {
       "id": "figures-recurring-name-as-printed",

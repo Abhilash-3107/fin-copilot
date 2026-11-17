@@ -762,7 +762,7 @@ def similar_candidates(
         f"""
         SELECT a.id AS annotation_id, a.category, a.subcategory, a.merchant, a.source,
                a.confidence, t.id AS transaction_id, t.txn_date, t.amount,
-               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.upi_meta
+               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.user_note, t.upi_meta
         FROM annotations a JOIN transactions t ON t.id = a.transaction_id
         WHERE t.id IN ({placeholders})
         """,

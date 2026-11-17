@@ -207,6 +207,29 @@ describe('Transactions', () => {
     expect(callsTo('/transactions?').some(p => p.includes('payee_key='))).toBe(false)
   })
 
+  it('writes a note on a payment and the row shows it at once, without a reload', async () => {
+    const user = userEvent.setup()
+    mockApi.put.mockResolvedValue({ ...TXNS[0], note: 'team lunch', note_is_yours: true })
+    renderPage()
+    await user.click((await screen.findAllByText('Mystery'))[0])
+    await screen.findByText('As printed on the statement')
+
+    const lists = () => callsTo('/transactions?').filter(p => p.includes('sort=')).length
+    const before = lists()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    expect(input).toHaveValue('lunch')
+    await user.clear(input)
+    await user.type(input, 'team lunch{Enter}')
+
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/t1/note', { note: 'team lunch' })
+    await waitFor(() => expect(screen.getAllByText('team lunch · UPI').length).toBeGreaterThan(0)) // the row
+    expect(screen.queryByText('lunch · UPI')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument()
+    expect(lists()).toBe(before)
+    expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
+  })
+
   it('drills by payee key: the list and the summary both get it, and the chip is named', async () => {
     renderPage(['/transactions?payee_key=AMIT.LANDLORD%40OKSBI&payee_key=OTHER'])
     await screen.findByText(/2 payments/)

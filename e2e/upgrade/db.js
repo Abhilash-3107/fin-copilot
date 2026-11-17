@@ -38,6 +38,7 @@ added = [
     table + "." + column
     for table, column in (
         ("transactions", "display_name"),
+        ("transactions", "user_note"),
         ("annotation_jobs", "transaction_ids"),
         ("annotation_jobs", "attempts"),
         ("statements", "account_id"),

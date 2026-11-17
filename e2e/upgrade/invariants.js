@@ -233,7 +233,7 @@ function groupMembersAgreeWithTheirPayment(before, after) {
     for (const m of g.members) {
       const t = payments.get(m.transaction_id)
       if (!t) continue
-      for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) {
+      for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note', 'user_note', 'note_is_yours']) {
         if (m[field] !== t[field]) problems.push(`group ${g.id} member ${m.id}: ${field} is ${JSON.stringify(m[field])}, its payment says ${JSON.stringify(t[field])}`)
       }
     }

@@ -1,4 +1,4 @@
-"""Transaction routes: list with filters, get by id with optional annotation, rename."""
+"""Transaction routes: list with filters, get by id with optional annotation, rename, note."""
 from __future__ import annotations
 
 import csv
@@ -15,8 +15,10 @@ from finance_copilot.db.queries.app_settings import get_dev_mode
 from finance_copilot.db.queries.common import parse_string_list
 from finance_copilot.db.queries.payee import (
     MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     set_payee_name,
     set_payment_name,
+    set_payment_note,
     with_payee,
 )
 from finance_copilot.db.queries.transactions import (
@@ -39,7 +41,7 @@ def _filters(
     statement_id: str | None = None,
     month: str | None = None,
     unannotated: bool = False,
-    q: str | None = Query(None, description="substring match on description, merchant, UPI note, and the names the user gave"),
+    q: str | None = Query(None, description="substring match on description, merchant, UPI note, and the names and notes the user wrote"),
     category: str | None = Query(None, description="comma-separated annotation categories; Uncategorized also matches unannotated rows"),
     source: str | None = Query(None, description="comma-separated annotation sources"),
     merchant: str | None = Query(None, description="exact annotated merchant"),
@@ -112,7 +114,7 @@ def get_transaction_facets(
 _EXPORT_COLUMNS = [
     "id", "txn_date", "amount", "debit_credit", "raw_description",
     "running_balance", "category", "subcategory", "merchant", "tags",
-    "confidence", "source", "payee",
+    "confidence", "source", "payee", "note",
 ]
 
 
@@ -144,6 +146,7 @@ def export_transactions(
             "confidence": r.get("confidence"),
             "source": r.get("source"),
             "payee": r["payee"],
+            "note": r["note"],
         })
 
     if format == "json":
@@ -217,6 +220,23 @@ def rename_payment(
     """Name this one payment. Clearing it falls back to the payee's name."""
     _payment_or_404(conn, transaction_id)
     set_payment_name(conn, transaction_id, body.name)
+    conn.commit()
+    return get_transaction(transaction_id, conn)
+
+
+class NoteBody(BaseModel):
+    """A note on a payment; null or blank clears it."""
+    note: str | None = Field(None, max_length=MAX_NOTE_LENGTH)
+
+
+@router.put("/{transaction_id}/note")
+def write_payment_note(
+    transaction_id: str, body: NoteBody, conn: sqlite3.Connection = Depends(get_db),
+):
+    """Write a note on this one payment. It shows wherever the UPI note does;
+    clearing it brings the UPI note back."""
+    _payment_or_404(conn, transaction_id)
+    set_payment_note(conn, transaction_id, body.note)
     conn.commit()
     return get_transaction(transaction_id, conn)
 
