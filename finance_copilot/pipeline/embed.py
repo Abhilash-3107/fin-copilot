@@ -40,6 +40,21 @@ def local_embeddings_installed() -> bool:
     return importlib.util.find_spec("fastembed") is not None
 
 
+def matching_unavailable_reason() -> str | None:
+    """Why similar payments cannot be matched right now, in words a person can
+    act on, or None when the configured provider can run. Ollama being
+    unreachable is only known by trying it, so it is not decided here."""
+    provider = settings.embedding_provider
+    if provider == "none":
+        return "Matching similar payments is turned off. Turn it on under Advanced in Settings > AI & Model."
+    if provider == "local" and not local_embeddings_installed():
+        return (
+            "The built-in matcher isn't available on this Python version. "
+            "Switch to Ollama under Advanced in Settings > AI & Model."
+        )
+    return None
+
+
 def build_embed_text(txn: TxnRow) -> str:
     """Canonical embedding text: '{debit_credit} {description}', lowercased.
 

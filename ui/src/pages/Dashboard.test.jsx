@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
 const { mockApi, mockRunAnnotationJob, refreshDemoData } = vi.hoisted(() => ({
@@ -279,8 +279,8 @@ describe('Dashboard', () => {
       return Promise.resolve([])
     })
     renderDashboard()
-    expect(await screen.findByText(/120 transactions from May are in/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Sort my transactions/ })).toBeInTheDocument()
+    expect(await screen.findByText(/120 payments from May are in/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Sort payments/ })).toBeInTheDocument()
     // Only the honest cash totals show: raw In and Out, nothing derived.
     expect(screen.getByText('In')).toBeInTheDocument()
     expect(screen.getByText('₹80,738')).toBeInTheDocument()
@@ -305,7 +305,7 @@ describe('Dashboard', () => {
       return { rule_matched: 40, rag_direct_annotated: 60, llm_annotated: 20 }
     })
     renderDashboard()
-    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
     // The job sweeps everything pending, not one statement.
     expect(mockRunAnnotationJob).toHaveBeenCalledWith({}, expect.any(Function))
     // Nothing-to-everything: the verdict hero appears after the refetch.
@@ -313,7 +313,38 @@ describe('Dashboard', () => {
       await screen.findByText((_, el) => el.tagName === 'P' && /In May, you kept/.test(el.textContent))
     ).toBeInTheDocument()
     expect(screen.getByText('Invested')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Sort my transactions/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sort payments/ })).not.toBeInTheDocument()
+  })
+
+  it('sorting also refreshes the counts, so the guesses row is not left at what it was', async () => {
+    let insights = PENDING_SUMMARY
+    let counts = { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 }
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(insights)
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(counts)
+      return Promise.resolve([])
+    })
+    mockRunAnnotationJob.mockImplementation(async () => {
+      insights = SUMMARY
+      counts = COUNTS
+      return { rule_matched: 40, rag_direct_annotated: 60, llm_annotated: 20 }
+    })
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+
+  it('loading the demo refreshes the counts and the accuracy block too', async () => {
+    let loaded = false
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(loaded ? SUMMARY : { months: [], month: null })
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(loaded ? COUNTS : { unsorted: 0, guesses: 0, set_aside: 0, set_aside_unsorted: 0 })
+      return Promise.resolve([])
+    })
+    mockApi.post.mockImplementation(async () => { loaded = true; return { transactions: 195, months: 4 } })
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Load demo data' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
   })
 
   it('stays in the setup stage when sorting fails', async () => {
@@ -323,8 +354,8 @@ describe('Dashboard', () => {
     })
     mockRunAnnotationJob.mockRejectedValue(new Error('LLM unreachable'))
     renderDashboard()
-    fireEvent.click(await screen.findByRole('button', { name: /Sort my transactions/ }))
-    expect(await screen.findByRole('button', { name: /Sort my transactions/ })).toBeEnabled()
+    fireEvent.click(await screen.findByRole('button', { name: /Sort payments/ }))
+    expect(await screen.findByRole('button', { name: /Sort payments/ })).toBeEnabled()
   })
 
   it('waits while another job holds the slot (e.g. re-attached after a reload)', async () => {
@@ -615,5 +646,87 @@ describe('privacy mode', () => {
     await screen.findByTestId('balance-sparkline')
     expect(chart.options.plugins.tooltip.callbacks.label({ raw: 71000 })).toBe('₹71,000')
     expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
+  })
+})
+
+describe('Dashboard help card', () => {
+  it('speaks of answers, not corrections or sample sizes', async () => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/annotations/accuracy'
+        ? Promise.resolve([{ category: 'Food', accuracy: 0.4, confirmed: 2, changed: 3, reviewed: 5 }])
+        : base(path)
+    ))
+    renderDashboard()
+    expect(await screen.findByText('5 answers')).toBeInTheDocument()
+    expect(screen.queryByText(/n=5/)).not.toBeInTheDocument()
+  })
+
+  it('invites you to answer a few in Teach Me when there is little to go on', async () => {
+    renderDashboard()
+    expect(await screen.findByText(/Answer a few in Teach Me/)).toBeInTheDocument()
+    expect(screen.queryByText(/corrections|Verify|shakiest/)).not.toBeInTheDocument()
+  })
+})
+
+describe('Dashboard when the API fails', () => {
+  const failOn = (prefix, fixed) => {
+    let failing = true
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (failing && path.startsWith(prefix)) return Promise.reject(new TypeError('Failed to fetch'))
+      return base(path)
+    })
+    return () => { failing = false; fixed?.() }
+  }
+
+  it('says the page could not load, never "Welcome", and recovers on Retry', async () => {
+    const heal = failOn('/insights')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your dashboard.")
+    expect(screen.queryByText(/Welcome!/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Where your help matters most')).not.toBeInTheDocument()
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Balance over time')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('one Retry on the page-level failure brings every block back', async () => {
+    let failing = true
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      failing && path !== '/statements' ? Promise.reject(new TypeError('Failed to fetch')) : base(path)
+    ))
+    renderDashboard()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your dashboard.")
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+    expect(screen.getByText(/Not enough answers yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed accuracy block in its own place while the rest stays', async () => {
+    const heal = failOn('/annotations/accuracy')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the accuracy figures.")
+    expect(screen.getByText('Balance over time')).toBeInTheDocument()
+    expect(screen.queryByText(/Not enough answers yet/)).not.toBeInTheDocument()
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText(/Not enough answers yet/)).toBeInTheDocument()
+  })
+
+  it('says so when the count of guesses waiting could not load', async () => {
+    const heal = failOn('/annotations/review-queue/counts')
+    renderDashboard()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load the guesses waiting in Teach Me.")
+    heal()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
   })
 })

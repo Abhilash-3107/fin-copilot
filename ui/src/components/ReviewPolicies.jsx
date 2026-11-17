@@ -1,17 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CategoryPicker from './CategoryPicker.jsx'
+import InlineError from './InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import { formatRupees } from './Amount.jsx'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
-const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569] transition-colors'
-const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
+const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8] transition-colors'
+const label = 'block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5'
 const EMPTY = { max_amount: '500', category: '', subcategory: '' }
 
 function sortedMessage(resolved) {
   return resolved
-    ? ` It sorted ${resolved} waiting transaction${resolved === 1 ? '' : 's'}.`
+    ? ` It sorted ${count(resolved, 'waiting payment')}.`
     : ''
 }
 
@@ -19,18 +23,11 @@ function sortedMessage(resolved) {
 // one kind today: small UPI payments to people who aren't on the People page.
 export default function ReviewPolicies() {
   const toast = useToast()
-  const [policies, setPolicies] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { data, error, reload, setData: setPolicies } = useLoad(useCallback(() => api.get('/policies'), []))
+  const policies = data ?? []
   const [draft, setDraft] = useState(EMPTY)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState(null)
-
-  useEffect(() => {
-    api.get('/policies')
-      .then(setPolicies)
-      .catch(e => toast(`Couldn't load your policies - ${e.message}`, 'error'))
-      .finally(() => setLoading(false))
-  }, [toast])
 
   const amount = Number(draft.max_amount)
   const ready = draft.category && amount > 0
@@ -47,7 +44,7 @@ export default function ReviewPolicies() {
       setDraft(EMPTY)
       toast(`Policy added.${sortedMessage(created.resolved)}`, 'success')
     } catch (err) {
-      toast(`Couldn't add policy - ${err.message}`, 'error')
+      toast(couldnt('add policy', err), 'error')
     } finally {
       setSaving(false)
     }
@@ -60,7 +57,7 @@ export default function ReviewPolicies() {
       setPolicies(ps => ps.map(x => (x.id === p.id ? updated : x)))
       if (updated.enabled) toast(`Policy resumed.${sortedMessage(updated.resolved)}`, 'success')
     } catch (err) {
-      toast(`Couldn't update policy - ${err.message}`, 'error')
+      toast(couldnt('update policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -78,7 +75,7 @@ export default function ReviewPolicies() {
       // not a string is shown as written (see ToastContext).
       toast(<>{`Limit set to ${formatRupees(amount, { decimals: 0 })}.${sortedMessage(updated.resolved)}`}</>, 'success')
     } catch (err) {
-      toast(`Couldn't update policy - ${err.message}`, 'error')
+      toast(couldnt('update policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -91,12 +88,12 @@ export default function ReviewPolicies() {
       setPolicies(ps => ps.filter(x => x.id !== p.id))
       toast(
         back
-          ? `Policy removed. ${back} transaction${back === 1 ? '' : 's'} it sorted ${back === 1 ? 'is' : 'are'} back in Teach Me.`
+          ? `Policy removed. ${count(back, 'payment')} it sorted ${back === 1 ? 'is' : 'are'} back in Teach Me.`
           : 'Policy removed.',
         'info',
       )
     } catch (err) {
-      toast(`Couldn't remove policy - ${err.message}`, 'error')
+      toast(couldnt('remove policy', err), 'error')
     } finally {
       setBusyId(null)
     }
@@ -105,10 +102,10 @@ export default function ReviewPolicies() {
   return (
     <div>
       <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Policies</h2>
-      <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
-        One answer for a kind of transaction you'd otherwise review one at a time. Small UPI
+      <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
+        One answer for a kind of payment you'd otherwise sort one at a time. Small UPI
         payments to people who aren't in your People list (autos, street vendors) get this
-        category automatically. Businesses, people you've added, and payees you've labeled
+        category automatically. Businesses, people you've added, and payees you've sorted
         differently before are never affected.
       </p>
 
@@ -138,7 +135,7 @@ export default function ReviewPolicies() {
           <button
             type="submit"
             disabled={!ready || saving}
-            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm hover:bg-[#5558e3] disabled:opacity-40 transition-colors"
+            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm hover:bg-[#5558e3] disabled:opacity-40 transition-colors"
           >
             <Plus size={14} /> {saving ? 'Adding…' : 'Add policy'}
           </button>
@@ -146,10 +143,12 @@ export default function ReviewPolicies() {
       </form>
 
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-        {loading ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">Loading…</p>
+        {error ? (
+          <InlineError what="your policies" error={error} onRetry={reload} className="m-3" />
+        ) : data == null ? (
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">Loading…</p>
         ) : policies.length === 0 ? (
-          <p className="px-5 py-4 text-sm text-[#64748b]">No policies yet.</p>
+          <p className="px-5 py-4 text-sm text-[#94a3b8]">No policies yet.</p>
         ) : (
           <ul className="divide-y divide-[#2d3148]">
             {policies.map(p => (
@@ -169,7 +168,7 @@ export default function ReviewPolicies() {
                 </label>
                 <span className="text-[#cbd5e1] flex-1 min-w-[10rem]">
                   → {p.category}
-                  {p.subcategory && <span className="text-[#64748b]"> › {p.subcategory}</span>}
+                  {p.subcategory && <span className="text-[#94a3b8]"> › {p.subcategory}</span>}
                 </span>
                 <div className="flex items-center gap-3 ml-auto">
                   <button
@@ -187,7 +186,7 @@ export default function ReviewPolicies() {
                     disabled={busyId === p.id}
                     aria-label="Remove policy"
                     title="Remove policy"
-                    className="text-[#64748b] hover:text-[#f87171] transition-colors disabled:opacity-40"
+                    className="text-[#94a3b8] hover:text-[#f87171] transition-colors disabled:opacity-40"
                   >
                     <X size={15} />
                   </button>

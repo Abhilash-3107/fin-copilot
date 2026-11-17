@@ -37,6 +37,31 @@ describe('formatRupees', () => {
   })
 })
 
+describe('<Amount> polarity', () => {
+  // Red is for a change in the bad direction, never for a plain debit.
+  it('shows a debit in the surrounding ink with a minus, never red or green', () => {
+    renderWithPrivacy(<Amount value={250} debitCredit="debit" />)
+    const el = screen.getByText('−₹250.00')
+    expect(el.className).not.toMatch(/red|green|emerald/)
+  })
+
+  it('shows a credit in green with a plus', () => {
+    renderWithPrivacy(<Amount value={250} debitCredit="credit" />)
+    expect(screen.getByText('+₹250.00')).toHaveClass('text-green-400')
+  })
+
+  it('leaves a plain figure in the surrounding ink', () => {
+    renderWithPrivacy(<Amount value={250} />)
+    expect(screen.getByText('₹250.00').className).not.toMatch(/red|green|emerald/)
+  })
+
+  it('keeps a credit green when privacy mode blurs it', () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    const { container } = renderWithPrivacy(<Amount value={250} debitCredit="credit" />)
+    expect(container.firstChild).toHaveClass('text-green-400')
+  })
+})
+
 describe('<Amount>', () => {
   it('renders the formatted amount when privacy mode is off', () => {
     renderWithPrivacy(<Amount value={2500} decimals={0} />)

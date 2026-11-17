@@ -1,21 +1,28 @@
 import { useId } from 'react'
+import { useDialog } from '../lib/useDialog.js'
 
-export default function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', onConfirm, onCancel, danger }) {
+export default function ConfirmDialog({ open, ...props }) {
+  return open ? <Dialog {...props} /> : null
+}
+
+function Dialog({ title, description, confirmLabel = 'Confirm', onConfirm, onCancel, danger }) {
   const titleId = useId()
-  if (!open) return null
+  const dialog = useDialog({ onCancel, onConfirm, danger })
   return (
     <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center" onClick={onCancel}>
       <div
+        {...dialog}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="bg-[#1a1d27] border border-[#2d3148] rounded-xl w-96 max-w-[90vw] p-6"
+        className="bg-[#1a1d27] border border-[#2d3148] rounded-xl w-96 max-w-[90vw] p-6 outline-none"
         onClick={e => e.stopPropagation()}
       >
         <h3 id={titleId} className="text-sm font-semibold text-[#e2e8f0] mb-2">{title}</h3>
         {description && <p className="text-sm text-[#94a3b8] mb-5">{description}</p>}
         <div className="flex gap-3 justify-end">
           <button
+            data-autofocus={danger ? '' : undefined}
             onClick={onCancel}
             className="px-4 py-2 rounded-md bg-[#1e2235] text-[#94a3b8] text-sm hover:text-[#e2e8f0] transition-colors"
           >
@@ -26,7 +33,7 @@ export default function ConfirmDialog({ open, title, description, confirmLabel =
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               danger
                 ? 'bg-red-700 hover:bg-red-600 text-white'
-                : 'bg-[#6366f1] hover:opacity-90 text-white'
+                : 'bg-[#4f46e5] hover:opacity-90 text-white'
             }`}
           >
             {confirmLabel}

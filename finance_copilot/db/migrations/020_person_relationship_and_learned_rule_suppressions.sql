@@ -1,12 +1,12 @@
 -- Migration 020: two related bits of merchant-memory hygiene.
 --
--- 1. people.relationship — how the user knows this person (dad, mom, friend, …).
+-- 1. people.relationship - how the user knows this person (dad, mom, friend, …).
 --    A subset of relationships (dad/mom/sister/wife/…) map internally to the
 --    Family subcategory so the stage-1 person rule can label those transfers as
 --    Transfers › Family instead of the generic Peer Transfer. Nullable: an
 --    unlabelled person keeps the old Peer Transfer behaviour.
 --
--- 2. learned_rule_suppressions — a user's explicit "stop showing / applying this
+-- 2. learned_rule_suppressions - a user's explicit "stop showing / applying this
 --    learned merchant rule". Learned rules are computed live from verified labels
 --    (no stored table), so suppression is the one bit of user state that overrides
 --    them. Keyed by counterparty_key (the same identity lookup_learned_rule uses).

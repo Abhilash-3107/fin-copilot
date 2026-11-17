@@ -9,7 +9,7 @@ export default function Delta({ delta, label, goodWhenDown = false, className = 
   // draws a coloured "▲ ₹0".
   const rupees = Math.round(delta)
   if (rupees === 0) {
-    return <span className={`${className} text-[#64748b]`}>same as {label}</span>
+    return <span className={`${className} text-[#94a3b8]`}>same as {label}</span>
   }
   const up = rupees > 0
   const good = goodWhenDown ? !up : up

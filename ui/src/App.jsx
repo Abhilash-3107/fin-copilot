@@ -6,8 +6,10 @@ import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
 import { DemoDataProvider } from './contexts/DemoDataContext.jsx'
+import { ROUTER_FUTURE } from './lib/routerFuture.js'
 import Layout from './components/Layout.jsx'
 import TokenGate from './components/TokenGate.jsx'
+import NotFound from './pages/NotFound.jsx'
 
 // Route-level code splitting: each page is its own chunk, so the ~150 KB
 // Chart.js bundle only loads on the pages that render a chart (Dashboard,
@@ -22,7 +24,7 @@ const Insights = lazy(() => import('./pages/Insights.jsx'))
 const Settings = lazy(() => import('./pages/Settings.jsx'))
 
 function PageFallback() {
-  return <div className="p-6 text-sm text-[#475569]">Loading…</div>
+  return <div className="p-6 text-sm text-[#94a3b8]">Loading…</div>
 }
 
 export default function App() {
@@ -34,7 +36,7 @@ export default function App() {
       <PeriodProvider>
       <AnnotationJobProvider>
       <DemoDataProvider>
-      <HashRouter>
+      <HashRouter future={ROUTER_FUTURE}>
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Navigate to="/dashboard" replace />} />
@@ -46,6 +48,7 @@ export default function App() {
             <Route path="upload" element={<Suspense fallback={<PageFallback />}><Upload /></Suspense>} />
             <Route path="insights" element={<Suspense fallback={<PageFallback />}><Insights /></Suspense>} />
             <Route path="settings" element={<Suspense fallback={<PageFallback />}><Settings /></Suspense>} />
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
       </HashRouter>

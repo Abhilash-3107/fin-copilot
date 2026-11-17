@@ -4,10 +4,18 @@ import { Sparkles, ArrowRight } from 'lucide-react'
 
 // What each background job kind is doing, in the user's words, and where the
 // card leads. A re-embed (model switch, or an embed-format upgrade on launch)
-// rebuilds retrieval memory; it categorizes nothing, so it must not say it does.
+// updates how payments are matched; it sorts nothing, so it must not say it does. A
+// model download blocks sorting on this computer, so it shows here too: its
+// numbers are bytes. A kind this list has not met still gets a plain card.
 const KINDS = {
-  annotate: { title: 'Categorizing your transactions', to: '/transactions' },
-  reembed: { title: 'Refreshing AI memory', to: '/settings' },
+  annotate: { title: 'Sorting your payments', to: '/transactions' },
+  reembed: { title: 'Updating matching', to: '/settings?tab=ai' },
+  model_download: { title: 'Downloading the AI model', to: '/settings?tab=ai', bytes: true },
+}
+const UNKNOWN_KIND = { title: 'Working in the background', to: '/settings' }
+
+function gigabytesOrMegabytes(n) {
+  return n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.round(n / 1024 ** 2)} MB`
 }
 
 // Floating realtime progress card for a running background job.
@@ -15,7 +23,7 @@ const KINDS = {
 // null. Renders nothing when there is no active job.
 export default function AnnotationProgress({ job }) {
   if (!job) return null
-  const { title, to } = KINDS[job.kind]
+  const { title, to, bytes } = KINDS[job.kind] ?? UNKNOWN_KIND
 
   const total = job.total ?? 0
   const processed = job.processed ?? 0
@@ -49,7 +57,13 @@ export default function AnnotationProgress({ job }) {
       </div>
 
       <div className="flex justify-between mt-2 text-xs text-[#94a3b8] tabular-nums">
-        <span>{indeterminate ? 'Getting started…' : `${processed} of ${total}`}</span>
+        <span>
+          {indeterminate
+            ? 'Getting started…'
+            : bytes
+              ? `${gigabytesOrMegabytes(processed)} of ${gigabytesOrMegabytes(total)}`
+              : `${processed} of ${total}`}
+        </span>
         {!indeterminate && <span>{pct}%</span>}
       </div>
     </Link>,

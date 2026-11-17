@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { GitMerge, ArrowRight, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 // "Tidy up" for Settings > Categories: subcategories that look like the same
 // thing, and transactions carrying a subcategory name that no longer exists.
@@ -15,7 +15,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
   const [targets, setTargets] = useState({})
   const [confirming, setConfirming] = useState(null)
 
-  if (!health || (health.duplicates.length === 0 && health.orphans.length === 0)) return null
+  // A malformed payload (not the {duplicates, orphans} shape) reads as tidy.
+  const duplicates = Array.isArray(health?.duplicates) ? health.duplicates : []
+  const orphans = Array.isArray(health?.orphans) ? health.orphans : []
+  if (duplicates.length === 0 && orphans.length === 0) return null
 
   const pairKey = d => `${d.keep.id}|${d.merge.id}`
 
@@ -25,10 +28,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
     setBusy(pairKey(d))
     try {
       const { moved } = await api.post(`/categories/subcategories/${d.merge.id}/merge`, { target_id: d.keep.id })
-      toast(`Merged "${d.merge.name}" into "${d.keep.name}" - ${plural(moved, 'transaction')} moved`, 'info')
+      toast(`Merged "${d.merge.name}" into "${d.keep.name}" - ${count(moved, 'payment')} moved`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't merge - ${e.message}`, 'error')
+      toast(couldnt('merge', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -41,7 +44,7 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       toast(`Keeping "${d.merge.name}" and "${d.keep.name}" separate`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't save - ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -56,10 +59,10 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       const { moved } = await api.post('/categories/tidy-up/orphans', {
         category_id: o.category_id, name: o.subcategory, target_id: target,
       })
-      toast(`Moved ${plural(moved, 'transaction')}`, 'info')
+      toast(`Moved ${count(moved, 'payment')}`, 'info')
       await onChanged()
     } catch (e) {
-      toast(`Couldn't move - ${e.message}`, 'error')
+      toast(couldnt('move', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -70,17 +73,17 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
       <div className="px-4 py-2.5 border-b border-[#4f46e5]/20">
         <span className="text-sm font-medium text-[#e2e8f0]">Tidy up</span>
         <p className="text-xs text-[#94a3b8] mt-0.5">
-          Splitting one kind of spending across two labels makes learning and insights weaker.
+          Splitting one kind of spending across two subcategories makes your totals harder to read.
         </p>
       </div>
       <ul className="divide-y divide-[#2d3148]">
-        {health.duplicates.map(d => (
+        {duplicates.map(d => (
           <li key={pairKey(d)} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
             <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
-              <span className="text-[#64748b]">{d.category} › </span>
-              "{d.merge.name}" <span className="text-[#64748b]">({d.merge.uses})</span>
+              <span className="text-[#94a3b8]">{d.category} › </span>
+              "{d.merge.name}" <span className="text-[#94a3b8]">({d.merge.uses})</span>
               {d.same_name ? ' is a duplicate of ' : ' looks like '}
-              "{d.keep.name}" <span className="text-[#64748b]">({d.keep.uses})</span>
+              "{d.keep.name}" <span className="text-[#94a3b8]">({d.keep.uses})</span>
             </span>
             <button
               onClick={() => merge(d)}
@@ -91,30 +94,30 @@ export default function TaxonomyHealth({ health, categories, onChanged }) {
             >
               <GitMerge size={13} />
               {confirming === pairKey(d)
-                ? `Move ${plural(d.merge.uses, 'transaction')} and delete "${d.merge.name}"?`
+                ? `Move ${count(d.merge.uses, 'payment')} and delete "${d.merge.name}"?`
                 : `Merge into "${d.keep.name}"`}
             </button>
             <button
               onClick={() => keepBoth(d)}
               disabled={busy === pairKey(d)}
-              className="flex items-center gap-1 text-xs text-[#64748b] hover:text-[#cbd5e1] disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#cbd5e1] disabled:opacity-40 transition-colors"
             >
               <X size={12} /> Keep both
             </button>
           </li>
         ))}
-        {health.orphans.map(o => {
+        {orphans.map(o => {
           const key = `${o.category_id}|${o.subcategory}`
           const options = categories.filter(c => c.parent_id === o.category_id)
           const value = targets[key] ?? o.suggestion?.id ?? ''
           return (
             <li key={key} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
               <span className="text-[#cbd5e1] flex-1 min-w-[14rem]">
-                {plural(o.count, 'transaction')} in {o.category} use "{o.subcategory}",
-                <span className="text-[#64748b]"> which isn't one of its subcategories</span>
+                {count(o.count, 'payment')} in {o.category} use "{o.subcategory}",
+                <span className="text-[#94a3b8]"> which isn't one of its subcategories</span>
               </span>
               <div className="flex items-center gap-2">
-                <ArrowRight size={13} className="text-[#64748b]" />
+                <ArrowRight size={13} className="text-[#94a3b8]" />
                 <select
                   aria-label={`Move "${o.subcategory}" to`}
                   value={value}

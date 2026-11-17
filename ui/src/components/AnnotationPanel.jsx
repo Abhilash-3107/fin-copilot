@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { X, ChevronDown, ChevronRight, Plus, Trash2, Pencil } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -8,6 +8,8 @@ import TagInput from './TagInput.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
+import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -47,7 +49,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => [...prev, group])
       toast(`Added to "${group.name}"`, 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('add it to the group', e), 'error')
     }
     setSearch('')
     setSuggestions([])
@@ -61,7 +63,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => [...prev, group])
       toast(`Created and added to "${group.name}"`, 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('create the group', e), 'error')
     }
     setSearch('')
     setSuggestions([])
@@ -74,7 +76,7 @@ function GroupsSection({ txnId }) {
       setGroups(prev => prev.filter(g => g.id !== groupId))
       toast(`Removed from "${groupName}"`, 'info')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('remove it from the group', e), 'error')
     }
   }
 
@@ -85,7 +87,7 @@ function GroupsSection({ txnId }) {
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] hover:text-[#94a3b8] w-full mb-2"
+        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] hover:text-[#e2e8f0] w-full mb-2"
       >
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Groups
@@ -97,7 +99,7 @@ function GroupsSection({ txnId }) {
       {open && (
         <div className="flex flex-col gap-2">
           {loading ? (
-            <p className="text-xs text-[#475569]">Loading…</p>
+            <p className="text-xs text-[#94a3b8]">Loading…</p>
           ) : groups.length > 0 ? (
             groups.map(g => (
               <div key={g.id} className="flex items-center justify-between bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2">
@@ -105,7 +107,7 @@ function GroupsSection({ txnId }) {
                 <button
                   type="button"
                   onClick={() => removeFromGroup(g.id, g.name)}
-                  className="text-[#475569] hover:text-red-400 transition-colors"
+                  className="text-[#94a3b8] hover:text-red-400 transition-colors"
                 >
                   <Trash2 size={13} />
                 </button>
@@ -116,13 +118,13 @@ function GroupsSection({ txnId }) {
           {/* Add to group input */}
           <div className="relative" ref={searchRef}>
             <div className="flex items-center gap-1.5 bg-[#13151f] border border-[#2d3148] rounded-md px-2.5 py-2 focus-within:border-[#6366f1] transition-colors">
-              <Plus size={13} className="text-[#475569] shrink-0" />
+              <Plus size={13} className="text-[#94a3b8] shrink-0" />
               <input
                 value={search}
                 onChange={e => searchGroups(e.target.value)}
                 onFocus={() => search && setShowSuggestions(true)}
                 placeholder="Add to group…"
-                className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+                className="bg-transparent border-none outline-none text-sm text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
               />
             </div>
             {showSuggestions && (suggestions.length > 0 || showCreate) && (
@@ -141,7 +143,7 @@ function GroupsSection({ txnId }) {
                   <button
                     type="button"
                     onMouseDown={() => createAndAdd(search.trim())}
-                    className="w-full text-left px-3 py-2 text-sm text-[#6366f1] hover:bg-[#1e2440] transition-colors border-t border-[#2d3148]"
+                    className="w-full text-left px-3 py-2 text-sm text-[#818cf8] hover:bg-[#1e2440] transition-colors border-t border-[#2d3148]"
                   >
                     + Create group "{search.trim()}"
                   </button>
@@ -152,6 +154,99 @@ function GroupsSection({ txnId }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ─── RenameForm ───────────────────────────────────────────────────────────────
+
+// Give the payee a name for every payment to it, or this one payment a name of
+// its own. A name is only a label: the printed line, category and learned
+// rules are untouched. Clearing a name falls back to the next one down
+// (payment, payee, merchant, the payee as printed).
+function RenameForm({ txn, onRenamed, onCancel }) {
+  const toast = useToast()
+  const canRenamePayee = Boolean(txn.counterparty_key)
+  const [scope, setScope] = useState(canRenamePayee && !txn.display_name ? 'payee' : 'payment')
+  // What the field starts with: the payment's current name, or for the payee
+  // the name every payment to it goes by (not this payment's own).
+  const prefill = s => (s === 'payee' ? txn.payee_all : txn.payee) ?? ''
+  const [name, setName] = useState(prefill(scope))
+  const [saving, setSaving] = useState(false)
+  // A payee name never clears a payment's own name, so say when this one keeps its.
+  const keepsOwnName = scope === 'payee' && Boolean(txn.display_name)
+  const hasName = scope === 'payee' ? Boolean(txn.payee_name) : Boolean(txn.display_name)
+
+  function pick(next) {
+    if (name === prefill(scope)) setName(prefill(next))
+    setScope(next)
+  }
+
+  async function save(value, to = scope) {
+    setSaving(true)
+    try {
+      const path = to === 'payee' ? 'payee-name' : 'name'
+      const updated = await api.put(`/transactions/${txn.id}/${path}`, { name: value })
+      onRenamed(updated, to)
+    } catch (e) {
+      toast(couldnt('rename', e), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="mt-3 flex flex-col gap-2.5 bg-[#1a1d27] border border-[#2d3148] rounded-md p-3"
+      onSubmit={e => { e.preventDefault(); if (name.trim()) save(name.trim()) }}
+    >
+      <label className="text-xs text-[#94a3b8]" htmlFor="rename-input">Name</label>
+      <input
+        id="rename-input"
+        autoFocus
+        value={name}
+        maxLength={80}
+        onChange={e => setName(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
+        className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+      />
+      <div className="flex flex-col gap-1.5 text-sm text-[#cbd5e1]">
+        {canRenamePayee && (
+          <label className="flex items-center gap-2">
+            <input type="radio" name="rename-scope" checked={scope === 'payee'} onChange={() => pick('payee')} className="accent-[#6366f1]" />
+            Every payment to {txn.payee_all}
+          </label>
+        )}
+        <label className="flex items-center gap-2">
+          <input type="radio" name="rename-scope" checked={scope === 'payment'} onChange={() => pick('payment')} className="accent-[#6366f1]" />
+          Just this payment
+        </label>
+      </div>
+      {keepsOwnName && (
+        <p className="text-xs text-[#94a3b8] flex items-center gap-2">
+          <span>This payment keeps its own name, {txn.display_name}</span>
+          <button type="button" disabled={saving} onClick={() => save(null, 'payment')} className="text-[#a5b4fc] hover:text-[#e2e8f0] underline">
+            Clear name
+          </button>
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={saving || !name.trim()}
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          Save name
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0]">
+          Cancel
+        </button>
+        {hasName && (
+          <button type="button" disabled={saving} onClick={() => save(null)} className="ml-auto text-xs text-[#94a3b8] hover:text-[#e2e8f0] underline">
+            {keepsOwnName ? 'Clear payee name' : 'Clear name'}
+          </button>
+        )}
+      </div>
+    </form>
   )
 }
 
@@ -172,9 +267,22 @@ function ConfidenceBar({ confidence }) {
 
 // ─── AnnotationPanel ──────────────────────────────────────────────────────────
 
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
+// `loadError` means the payment's own record could not be read, so whether it
+// already has an annotation is unknown: the form is replaced by the error and
+// saving waits for a successful Retry.
+export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, loadError = null, onRetryLoad }) {
   const toast = useToast()
-  const [form, setForm] = useState({ category: '', subcategory: '', merchant: '', tags: [] })
+  const [renaming, setRenaming] = useState(false)
+  const renameButton = useRef(null)
+  const wasRenaming = useRef(false)
+
+  // The form takes the Rename button's place while open; when it closes, focus
+  // goes back to the button so a keyboard user is not left at the top of the page.
+  useEffect(() => {
+    if (wasRenaming.current && !renaming) renameButton.current?.focus()
+    wasRenaming.current = renaming
+  }, [renaming])
+  const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
   // Reset form when transaction or annotation changes.
@@ -187,7 +295,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
     setForm({
       category:    annotation?.category    ?? '',
       subcategory: annotation?.subcategory ?? '',
-      merchant:    annotation?.merchant    ?? '',
       tags: annotation?.tags
         ? (Array.isArray(annotation.tags) ? annotation.tags : annotation.tags.split(',').filter(Boolean))
         : [],
@@ -207,7 +314,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
       const payload = {
         category:    form.category,
         subcategory: form.subcategory || null,
-        merchant:    form.merchant.trim() || null,
         tags:        form.tags,
       }
       let saved
@@ -225,7 +331,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
       onSaved?.(txn.id, saved)
       onClose?.()
     } catch (e) {
-      toast(`Save failed: ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
     } finally {
       setSaving(false)
     }
@@ -233,11 +339,6 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
 
   if (!txn) return null
 
-  const isDebit = txn.debit_credit === 'debit'
-  let upiMeta = null
-  try {
-    upiMeta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-  } catch (_) {}
   const src = annotation?.source
 
   return (
@@ -249,9 +350,9 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-[#2d3148] flex items-center justify-between shrink-0">
           <h2 className="text-sm font-semibold text-[#a5b4fc]">
-            {annotation ? 'Edit annotation' : 'Annotate transaction'}
+            {loadError ? "Couldn't load this payment" : annotation ? 'Edit this payment' : 'Sort this payment'}
           </h2>
-          <button onClick={onClose} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
+          <button onClick={onClose} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors">
             <X size={17} />
           </button>
         </div>
@@ -259,15 +360,36 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
         {/* Transaction summary */}
         <div className="px-5 py-4 bg-[#13151f] border-b border-[#2d3148] shrink-0">
           <div className="flex items-start justify-between gap-4 mb-2">
-            <span className="text-xs text-[#64748b]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
-            <Amount value={txn.amount} debitCredit={txn.debit_credit} className={`text-lg font-bold tabular-nums ${isDebit ? 'text-red-400' : 'text-green-400'}`} />
+            <span className="text-xs text-[#94a3b8]">{dayjs(txn.txn_date).format('DD MMM YYYY')}</span>
+            <Amount value={txn.amount} debitCredit={txn.debit_credit} className="text-lg font-bold tabular-nums" />
           </div>
-          <p className="text-sm text-[#cbd5e1] break-words leading-relaxed">{txn.raw_description}</p>
-          {upiMeta?.note && (
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-base font-semibold text-[#e2e8f0] break-words min-w-0">{txn.payee || txn.raw_description}</h3>
+            {!renaming && (
+              <button
+                type="button"
+                ref={renameButton}
+                onClick={() => setRenaming(true)}
+                className="shrink-0 inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
+              >
+                <Pencil size={12} />Rename
+              </button>
+            )}
+          </div>
+          {renaming && (
+            <RenameForm
+              txn={txn}
+              onRenamed={(updated, scope) => { setRenaming(false); onRenamed?.(updated, scope) }}
+              onCancel={() => setRenaming(false)}
+            />
+          )}
+          {txn.note && (
             <div className="mt-2 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc]">
-              <span className="text-[#475569] mr-1.5">note</span>{upiMeta.note}
+              <span className="text-[#94a3b8] mr-1.5">{txn.debit_credit === 'credit' ? 'Note' : 'Your note'}</span>{txn.note}
             </div>
           )}
+          <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>
+          <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
           {annotation && (
             <div className="mt-3 flex items-center gap-2">
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
@@ -289,6 +411,10 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
 
         {/* Form */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+          {loadError ? (
+            <InlineError what="this payment's details" error={loadError} onRetry={onRetryLoad} />
+          ) : (
+          <>
           <CategoryPicker
             category={form.category}
             subcategory={form.subcategory}
@@ -296,25 +422,15 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
           />
 
           <div>
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">
-              Merchant
-            </label>
-            <input
-              value={form.merchant}
-              onChange={e => setForm(f => ({ ...f, merchant: e.target.value }))}
-              placeholder="e.g. Swiggy"
-              className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] transition-colors placeholder:text-[#475569]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5">
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">
               Tags
             </label>
             <TagInput tags={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} />
           </div>
 
           <GroupsSection txnId={txn.id} />
+          </>
+          )}
         </div>
 
         {/* Footer */}
@@ -323,15 +439,17 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved }) {
             onClick={onClose}
             className="px-4 py-2 rounded-md bg-[#1e2235] text-[#94a3b8] text-sm hover:text-[#e2e8f0] transition-colors"
           >
-            Cancel
+            {loadError ? 'Close' : 'Cancel'}
           </button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            {saving ? 'Saving…' : annotation ? 'Update annotation' : 'Save annotation'}
-          </button>
+          {!loadError && (
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 px-4 py-2 rounded-md bg-[#4f46e5] text-white text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            >
+              {saving ? 'Saving…' : annotation ? 'Update' : 'Save'}
+            </button>
+          )}
         </div>
       </aside>
     </>

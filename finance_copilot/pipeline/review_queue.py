@@ -18,7 +18,9 @@ def group_review_queue(items: list[dict]) -> list[dict]:
 
     Groups rank by their largest item's impact plus ln(group size): a payee
     seen many times rises, but never above a single large unknown just by
-    count. Adds group_key, group_size, payee and payee_kind to every item.
+    count. Adds group_key, group_size and payee_kind to every item; the name
+    to show (item["payee"]) is added by db.queries.payee.with_payee, because it
+    depends on what the user has renamed.
     """
     groups: dict[str, list[dict]] = {}
     for item in items:
@@ -35,7 +37,7 @@ def group_review_queue(items: list[dict]) -> list[dict]:
         payee = parse_description(members[0]["raw_description"]).counterparty
         kind = classify_payee(payee)
         for item in sorted(members, key=lambda i: (i["txn_date"], i["transaction_id"])):
-            ordered.append({**item, "group_key": key, "group_size": len(members), "payee": payee, "payee_kind": kind})
+            ordered.append({**item, "group_key": key, "group_size": len(members), "payee_kind": kind})
     return ordered
 
 

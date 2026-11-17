@@ -5,6 +5,8 @@ import { reloadWithToast, useToast } from '../contexts/ToastContext.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import RemoveSampleData from './RemoveSampleData.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 // Data management (4.14): export (CSV/JSON), full DB backup and restore, and an
 // irreversible delete-everything. Downloads go through the token-aware client so they work
@@ -22,7 +24,7 @@ export default function DataSettings() {
     try {
       await downloadFile(path, name)
     } catch (e) {
-      toast(`Download failed - ${e.message}`, 'error')
+      toast(couldnt('download', e), 'error')
     } finally {
       setBusy(null)
     }
@@ -46,12 +48,12 @@ export default function DataSettings() {
       // Hard reload so every page drops caches from the replaced ledger; the
       // message is shown by the reloaded app.
       reloadWithToast(
-        `Restored ${r.transactions} transaction${r.transactions === 1 ? '' : 's'} from ${file.name}. `
+        `Restored ${count(r.transactions, 'payment')} from ${file.name}. `
           + `Your previous data was saved as ${r.safety_copy}.`,
         'success',
       )
     } catch (e) {
-      toast(`Couldn't restore - ${e.message}`, 'error', 8000)
+      toast(couldnt('restore', e), 'error', 8000)
       setBusy(null)
     }
   }
@@ -64,7 +66,7 @@ export default function DataSettings() {
       // Hard reload so every page drops its now-empty caches.
       reloadWithToast('All data and settings deleted. Your categories are kept.', 'info')
     } catch (e) {
-      toast(`Couldn't delete - ${e.message}`, 'error')
+      toast(couldnt('delete', e), 'error')
       setBusy(null)
     }
   }
@@ -76,11 +78,11 @@ export default function DataSettings() {
       {removable && (
         <div>
           <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Sample data</h2>
-          <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
+          <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
             {mixed
-              ? 'Your ledger still holds the bundled sample transactions next to your own statements. '
+              ? 'Your ledger still holds the bundled sample payments next to your own statements. '
               : 'Your ledger holds the bundled sample data, not your own. '}
-            Removing it deletes the sample transactions, people, groups and rule and
+            Removing it deletes the sample payments, people, groups and rule and
             nothing else.
           </p>
           <RemoveSampleData className={btn} />
@@ -89,8 +91,8 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Export</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
-          Download your transactions with their current categories as a CSV or JSON file -
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
+          Download your payments with their current categories as a CSV or JSON file -
           your data stays yours and portable.
         </p>
         <div className="flex gap-3">
@@ -107,9 +109,9 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Backup</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
-          Download a complete snapshot of your database - transactions, categories,
-          learned rules, and memory - as a single file you can keep or restore. Your AI
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
+          Download a complete snapshot of your database - payments, categories,
+          remembered payees, and settings - as a single file you can keep or restore. Your AI
           provider's API key is left out, so the file is safe to share.
         </p>
         <div className="flex gap-3">
@@ -133,10 +135,10 @@ export default function DataSettings() {
 
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Delete everything</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed max-w-xl">
-          Permanently remove all statements, transactions, categories you've assigned,
-          people, groups, the AI's memory, and your settings (AI model and API key, review
-          threshold, developer mode, your rules and dismissed ones). The category list itself is kept. This cannot be
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed max-w-xl">
+          Permanently remove all statements, payments, categories you've assigned,
+          people, groups, remembered payees, and your settings (AI model and API key, when
+          to ask you, developer mode, your rules and dismissed ones). The category list itself is kept. This cannot be
           undone - back up first if you're unsure.
         </p>
         <button
@@ -152,7 +154,7 @@ export default function DataSettings() {
         open={restoreFile !== null}
         danger
         title="Restore from this backup?"
-        description={`Everything in the app now - statements, transactions, categories, people, groups, memory, and settings - will be replaced with the contents of ${restoreFile?.name ?? 'the backup'}. Your current data is first saved as a pre-restore file in the app's data folder, and your AI provider's API key is kept.`}
+        description={`Everything in the app now - statements, payments, categories, people, groups, remembered payees, and settings - will be replaced with the contents of ${restoreFile?.name ?? 'the backup'}. Your current data is first saved as a pre-restore file in the app's data folder, and your AI provider's API key is kept.`}
         confirmLabel="Replace and restore"
         onConfirm={restore}
         onCancel={() => setRestoreFile(null)}
@@ -162,7 +164,7 @@ export default function DataSettings() {
         open={confirmDelete}
         danger
         title="Delete all data?"
-        description="This permanently removes every statement, transaction, category assignment, person, group, and all AI memory, plus your settings: AI model and API key, review threshold, developer mode, your rules, and dismissed rules. Your category list is kept. This cannot be undone."
+        description="This permanently removes every statement, payment, category assignment, person, group, and all remembered payees, plus your settings: AI model and API key, when to ask you, developer mode, your rules, and dismissed rules. Your category list is kept. This cannot be undone."
         confirmLabel="Delete everything"
         onConfirm={deleteEverything}
         onCancel={() => setConfirmDelete(false)}

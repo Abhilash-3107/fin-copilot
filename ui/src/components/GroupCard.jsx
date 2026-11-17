@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2, HelpCircle, Plus, Search, X, Pencil } from 'lucide-react'
 import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import { formatDateRange } from '../lib/dates.js'
@@ -8,6 +8,9 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import Amount from './Amount.jsx'
 import PeoplePicker from './PeoplePicker.jsx'
 import Tooltip from './Tooltip.jsx'
+import TagInput from './TagInput.jsx'
+import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
 
 const TXN_TYPES = ['split', 'reimbursement', 'refund', 'transfer', 'event']
 const TYPE_HELP = 'Matters for payments you made. split / event / blank = shared cost, divided with you · transfer / refund = money you sent them, owed back in full · reimbursement = repaying something they covered, no effect. Money you received always counts as paid back.'
@@ -38,7 +41,7 @@ function AddTransactionSearch({ existingIds, onAdd }) {
         setResults(rows.filter(r => !existingIds.has(r.id)))
         setOpen(true)
       } catch (e) {
-        toast(`Search failed: ${e.message}`, 'error')
+        toast(couldnt('search', e), 'error')
       }
     }, 300)
     return () => clearTimeout(t)
@@ -47,16 +50,16 @@ function AddTransactionSearch({ existingIds, onAdd }) {
   return (
     <div ref={ref} className="relative px-3 py-2.5">
       <div className="flex items-center gap-2 bg-[#0f1117] border border-[#2d3148] rounded-md px-2.5 py-1.5 focus-within:border-[#6366f1] transition-colors max-w-md">
-        <Search size={13} className="text-[#475569] shrink-0" />
+        <Search size={13} className="text-[#94a3b8] shrink-0" />
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
           onFocus={() => query.trim() && setOpen(true)}
-          placeholder="Add a transaction to this group…"
-          className="bg-transparent border-none outline-none text-xs text-[#e2e8f0] flex-1 placeholder:text-[#475569]"
+          placeholder="Add a payment to this group…"
+          className="bg-transparent border-none outline-none text-xs text-[#e2e8f0] flex-1 placeholder:text-[#94a3b8]"
         />
         {query && (
-          <button type="button" onClick={() => { setQuery(''); setResults([]) }} className="text-[#475569] hover:text-[#94a3b8]">
+          <button type="button" onClick={() => { setQuery(''); setResults([]) }} className="text-[#94a3b8] hover:text-[#e2e8f0]">
             <X size={12} />
           </button>
         )}
@@ -70,10 +73,10 @@ function AddTransactionSearch({ existingIds, onAdd }) {
               onClick={async () => { await onAdd(r.id); setQuery(''); setResults([]); setOpen(false) }}
               className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[#1e2440] transition-colors border-b border-[#1e2235] last:border-b-0"
             >
-              <span className="text-[10px] text-[#64748b] whitespace-nowrap tabular-nums">{dayjs(r.txn_date).format('DD MMM YY')}</span>
-              <span className="text-xs text-[#cbd5e1] flex-1 truncate">{r.raw_description}</span>
-              <Amount value={r.amount} debitCredit={r.debit_credit} className={`text-xs tabular-nums shrink-0 ${r.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`} />
-              <Plus size={12} className="text-[#6366f1] shrink-0" />
+              <span className="text-[10px] text-[#94a3b8] whitespace-nowrap tabular-nums">{dayjs(r.txn_date).format('DD MMM YY')}</span>
+              <span className="text-xs text-[#cbd5e1] flex-1 truncate">{r.payee}</span>
+              <Amount value={r.amount} debitCredit={r.debit_credit} className="text-xs tabular-nums shrink-0" />
+              <Plus size={12} className="text-[#818cf8] shrink-0" />
             </button>
           ))}
         </div>
@@ -87,7 +90,7 @@ function TypeSelect({ member, onChange }) {
     <select
       value={member.txn_type ?? ''}
       onChange={e => onChange({ txn_type: e.target.value })}
-      aria-label={`Type for ${member.raw_description}`}
+      aria-label={`Type for ${member.payee}`}
       className="bg-[#1a1d27] border border-[#2d3148] text-[#e2e8f0] px-1.5 py-0.5 rounded text-xs focus:outline-none focus:border-[#6366f1]"
     >
       <option value="">-</option>
@@ -101,8 +104,8 @@ function RemoveMemberButton({ member, onRemove }) {
     <button
       type="button"
       onClick={onRemove}
-      aria-label={`Remove ${member.raw_description} from group`}
-      className="text-[#475569] hover:text-red-400 transition-colors"
+      aria-label={`Remove ${member.payee} from group`}
+      className="text-[#94a3b8] hover:text-red-400 transition-colors"
     >
       <Trash2 size={12} />
     </button>
@@ -131,7 +134,7 @@ function OwedLine({ summary }) {
           {owedToYou.name ?? `${owedToYou.count} people`} {owedToYou.count === 1 ? 'owes' : 'owe'} you <Money value={owedToYou.total} />
         </span>
       )}
-      {mixed && <span className="text-[#475569]"> · </span>}
+      {mixed && <span className="text-[#94a3b8]"> · </span>}
       {youOwe.count > 0 && (
         <span className="text-red-400">
           {mixed ? 'you' : 'You'} owe {youOwe.name ?? `${youOwe.count} people`} <Money value={youOwe.total} />
@@ -148,7 +151,7 @@ function SettleUp({ settleUp, hasPeople }) {
     if (!hasPeople) return null
     return (
       <div className="border-t border-[#2d3148] px-4 py-3 bg-[#10121a] rounded-b-lg flex items-center gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Settle up</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Settle up</span>
         <span className="text-xs text-green-400">Everyone's settled up</span>
       </div>
     )
@@ -156,9 +159,9 @@ function SettleUp({ settleUp, hasPeople }) {
   return (
     <div className="border-t border-[#2d3148] px-4 py-3 bg-[#10121a] rounded-b-lg">
       <div className="flex items-center gap-1.5 mb-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#64748b]">Settle up</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">Settle up</span>
         <Tooltip content="Money a tagged person sent you counts in full. A payment you made is split evenly across them plus you (split, event or blank), counted in full (transfer, refund), or ignored (reimbursement: repaying something they covered)." position="bottom">
-          <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+          <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
         </Tooltip>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -178,12 +181,17 @@ function SettleUp({ settleUp, hasPeople }) {
   )
 }
 
-export default function GroupCard({ group, onDelete }) {
+export default function GroupCard({ group, onDelete, onUpdate }) {
   const toast = useToast()
   const [expanded, setExpanded] = useState(false)
   const [detail, setDetail] = useState(null)
   const [loading, setLoading] = useState(false)
   const [people, setPeople] = useState([])
+  const [loadError, setLoadError] = useState(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({ name: '', note: '', labels: [] })
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   // The open card's detail carries a fresh rollup from the server; the list's
   // copy (group.summary) only describes the group as it was when the page loaded.
@@ -205,23 +213,62 @@ export default function GroupCard({ group, onDelete }) {
       setPeople(prev => [...prev, person])
       return person
     } catch (e) {
-      toast(`Couldn't add ${name}: ${e.message}`, 'error')
+      toast(couldnt(`add ${name}`, e), 'error')
       return null
     }
   }
 
-  async function toggle() {
-    if (!expanded && !detail) {
-      setLoading(true)
-      try {
-        await reload()
-      } catch (e) {
-        toast(`Failed to load group: ${e.message}`, 'error')
-      } finally {
-        setLoading(false)
-      }
+  async function open() {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      await reload()
+    } catch (e) {
+      setLoadError(e)
+    } finally {
+      setLoading(false)
     }
+  }
+
+  async function toggle() {
+    if (!expanded && !detail) open()
     setExpanded(o => !o)
+  }
+
+  function startEdit() {
+    setDraft({ name: group.name, note: group.note ?? '', labels: labels })
+    setSaveError('')
+    setEditing(true)
+  }
+
+  async function saveEdit() {
+    const name = draft.name.trim()
+    if (!name || saving) return
+    const note = draft.note.trim()
+    if (name === group.name && note === (group.note ?? '') && draft.labels.join('\n') === labels.join('\n')) {
+      setEditing(false)
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    try {
+      const updated = await api.patch(`/groups/${group.id}`, { name, note, labels: draft.labels })
+      onUpdate?.(updated)
+      setEditing(false)
+    } catch (e) {
+      // Shown in the form beside the field that caused it, e.g. a name already taken.
+      setSaveError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Enter saves and Escape cancels, from any field in the form; a label being
+  // typed owns its own Enter (it adds the label), and a button owns its own
+  // (Enter on Cancel must cancel, not save).
+  function onEditKeyDown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
+    else if (e.key === 'Enter' && !e.defaultPrevented && !e.target.closest('button')) { e.preventDefault(); saveEdit() }
   }
 
   async function updateMember(txnId, patch) {
@@ -229,7 +276,7 @@ export default function GroupCard({ group, onDelete }) {
       await api.patch(`/groups/${group.id}/members/${txnId}`, patch)
       await reload()
     } catch (e) {
-      toast(`Update failed: ${e.message}`, 'error')
+      toast(couldnt('update', e), 'error')
     }
   }
 
@@ -238,7 +285,7 @@ export default function GroupCard({ group, onDelete }) {
       await api.delete(`/groups/${group.id}/members/${txnId}`)
       await reload()
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('remove it from the group', e), 'error')
     }
   }
 
@@ -248,7 +295,7 @@ export default function GroupCard({ group, onDelete }) {
       await reload()
       toast('Added to group', 'success')
     } catch (e) {
-      toast(`Failed: ${e.message}`, 'error')
+      toast(couldnt('add it to the group', e), 'error')
     }
   }
 
@@ -268,10 +315,51 @@ export default function GroupCard({ group, onDelete }) {
           onClick={toggle}
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.name}`}
-          className="text-[#64748b] hover:text-[#94a3b8] shrink-0"
+          className="text-[#94a3b8] hover:text-[#e2e8f0] shrink-0"
         >
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
+        {editing ? (
+          <div className="flex-1 min-w-0 space-y-2" onKeyDown={onEditKeyDown}>
+            <input
+              autoFocus
+              aria-label="Group name"
+              value={draft.name}
+              onChange={e => { setDraft(d => ({ ...d, name: e.target.value })); setSaveError('') }}
+              className="w-full bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+            />
+            <input
+              aria-label="Note"
+              value={draft.note}
+              onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
+              placeholder="Add a note"
+              className="w-full h-[36px] bg-[#0f1117] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-xs focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]"
+            />
+            <TagInput
+              tags={draft.labels}
+              onChange={labels => setDraft(d => ({ ...d, labels }))}
+              placeholder="Labels - type and press Enter"
+            />
+            {saveError && <p role="alert" className="text-xs text-[#fca5a5]">{saveError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={saving || !draft.name.trim()}
+                className="bg-[#4f46e5] text-white px-3 py-1 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="px-3 py-1 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="flex-1 min-w-0 cursor-pointer" onClick={toggle}>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-[#e2e8f0]">{group.name}</span>
@@ -279,27 +367,39 @@ export default function GroupCard({ group, onDelete }) {
               <span key={l} className="text-[10px] bg-[#1e2440] text-[#a5b4fc] px-1.5 py-0.5 rounded-full">{l}</span>
             ))}
           </div>
-          <div className="flex items-center gap-2 mt-0.5 text-xs text-[#64748b] flex-wrap">
+          <div className="flex items-center gap-2 mt-0.5 text-xs text-[#94a3b8] flex-wrap">
             {dateRange && <span>{dateRange}</span>}
-            {dateRange && <span className="text-[#2d3148]">·</span>}
+            {dateRange && <span aria-hidden="true" className="text-[#94a3b8]">·</span>}
             <span>{count(summary.member_count ?? 0, 'payment')}</span>
-            {group.note && <><span className="text-[#2d3148]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
+            {group.note && <><span aria-hidden="true" className="text-[#94a3b8]">·</span><span className="truncate max-w-[240px]">{group.note}</span></>}
           </div>
         </div>
+        )}
         {/* Your share and what is still owed */}
         {summary.member_count > 0 && (
           <div className="text-right shrink-0">
             <div className="text-sm tabular-nums text-[#e2e8f0]">
-              <span className="text-xs text-[#64748b]">Your share</span>{' '}
+              <span className="text-xs text-[#94a3b8]">Your share</span>{' '}
               <span className="font-medium tabular-nums"><Money value={summary.your_share} /></span>
             </div>
             <div className="text-xs tabular-nums"><OwedLine summary={summary} /></div>
           </div>
         )}
+        {!editing && (
+          <button
+            type="button"
+            onClick={startEdit}
+            aria-label={`Edit ${group.name}`}
+            className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+            title="Edit name, note and labels"
+          >
+            <Pencil size={14} />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onDelete?.(group)}
-          className="text-[#475569] hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
+          className="text-[#94a3b8] hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
           title="Delete group"
         >
           <Trash2 size={14} />
@@ -310,7 +410,9 @@ export default function GroupCard({ group, onDelete }) {
       {expanded && (
         <div className="border-t border-[#2d3148]">
           {loading ? (
-            <p className="px-4 py-3 text-xs text-[#475569]">Loading…</p>
+            <p className="px-4 py-3 text-xs text-[#94a3b8]">Loading…</p>
+          ) : loadError ? (
+            <InlineError what="this group" error={loadError} onRetry={open} className="m-3" />
           ) : (
             <>
               {detail?.members?.length ? (
@@ -318,14 +420,14 @@ export default function GroupCard({ group, onDelete }) {
                 <table className="w-full text-xs hidden md:table">
                   <thead>
                     <tr>
-                      {['Date', 'Description', 'Amount', 'People'].map(h => (
-                        <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">{h}</th>
+                      {['Date', 'Payee', 'Amount', 'People'].map(h => (
+                        <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                       ))}
-                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235]">
+                      <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">
                         <span className="flex items-center gap-1">
                           Type
                           <Tooltip content={TYPE_HELP} position="bottom">
-                            <HelpCircle size={11} className="text-[#475569] hover:text-[#94a3b8] transition-colors cursor-help" />
+                            <HelpCircle size={11} className="text-[#94a3b8] hover:text-[#e2e8f0] transition-colors cursor-help" />
                           </Tooltip>
                         </span>
                       </th>
@@ -336,8 +438,8 @@ export default function GroupCard({ group, onDelete }) {
                     {detail.members.map(m => (
                       <tr key={m.transaction_id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27]">
                         <td className="px-3 py-2 text-[#94a3b8] whitespace-nowrap">{dayjs(m.txn_date).format('DD MMM YY')}</td>
-                        <td className="px-3 py-2 text-[#cbd5e1] max-w-[160px] truncate">{m.raw_description}</td>
-                        <td className={`px-3 py-2 tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
+                        <td className="px-3 py-2 text-[#cbd5e1] max-w-[160px] truncate">{m.payee}</td>
+                        <td className="px-3 py-2 tabular-nums whitespace-nowrap">
                           <Amount value={m.amount} debitCredit={m.debit_credit} />
                         </td>
                         <td className="px-3 py-1.5 min-w-[180px] w-[280px]">
@@ -365,10 +467,10 @@ export default function GroupCard({ group, onDelete }) {
                     <li key={m.transaction_id} className="px-4 py-3 space-y-2 text-xs">
                       <div className="flex items-start gap-3">
                         <div className="flex-1 min-w-0">
-                          <p className="text-[#cbd5e1] truncate">{m.raw_description}</p>
-                          <p className="text-[#64748b]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
+                          <p className="text-[#cbd5e1] truncate">{m.payee}</p>
+                          <p className="text-[#94a3b8]">{dayjs(m.txn_date).format('DD MMM YY')}</p>
                         </div>
-                        <span className={`tabular-nums whitespace-nowrap ${m.debit_credit === 'debit' ? 'text-red-400' : 'text-green-400'}`}>
+                        <span className="tabular-nums whitespace-nowrap">
                           <Amount value={m.amount} debitCredit={m.debit_credit} />
                         </span>
                         <RemoveMemberButton member={m} onRemove={() => removeMember(m.transaction_id)} />
@@ -390,7 +492,7 @@ export default function GroupCard({ group, onDelete }) {
                 </ul>
                 </>
               ) : (
-                <p className="px-4 py-3 text-xs text-[#475569]">No transactions yet. Search below to add some.</p>
+                <p className="px-4 py-3 text-xs text-[#94a3b8]">No payments yet. Search below to add some.</p>
               )}
 
               <AddTransactionSearch existingIds={existingIds} onAdd={addMember} />

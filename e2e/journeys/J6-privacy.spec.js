@@ -36,7 +36,7 @@ const CONTENT = {
   '/transactions': (page) => figuresLoaded(page),
   '/people': (page) => figuresLoaded(page),
   '/groups': (page) => figuresLoaded(page),
-  '/review': (page) => expect(page.getByText('My best guess').first()).toBeVisible(),
+  '/review': (page) => expect(page.getByRole('combobox', { name: 'Another category' })).toBeVisible(),
   // A statement row, under the table's header row.
   '/upload': (page) => expect(page.getByRole('row').nth(1)).toBeVisible(),
 }
@@ -44,8 +44,8 @@ const CONTENT = {
 // Every Settings tab, and a line that shows it has loaded.
 const SETTINGS_TABS = {
   General: (page) => expect(page.getByText('Developer mode', { exact: true })).toBeVisible(),
-  'AI & Model': (page) => expect(page.getByRole('heading', { name: 'AI provider' })).toBeVisible(),
-  Insights: (page) => expect(page.getByRole('heading', { name: 'Review bar' })).toBeVisible(),
+  'AI & Model': (page) => expect(page.getByRole('heading', { name: 'AI model' })).toBeVisible(),
+  'Teach Me': (page) => expect(page.getByRole('heading', { name: 'When to ask you' })).toBeVisible(),
   Categories: (page) => expect(page.getByRole('heading', { name: 'Categories', exact: true })).toBeVisible(),
   // The policy row is the only one whose figure is a field.
   Rules: (page) => expect(page.getByLabel('Amount limit')).toBeVisible(),
@@ -131,9 +131,9 @@ test.describe('J6 privacy mode', () => {
     await open(page, '/dashboard')
     await hideWithButton(page)
     await page.keyboard.press('ControlOrMeta+k')
-    const search = page.getByPlaceholder(/Search transactions/)
+    const search = page.getByPlaceholder(/Search payments/)
     await search.fill('swiggy')
-    await expect(page.getByRole('button', { name: /Swiggy/ }).first()).toBeVisible()
+    await expect(page.getByRole('option', { name: /Swiggy/ }).first()).toBeVisible()
     await expectNoLeaks(page, 'the command palette')
   })
 

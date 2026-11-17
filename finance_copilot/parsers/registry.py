@@ -5,7 +5,7 @@ from finance_copilot.parsers.banks.kotak import KotakParser
 from finance_copilot.parsers.base import StatementParser
 from finance_copilot.parsers.generic import GenericStatementParser
 
-# Ordered list — detect() is tried in this order; first match wins.
+# Ordered list - detect() is tried in this order; first match wins.
 # Dedicated bank parsers go first; the generic balance-verified parser is the
 # last-resort fallback and must stay at the end.
 _PARSERS: list[type[StatementParser]] = [

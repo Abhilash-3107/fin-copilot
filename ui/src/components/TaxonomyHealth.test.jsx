@@ -34,12 +34,20 @@ describe('TaxonomyHealth', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('tolerates a malformed payload instead of throwing', () => {
+    for (const bad of [[], {}, { duplicates: null }, { duplicates: [], orphans: 'x' }]) {
+      const { container, unmount } = render(<TaxonomyHealth health={bad} categories={CATS} onChanged={() => {}} />)
+      expect(container).toBeEmptyDOMElement()
+      unmount()
+    }
+  })
+
   it('merges a duplicate only after a second, explicit click', async () => {
     const onChanged = vi.fn().mockResolvedValue()
     render(<TaxonomyHealth health={HEALTH} categories={CATS} onChanged={onChanged} />)
     fireEvent.click(screen.getByRole('button', { name: /Merge into "Cafe & Snacks"/ }))
     expect(mockApi.post).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: /Move 13 transactions and delete "Cafes"\?/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Move 13 payments and delete "Cafes"\?/ }))
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
     expect(mockApi.post).toHaveBeenCalledWith('/categories/subcategories/u_cafes/merge', { target_id: 'cat_food_cafe' })
   })

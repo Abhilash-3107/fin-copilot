@@ -12,6 +12,7 @@ import httpx
 
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
+    count_in_review_queue,
     demote_machine_annotation,
     insert_annotation,
     replace_machine_annotation,
@@ -216,7 +217,7 @@ def rule_annotation(
 
     The person rule labels by *mechanism* (a payment to a known person →
     Transfers) but humans label by *purpose* (the same payment can be
-    Entertainment or Food when it settles a shared expense) — on the golden eval
+    Entertainment or Food when it settles a shared expense) - on the golden eval
     it was wrong 10/49 times. When the person's own history says their payments
     are dominated by a non-Transfers category, drop confidence below the review
     threshold so a human decides; cold-start (no history) and genuine
@@ -237,7 +238,7 @@ def rule_annotation(
     person_result = _match_known_person(txn, known_people)
     result = person_result or apply_rules(txn)
 
-    # Stage 1.5 — learned merchant memory. Only when the hand-authored person /
+    # Stage 1.5 - learned merchant memory. Only when the hand-authored person /
     # keyword rules didn't fire: a counterparty the user has verified enough times
     # at high purity gets a deterministic label with no embedding/LLM call. Causal
     # (bounded by this txn's date, excludes self) so production == eval.
@@ -273,7 +274,7 @@ def rule_annotation(
             )
             return ann, trace
 
-    # Stage 1.6 — review policies: the user's standing answer for a class of
+    # Stage 1.6 - review policies: the user's standing answer for a class of
     # transactions no rule or history settles. Before any model runs.
     if result is None:
         if policies is None:
@@ -501,10 +502,10 @@ def auto_annotate(
 ) -> AutoAnnotateResult:
     """Run the full auto-annotation pipeline on unannotated transactions.
 
-    Stage 1 — rules:        keyword/merchant match → source=rule
-    Stage 2 — rag_direct:   cosine similarity >= threshold → copy annotation → source=rag_direct
-    Stage 3 — rag_prompted: cosine similarity found but below threshold → LLM with examples → source=rag_prompted
-    Stage 4 — llm:          no similar found or embedding unavailable → plain LLM → source=llm
+    Stage 1 - rules:        keyword/merchant match → source=rule
+    Stage 2 - rag_direct:   cosine similarity >= threshold → copy annotation → source=rag_direct
+    Stage 3 - rag_prompted: cosine similarity found but below threshold → LLM with examples → source=rag_prompted
+    Stage 4 - llm:          no similar found or embedding unavailable → plain LLM → source=llm
 
     progress_cb(processed, total), when given, is called after each transaction
     so callers (e.g. background jobs) can report progress.
@@ -530,7 +531,7 @@ def auto_annotate(
     rag_prompted_annotated = 0
     llm_annotated = 0
     llm_failed = 0
-    low_confidence = 0
+    decided_ids: list[str] = []
 
     # Commit in small batches: cheap enough to keep progress on a crash, without
     # paying a WAL sync per annotation.
@@ -539,7 +540,7 @@ def auto_annotate(
 
     def _persist(ann_create: AnnotationCreate, trace: ReasoningTrace | None = None) -> None:
         nonlocal uncommitted
-        # Always store the reasoning trace — dev mode only gates whether the
+        # Always store the reasoning trace - dev mode only gates whether the
         # API/UI surface it, so flipping it on later explains past decisions too.
         reasoning = trace.model_dump_json() if trace is not None else None
         annotation = Annotation(
@@ -553,6 +554,7 @@ def auto_annotate(
             reasoning=reasoning,
         )
         insert_annotation(conn, annotation)
+        decided_ids.append(ann_create.transaction_id)
         uncommitted += 1
         if uncommitted >= _COMMIT_EVERY:
             conn.commit()
@@ -574,7 +576,7 @@ def auto_annotate(
     known_people = stage.known_people
 
     # A transaction counts as processed once its final outcome is decided
-    # (annotated or failed) — stage-1 misses are still pending.
+    # (annotated or failed) - stage-1 misses are still pending.
     total = len(unannotated)
     processed = 0
 
@@ -610,8 +612,6 @@ def auto_annotate(
                 learned_rule_annotated += 1
             else:
                 rule_matched += 1
-            if result.confidence < settings.confidence_threshold:
-                low_confidence += 1
             logger.debug(
                 "rule match | txn=%s  desc=%r  → category=%s/%s  conf=%.2f  source=%s",
                 txn["id"], txn["raw_description"], result.category, result.subcategory,
@@ -647,8 +647,6 @@ def auto_annotate(
                     rag_direct_annotated += 1
                 else:
                     rag_prompted_annotated += 1
-                if rag_result.confidence < settings.confidence_threshold:
-                    low_confidence += 1
             else:
                 needs_llm.append(txn)
                 _heartbeat()
@@ -666,7 +664,7 @@ def auto_annotate(
         # sit next to each other here and trip the timeout streak ahead of
         # fresh rows that never got a try.
         needs_llm.sort(key=lambda t: bool(rag_ctx_by_txn.get(t["id"], {}).get("rag_llm_failed")))
-        # Recurring transactions share normalized descriptions — call the LLM once
+        # Recurring transactions share normalized descriptions - call the LLM once
         # per (description, direction) and reuse the result within this run.
         llm_cache: dict = {}
         for txn in needs_llm:
@@ -711,9 +709,6 @@ def auto_annotate(
                 _apply_fact_gate(conn, txn, ann, trace, txn["txn_date"])
                 _persist(ann, trace)
                 llm_annotated += 1
-                # Compare the stored (dampened) confidence — it decides review-queue membership
-                if ann.confidence < settings.confidence_threshold:
-                    low_confidence += 1
                 logger.debug(
                     "llm result | txn=%s  → %s/%s  merchant=%r  raw_conf=%.2f  dampened_conf=%.4f",
                     txn["id"], llm_result.category, llm_result.subcategory, llm_result.merchant,
@@ -725,6 +720,10 @@ def auto_annotate(
             _tick()
 
     conn.commit()  # flush the final partial batch
+    # What this run decided but still needs the person: asked of the review
+    # queue's own condition, with the bar the user set, so a guess below it and
+    # a confident "Uncategorized" both count and nothing else does.
+    low_confidence = count_in_review_queue(conn, get_confidence_threshold(conn), decided_ids)
     logger.info(
         "auto_annotate done | total_processed=%d  rule=%d  learned_rule=%d  rag_direct=%d  rag_prompted=%d  llm=%d  failed=%d  low_conf=%d  skipped=%d",
         len(unannotated), rule_matched, learned_rule_annotated, rag_direct_annotated,
@@ -883,8 +882,8 @@ def _fuse_counterparty_prior(
     """Late-fuse the counterparty recurrence prior into a rag_prompted confidence.
 
     Out-of-band signal: the embedding/KNN can't see that a counterparty recurs, but
-    the user's own history can. We adjust *confidence/routing only* — never the label
-    — consistent with the prior being a weak-but-orthogonal evidence source.
+    the user's own history can. We adjust *confidence/routing only* - never the label
+    - consistent with the prior being a weak-but-orthogonal evidence source.
 
     - established prior AGREES with the chosen label → "rescue": lift confidence
       toward prior.probability so genuine recurring transfers (which category-level
@@ -960,7 +959,7 @@ def _try_rag_annotation(
         except Exception as e:
             logger.warning("rag | embedding failed | txn=%s  error=%s", txn["id"], e)
             skips.append(f"rag: embedding failed ({e})")
-            return None, None  # embedding service down — fall through to plain LLM
+            return None, None  # embedding service down - fall through to plain LLM
     ctx["embed_text"] = embed_text
 
     similar = find_similar(
@@ -1020,7 +1019,7 @@ def _try_rag_annotation(
         txn["id"], top_match["transaction_id"], cosine_similarity, settings.rag_direct_threshold, len(annotated_matches),
     )
 
-    # Source-weighted, deduplicated vote across the donors — the basis for
+    # Source-weighted, deduplicated vote across the donors - the basis for
     # confidence and the reject/defer decision (more reliable than top-1 similarity).
     vote_category, vote_share, trusted_weight = _weighted_trusted_vote(evidence)
 
@@ -1158,7 +1157,7 @@ def _try_rag_annotation(
             confidence = round(llm_result.confidence * dampening, 4)
             caps_applied: list[str] = []
 
-            # Seam A: counterparty recurrence prior — out-of-band, computed from the
+            # Seam A: counterparty recurrence prior - out-of-band, computed from the
             # user's own prior labels (causal: bounded by this txn's date, excludes
             # self). Inert for unknown/first-time counterparties.
             prior = counterparty_prior(conn, txn, as_of=as_of)
@@ -1180,7 +1179,7 @@ def _try_rag_annotation(
             # Reject/defer band: only when the LLM is *itself* uncertain AND the
             # trusted donors are split with no clear winner. This is the genuinely
             # undecidable case (e.g. an unfamiliar small UPI to a bare personal name
-            # whose amount-neighbors are part cab, part family transfer) — the
+            # whose amount-neighbors are part cab, part family transfer) - the
             # description carries no signal and neither does history, so route to a
             # human. We deliberately do NOT defer when the LLM is confident (a
             # merchant it recognizes, e.g. 'Zomato', 'Miya Kebabs'); the noisy
@@ -1383,7 +1382,7 @@ def _build_examples_from_similar(
             "source": ann_row.get("source"),
         })
 
-    # Prioritize human-verified examples first — LLMs are sensitive to example ordering
+    # Prioritize human-verified examples first - LLMs are sensitive to example ordering
     _SOURCE_PRIORITY = {"manual": 0, "rule": 1, "imported": 2}
     examples.sort(key=lambda e: _SOURCE_PRIORITY.get(e.get("source", ""), 9))
     return examples
@@ -1574,9 +1573,17 @@ def reevaluate_machine_labels(
     return changed
 
 
-def reevaluate_after_teaching(conn: sqlite3.Connection, taught_ids: list[str]) -> list[dict]:
-    """Propagate fresh human labels: re-decide the machine labels they could change."""
-    return reevaluate_machine_labels(conn, reevaluation_candidates(conn, taught_ids), reason="teaching")
+def reevaluate_after_teaching(
+    conn: sqlite3.Connection, taught_ids: list[str], candidates: list[str] | None = None
+) -> list[dict]:
+    """Propagate fresh human labels: re-decide the machine labels they could change.
+
+    `candidates` is what reevaluation_candidates returned earlier for the same
+    taught payments: a caller that must see the rows before they change (undo)
+    asks first and passes them back, so the search is not run twice."""
+    if candidates is None:
+        candidates = reevaluation_candidates(conn, taught_ids)
+    return reevaluate_machine_labels(conn, candidates, reason="teaching")
 
 
 def rescore_review_queue(conn: sqlite3.Connection) -> list[dict]:

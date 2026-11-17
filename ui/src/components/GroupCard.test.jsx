@@ -150,21 +150,21 @@ describe('GroupCard', () => {
     const empty = { ...GROUP, summary: { ...NO_BALANCES, member_count: 0, first_date: null, last_date: null, spend: 0, received: 0, your_share: 0, has_people: false, settle_up: [] } }
     const afterAdd = {
       ...GROUP,
-      members: [{ transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null }],
+      members: [{ transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: [], txn_type: null }],
       summary: { member_count: 1, first_date: '2026-01-05', last_date: '2026-01-05', spend: 300, received: 0, your_share: 300, has_people: false, settle_up: [] },
     }
     let added = false
     mockApi.get.mockImplementation(url => {
       if (url === '/people') return Promise.resolve([])
-      if (url.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER' }])
+      if (url.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER' }])
       return Promise.resolve(added ? afterAdd : { ...empty, members: [] })
     })
     mockApi.post.mockImplementation(() => { added = true; return Promise.resolve({}) })
     renderCard(empty)
     expect(screen.getByText('0 payments')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Goa Trip'))
-    await waitFor(() => expect(screen.getByPlaceholderText(/Add a transaction/)).toBeInTheDocument())
-    fireEvent.change(screen.getByPlaceholderText(/Add a transaction/), { target: { value: 'dinner' } })
+    await waitFor(() => expect(screen.getByPlaceholderText(/Add a payment/)).toBeInTheDocument())
+    fireEvent.change(screen.getByPlaceholderText(/Add a payment/), { target: { value: 'dinner' } })
     fireEvent.click(await screen.findByText('DINNER', {}, { timeout: 2000 }))
     await waitFor(() => expect(screen.getByText('1 payment')).toBeInTheDocument())
     expect(screen.getByText('Your share')).toBeInTheDocument()
@@ -175,7 +175,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'Alice', net: 150 }] },
     })
@@ -195,7 +195,7 @@ describe('GroupCard', () => {
       : {
           ...GROUP,
           members: [
-            { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['p1'], txn_type: null },
+            { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['p1'], txn_type: null },
           ],
           summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'p1', name: 'Alice', net: 150 }] },
         }))
@@ -218,8 +218,8 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: null },
-        { transaction_id: 't2', txn_date: '2026-01-06', amount: 150, debit_credit: 'credit', raw_description: 'REPAY', people: ['Alice'], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: null },
+        { transaction_id: 't2', txn_date: '2026-01-06', amount: 150, debit_credit: 'credit', raw_description: 'REPAY', payee: 'REPAY', people: ['Alice'], txn_type: null },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [] },
     })
@@ -232,7 +232,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: [], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: [], txn_type: null },
       ],
     })
     renderCard(GROUP)
@@ -246,7 +246,7 @@ describe('GroupCard', () => {
     mockDetail({
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['Alice'], txn_type: 'split', role: 'paid' },
       ],
       summary: { ...GROUP.summary, has_people: true, settle_up: [{ person: 'Alice', net: 150 }] },
     })
@@ -261,7 +261,7 @@ describe('GroupCard', () => {
     const withBalance = {
       ...GROUP,
       members: [
-        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', people: ['p1'], txn_type: null },
+        { transaction_id: 't1', txn_date: '2026-01-05', amount: 300, debit_credit: 'debit', raw_description: 'DINNER', payee: 'DINNER', people: ['p1'], txn_type: null },
       ],
       // A stray top-level field must not drive the body.
       settle_up: [{ person: 'p9', name: 'Stale', net: 1 }],
@@ -273,5 +273,95 @@ describe('GroupCard', () => {
     await waitFor(() => expect(screen.getByText('Settle up')).toBeInTheDocument())
     expect(screen.queryByText('Stale')).not.toBeInTheDocument()
     expect(screen.getByText(/owes you/)).toHaveTextContent('owes you ₹150')
+  })
+})
+
+describe('GroupCard failures', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('says the group could not load, inside the card, and recovers on Retry', async () => {
+    mockApi.get.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderCard(GROUP)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Goa Trip' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load this group.")
+    expect(screen.queryByText(/No payments yet/)).not.toBeInTheDocument()
+    mockDetail({ ...GROUP, members: [] })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText(/No payments yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('GroupCard editing', () => {
+  const onUpdate = vi.fn()
+  const renderEditable = (group = GROUP) => render(
+    <PrivacyProvider><GroupCard group={group} onDelete={() => {}} onUpdate={onUpdate} /></PrivacyProvider>
+  )
+  beforeEach(() => vi.clearAllMocks())
+
+  it('renames, adds a note and labels, and hands the saved group up', async () => {
+    mockApi.patch.mockResolvedValue({ ...GROUP, name: 'Goa 2026', note: 'Flights split', labels: ['travel'] })
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    const name = screen.getByLabelText('Group name')
+    expect(name).toHaveValue('Goa Trip')
+    expect(name).toHaveFocus()
+    fireEvent.change(name, { target: { value: 'Goa 2026' } })
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'Flights split' } })
+    const label = screen.getByPlaceholderText(/type and press Enter/)
+    fireEvent.change(label, { target: { value: 'travel' } })
+    fireEvent.keyDown(label, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/groups/g1', { name: 'Goa 2026', note: 'Flights split', labels: ['travel'] }))
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'g1', name: 'Goa 2026' })))
+    expect(screen.queryByLabelText('Group name')).not.toBeInTheDocument()
+  })
+
+  it('saves on Enter in the name and cancels on Escape without saving', async () => {
+    mockApi.patch.mockResolvedValue({ ...GROUP, name: 'Goa 2026' })
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'Goa 2026' } })
+    fireEvent.keyDown(screen.getByLabelText('Group name'), { key: 'Escape' })
+    expect(mockApi.patch).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Group name')).not.toBeInTheDocument()
+    expect(screen.getByText('Goa Trip')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'Goa 2026' } })
+    fireEvent.keyDown(screen.getByLabelText('Group name'), { key: 'Enter' })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1))
+  })
+
+  it('Enter on the Cancel button cancels and never saves', () => {
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'Goa 2026' } })
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    fireEvent.keyDown(cancel, { key: 'Enter' })
+    expect(mockApi.patch).not.toHaveBeenCalled()
+    // The browser turns that Enter into a click on the focused button.
+    fireEvent.click(cancel)
+    expect(screen.queryByLabelText('Group name')).not.toBeInTheDocument()
+    expect(mockApi.patch).not.toHaveBeenCalled()
+  })
+
+  it('shows a refused name in the form and keeps it open', async () => {
+    mockApi.patch.mockRejectedValue(Object.assign(new Error('You already have a group called "Flat".'), { status: 409 }))
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: 'Flat' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('You already have a group called "Flat".')
+    expect(screen.getByLabelText('Group name')).toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it('does not save a blank name', () => {
+    renderEditable()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Goa Trip' }))
+    fireEvent.change(screen.getByLabelText('Group name'), { target: { value: '  ' } })
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 })

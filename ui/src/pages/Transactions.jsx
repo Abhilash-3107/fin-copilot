@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { LEDGER_KEYS } from '../lib/shortcuts.js'
 import { useSearchParams, useLocation } from 'react-router-dom'
 import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -14,8 +15,11 @@ import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Amount from '../components/Amount.jsx'
+import InlineError from '../components/InlineError.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 const PAGE_SIZE = 500
 
@@ -85,6 +89,14 @@ function MultiFilter({ label, options, selected, onChange }) {
   )
 }
 
+// What the server resolves for a payment's name; a row is refreshed from the
+// payment's own read after an edit instead of working the name out here.
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'channel']
+
+function nameFields(txn) {
+  return Object.fromEntries(NAME_FIELDS.map(f => [f, txn[f]]))
+}
+
 function buildAnnotationMap(txns) {
   const map = {}
   for (const t of txns) {
@@ -105,8 +117,8 @@ function buildAnnotationMap(txns) {
 
 export default function Transactions() {
   const toast = useToast()
-  const { statements, activeStatement, setActiveStatement } = useStatement()
-  const { month: periodMonth, setMonth } = usePeriod()
+  const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
+  const { month: periodMonth, setMonth, months } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const selectedStmt = activeStatement?.id ?? ''
@@ -115,6 +127,8 @@ export default function Transactions() {
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
+  // A Money Map row's payee: the grouping keys drive the query, name labels the chip.
+  const [payeeFilter, setPayeeFilter] = useState(null)
   // Person filter carries {token, name}: token drives the query, name labels the chip.
   const [personFilter, setPersonFilter] = useState(null)
   const [minAmount, setMinAmount] = useState('')
@@ -133,11 +147,19 @@ export default function Transactions() {
   const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
+  // Each fetch that can fail keeps its error, so the block says so (with Retry)
+  // instead of reading as "no transactions".
+  const [loadError, setLoadError] = useState(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [moreError, setMoreError] = useState(null)
+  const [facetsError, setFacetsError] = useState(null)
+  const [categoriesError, setCategoriesError] = useState(null)
+  const [detailError, setDetailError] = useState(null)
+  const [linkError, setLinkError] = useState(null) // {id, status} of a linked payment that could not open
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
-  // Any tracked run holds the single job slot, so Auto-annotate waits for it.
+  // Any tracked run holds the single job slot, so Sort again waits for it.
   const { job, startAnnotation } = useAnnotationJob()
   const [autoAnnotating, setAutoAnnotating] = useState(false)
   const loadRef = useRef(0)
@@ -161,11 +183,12 @@ export default function Transactions() {
     if (categoryCsv) params.set('category', categoryCsv)
     if (sourceCsv) params.set('source', sourceCsv)
     if (merchantFilter) params.set('merchant', merchantFilter)
+    for (const key of payeeFilter?.keys ?? []) params.append('payee_key', key)
     if (personFilter?.token) params.set('person', personFilter.token)
     if (minAmount !== '' && !Number.isNaN(Number(minAmount))) params.set('min_amount', minAmount)
     if (maxAmount !== '' && !Number.isNaN(Number(maxAmount))) params.set('max_amount', maxAmount)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, personFilter, minAmount, maxAmount])
+  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, minAmount, maxAmount])
 
   const buildFilterParams = useCallback(() => {
     const params = buildScopeParams()
@@ -179,6 +202,7 @@ export default function Transactions() {
   const loadTransactions = useCallback(async () => {
     const id = ++loadRef.current
     setLoading(true)
+    setLoadError(null)
     try {
       const [txns, totals] = await Promise.all([
         api.get(`/transactions?${buildFilterParams()}`),
@@ -191,16 +215,17 @@ export default function Transactions() {
       setHasMore(txns.length === PAGE_SIZE)
       setSelected(new Set()) // a fresh result set invalidates the old selection
     } catch (e) {
-      toast(`Failed to load: ${e.message}`, 'error')
+      if (id === loadRef.current) setLoadError(e)
     } finally {
       if (id === loadRef.current) setLoading(false)
     }
-  }, [buildFilterParams, buildScopeParams, toast])
+  }, [buildFilterParams, buildScopeParams])
 
   async function loadMore() {
     const last = transactions.at(-1)
     if (!last) return
     setLoadingMore(true)
+    setMoreError(null)
     try {
       const params = buildFilterParams()
       params.set('after', last.id)
@@ -209,7 +234,7 @@ export default function Transactions() {
       setAnnotationMap(prev => ({ ...prev, ...buildAnnotationMap(more) }))
       setHasMore(more.length === PAGE_SIZE)
     } catch (e) {
-      toast(`Failed to load more: ${e.message}`, 'error')
+      setMoreError(e)
     } finally {
       setLoadingMore(false)
     }
@@ -253,12 +278,12 @@ export default function Transactions() {
       const gone = skipped.length
         ? ` · ${skipped.length} skipped (no longer exist${skipped.length === 1 ? 's' : ''})`
         : ''
-      toast(`Categorized ${updated} transaction${updated === 1 ? '' : 's'}${gone}`, skipped.length ? 'info' : 'success')
+      toast(`Sorted ${count(updated, 'payment')}${gone}`, skipped.length ? 'info' : 'success')
       setSelected(new Set())
       setBulkCategory('')
       loadTransactions()
     } catch (e) {
-      toast(`Couldn't apply - ${e.message}`, 'error')
+      toast(couldnt('apply', e), 'error')
     } finally {
       setBulkApplying(false)
     }
@@ -273,8 +298,10 @@ export default function Transactions() {
     if (month) params.set('month', month)
     try {
       setFacets(await api.get(`/transactions/facets?${params}`))
-    } catch (_) {
-      // Non-fatal: dropdowns just keep their previous options.
+      setFacetsError(null)
+    } catch (e) {
+      // The dropdowns keep their previous options; the bar says so, with Retry.
+      setFacetsError(e)
     }
   }, [selectedStmt, month])
 
@@ -282,9 +309,11 @@ export default function Transactions() {
 
   // Full taxonomy for the bulk set-category picker (facets only list categories
   // already present in data; here the user can assign any of them).
-  useEffect(() => {
-    api.get('/categories').then(setCategoryTree).catch(() => {})
+  const loadCategories = useCallback(() => {
+    setCategoriesError(null)
+    api.get('/categories').then(setCategoryTree).catch(setCategoriesError)
   }, [])
+  useEffect(() => { loadCategories() }, [loadCategories])
 
   const bulkOptions = (() => {
     const byId = Object.fromEntries(categoryTree.map(c => [c.id, c]))
@@ -300,17 +329,23 @@ export default function Transactions() {
   // writeback below also changes searchParams - the ref lets us tell the two
   // apart so a writeback never re-seeds (or clears the statement scope).
   const lastWrittenParams = useRef(null)
+  const pendingPayment = useRef(null)
+  const scrollTarget = useRef(null)
   useEffect(() => {
     if (searchParams.toString() === lastWrittenParams.current) return
     const category = searchParams.get('category')
     const source = searchParams.get('source')
     const merchant = searchParams.get('merchant')
+    const payeeKeys = searchParams.getAll('payee_key')
     const person = searchParams.get('person')
     const q = searchParams.get('q')
     const m = searchParams.get('month')
     setCategoryFilter(category ? new Set(category.split(',')) : new Set())
     setSourceFilter(source ? new Set(source.split(',')) : new Set())
     setMerchantFilter(merchant ?? '')
+    // The payee's name rides along in navigation state, like a person's; on a
+    // cold link the chip reads what the server calls the payee once rows load.
+    setPayeeFilter(payeeKeys.length ? { keys: payeeKeys, name: location.state?.payeeName ?? null } : null)
     // A person label may ride along in navigation state so the chip reads as a
     // name; on a cold link we only have the token, which is a fine chip label.
     setPersonFilter(person ? { token: person, name: location.state?.personName ?? person } : null)
@@ -319,7 +354,10 @@ export default function Transactions() {
     if (m && m !== periodMonth) setMonth(m)
     // A deep link means "this slice of everything": a lingering statement
     // selection would AND with the link's month and silently empty the list.
-    if (category || source || merchant || person || q || m) clearStatementForDeepLink.current = true
+    // A payment link (the palette) names one payment: the effect below opens it once it can.
+    const linked = searchParams.get('txn')
+    if (linked) pendingPayment.current = linked
+    if (category || source || merchant || payeeKeys.length || person || q || m || linked) clearStatementForDeepLink.current = true
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -343,6 +381,7 @@ export default function Transactions() {
     if (categoryCsv) next.set('category', categoryCsv)
     if (sourceCsv) next.set('source', sourceCsv)
     if (merchantFilter) next.set('merchant', merchantFilter)
+    for (const key of payeeFilter?.keys ?? []) next.append('payee_key', key)
     if (personFilter?.token) next.set('person', personFilter.token)
     if (search) next.set('q', search)
     const s = next.toString()
@@ -350,7 +389,7 @@ export default function Transactions() {
     lastWrittenParams.current = s
     setSearchParams(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryCsv, sourceCsv, merchantFilter, personFilter, search])
+  }, [categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, search])
 
   // The statement scope may already be set (in-session navigation) or arrive
   // later (hard load: StatementContext defaults to the latest statement once
@@ -387,40 +426,100 @@ export default function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodMonth, activeStatement])
 
-  // Keyboard navigation
+  // Escape closes the open payment. While the user is typing in it, the first
+  // Escape only leaves the field, so a half-typed edit is not thrown away.
+  const panelOpen = activeTxn != null
   useEffect(() => {
     function handler(e) {
-      if (e.key === 'Escape') setActiveTxn(null)
+      if (e.key !== LEDGER_KEYS.closePanel || e.defaultPrevented) return
+      const t = e.target
+      const typing = t?.tagName === 'INPUT' || t?.tagName === 'TEXTAREA' || t?.tagName === 'SELECT' || t?.isContentEditable
+      if (typing && panelOpen) { t.blur?.(); return }
+      setActiveTxn(null)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [panelOpen])
+
+  // The payment's own record decides what the panel shows: its annotation, if any.
+  function showRecord(full) {
+    setActiveTxn(prev => (prev?.id === full.id ? { ...prev, ...nameFields(full) } : prev))
+    if (full.annotation_id) {
+      setActiveAnnotation({
+        id: full.annotation_id,
+        category: full.category,
+        subcategory: full.subcategory,
+        merchant: full.merchant,
+        tags: full.tags,
+        confidence: full.confidence,
+        source: full.source,
+        // dev mode only: backend attaches the reasoning trace when DEV_MODE is on
+        reasoning: full.reasoning ?? null,
+      })
+    } else {
+      setActiveAnnotation(null)
+    }
+  }
 
   async function openAnnotationPanel(txn) {
     setActiveTxn(txn)
     setActiveAnnotation(undefined) // sentinel: loading
-    // Fetch full transaction to get annotation fields
+    setDetailError(null)
+    setLinkError(null)
+    // Fetch full transaction to get annotation fields. When that fails the panel
+    // must not pose as a new annotation for a payment that may already have one.
     try {
-      const full = await api.get(`/transactions/${txn.id}`)
-      if (full.annotation_id) {
-        setActiveAnnotation({
-          id: full.annotation_id,
-          category: full.category,
-          subcategory: full.subcategory,
-          merchant: full.merchant,
-          tags: full.tags,
-          confidence: full.confidence,
-          source: full.source,
-          // dev mode only: backend attaches the reasoning trace when DEV_MODE is on
-          reasoning: full.reasoning ?? null,
-        })
-      } else {
-        setActiveAnnotation(null)
-      }
-    } catch (_) {
-      setActiveAnnotation(null)
+      showRecord(await api.get(`/transactions/${txn.id}`))
+    } catch (e) {
+      setDetailError(e)
     }
   }
+
+  // A link to one payment (the palette): show the month it is in, drop a statement
+  // scope that would hide it, and open it. Waits for the statements so the month
+  // can be matched against the ones the period picker knows.
+  function openLinkedPayment(id) {
+    setLinkError(null)
+    return api.get(`/transactions/${id}`)
+      .then(full => {
+        const m = String(full.txn_date).slice(0, 7)
+        setMonth(months.includes(m) ? m : ALL_TIME)
+        setActiveStatement(null)
+        scrollTarget.current = full.id
+        setDetailError(null)
+        setActiveTxn(full)
+        showRecord(full)
+      })
+      .catch(e => setLinkError({ id, status: e?.status }))
+      .finally(() => {
+        setSearchParams(prev => {
+          const next = new URLSearchParams(prev)
+          next.delete('txn')
+          return next
+        }, { replace: true })
+      })
+  }
+
+  useEffect(() => {
+    const id = pendingPayment.current
+    if (!id || statementsLoading) return
+    pendingPayment.current = null
+    openLinkedPayment(id)
+    // showRecord and the setters are stable in effect: only a new link or the
+    // statements finishing their load should run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, statementsLoading])
+
+  // Bring the linked payment's row into view once its month has loaded.
+  useEffect(() => {
+    if (!scrollTarget.current || loading) return
+    const rows = [...document.querySelectorAll(`[data-txn-id="${scrollTarget.current}"]`)]
+    const row = rows.find(el => el.offsetParent !== null) ?? rows[0]
+    if (row) {
+      row.scrollIntoView?.({ block: 'center' })
+      scrollTarget.current = null
+    }
+  }, [transactions, loading])
 
   async function autoAnnotate() {
     if (!selectedStmt) {
@@ -435,7 +534,7 @@ export default function Transactions() {
       loadTransactions()
       loadFacets()
     } catch (e) {
-      toast(`Auto-annotate failed: ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setAutoAnnotating(false)
     }
@@ -462,13 +561,43 @@ export default function Transactions() {
       t.id === txnId ? { ...t, ...ann, id: t.id, annotation_id: saved.id } : t
     ))
     loadFacets() // a manual save can introduce a category new to this scope
+    refreshName(txnId) // and a new merchant can change what the row is called
+  }
+
+  async function refreshName(txnId) {
+    try {
+      const fields = nameFields(await api.get(`/transactions/${txnId}`))
+      setTransactions(prev => prev.map(t => (t.id === txnId ? { ...t, ...fields } : t)))
+    } catch (_) {
+      // The row keeps its old name until the next load.
+    }
+  }
+
+  // A rename changes names and nothing else, so the rows are updated where
+  // they stand: the page keeps its place, its selection and the open payment.
+  // A payee name reaches every payment to the payee, so the loaded ones of that
+  // payee are re-read together; a payment's own name changes only its row.
+  async function applyRename(updated, scope) {
+    const fields = nameFields(updated)
+    setActiveTxn(prev => ({ ...prev, ...fields }))
+    setTransactions(prev => prev.map(t => (t.id === updated.id ? { ...t, ...fields } : t)))
+    if (scope !== 'payee' || !updated.counterparty_key) return
+    try {
+      const rows = await api.get(`/transactions?${new URLSearchParams({
+        payee_key: updated.counterparty_key, include: 'annotation', limit: 1000,
+      })}`)
+      const byId = new Map(rows.map(r => [r.id, nameFields(r)]))
+      setTransactions(prev => prev.map(t => (byId.has(t.id) ? { ...t, ...byId.get(t.id) } : t)))
+    } catch (_) {
+      // The rows keep their old names until the next load.
+    }
   }
 
   const sourceOptions = sourceFilterOptions(facets.sources)
   const categoryOptions = facets.categories.map(c => ({ value: c, label: c }))
 
   const filtersActive = Boolean(
-    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter || personFilter
+    debouncedSearch || sourceFilter.size || categoryFilter.size || merchantFilter || payeeFilter || personFilter
   )
 
   return (
@@ -499,8 +628,8 @@ export default function Transactions() {
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search description…"
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-52 placeholder:text-[#475569]"
+          placeholder="Search payee, note or amount…"
+          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-64 placeholder:text-[#94a3b8]"
         />
 
         <div className="flex items-center gap-1">
@@ -509,15 +638,15 @@ export default function Transactions() {
             value={minAmount}
             onChange={e => setMinAmount(e.target.value)}
             placeholder="Min ₹"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#94a3b8]"
           />
-          <span className="text-[#475569] text-xs">–</span>
+          <span className="text-[#94a3b8] text-xs">–</span>
           <input
             type="number"
             value={maxAmount}
             onChange={e => setMaxAmount(e.target.value)}
             placeholder="Max ₹"
-            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#475569]"
+            className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1] w-24 placeholder:text-[#94a3b8]"
           />
         </div>
 
@@ -535,12 +664,26 @@ export default function Transactions() {
           onChange={setCategoryFilter}
         />
 
+        {facetsError && (
+          <InlineError what="the filter options" error={facetsError} onRetry={loadFacets} compact />
+        )}
+
         {merchantFilter && (
           <button
             onClick={() => setMerchantFilter('')}
             className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
           >
             <span>{merchantFilter}</span>
+            <X size={12} className="opacity-60 hover:opacity-100" />
+          </button>
+        )}
+
+        {payeeFilter && (
+          <button
+            onClick={() => setPayeeFilter(null)}
+            className="flex items-center gap-1.5 bg-[#13151f] border border-[#6366f1] text-[#a5b4fc] px-2.5 py-1.5 rounded-md text-sm transition-colors"
+          >
+            <span>Payee: {payeeFilter.name ?? transactions.find(t => t.payee_all)?.payee_all ?? payeeFilter.keys[0]}</span>
             <X size={12} className="opacity-60 hover:opacity-100" />
           </button>
         )}
@@ -555,35 +698,35 @@ export default function Transactions() {
           </button>
         )}
 
-        <span className="text-xs text-[#64748b] ml-auto">
-          {loading ? 'Loading…' : summary ? (
+        <span className="text-xs text-[#94a3b8] ml-auto">
+          {loading ? 'Loading…' : loadError ? null : summary ? (
             <>
-              {summary.count} transaction{summary.count === 1 ? '' : 's'}
+              {count(summary.count, 'payment')}
               {' · '}<Amount value={summary.money_out} decimals={0} /> out
               {' · '}<Amount value={summary.money_in} decimals={0} /> in
             </>
           ) : (
-            `${transactions.length}${hasMore ? '+' : ''} transaction${transactions.length === 1 ? '' : 's'}`
+            `${transactions.length}${hasMore ? '+' : ''} ${transactions.length === 1 ? 'payment' : 'payments'}`
           )}
         </span>
 
         <button
           onClick={loadTransactions}
           disabled={loading}
-          className="text-[#64748b] hover:text-[#94a3b8] disabled:opacity-50"
+          className="text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-50"
           title="Refresh"
         >
           <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
         </button>
 
-        <Tooltip content="Use AI to automatically categorize transactions in this statement">
+        <Tooltip content="Sort this statement again, for example after connecting a model">
           <button
             onClick={autoAnnotate}
             disabled={autoAnnotating || !selectedStmt || job != null}
-            className="flex items-center gap-1.5 bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             <Zap size={13} />
-            {autoAnnotating ? 'Annotating…' : 'Auto-annotate'}
+            {autoAnnotating ? 'Sorting…' : 'Sort again'}
           </button>
         </Tooltip>
       </div>
@@ -601,6 +744,9 @@ export default function Transactions() {
             Clear
           </button>
           <div className="flex items-center gap-2 ml-auto">
+            {categoriesError && (
+              <InlineError what="the categories" error={categoriesError} onRetry={loadCategories} compact className="text-[#fecaca]" />
+            )}
             <select
               value={bulkCategory}
               onChange={e => setBulkCategory(e.target.value)}
@@ -612,7 +758,7 @@ export default function Transactions() {
             <button
               onClick={applyBulkCategory}
               disabled={!bulkCategory || bulkApplying}
-              className="bg-[#6366f1] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+              className="bg-[#4f46e5] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
             >
               {bulkApplying ? 'Applying…' : 'Apply'}
             </button>
@@ -622,10 +768,30 @@ export default function Transactions() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
-        {!loading && transactions.length === 0 ? (
+        {linkError && (
+          <p role="alert" className="m-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
+            {linkError.status === 404 ? (
+              <span>Couldn't find that payment. It may have been removed.</span>
+            ) : (
+              <>
+                <span>Couldn't open this payment.</span>
+                <button
+                  type="button"
+                  onClick={() => openLinkedPayment(linkError.id)}
+                  className="shrink-0 rounded-md border border-[#7f1d1d] px-3 py-1.5 text-xs font-medium text-[#fecaca] transition-colors hover:bg-[#3b1a1e]"
+                >
+                  Retry
+                </button>
+              </>
+            )}
+          </p>
+        )}
+        {loadError ? (
+          <InlineError what="your payments" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
+        ) : !loading && transactions.length === 0 ? (
           <EmptyState
-            title="No transactions"
-            description={filtersActive ? 'No transactions match the current filters.' : 'Upload a statement to get started.'}
+            title="No payments"
+            description={filtersActive ? 'No payments match the current filters.' : 'Add a statement to get started.'}
           />
         ) : (
           <>
@@ -656,6 +822,9 @@ export default function Transactions() {
                 onToggle={toggleSelect}
               />
             </div>
+            {moreError && (
+              <InlineError what="more payments" error={moreError} onRetry={loadMore} retrying={loadingMore} className="mx-4 mt-3" />
+            )}
             {hasMore && (
               <div className="flex justify-center py-4">
                 <button
@@ -676,8 +845,11 @@ export default function Transactions() {
         <AnnotationPanel
           txn={activeTxn}
           annotation={activeAnnotation}
-          onClose={() => { setActiveTxn(null); setActiveAnnotation(null) }}
+          onClose={() => { setActiveTxn(null); setActiveAnnotation(null); setDetailError(null); scrollTarget.current = null }}
           onSaved={applySavedAnnotation}
+          onRenamed={applyRename}
+          loadError={detailError}
+          onRetryLoad={() => openAnnotationPanel(activeTxn)}
         />
       )}
     </div>

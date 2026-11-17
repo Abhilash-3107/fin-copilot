@@ -227,7 +227,7 @@ def _salvage_dropping_reasoning(content: str) -> AnnotationResponse | None:
     Small models intermittently mangle the free-text `reasoning` string (escaped
     `\\"`, nested quotes, stray braces) into invalid JSON, which fails parsing
     *before* any field validator runs. The category/subcategory/confidence are
-    still recoverable — strip the reasoning field and retry, so a cosmetic prose
+    still recoverable - strip the reasoning field and retry, so a cosmetic prose
     error never costs us a usable classification. Returns None if unrecoverable.
     """
     # Remove a `"reasoning": "..."` (or `\"..."`) entry, greedy to the last
@@ -533,7 +533,7 @@ def _build_provider_request(
     payload = {
         "model": settings.ollama_model,
         "stream": False,
-        # Keep the model resident between calls — cold-loading a 4B model costs
+        # Keep the model resident between calls - cold-loading a 4B model costs
         # 5-15 s and auto-annotate runs are bursty.
         "keep_alive": "30m",
         "format": schema,
@@ -593,7 +593,7 @@ def _call_llm(
     re-asks here.
     """
     if settings.llm_provider == "none":
-        logger.debug("%s | txn=%s  llm_provider=none — skipping", log_prefix, txn_id)
+        logger.debug("%s | txn=%s  llm_provider=none - skipping", log_prefix, txn_id)
         return None
 
     messages = [
@@ -651,7 +651,7 @@ def _call_llm(
                     log_prefix, txn_id, attempt,
                 )
             # Truncation is silent (Ollama drops from the front, i.e. the system
-            # prompt) — log the actual prompt token count so it's observable.
+            # prompt) - log the actual prompt token count so it's observable.
             prompt_tokens = data.get("prompt_eval_count") or (data.get("usage") or {}).get("prompt_tokens")
             truncated = prompt_tokens is not None and prompt_tokens >= settings.ollama_num_ctx - 64
             if truncated:
@@ -734,16 +734,39 @@ def annotate_transaction_llm_with_examples(
     )
 
 
+def _unreachable_detail(provider: str, error: Exception) -> str:
+    """Why a model could not be reached, in plain words: where we looked, then
+    the cause, never an exception class name."""
+    url = settings.llm_base_url.rstrip("/") if provider == "openai" else settings.ollama_url
+    if isinstance(error, httpx.HTTPStatusError):
+        code = error.response.status_code
+        if code in (401, 403):
+            cause = "it did not accept the API key"
+        elif code == 404:
+            cause = "nothing that looks like a model server answers at that address"
+        else:
+            cause = f"it answered with an error ({code})"
+    elif isinstance(error, httpx.TimeoutException):
+        cause = "it took too long to answer"
+    elif isinstance(error, httpx.ConnectError):
+        cause = "nothing is listening there"
+    elif isinstance(error, (ValueError, KeyError)):
+        cause = "it answered with something that isn't a list of models"
+    else:
+        cause = "the connection broke"
+    return f"Couldn't reach the model at {url}: {cause}."
+
+
 def test_connection(timeout: float = 10.0) -> dict:
     """Probe the configured LLM provider with a trivial request.
 
     Returns {ok, detail, models?}. Used by the Settings › AI & Model
     test-connection button so a user can validate a BYOM endpoint before relying
-    on it. Never raises — connection/HTTP errors are reported in `detail`.
+    on it. Never raises - connection/HTTP errors are reported in `detail`.
     """
     provider = settings.llm_provider
     if provider == "none":
-        return {"ok": True, "detail": "AI is disabled (provider = none)."}
+        return {"ok": True, "detail": "AI is turned off."}
 
     if provider == "local":
         from finance_copilot.local_llm import test_local_connection
@@ -780,8 +803,8 @@ def test_connection(timeout: float = 10.0) -> dict:
         if settings.ollama_model and models and settings.ollama_model not in models:
             detail += f" Warning: '{settings.ollama_model}' is not pulled - run `ollama pull {settings.ollama_model}`."
         return {"ok": True, "detail": detail, "models": models}
-    except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
-        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+    except (httpx.HTTPError, ValueError, KeyError) as e:
+        return {"ok": False, "detail": _unreachable_detail(provider, e)}
 
 
 def annotate_transaction_llm(

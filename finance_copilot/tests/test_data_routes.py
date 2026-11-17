@@ -172,7 +172,7 @@ class TestRestore:
         r = _restore(client, backup)
         assert r.status_code == 409
 
-    def test_jobs_frozen_in_the_backup_do_not_block_later_runs(self, file_db, tmp_path):
+    def test_a_sort_frozen_in_the_backup_goes_back_in_line_and_other_jobs_fail(self, file_db, tmp_path):
         import sqlite3
 
         client, conn, _ = file_db
@@ -180,11 +180,13 @@ class TestRestore:
         snap.write_bytes(client.get("/api/data/backup").content)
         c = sqlite3.connect(snap)
         c.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('j1', 'running', 'annotate')")
+        c.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('j2', 'running', 'reembed')")
         c.commit()
         c.close()
         assert _restore(client, snap.read_bytes()).status_code == 200
-        status = conn.execute("SELECT status FROM annotation_jobs WHERE id = 'j1'").fetchone()[0]
-        assert status == "failed"
+        statuses = dict(conn.execute("SELECT id, status FROM annotation_jobs").fetchall())
+        # The sort was cut off by the snapshot, not broken: it runs against the restored ledger.
+        assert statuses == {"j1": "queued", "j2": "failed"}
 
     def test_blocked_in_demo_mode(self, file_db, monkeypatch):
         from finance_copilot.config import settings

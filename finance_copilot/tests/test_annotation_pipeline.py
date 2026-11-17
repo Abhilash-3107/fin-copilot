@@ -417,6 +417,42 @@ class TestAutoAnnotatePipeline:
 
         assert result.low_confidence == 1
 
+    def test_low_confidence_follows_the_stored_review_bar(self):
+        """The count that reaches the Upload page is the one Teach Me uses: the
+        bar the user set in Settings, not the config default."""
+        from finance_copilot.db.queries.app_settings import set_confidence_threshold
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "t6b", "mystery transaction two")
+        set_confidence_threshold(self.conn, 0.3)
+        self.conn.commit()
+        llm_result = AnnotationResponse(category="Shopping", subcategory="General Retail", confidence=0.7)
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn)
+
+        # 0.7 is below the config default (0.85) but above the bar the user set.
+        assert result.low_confidence == 0
+
+    def test_a_confident_uncategorized_answer_is_not_sorted(self, monkeypatch):
+        from finance_copilot.db.queries.app_settings import set_confidence_threshold
+        monkeypatch.setattr(settings, "confidence_threshold", 0.3)
+        from finance_copilot.pipeline.annotate import auto_annotate
+        from finance_copilot.pipeline.llm import AnnotationResponse
+
+        _insert_txn(self.conn, "t6c", "mystery transaction three")
+        set_confidence_threshold(self.conn, 0.3)
+        self.conn.commit()
+        llm_result = AnnotationResponse(category="Uncategorized", confidence=0.99)
+
+        with patch("finance_copilot.pipeline.annotate.get_embedding_single", side_effect=Exception("unavailable")), \
+             patch("finance_copilot.pipeline.annotate.annotate_transaction_llm", return_value=llm_result):
+            result = auto_annotate(self.conn)
+
+        assert result.low_confidence == 1
+
     def test_filter_by_statement_id(self):
         from finance_copilot.pipeline.annotate import auto_annotate
 
@@ -485,7 +521,7 @@ class TestAutoAnnotateEndpoint:
 
 class TestBuildEmbedText:
     def test_basic(self):
-        # Amount is deliberately excluded — it's per-transaction noise that
+        # Amount is deliberately excluded - it's per-transaction noise that
         # dilutes the merchant signal the retriever depends on.
         from finance_copilot.pipeline.embed import build_embed_text
         txn = {"debit_credit": "debit", "amount": 500.0,
@@ -767,7 +803,7 @@ class TestRagPromptedOffExample:
         from finance_copilot.pipeline.annotate import auto_annotate
         from finance_copilot.pipeline.llm import AnnotationResponse
 
-        # All donors are Transport — none are Transfers.
+        # All donors are Transport - none are Transfers.
         for i in range(4):
             self._insert_donor(f"donor_t{i}", f"UPI/DRIVER {i}/1/UPI", "Transport", "Cab & Auto")
         _insert_txn(self.conn, "target_off", "UPI/UNKNOWN NAME/9/UPI")
@@ -785,7 +821,7 @@ class TestRagPromptedOffExample:
         ann = get_annotation_by_transaction(self.conn, "target_off")
         assert ann is not None
         assert ann["source"] == "rag_prompted"
-        assert ann["category"] == "Transfers"  # not overridden — just distrusted
+        assert ann["category"] == "Transfers"  # not overridden - just distrusted
         assert ann["confidence"] <= settings.rag_offexample_confidence_cap
         assert ann["confidence"] < settings.confidence_threshold
         assert result.low_confidence == 1

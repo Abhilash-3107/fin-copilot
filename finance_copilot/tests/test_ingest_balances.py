@@ -173,7 +173,7 @@ class TestIngestBalances:
 
     def test_statement_of_only_artifact_rows_rejected(self):
         conn = _make_conn()
-        with pytest.raises(ValueError, match="no transactions"):
+        with pytest.raises(ValueError, match="No payments were found"):
             _ingest(conn, [_txn("OPENING BALANCE", amount=100.0, balance=100.0)], b"%PDF only artifact")
         conn.close()
 
@@ -329,7 +329,10 @@ class TestUploadRouteWarnings:
 
             client = TestClient(app)
             rows = [_txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69)]
-            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=_fake_parser(rows)):
+            # The sorting job an upload queues opens its own connection to the
+            # real db path; this test is about the warnings, so it must not run.
+            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=_fake_parser(rows)), \
+                    patch("finance_copilot.api.routes.annotations._run_annotation_job"):
                 resp = client.post(
                     "/api/statements/upload",
                     files={"file": ("stmt.pdf", b"%PDF warn test", "application/pdf")},

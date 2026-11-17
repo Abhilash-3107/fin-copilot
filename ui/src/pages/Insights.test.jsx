@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 // Hermetic mocks: no backend, no canvas (chart.js needs a real 2d context).
 const { mockApi } = vi.hoisted(() => ({
@@ -73,9 +73,9 @@ const SUMMARY = {
   },
   recurring_summary: { monthly_total: 8000, count: 1 },
   recurring: [
-    { name: 'INDmoney', category: 'Investments', amount: 8000, months_seen: 6, months_span: 6, cadence: 'monthly', last_date: '2026-02-03', active: true },
-    { name: 'BESCOM', category: 'Utilities', amount: 2260, months_seen: 3, months_span: 4, cadence: 'irregular', last_date: '2026-02-04', active: true },
-    { name: 'LinkedIn', category: 'Subscriptions', amount: 499, months_seen: 2, months_span: 2, cadence: 'monthly', last_date: '2025-11-20', active: false },
+    { name: 'INDmoney', keys: ['INDMONEY'], category: 'Investments', amount: 8000, months_seen: 6, months_span: 6, cadence: 'monthly', last_date: '2026-02-03', active: true },
+    { name: 'BESCOM', keys: ['BESCOM'], category: 'Utilities', amount: 2260, months_seen: 3, months_span: 4, cadence: 'irregular', last_date: '2026-02-04', active: true },
+    { name: 'LinkedIn', keys: ['LINKEDIN'], category: 'Subscriptions', amount: 499, months_seen: 2, months_span: 2, cadence: 'monthly', last_date: '2025-11-20', active: false },
   ],
   people: {
     items: [
@@ -85,7 +85,7 @@ const SUMMARY = {
     unmatched: { sent: 0, received: 0, count: 0 },
   },
   merchants: [
-    { name: 'Zomato', total: 4470, count: 10, avg: 447 },
+    { name: 'Zomato', keys: ['ZOMATO', 'ZOMATO LIMITED'], total: 4470, count: 10, avg: 447 },
   ],
   balance: {
     account: 'Kotak ····1234',
@@ -189,6 +189,14 @@ describe('Insights (Money Map)', () => {
     expect(screen.getByText('Zomato')).toBeInTheDocument()
     expect(screen.getByText('10')).toBeInTheDocument() // order count
     expect(screen.getByText('₹447')).toBeInTheDocument() // avg ticket
+  })
+
+  it('drills a merchant row by its keys, not its name', async () => {
+    renderInsights()
+    const link = (await screen.findByText('Zomato')).closest('a')
+    const params = new URL(link.getAttribute('href'), 'http://x').searchParams
+    expect(params.getAll('payee_key')).toEqual(['ZOMATO', 'ZOMATO LIMITED'])
+    expect(params.has('merchant')).toBe(false)
   })
 
   it('closes the breakdown on Out with the reconciling rows and a total', async () => {
@@ -343,5 +351,22 @@ describe('privacy mode', () => {
     await screen.findByTestId('balance-chart')
     expect(chart.options.plugins.tooltip.callbacks.label({ raw: 71000 })).toBe('₹71,000')
     expect(chart.options.scales.y.ticks.callback(71000)).toBe('₹71k')
+  })
+})
+
+describe('Insights when the API fails', () => {
+  it('says the Money Map could not load, never "Nothing here yet", and recovers on Retry', async () => {
+    const base = mockApi.get.getMockImplementation()
+    let failing = true
+    mockApi.get.mockImplementation(path => (
+      failing && path.startsWith('/insights') ? Promise.reject(new TypeError('Failed to fetch')) : base(path)
+    ))
+    renderInsights()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your Money Map.")
+    expect(screen.queryByText(/Nothing here yet/)).not.toBeInTheDocument()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText(/What changed/i)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

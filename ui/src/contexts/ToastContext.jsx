@@ -40,39 +40,73 @@ const TYPE_STYLES = {
 // a figure use useMoney(); this covers text that comes from the server. A
 // message that is not a string (a fragment) is shown as written, for a figure
 // that must stay visible, such as a policy limit.
-function Toast({ message, type }) {
+function Toast({ message, type, action, onAction }) {
   const { hidden } = usePrivacy()
   return (
     <div
-      className={`animate-fade-in bg-[#1e2235] border rounded-lg px-5 py-2.5 text-sm shadow-xl pointer-events-auto ${TYPE_STYLES[type] ?? TYPE_STYLES.info}`}
+      className={`animate-fade-in flex items-center gap-4 bg-[#1e2235] border rounded-lg px-5 py-2.5 text-sm shadow-xl pointer-events-auto ${TYPE_STYLES[type] ?? TYPE_STYLES.info}`}
     >
-      {hidden && typeof message === 'string' ? maskRupees(message) : message}
+      <span>{hidden && typeof message === 'string' ? maskRupees(message) : message}</span>
+      {action && (
+        <button
+          onClick={onAction}
+          className="shrink-0 font-medium underline underline-offset-2 hover:text-white"
+        >
+          {action.label}
+        </button>
+      )}
     </div>
   )
 }
 
-export function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([])
-  const counter = useRef(0)
+const DEFAULT_MS = 2500
+// A toast with an action is a chance to take something back: it stays longer.
+const ACTION_MS = 8000
 
-  const toast = useCallback((message, type = 'info', duration = 2500) => {
+// One toast at a time: a new one replaces the one on screen. The third
+// argument is a duration in milliseconds, or { duration, action: { label, onClick } }.
+export function ToastProvider({ children }) {
+  const [current, setCurrent] = useState(null)
+  const counter = useRef(0)
+  const timer = useRef(null)
+
+  const dismiss = useCallback(() => {
+    clearTimeout(timer.current)
+    setCurrent(null)
+  }, [])
+
+  const toast = useCallback((message, type = 'info', options) => {
+    const { duration, action } = typeof options === 'object' && options !== null ? options : { duration: options }
     const id = ++counter.current
-    setToasts(prev => [...prev, { id, message, type }])
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
+    clearTimeout(timer.current)
+    setCurrent({ id, message, type, action })
+    timer.current = setTimeout(() => setCurrent(c => (c?.id === id ? null : c)), duration ?? (action ? ACTION_MS : DEFAULT_MS))
   }, [])
 
   useEffect(() => {
     const parked = takeToastAfterReload()
     if (parked) toast(parked.message, parked.type, parked.duration)
+    return () => clearTimeout(timer.current)
   }, [toast])
+
+  function runAction() {
+    const { action } = current
+    dismiss()
+    action.onClick()
+  }
 
   return (
     <ToastCtx.Provider value={toast}>
       {children}
+      {/* The live regions stay mounted: a screen reader announces what is put into
+          one, which it does not for a region that appears together with its text. */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex flex-col gap-2 items-center pointer-events-none">
-        {toasts.map(t => (
-          <Toast key={t.id} message={t.message} type={t.type} />
-        ))}
+        <div role="status" className="flex flex-col items-center">
+          {current && current.type !== 'error' && <Toast key={current.id} {...current} onAction={runAction} />}
+        </div>
+        <div role="alert" className="flex flex-col items-center">
+          {current && current.type === 'error' && <Toast key={current.id} {...current} onAction={runAction} />}
+        </div>
       </div>
     </ToastCtx.Provider>
   )

@@ -31,7 +31,7 @@ function renderRules() {
 }
 
 async function fillDraft() {
-  fireEvent.change(screen.getByLabelText(/When the transaction mentions/), { target: { value: 'zepto' } })
+  fireEvent.change(screen.getByLabelText(/When the payment mentions/), { target: { value: 'zepto' } })
   // CategoryPicker loads the taxonomy asynchronously; pick once it's there.
   await screen.findByRole('option', { name: 'Food & Dining' })
   fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'Food & Dining' } })
@@ -40,10 +40,11 @@ async function fillDraft() {
 describe('UserRules', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    let added = 0
     mockApi.get.mockImplementation(path => Promise.resolve(path === '/categories' ? TREE : []))
     mockApi.post.mockImplementation(path => {
       if (path === '/rules/preview') return Promise.resolve(PREVIEW)
-      if (path === '/rules') return Promise.resolve(RULE)
+      if (path === '/rules') return Promise.resolve({ ...RULE, id: `r${++added}` })
       return Promise.resolve({ relabeled: 1, labeled: 1, protected: 1, unchanged: 0 })
     })
   })
@@ -51,8 +52,8 @@ describe('UserRules', () => {
   it('previews what a rule would change before saving', async () => {
     renderRules()
     await fillDraft()
-    await waitFor(() => expect(screen.getByText(/Matches 3 transactions/)).toBeInTheDocument())
-    expect(screen.getByText(/1 you labeled yourself \(kept\)/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText(/Matches 3 payments/)).toBeInTheDocument())
+    expect(screen.getByText(/1 you sorted yourself \(kept\)/)).toBeInTheDocument()
     expect(screen.getByText('UPI/ZEPTO/1')).toBeInTheDocument()
     expect(mockApi.post).not.toHaveBeenCalledWith('/rules', expect.anything())
   })
@@ -60,17 +61,23 @@ describe('UserRules', () => {
   it('adds the rule, and applies it to existing matches only when asked', async () => {
     renderRules()
     await fillDraft()
-    await waitFor(() => expect(screen.getByText(/Also categorize the 2 existing matches now/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Also sort the 2 existing matches now/)).toBeInTheDocument())
     fireEvent.click(screen.getByText('Add rule'))
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules', expect.objectContaining({ pattern: 'zepto' })))
     expect(mockApi.post).not.toHaveBeenCalledWith('/rules/r1/apply')
     expect(await screen.findByText('"zepto"')).toBeInTheDocument()
 
+    // The server gives the second rule an id of its own (a repeated id is a React key clash).
+    mockApi.post.mockImplementation(path => (
+      path === '/rules' ? Promise.resolve({ ...RULE, id: 'r2' })
+        : path === '/rules/preview' ? Promise.resolve(PREVIEW)
+          : Promise.resolve({ relabeled: 1, labeled: 1, protected: 1, unchanged: 0 })
+    ))
     await fillDraft()
     await screen.findByRole('checkbox')
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByText('Add rule'))
-    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules/r1/apply'))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/rules/r2/apply'))
   })
 
   it('pauses and removes a rule', async () => {

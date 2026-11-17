@@ -189,10 +189,10 @@ uv run python scripts/seed_demo_data.py --wipe    # remove demo rows
 The demo data includes:
 - Pre-annotated transactions from all pipeline stages (rule, rag_direct, rag_prompted, llm, manual)
 - Low-confidence annotations that appear in the review queue
-- Unannotated transactions ready for auto-annotate (until they are sorted they wait in the review queue too)
+- Payments not sorted yet, ready for Sort again (until they are sorted they wait in Teach Me too)
 - Synthetic people for known-person matching, and a settled Goa trip group
 
-After seeding, trigger auto-annotate on the remaining unannotated transactions to see the full pipeline in action.
+After seeding, use Sort again on the remaining payments to see the whole sorting process in action.
 
 ## Bank Statement Parsing
 

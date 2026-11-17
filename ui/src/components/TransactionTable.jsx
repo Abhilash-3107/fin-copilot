@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import Amount from './Amount.jsx'
+import PaymentLabel from './PaymentLabel.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Sortable header for the Date/Amount columns (4.12). Clicking toggles the
@@ -10,7 +11,7 @@ function SortHeader({ label, col, sort, order, onSort, align = 'left' }) {
   return (
     <button
       onClick={() => onSort(col)}
-      className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#a5b4fc]' : 'hover:text-[#94a3b8]'} ${align === 'right' ? 'flex-row-reverse' : ''}`}
+      className={`inline-flex items-center gap-1 uppercase tracking-wider ${active ? 'text-[#a5b4fc]' : 'hover:text-[#e2e8f0]'} ${align === 'right' ? 'flex-row-reverse' : ''}`}
     >
       {label}
       {active && (order === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
@@ -25,7 +26,7 @@ export default function TransactionTable({
   if (!transactions.length) return null
 
   const allSelected = selectable && transactions.every(t => selected?.has(t.id))
-  const th = 'sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#1e2235] z-10 whitespace-nowrap'
+  const th = 'sticky top-0 bg-[#13151f] px-3 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] z-10 whitespace-nowrap'
 
   return (
     <table className="w-full border-collapse text-sm">
@@ -45,11 +46,11 @@ export default function TransactionTable({
           <th className={`${th} text-left`}>
             {onSort ? <SortHeader label="Date" col="date" sort={sort} order={order} onSort={onSort} /> : 'Date'}
           </th>
-          <th className={`${th} text-left`}>Description</th>
+          <th className={`${th} text-left`}>Payee</th>
           <th className={`${th} text-right`}>
             {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
           </th>
-          {['Category', 'Source', 'Confidence'].map(h => (
+          {['Category', 'Source', 'How sure'].map(h => (
             <th key={h} className={`${th} text-left`}>{h}</th>
           ))}
         </tr>
@@ -57,26 +58,13 @@ export default function TransactionTable({
       <tbody>
         {transactions.map(txn => {
           const ann = annotationMap[txn.id]
-          const isDebit = txn.debit_credit === 'debit'
           const src = ann?.source ?? 'pending'
           const isActive = txn.id === activeId
           const isSelected = selectable && selected?.has(txn.id)
-          let upiNote = null
-          try {
-            const meta = typeof txn.upi_meta === 'string' ? JSON.parse(txn.upi_meta) : txn.upi_meta
-            // Only show a note that adds information - bank descriptions often
-            // already embed it ("UPI/Blinkit/…/Blinkit Payment"), and repeating
-            // it as a second line is pure noise.
-            if (
-              meta?.note &&
-              meta.note.length < 60 &&
-              !txn.raw_description.toLowerCase().includes(meta.note.toLowerCase())
-            ) upiNote = meta.note
-          } catch (_) {}
-
           return (
             <tr
               key={txn.id}
+              data-txn-id={txn.id}
               onClick={() => onSelect?.(txn)}
               className={`border-b border-[#1a1d27] cursor-pointer transition-colors duration-100 ${
                 isActive
@@ -93,22 +81,17 @@ export default function TransactionTable({
                     checked={!!isSelected}
                     onChange={() => onToggle(txn.id)}
                     className="accent-[#6366f1] align-middle"
-                    aria-label="Select transaction"
+                    aria-label="Select payment"
                   />
                 </td>
               )}
               <td className="px-3 py-2.5 whitespace-nowrap text-[#94a3b8]">
                 {dayjs(txn.txn_date).format('DD MMM YY')}
               </td>
-              <td className="px-3 py-2.5 text-[#cbd5e1] max-w-[480px]">
-                <div className="truncate max-w-[460px]" title={txn.raw_description}>
-                  {txn.raw_description}
-                </div>
-                {upiNote && (
-                  <div className="text-xs text-[#818cf8] truncate max-w-[460px]">{upiNote}</div>
-                )}
+              <td className="px-3 py-2.5 max-w-[480px]">
+                <PaymentLabel txn={txn} className="max-w-[460px]" />
               </td>
-              <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right ${isDebit ? 'text-red-400' : 'text-green-400'}`}>
+              <td className="px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right">
                 <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
               <td className="px-3 py-2.5">
@@ -119,7 +102,7 @@ export default function TransactionTable({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-[#475569]">-</span>
+                  <span className="text-[#94a3b8]">-</span>
                 )}
               </td>
               <td className="px-3 py-2.5">
@@ -133,9 +116,9 @@ export default function TransactionTable({
                     nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
                 {ann?.confidence == null || src === 'manual' ? (
-                  <span className="text-[#475569]">-</span>
+                  <span className="text-[#94a3b8]">-</span>
                 ) : ann.confidence >= 0.8 ? (
-                  <span className="text-xs tabular-nums text-[#64748b]">
+                  <span className="text-xs tabular-nums text-[#94a3b8]">
                     {Math.round(ann.confidence * 100)}%
                   </span>
                 ) : (

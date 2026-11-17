@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { Routes, Route } from 'react-router-dom'
+import { MemoryRouter } from '../test/router.jsx'
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -59,6 +60,26 @@ describe('People', () => {
     expect(zoya).toHaveValue('cousin')
   })
 
+  it('editing the match sends only the match, so the relationship is left alone', async () => {
+    mockApi.patch.mockResolvedValue({ ...PEOPLE[0], upi: 'karabi.b' })
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('karabi'))
+    const box = screen.getByPlaceholderText('To help us better match')
+    fireEvent.change(box, { target: { value: 'karabi.b' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/people/p1', { upi: 'karabi.b' }))
+  })
+
+  it('changing the relationship sends only the relationship', async () => {
+    mockApi.patch.mockResolvedValue({ ...PEOPLE[0], relationship: 'friend' })
+    renderPeople()
+    await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
+    const [select] = screen.getAllByRole('combobox').filter(el => el.closest('tr'))
+    fireEvent.change(select, { target: { value: 'friend' } })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/people/p1', { relationship: 'friend' }))
+  })
+
   it('states what the figure counts and over what period', async () => {
     renderPeople()
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
@@ -98,10 +119,10 @@ describe('People', () => {
     expect(document.body.textContent).not.toContain('\u2014')
   })
 
-  it('counts contacts with the right plural', async () => {
+  it('counts people with the right plural', async () => {
     mockApi.get.mockResolvedValue([PEOPLE[0]])
     renderPeople()
-    expect(await screen.findByText('1 contact')).toBeInTheDocument()
+    expect(await screen.findByText('1 person')).toBeInTheDocument()
   })
 
   it('clicks the matched count through to filtered transactions', async () => {
@@ -116,7 +137,39 @@ describe('People', () => {
     await waitFor(() => expect(screen.getByText('Karabi')).toBeInTheDocument())
     // No modal heading until the trigger is clicked.
     expect(screen.queryByText('Add a person')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Add Person/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add person/i }))
     expect(screen.getByText('Add a person')).toBeInTheDocument()
+  })
+})
+
+describe('People when the API fails', () => {
+  it('says the list could not load, never "No people yet", and recovers on Retry', async () => {
+    mockApi.get.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderPeople()
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your people.")
+    expect(screen.queryByText('No people yet')).not.toBeInTheDocument()
+    mockApi.get.mockResolvedValue(PEOPLE)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('Karabi')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('People duplicates', () => {
+  it('shows the refusal inside the add dialog and keeps it open', async () => {
+    mockApi.get.mockResolvedValue(PEOPLE)
+    mockApi.post.mockRejectedValue(Object.assign(new Error('You already have Karabi with the match "karabi".'), { status: 409 }))
+    renderPeople()
+    await screen.findByText('Karabi')
+    fireEvent.click(screen.getByRole('button', { name: /Add person/i }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a person' })
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Karabi'), { target: { value: 'Karabi' } })
+    fireEvent.change(within(dialog).getByPlaceholderText(/UPI id or name/), { target: { value: 'karabi' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add person' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('You already have Karabi with the match "karabi".')
+    expect(screen.getByRole('dialog', { name: 'Add a person' })).toBeInTheDocument()
+    // Typing again clears the message.
+    fireEvent.change(within(dialog).getByPlaceholderText('e.g. Karabi'), { target: { value: 'Karabi B' } })
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
   })
 })

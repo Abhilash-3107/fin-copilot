@@ -7,7 +7,7 @@ import sqlite3
 
 import ulid
 
-# Relationships that mean "family" — payments to these people are labelled
+# Relationships that mean "family" - payments to these people are labelled
 # Transfers › Family rather than the generic Transfers › Peer Transfer. Kept as a
 # flat set (not a per-relationship subcategory map) because Family is the only
 # subcategory that currently distinguishes the person rule; everything else,
@@ -55,6 +55,26 @@ def create_person(
         (person_id, name, upi, relationship),
     )
     return {"id": person_id, "name": name, "upi": upi, "relationship": relationship}
+
+
+def find_duplicate_person(
+    conn: sqlite3.Connection, name: str, upi: str | None, exclude_id: str | None = None
+) -> dict | None:
+    """The person who already has this name and this match-token.
+
+    Two real people can share a name, so the token tells them apart; without
+    one on either side the name alone is the identity. Case and surrounding
+    spaces are ignored.
+    """
+    def norm(value: str | None) -> str:
+        return (value or "").strip().casefold()
+
+    for row in conn.execute("SELECT * FROM people"):
+        if row["id"] == exclude_id:
+            continue
+        if norm(row["name"]) == norm(name) and norm(row["upi"]) == norm(upi):
+            return dict(row)
+    return None
 
 
 def get_person(conn: sqlite3.Connection, person_id: str) -> dict | None:

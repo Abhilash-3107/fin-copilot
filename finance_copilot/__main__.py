@@ -29,7 +29,7 @@ def _is_loopback(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        # A hostname we can't resolve to a literal — treat as non-loopback so we
+        # A hostname we can't resolve to a literal - treat as non-loopback so we
         # err toward warning rather than staying silent.
         return False
 

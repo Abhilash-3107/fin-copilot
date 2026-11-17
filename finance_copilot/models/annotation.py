@@ -35,7 +35,7 @@ class TraceExample(BaseModel):
 
 
 class ReasoningTrace(BaseModel):
-    """Why the pipeline chose what it did — captured at annotation time.
+    """Why the pipeline chose what it did - captured at annotation time.
 
     Always stored (annotations.reasoning JSON column); dev mode only gates whether
     the API/UI surface it. This is a persistence format read long after settings
@@ -67,7 +67,7 @@ class ReasoningTrace(BaseModel):
     # Set when an existing label was re-decided after new human evidence, e.g.
     # "teaching" (a label elsewhere) or "rescore" (a queue sweep).
     trigger: str | None = None
-    # Counterparty recurrence prior (rag_prompted) — the late-fused out-of-band signal
+    # Counterparty recurrence prior (rag_prompted) - the late-fused out-of-band signal
     counterparty_prior_category: str | None = None
     counterparty_prior_probability: float | None = None
     counterparty_prior_n: int | None = None       # prior observations for this counterparty
@@ -130,7 +130,7 @@ class AutoAnnotateResult(BaseModel):
     rag_prompted_annotated: int = 0
     llm_annotated: int
     llm_failed: int
-    low_confidence: int       # annotations below settings.confidence_threshold
+    low_confidence: int       # decided this run but still waiting for you: below the review bar, or Uncategorized
     already_annotated: int    # transactions skipped because already annotated
     # Whether an LLM provider was configured for this run. False means the LLM
     # stage never fired, so "llm_failed" transactions are simply waiting for the

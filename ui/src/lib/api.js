@@ -1,9 +1,28 @@
 const BASE = '/api'
 const TOKEN_KEY = 'fc_api_token'
 
+// A FastAPI 422 sends `detail` as a list of {loc, msg} items, not a string.
+// Turn whatever arrived into one sentence a person can read.
+export function describeDetail(detail) {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map(item => {
+        if (typeof item === 'string') return item
+        const msg = String(item?.msg ?? '').replace(/^Value error, /, '')
+        const field = Array.isArray(item?.loc) ? item.loc.filter(p => p !== 'body' && p !== 'query').join('.') : ''
+        return field && msg ? `${field}: ${msg}` : msg
+      })
+      .filter(Boolean)
+      .join('. ')
+  }
+  if (detail && typeof detail === 'object') return describeDetail(detail.detail ?? detail.message ?? '')
+  return detail == null ? '' : String(detail)
+}
+
 export class ApiError extends Error {
   constructor(status, message) {
-    super(message)
+    super(describeDetail(message))
     this.status = status
     this.name = 'ApiError'
   }
@@ -107,7 +126,7 @@ export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
     failures = 0
     onProgress?.(job)
     if (job.status === 'completed') return job.result
-    if (job.status === 'failed') throw new ApiError(500, job.error || 'Annotation job failed')
+    if (job.status === 'failed') throw new ApiError(500, job.error || 'Sorting did not finish')
   }
 }
 
@@ -115,12 +134,14 @@ export async function pollAnnotationJob(jobId, onProgress, pollMs = 1000) {
 export class JobBusyError extends Error {
   constructor(kind) {
     const what = {
-      annotate: 'Another categorization run is in progress',
-      reembed: "The AI's memory is being rebuilt",
+      annotate: 'Another sort is already running',
+      reembed: 'Matching is being updated',
       model_download: 'A model download is in progress',
     }[kind] ?? 'Another background job is running'
     super(`${what} - try again when it finishes`)
     this.name = 'JobBusyError'
+    // A conflict, not a dropped connection: the reason is worth showing as written.
+    this.status = 409
   }
 }
 

@@ -16,12 +16,12 @@ export default function DemoBanner() {
     return (
       <div className={strip}>
         <Sparkles size={13} className="shrink-0 text-[#818cf8]" />
-        <span>Sample data. Yours never comes here - this demo can't accept uploads.</span>
+        <span>Sample data. You can't add your own statements to this demo.</span>
         <a
           href="https://github.com/Abhilash-3107/fin-copilot#finance-copilot"
           target="_blank"
           rel="noreferrer"
-          className="shrink-0 rounded-md bg-[#6366f1] px-2.5 py-1 font-semibold text-white transition-opacity hover:opacity-90"
+          className="shrink-0 rounded-md bg-[#4f46e5] px-2.5 py-1 font-semibold text-white transition-opacity hover:opacity-90"
         >
           Run it locally
         </a>

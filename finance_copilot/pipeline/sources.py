@@ -2,7 +2,7 @@
 
 Every annotation carries a `source` naming the stage that produced it. Several
 subsystems partition those sources three ways, and before this module each kept
-its own copy of the list — they had already drifted ("model" appearing in some
+its own copy of the list - they had already drifted ("model" appearing in some
 lists but not others). This module is the single source of truth; it imports
 nothing from the pipeline so any layer can depend on it without a cycle.
 

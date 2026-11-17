@@ -30,6 +30,17 @@ def create_group(
     return {"id": group_id, "name": name, "note": note, "labels": labels or []}
 
 
+def find_group_by_name(
+    conn: sqlite3.Connection, name: str, exclude_id: str | None = None
+) -> dict | None:
+    """The group already called this, ignoring case and surrounding spaces."""
+    wanted = name.strip().casefold()
+    for row in conn.execute("SELECT * FROM transaction_groups"):
+        if row["id"] != exclude_id and row["name"].strip().casefold() == wanted:
+            return dict(row)
+    return None
+
+
 def get_group(conn: sqlite3.Connection, group_id: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM transaction_groups WHERE id = ?", (group_id,)
@@ -140,9 +151,11 @@ def _members_for_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[
     placeholders = ",".join("?" * len(group_ids))
     rows = conn.execute(
         f"""
-        SELECT m.group_id, m.role, m.txn_type, m.people, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta
+        SELECT m.group_id, m.role, m.txn_type, m.people, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta,
+               t.counterparty_key, t.display_name, a.merchant
         FROM transaction_group_members m
         JOIN transactions t ON t.id = m.transaction_id
+        LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE m.group_id IN ({placeholders})
         ORDER BY t.txn_date, t.id
         """,

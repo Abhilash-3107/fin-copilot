@@ -26,7 +26,7 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
 
 
 def statement_balance_checks(
-    conn: sqlite3.Connection, tolerance: float = 0.01
+    conn: sqlite3.Connection, tolerance: float = 0.01, statement_id: str | None = None
 ) -> dict[str, dict]:
     """Per-statement running-balance reconciliation, keyed by statement_id.
 
@@ -38,6 +38,7 @@ def statement_balance_checks(
     Returns {statement_id: {"checked": int, "consistent": int, "balanced": bool}}.
     A statement with no balance chain (checked == 0) is reported balanced=True
     (nothing to contradict), so the UI shows a check only when checked > 0.
+    With statement_id, only that statement is computed.
     """
     rows = conn.execute(
         """
@@ -51,7 +52,7 @@ def statement_balance_checks(
                     PARTITION BY statement_id ORDER BY rowid
                 ) AS prev_balance
             FROM transactions
-            WHERE running_balance IS NOT NULL
+            WHERE running_balance IS NOT NULL AND (? IS NULL OR statement_id = ?)
         )
         SELECT
             statement_id,
@@ -66,7 +67,7 @@ def statement_balance_checks(
         WHERE prev_balance IS NOT NULL AND debit_credit IS NOT NULL
         GROUP BY statement_id
         """,
-        (tolerance,),
+        (statement_id, statement_id, tolerance),
     ).fetchall()
     out: dict[str, dict] = {}
     for r in rows:
@@ -136,6 +137,7 @@ def _filter_conditions(
     categories: list[str] | None,
     sources: list[str] | None,
     merchant: str | None,
+    payee_keys: list[str] | None,
     person_token: str | None,
     min_amount: float | None,
     max_amount: float | None,
@@ -155,8 +157,12 @@ def _filter_conditions(
             "LOWER(t.raw_description) LIKE ? ESCAPE '\\'",
             "LOWER(a.merchant) LIKE ? ESCAPE '\\'",
             "(json_valid(t.upi_meta) AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')",
+            # The names the user gave: this payment's own, or its payee's.
+            "LOWER(t.display_name) LIKE ? ESCAPE '\\'",
+            "t.counterparty_key IN (SELECT counterparty_key FROM payee_names "
+            "WHERE LOWER(name) LIKE ? ESCAPE '\\')",
         ]
-        params += [pattern, pattern, pattern]
+        params += [pattern] * 5
         # A numeric query also matches on amount (exact or, for a whole-rupee
         # query, the rupee part), so "1200" finds the ₹1,200 transaction.
         amount = _parse_amount_query(q)
@@ -189,6 +195,13 @@ def _filter_conditions(
     if merchant:
         conditions.append("a.merchant = ?")
         params.append(merchant)
+
+    if payee_keys:
+        # The key a Money Map row was grouped on (insights.py: counterparty
+        # key, else the merchant), so a drill lists exactly the payments the
+        # row adds up, whatever anyone has since called them.
+        conditions.append(f"UPPER(COALESCE(t.counterparty_key, a.merchant)) IN ({','.join('?' * len(payee_keys))})")
+        params += [k.upper() for k in payee_keys]
 
     if person_token:
         # Person→transaction matching is token-based (VPA-exact or name-prefix on
@@ -233,6 +246,7 @@ def list_transactions(
     categories: list[str] | None = None,
     sources: list[str] | None = None,
     merchant: str | None = None,
+    payee_keys: list[str] | None = None,
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
@@ -246,8 +260,9 @@ def list_transactions(
     include_annotation joins each row's annotation (same shape as the per-id
     endpoint: annotation_id, category, ...) so list pages need one round-trip.
     q is a case-insensitive substring match over the raw description, the
-    annotated merchant, and the UPI note. sources/merchant filter on annotation
-    fields, so they only ever match annotated rows; the category filter does
+    annotated merchant, the UPI note and the names the user gave. payee_keys
+    are the grouping keys insights rows carry (counterparty key, else merchant).
+    sources/merchant filter on annotation fields, so they only ever match annotated rows; the category filter does
     too, except that Uncategorized also matches rows with no annotation.
     after/limit give keyset pagination: pass the last row's id to get the next
     page in (txn_date, id) order.
@@ -265,9 +280,9 @@ def list_transactions(
     conditions, params = _filter_conditions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
-        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
     )
-    needs_annotation_join = unannotated or q or categories or sources or merchant
+    needs_annotation_join = unannotated or q or categories or sources or merchant or payee_keys
     if needs_annotation_join and not include_annotation:
         query += " LEFT JOIN annotations a ON a.transaction_id = t.id"
 
@@ -308,6 +323,7 @@ def summarize_transactions(
     categories: list[str] | None = None,
     sources: list[str] | None = None,
     merchant: str | None = None,
+    payee_keys: list[str] | None = None,
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
@@ -317,7 +333,7 @@ def summarize_transactions(
     conditions, params = _filter_conditions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
-        person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
     )
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     row = conn.execute(

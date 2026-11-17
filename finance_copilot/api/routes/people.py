@@ -7,9 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.connection import write_transaction
 from finance_copilot.db.queries.people import (
     create_person,
     delete_person,
+    find_duplicate_person,
+    get_person,
     list_people,
     people_transaction_stats,
     search_people,
@@ -31,6 +34,30 @@ def _validate_match_token(upi: str | None) -> None:
         )
 
 
+def _clean_person(
+    conn: sqlite3.Connection,
+    name: str,
+    upi: str | None,
+    exclude_id: str | None = None,
+    check_token: bool = True,
+):
+    """Trim the name and token, and refuse a second copy of the same person."""
+    name = name.strip()
+    upi = (upi or "").strip() or None
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the person a name.")
+    if check_token:
+        _validate_match_token(upi)
+    clash = find_duplicate_person(conn, name, upi, exclude_id)
+    if clash:
+        have = f"You already have {clash['name']}"
+        raise HTTPException(
+            status_code=409,
+            detail=f'{have} with the match "{clash["upi"]}".' if clash["upi"] else f"{have}.",
+        )
+    return name, upi
+
+
 class PersonCreate(BaseModel):
     name: str
     upi: str | None = None
@@ -39,10 +66,9 @@ class PersonCreate(BaseModel):
 
 @router.post("", status_code=201)
 def create(body: PersonCreate, conn: sqlite3.Connection = Depends(get_db)):
-    _validate_match_token(body.upi)
-    person = create_person(conn, body.name, body.upi, body.relationship or None)
-    conn.commit()
-    return person
+    with write_transaction(conn):
+        name, upi = _clean_person(conn, body.name, body.upi)
+        return create_person(conn, name, upi, body.relationship or None)
 
 
 @router.get("")
@@ -58,19 +84,30 @@ def list_all(q: str = "", conn: sqlite3.Connection = Depends(get_db)):
 
 
 class PersonUpdate(BaseModel):
-    name: str
+    """Every field is optional; one that is left out stays as it is. An explicit
+    null clears the match or the relationship."""
+    name: str | None = None
     upi: str | None = None
     relationship: str | None = None
 
 
 @router.patch("/{person_id}")
 def update(person_id: str, body: PersonUpdate, conn: sqlite3.Connection = Depends(get_db)):
-    _validate_match_token(body.upi)
-    person = update_person(conn, person_id, body.name, body.upi or None, body.relationship or None)
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-    conn.commit()
-    return person
+    sent = body.model_fields_set
+    with write_transaction(conn):
+        current = get_person(conn, person_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="Person not found")
+        name, upi = _clean_person(
+            conn,
+            current["name"] if body.name is None else body.name,
+            body.upi if "upi" in sent else current["upi"],
+            exclude_id=person_id,
+            # A match saved before the 3-character rule stays editable on its own terms.
+            check_token="upi" in sent,
+        )
+        relationship = (body.relationship or None) if "relationship" in sent else current["relationship"]
+        return update_person(conn, person_id, name, upi, relationship)
 
 
 @router.delete("/{person_id}", status_code=204)

@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.connection import write_transaction
 from finance_copilot.db.queries.groups import (
     add_member,
     create_group,
     delete_group,
     empty_summary,
+    find_group_by_name,
     get_group,
     list_groups_for_transaction,
     list_members_for_group,
@@ -21,6 +23,7 @@ from finance_copilot.db.queries.groups import (
     summarize_groups,
     update_member,
 )
+from finance_copilot.db.queries.payee import with_payee
 
 router = APIRouter()
 
@@ -48,11 +51,24 @@ class MemberPatch(BaseModel):
     role: ROLES | None = None
 
 
+def _clean_group_name(conn: sqlite3.Connection, name: str, exclude_id: str | None = None) -> str:
+    """Trim the name, and refuse a blank one or one another group already has."""
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Give the group a name.")
+    clash = find_group_by_name(conn, name, exclude_id)
+    if clash:
+        raise HTTPException(
+            status_code=409, detail=f'You already have a group called "{clash["name"]}".'
+        )
+    return name
+
+
 @router.post("", status_code=201)
 def create(body: GroupCreate, conn: sqlite3.Connection = Depends(get_db)):
-    group = create_group(conn, body.name, body.note, body.labels or None)
-    conn.commit()
-    return group
+    with write_transaction(conn):
+        name = _clean_group_name(conn, body.name)
+        return create_group(conn, name, (body.note or "").strip() or None, body.labels or None)
 
 
 @router.get("")
@@ -72,7 +88,7 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
     group = get_group(conn, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    group["members"] = list_members_for_group(conn, group_id)
+    group["members"] = with_payee(conn, list_members_for_group(conn, group_id))
     # Same rollup the list serves, so the open card's header refreshes from the
     # server after every membership change instead of keeping the list's copy.
     group["summary"] = summarize_groups(conn, [group_id]).get(group_id, empty_summary())
@@ -80,22 +96,35 @@ def get(group_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 
 class GroupPatch(BaseModel):
+    """Every field is optional; one that is left out stays as it is."""
+    name: str | None = None
+    note: str | None = None
     labels: list[str] | None = None
 
 
 @router.patch("/{group_id}")
 def patch(group_id: str, body: GroupPatch, conn: sqlite3.Connection = Depends(get_db)):
-    if not get_group(conn, group_id):
-        raise HTTPException(status_code=404, detail="Group not found")
-    if body.labels is not None:
-        from finance_copilot.db.queries.common import dump_string_list
+    from finance_copilot.db.queries.common import dump_string_list
 
-        conn.execute(
-            "UPDATE transaction_groups SET labels = ? WHERE id = ?",
-            (dump_string_list(body.labels) if body.labels else None, group_id),
-        )
-        conn.commit()
-    return get_group(conn, group_id)
+    with write_transaction(conn):
+        if not get_group(conn, group_id):
+            raise HTTPException(status_code=404, detail="Group not found")
+        if body.name is not None:
+            conn.execute(
+                "UPDATE transaction_groups SET name = ? WHERE id = ?",
+                (_clean_group_name(conn, body.name, exclude_id=group_id), group_id),
+            )
+        if "note" in body.model_fields_set:
+            conn.execute(
+                "UPDATE transaction_groups SET note = ? WHERE id = ?",
+                ((body.note or "").strip() or None, group_id),
+            )
+        if body.labels is not None:
+            conn.execute(
+                "UPDATE transaction_groups SET labels = ? WHERE id = ?",
+                (dump_string_list(body.labels) if body.labels else None, group_id),
+            )
+        return get_group(conn, group_id)
 
 
 @router.delete("/{group_id}", status_code=204)

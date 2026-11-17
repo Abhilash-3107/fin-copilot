@@ -1,4 +1,7 @@
-"""Generate finance_copilot/tests/fixtures/sample_statement.pdf.
+"""Generate the fictional fixture statements in finance_copilot/tests/fixtures/.
+
+sample_statement.pdf is October 2026; sample_statement_nov.pdf is November 2026
+and opens on October's closing balance, so uploading both raises no gap warning.
 
 A small, entirely fictional bank statement that the generic parser accepts:
 a ruled table (pdfplumber's default lines strategy) with date / narration /
@@ -14,12 +17,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reportlab import rl_config
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-OUT = Path(__file__).resolve().parent.parent / "finance_copilot" / "tests" / "fixtures" / "sample_statement.pdf"
+# Without this reportlab stamps the creation time and a random document id into
+# every PDF, so each regeneration changed the committed bytes.
+rl_config.invariant = 1
+
+FIXTURES = Path(__file__).resolve().parent.parent / "finance_copilot" / "tests" / "fixtures"
 
 OPENING = 25000.00
 # (date, narration, withdrawal, deposit)
@@ -35,11 +43,24 @@ ROWS = [
 ]
 
 
-def main() -> None:
+NOV_ROWS = [
+    ("01/11/2026", "UPI/SWIGGY/ORDER/500112233/UPI", 389.00, None),
+    ("02/11/2026", "UPI/BMRCL METRO/RECHARGE/500112234", 200.00, None),
+    ("03/11/2026", "NEFT/ACME LABS PVT LTD/SALARY NOV", None, 85000.00),
+    ("04/11/2026", "UPI/ZEPTO/ORDER/500112235/UPI", 512.75, None),
+    ("05/11/2026", "ACH/SIP/EXAMPLE MUTUAL FUND", 5000.00, None),
+    ("06/11/2026", "UPI/RAHUL MEHTA/500112236/MOVIE SHARE", None, 450.00),
+    ("07/11/2026", "POS/EXAMPLE BOOKSTORE BANGALORE", 1299.00, None),
+    ("08/11/2026", "UPI/ELECTRICITY BOARD/BILL/500112237", 1912.50, None),
+]
+
+
+def build(out: Path, opening: float, rows: list, period: str) -> float:
+    """Write one statement PDF and return its closing balance."""
     styles = getSampleStyleSheet()
     data = [["Date", "Narration", "Withdrawal", "Deposit", "Balance"]]
-    balance = OPENING
-    for date, narration, debit, credit in ROWS:
+    balance = opening
+    for date, narration, debit, credit in rows:
         balance = round(balance - (debit or 0) + (credit or 0), 2)
         data.append([
             date,
@@ -56,14 +77,20 @@ def main() -> None:
         ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
     ]))
-    doc = SimpleDocTemplate(str(OUT), pagesize=A4, title="Sample statement (fictional)")
+    doc = SimpleDocTemplate(str(out), pagesize=A4, title="Sample statement (fictional)")
     doc.build([
         Paragraph("Example Bank - Statement of Account (fictional test data)", styles["Title"]),
-        Paragraph(f"Account: XXXX0000 &nbsp; Period: 01/10/2026 - 08/10/2026 &nbsp; Opening balance: {OPENING:,.2f}", styles["Normal"]),
+        Paragraph(f"Account: XXXX0000 &nbsp; Period: {period} &nbsp; Opening balance: {opening:,.2f}", styles["Normal"]),
         Spacer(1, 12),
         table,
     ])
-    print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
+    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    return balance
+
+
+def main() -> None:
+    closing = build(FIXTURES / "sample_statement.pdf", OPENING, ROWS, "01/10/2026 - 08/10/2026")
+    build(FIXTURES / "sample_statement_nov.pdf", closing, NOV_ROWS, "01/11/2026 - 08/11/2026")
 
 
 if __name__ == "__main__":

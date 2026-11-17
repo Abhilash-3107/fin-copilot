@@ -68,7 +68,7 @@ def insert_annotation(conn: sqlite3.Connection, annotation: Annotation) -> bool:
 
 # Columns a patch is allowed to set. The column names are interpolated into the
 # UPDATE (SQLite can't parameterize identifiers), so they must never come from
-# request-shaped data — validate against this allowlist to keep the injection
+# request-shaped data - validate against this allowlist to keep the injection
 # surface closed regardless of caller.
 def replace_machine_annotation(
     conn: sqlite3.Connection,
@@ -213,7 +213,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT t.id AS transaction_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
-               t.counterparty_key,
+               t.counterparty_key, t.display_name, t.upi_meta,
                a.id AS annotation_id, a.merchant, a.category, a.subcategory, a.tags,
                COALESCE(a.confidence, 0.0) AS confidence, a.source, a.original_source,
                a.annotated_at, a.reasoning
@@ -228,6 +228,27 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
         params,
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def count_in_review_queue(conn: sqlite3.Connection, threshold: float, transaction_ids: list[str]) -> int:
+    """How many of these payments the review queue would ask about, by the
+    same condition list_review_queue uses (snoozing aside: a skip hides a
+    payment from Teach Me, it does not make it sorted)."""
+    condition, params = _queue_condition(threshold)
+    total = 0
+    for start in range(0, len(transaction_ids), 500):
+        chunk = transaction_ids[start:start + 500]
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM transactions t
+            LEFT JOIN annotations a ON a.transaction_id = t.id
+            WHERE t.id IN ({','.join('?' for _ in chunk)}) AND {condition}
+            """,
+            (*chunk, *params),
+        ).fetchone()
+        total += row["n"]
+    return total
 
 
 def snooze_transaction(conn: sqlite3.Connection, transaction_id: str) -> bool:
@@ -262,6 +283,44 @@ def queue_counts(conn: sqlite3.Connection, threshold: float) -> dict:
         params,
     ).fetchone()
     return {key: row[key] for key in ("unsorted", "guesses", "set_aside", "set_aside_unsorted")}
+
+
+def sorted_counts_by_statement(conn: sqlite3.Connection, threshold: float) -> dict[str, int]:
+    """Per statement, how many payments count as sorted: the ones Teach Me is
+    not waiting on. The complement of _queue_condition, so "sorted" means the
+    same thing here as on the review queue - a guess below the review bar and a
+    payment with no real category are not sorted, and a skipped payment is
+    exactly as sorted as it was before it was skipped."""
+    condition, params = _queue_condition(threshold)
+    rows = conn.execute(
+        f"""
+        SELECT t.statement_id, COALESCE(SUM(NOT {condition}), 0) AS n
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        GROUP BY t.statement_id
+        """,
+        params,
+    ).fetchall()
+    return {row["statement_id"]: row["n"] for row in rows}
+
+
+def sorted_payment_coverage(conn: sqlite3.Connection, threshold: float, model_version: str) -> tuple[int, int]:
+    """(ready, total) over sorted payments, by the same definition as
+    sorted_counts_by_statement: total is every sorted payment, ready the ones
+    with a vector from the active embedding model. Only sorted payments serve
+    as examples for matching, so a payment still waiting in Teach Me is neither."""
+    condition, params = _queue_condition(threshold)
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(NOT {condition}), 0) AS total,
+               COALESCE(SUM(NOT {condition} AND em.id IS NOT NULL), 0) AS ready
+        FROM transactions t
+        LEFT JOIN annotations a ON a.transaction_id = t.id
+        LEFT JOIN embedding_meta em ON em.transaction_id = t.id AND em.model_version = ?
+        """,
+        (*params, *params, model_version),
+    ).fetchone()
+    return row["ready"], row["total"]
 
 
 def count_snoozed(conn: sqlite3.Connection, threshold: float) -> int:

@@ -13,7 +13,7 @@ const SELECT_CLASS =
   'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] transition-colors'
 
 const LABEL_CLASS =
-  'block text-[10px] font-semibold uppercase tracking-wider text-[#64748b] mb-1.5'
+  'block text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5'
 
 export default function CategoryPicker({ category, subcategory, onChange }) {
   const [tree, setTree] = useState(_cache ?? [])

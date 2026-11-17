@@ -1,6 +1,6 @@
 """Read/write helpers for runtime app settings (the app_settings key-value table).
 
-These are settings the UI can toggle at runtime and the backend reads live — unlike
+These are settings the UI can toggle at runtime and the backend reads live - unlike
 finance_copilot.config.Settings, which is process-static env/.env config. The env value (e.g.
 DEV_MODE) only seeds the initial default the first time a key is read.
 """

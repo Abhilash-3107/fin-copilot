@@ -6,19 +6,27 @@ import json
 import logging
 import sqlite3
 
+import httpx
 import ulid
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.api.live_jobs import tracks_live_job
+from finance_copilot.api.routes.data import _refuse_while_job_running
+from finance_copilot.config import current_embedding_model
+from finance_copilot.db.queries.annotations import sorted_payment_coverage
+from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.embeddings import (
-    delete_embeddings,
     ensure_vec_dimension,
     get_embedding_stats,
 )
 from finance_copilot.pipeline.annotate import rescore_review_queue
-from finance_copilot.pipeline.embed import refresh_embeddings, stale_embedding_rows
+from finance_copilot.pipeline.embed import (
+    matching_unavailable_reason,
+    refresh_embeddings,
+    stale_embedding_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,33 +41,38 @@ class EmbedResponse(BaseModel):
     embedded: int
 
 
+@router.get("/coverage")
+def matching_coverage(conn: sqlite3.Connection = Depends(get_db)):
+    """How many sorted payments are ready to match, out of all sorted payments,
+    and why Update now cannot run (None when it can)."""
+    ready, total = sorted_payment_coverage(conn, get_confidence_threshold(conn), current_embedding_model())
+    return {"ready": ready, "total": total, "unavailable": matching_unavailable_reason()}
+
+
 @router.post("/generate", response_model=EmbedResponse)
 def generate_embeddings(
     body: EmbedRequest,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Embed every annotated transaction whose vector is missing or stale.
+    """Get every sorted payment ready to match: embed each annotated transaction
+    whose vector is missing or stale.
 
     Scoped to a statement if statement_id is provided, otherwise all statements.
+    409 with a plain reason when matching is off, a sort is running, or the
+    provider can't be reached.
     """
-    return refresh_embeddings(conn, body.statement_id)
-
-
-@router.delete("/statement/{statement_id}")
-def clear_embeddings(
-    statement_id: str,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """Delete all embedding vectors for a statement so they can be regenerated."""
-    txn_ids = [
-        r[0]
-        for r in conn.execute(
-            "SELECT id FROM transactions WHERE statement_id = ?", (statement_id,)
-        ).fetchall()
-    ]
-    deleted = delete_embeddings(conn, txn_ids)
-    conn.commit()
-    return {"cleared": deleted}
+    reason = matching_unavailable_reason()
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    _refuse_while_job_running(conn)
+    try:
+        return refresh_embeddings(conn, body.statement_id)
+    except httpx.HTTPError as e:
+        logger.warning("update matching failed | %s", e)
+        raise HTTPException(
+            status_code=409,
+            detail="Couldn't reach Ollama to match payments. Check that it is running, then try again.",
+        ) from e
 
 
 @tracks_live_job
@@ -122,7 +135,7 @@ def enqueue_reembed_job(conn: sqlite3.Connection) -> tuple[dict | None, str | No
         _reap_stale_jobs(conn)
         inflight = conn.execute(
             "SELECT id, status, kind FROM annotation_jobs WHERE status IN ('queued','running') "
-            "ORDER BY created_at LIMIT 1"
+            "ORDER BY (status = 'running') DESC, created_at, id LIMIT 1"
         ).fetchone()
         if inflight is not None:
             conn.commit()

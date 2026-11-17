@@ -3,7 +3,7 @@
 Aggregates annotations.reasoning across the annotated corpus (or one statement)
 into the dev-mode insight surface: a stage funnel, the best-similarity and
 final-confidence distributions drawn against the thresholds each is gated by, and
-near-miss lists — transactions sitting just below a gate, i.e. the ones a small
+near-miss lists - transactions sitting just below a gate, i.e. the ones a small
 threshold change would flip. Individual traces explain one decision; these show
 where the mass sits relative to a knob, which is what informs setting it.
 
@@ -158,7 +158,7 @@ def run_summary(
     auto_count = sum(s["auto_accepted"] for s in stage_funnel)
 
     # Sort near-miss lists by proximity to the gate (closest first) and cap the
-    # payload — this is a "here are the tuning candidates" list, not a full dump.
+    # payload - this is a "here are the tuning candidates" list, not a full dump.
     near_miss_similarity.sort(key=lambda m: -m["best_similarity"])
     near_miss_confidence.sort(key=lambda m: -m["confidence"])
 

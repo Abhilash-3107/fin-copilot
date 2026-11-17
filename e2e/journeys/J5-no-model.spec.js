@@ -2,8 +2,8 @@
 // sort must still reach the user, and no screen may say "all done" while rows
 // are unsorted or before anything has been uploaded.
 import { test, expect } from '../fixtures.js'
-import { open } from '../lib/ui.js'
-import { categorise, uploadFixture } from '../lib/statement.js'
+import { open, openSettingsTab } from '../lib/ui.js'
+import { sortedByServer, uploadFixture } from '../lib/statement.js'
 
 test.use({ modelMode: 'none' })
 
@@ -18,11 +18,33 @@ test.describe('J5 no model connected', () => {
     await expect(page.getByText(/all done|all caught up/i)).toHaveCount(0)
   })
 
-  test.describe('after a statement is categorised without a model', () => {
+  test('Settings says plainly that sorting uses your rules and remembered payees only', async ({ page }) => {
+    await openSettingsTab(page, 'AI & Model')
+    await expect(page.getByRole('status').filter({ hasText: /^Sorting is using/ })).toContainText('rules and remembered payees only')
+  })
+
+  test('Update now is disabled, with the reason, when matching is off', async ({ page, app }) => {
+    await app.loadDemo()
+    const { unavailable, ready, total } = await app.api.get('/embeddings/coverage')
+    expect(unavailable).toContain('turned off')
+    expect(ready, 'payments ready to match with matching off').toBeLessThan(total)
+    await openSettingsTab(page, 'AI & Model')
+    await page.getByRole('button', { name: 'Advanced' }).click()
+    const update = page.getByRole('button', { name: 'Update now' })
+    await expect(update).toBeDisabled()
+    await expect(page.getByText(/Matching similar payments is turned off/)).toBeVisible()
+    // And the server agrees: it refuses with that reason instead of failing.
+    const refused = await fetch(`${app.url}/api/embeddings/generate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    expect(refused.status).toBe(409)
+  })
+
+  test.describe('after a statement is sorted without a model', () => {
     let unsorted
     test.beforeEach(async ({ app }) => {
       const statement = await uploadFixture(app.api)
-      const result = await categorise(app.api, statement.id)
+      const result = await sortedByServer(app.api, statement.id)
       expect(result.ai_active, 'the model must be off for this journey').toBe(false)
       unsorted = await app.api.get('/transactions?unannotated=true')
       expect(unsorted.length, 'rows the rules could not sort').toBeGreaterThan(0)

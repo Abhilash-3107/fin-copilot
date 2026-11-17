@@ -51,6 +51,7 @@ from datetime import date
 from statistics import median
 
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.payee import payee_labels
 
 NON_SPEND_CATEGORIES = ("Self Transfers", "Investments", "Transfers", "Income")
 
@@ -211,8 +212,8 @@ def _offsets_fingerprint(conn: sqlite3.Connection) -> tuple:
 
     Two independent change counters make it complete:
     - conn.total_changes: SQLite's running count of rows inserted/updated/deleted
-      through *this* connection. Catches same-connection edits — including a
-      category re-label that leaves all row counts unchanged — which a
+      through *this* connection. Catches same-connection edits - including a
+      category re-label that leaves all row counts unchanged - which a
       count/timestamp fingerprint misses at datetime()'s one-second resolution.
     - data_version (PRAGMA): bumps when *another* connection commits, catching
       writes this connection didn't make.
@@ -567,7 +568,7 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
         """
         SELECT t.counterparty_key AS key, CAST(ROUND(t.amount) AS INTEGER) AS amount,
                t.txn_date, strftime('%Y-%m', t.txn_date) AS month,
-               a.category, a.merchant
+               a.category
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE t.debit_credit = 'debit' AND t.counterparty_key IS NOT NULL
@@ -582,6 +583,9 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
     def month_index(month: str) -> int:
         return int(month[:4]) * 12 + int(month[5:7])
 
+    # Labelled by payee, the way the Ledger names it: a rename of one payment
+    # changes nothing here, a rename of the payee changes this label and not the row.
+    labels = payee_labels(conn, sorted({key for key, _amount in units}))
     items = []
     for (key, amount), charges in units.items():
         months_seen = sorted({c["month"] for c in charges})
@@ -596,7 +600,6 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
         )
         if not qualifies:
             continue
-        merchant_names = Counter(c["merchant"] for c in charges if c["merchant"])
         dates = [c["txn_date"] for c in charges]
         gaps = [
             (_days_between(dates[i - 1], dates[i]))
@@ -604,7 +607,9 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
         ]
         last_date = dates[-1]
         items.append({
-            "name": merchant_names.most_common(1)[0][0] if merchant_names else key.title(),
+            "name": labels[key],
+            # The grouping key, for the drill to the payments this row adds up.
+            "keys": [key],
             "category": category,
             "amount": amount,
             "months_seen": len(months_seen),
@@ -713,7 +718,7 @@ def _merchants(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT UPPER(COALESCE(t.counterparty_key, a.merchant)) AS key,
-               a.merchant, t.amount
+               a.merchant, t.amount, t.counterparty_key AS cpk
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
@@ -723,21 +728,25 @@ def _merchants(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
         (start, end, *NON_SPEND_CATEGORIES),
     ).fetchall()
     canonical = _merge_merchant_keys([r["key"] for r in rows])
-    agg: dict[str, dict] = defaultdict(lambda: {"total": 0.0, "count": 0, "names": Counter()})
+    labels = payee_labels(conn, sorted({r["cpk"] for r in rows if r["cpk"]}))
+    agg: dict[str, dict] = defaultdict(lambda: {"total": 0.0, "count": 0, "names": Counter(), "keys": set()})
     for row in rows:
         entry = agg[canonical[row["key"]]]
         entry["total"] += row["amount"]
         entry["count"] += 1
-        if row["merchant"]:
-            entry["names"][row["merchant"]] += 1
+        entry["keys"].add(row["key"])
+        # The payee's name as the Ledger shows it; a payment with no payee key
+        # is grouped by its merchant, which is then its name.
+        entry["names"][labels.get(row["cpk"]) or (row["merchant"] or row["key"]).strip()] += 1
     items = [
         {
-            "name": entry["names"].most_common(1)[0][0] if entry["names"] else key.title(),
+            "name": min(entry["names"].items(), key=lambda kv: (-kv[1], kv[0]))[0],
+            "keys": sorted(entry["keys"]),
             "total": round(entry["total"], 2),
             "count": entry["count"],
             "avg": round(entry["total"] / entry["count"], 2),
         }
-        for key, entry in agg.items()
+        for entry in agg.values()
     ]
     items.sort(key=lambda i: -i["total"])
     return items[:8]

@@ -45,7 +45,7 @@ export default function Sidebar({ open, onClose }) {
       >
         <div className="px-4 py-4 border-b border-[#2d3148] flex items-center justify-between">
           <span className="text-[#a5b4fc] font-semibold text-sm tracking-tight">Finance Copilot</span>
-          <button onClick={onClose} className="md:hidden text-[#64748b] hover:text-[#e2e8f0]" aria-label="Close menu">
+          <button onClick={onClose} className="md:hidden text-[#94a3b8] hover:text-[#e2e8f0]" aria-label="Close menu">
             <X size={18} />
           </button>
         </div>

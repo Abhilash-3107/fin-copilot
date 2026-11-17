@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
-from finance_copilot.api.live_jobs import live_job_ids, tracks_live_job
+from finance_copilot.api.live_jobs import JobRunner, live_job_ids, tracks_live_job
 from finance_copilot.config import settings
 from finance_copilot.db.queries.annotations import (
     get_annotation,
@@ -33,6 +33,8 @@ from finance_copilot.db.queries.categories import (
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
 from finance_copilot.db.queries.embeddings import find_similar
 from finance_copilot.db.queries.feedback_stats import category_accuracy, record_feedback
+from finance_copilot.db.queries.payee import payee_labels, with_payee
+from finance_copilot.db.queries.review_undo import UndoCapture, UndoError, undo
 from finance_copilot.models.annotation import (
     Annotation,
     AnnotationCreate,
@@ -42,6 +44,7 @@ from finance_copilot.models.annotation import (
 from finance_copilot.pipeline.annotate import (
     auto_annotate,
     reevaluate_after_teaching,
+    reevaluation_candidates,
     rescore_review_queue,
 )
 from finance_copilot.pipeline.embed import (
@@ -53,6 +56,7 @@ from finance_copilot.pipeline.embed import (
 from finance_copilot.pipeline.review_queue import group_review_queue, take_whole_groups
 from finance_copilot.pipeline.sources import MACHINE_SOURCES as _MACHINE_SOURCES
 from finance_copilot.pipeline.sources import MODEL_SOURCES as _MODEL_SOURCES
+from finance_copilot.pipeline.suggestions import attach_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,12 @@ def _embed_in_background(transaction_ids: list[str]) -> None:
 # ever runs where this process's registry can't see it).
 STALE_JOB_MINUTES = 10
 
+# A sort the app was closed in the middle of is put back in line once; the
+# second interruption ends it (migration 040 counts the starts).
+MAX_SORT_ATTEMPTS = 2
+CHANGED_ELSEWHERE = "That payment's category changed elsewhere. Reload and try again."
+GAVE_UP_SORTING = "Stopped: the app closed twice while sorting this statement. Use Sort again."
+
 
 def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     """Fail in-flight jobs with no live worker whose heartbeat has gone quiet
@@ -121,7 +131,9 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
     Any observer (a status poll, a new job request, a page mount) can flip these
     to failed so nothing polls a zombie forever. A job whose worker is running
     in this process is skipped however long it has been quiet, so a slow call
-    can never get a live job reaped and a duplicate run started beside it.
+    can never get a live job reaped and a duplicate run started beside it. So is
+    a queued sorting job while the job runner is alive: it is waiting its turn
+    behind the job ahead of it, however long that takes.
     Returns the number of jobs reaped. Caller commits.
 
     Reads before writing: polls are frequent and almost never find anything
@@ -134,29 +146,45 @@ def _reap_stale_jobs(conn: sqlite3.Connection) -> int:
         "WHERE status IN ('queued','running') "
         f"AND updated_at < datetime('now', '-{STALE_JOB_MINUTES} minutes')"
         + (f" AND id NOT IN ({','.join('?' * len(live))})" if live else "")
+        + (" AND NOT (status = 'queued' AND kind = 'annotate')" if runner.alive else "")
     )
     if conn.execute(f"SELECT 1 FROM annotation_jobs {stale_where} LIMIT 1", live).fetchone() is None:
         return 0
     cur = conn.execute(
         "UPDATE annotation_jobs SET status='failed', "
-        f"error='Went stale without a worker', updated_at=datetime('now') {stale_where}",
+        f"error='Stopped: sorting did not finish. Use Sort again.', updated_at=datetime('now') {stale_where}",
         live,
     )
     return cur.rowcount
 
 
 def reap_interrupted_jobs(conn: sqlite3.Connection) -> int:
-    """Fail every queued/running job. Called at startup: this is a
-    single-process app, so any job still marked in-flight when the process
-    boots was orphaned by a restart and will never finish. Left alone it would
-    satisfy start_auto_annotate_job's single-job guard forever and block all
-    future annotation runs."""
+    """Settle the jobs a previous process left in flight. Called at startup,
+    after the data-folder lock is held: no other process owns this ledger, so a
+    job still marked running was orphaned by the restart and will never finish.
+    Left alone it would satisfy the single-job guard forever.
+
+    A sorting job, queued or interrupted, goes back in line: the pipeline skips
+    payments that already have a label, so running it again finishes the
+    statement instead of losing the sort. Only once, though: a job already
+    started twice (the app closed both times) fails, so a crash while sorting
+    one statement cannot relaunch the same sort at every start. A re-embed or a
+    model download was handed to a thread that no longer exists and fails (the
+    person starts it again). Returns how many jobs failed."""
+    requeued = conn.execute(
+        "UPDATE annotation_jobs SET status='queued', processed=0, total=0, error=NULL, "
+        "updated_at=datetime('now') "
+        f"WHERE status = 'running' AND kind = 'annotate' AND attempts < {MAX_SORT_ATTEMPTS}"
+    ).rowcount
     cur = conn.execute(
-        "UPDATE annotation_jobs SET status='failed', "
-        "error='Interrupted by a server restart', updated_at=datetime('now') "
-        "WHERE status IN ('queued','running')"
+        "UPDATE annotation_jobs SET status='failed', updated_at=datetime('now'), error = "
+        "CASE WHEN kind = 'annotate' THEN ? ELSE 'Stopped: the app closed before this finished. Start it again.' END "
+        "WHERE status = 'running' OR (status = 'queued' AND kind != 'annotate')",
+        (GAVE_UP_SORTING,),
     )
     conn.commit()
+    if requeued or cur.rowcount:
+        logger.info("Startup: requeued %d interrupted job(s), failed %d", requeued, cur.rowcount)
     return cur.rowcount
 
 
@@ -166,14 +194,9 @@ def _run_annotation_job(
     statement_id: str | None,
     transaction_ids: list[str] | None,
 ) -> None:
+    # The runner claimed the row (status 'running') before calling this.
     conn = _open_job_connection()
     try:
-        conn.execute(
-            "UPDATE annotation_jobs SET status='running', updated_at=datetime('now') WHERE id = ?",
-            (job_id,),
-        )
-        conn.commit()
-
         last_commit = 0.0
 
         def progress(processed: int, total: int) -> None:
@@ -185,7 +208,8 @@ def _run_annotation_job(
             if now - last_commit < 1.0 and processed != total:
                 return
             conn.execute(
-                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') WHERE id = ?",
+                "UPDATE annotation_jobs SET processed=?, total=?, updated_at=datetime('now') "
+                "WHERE id = ? AND status = 'running'",
                 (processed, total, job_id),
             )
             conn.commit()
@@ -195,7 +219,7 @@ def _run_annotation_job(
         conn.execute(
             """UPDATE annotation_jobs
                SET status='completed', processed=?, total=?, result=?, updated_at=datetime('now')
-               WHERE id = ?""",
+               WHERE id = ? AND status = 'running'""",
             (result.total_processed, result.total_processed, result.model_dump_json(), job_id),
         )
         conn.commit()
@@ -203,7 +227,8 @@ def _run_annotation_job(
         logger.exception("annotation job failed | job=%s", job_id)
         conn.rollback()
         conn.execute(
-            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') WHERE id = ?",
+            "UPDATE annotation_jobs SET status='failed', error=?, updated_at=datetime('now') "
+            "WHERE id = ? AND status = 'running'",
             (str(e), job_id),
         )
         conn.commit()
@@ -211,27 +236,30 @@ def _run_annotation_job(
         conn.close()
 
 
-@router.post("/auto-annotate/jobs", status_code=202)
-def start_auto_annotate_job(
-    body: AutoAnnotateRequest,
-    background_tasks: BackgroundTasks,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress.
+def enqueue_annotation_job(
+    conn: sqlite3.Connection,
+    statement_id: str | None,
+    *,
+    transaction_ids: list[str] | None = None,
+    queue: bool = False,
+) -> dict:
+    """Record a sorting job and wake the job runner, which runs it in its turn.
 
-    Single-user app: only one annotation job may be in flight at a time. A second
-    request (e.g. a double-click or a click from another open tab) re-attaches to
-    the running job instead of starting a duplicate, which would burn duplicate LLM
-    calls and could overwrite a manual label created mid-run.
+    Single-user app: only one job runs at a time. By default a request that
+    finds one in flight (a double-click, a click from another open tab)
+    re-attaches to it instead of starting a duplicate, which would burn
+    duplicate LLM calls and could overwrite a manual label created mid-run.
+    With queue=True (a statement that just landed) the new job is recorded
+    anyway and waits in line, so the statement is sorted once the jobs ahead of
+    it finish.
     """
     # Reap + guard + insert must be atomic against a concurrent request (a
     # double-click or a second tab). SQLite serializes writes but not a
     # read-then-write across two connections: without a write lock held up
-    # front, both requests could see no in-flight job and both insert +
-    # schedule, which is the duplicate-LLM-burn the single-job guard exists to
-    # prevent. BEGIN IMMEDIATE takes the write lock now, so the second request
-    # blocks (busy_timeout) until the first commits and then sees its row.
-    scheduled_job_id: str | None = None
+    # front, both requests could see no in-flight job and both insert, which is
+    # the duplicate-LLM-burn the single-job guard exists to prevent.
+    # BEGIN IMMEDIATE takes the write lock now, so the second request blocks
+    # (busy_timeout) until the first commits and then sees its row.
     conn.execute("BEGIN IMMEDIATE")
     try:
         # An in-flight row with a quiet heartbeat is an orphan (worker died or
@@ -239,11 +267,14 @@ def start_auto_annotate_job(
         # than re-attach, or it would block every future run until restart.
         _reap_stale_jobs(conn)
 
+        # Attach to the job doing the work: with a queue behind it a waiting
+        # row must never be what a caller thinks it is following.
         inflight = conn.execute(
             "SELECT id, status, kind, statement_id FROM annotation_jobs "
-            "WHERE status IN ('queued','running') ORDER BY created_at LIMIT 1"
+            "WHERE status IN ('queued','running') "
+            "ORDER BY (status = 'running') DESC, created_at, id LIMIT 1"
         ).fetchone()
-        if inflight is not None:
+        if inflight is not None and not queue:
             conn.commit()
             # Say it's a re-attach and to what: the in-flight job may be a
             # different kind (a re-embed) or another statement's run, and the
@@ -258,21 +289,76 @@ def start_auto_annotate_job(
 
         job_id = str(ulid.ULID())
         conn.execute(
-            "INSERT INTO annotation_jobs (id, statement_id) VALUES (?, ?)",
-            (job_id, body.statement_id),
+            "INSERT INTO annotation_jobs (id, statement_id, transaction_ids) VALUES (?, ?, ?)",
+            (job_id, statement_id, json.dumps(transaction_ids) if transaction_ids is not None else None),
         )
         conn.commit()
-        scheduled_job_id = job_id
     except Exception:
         conn.rollback()
         raise
 
-    # Schedule the worker only after the row is committed and the lock released,
-    # so the background task's own connection can't deadlock on our write lock.
-    background_tasks.add_task(
-        _run_annotation_job, scheduled_job_id, body.statement_id, body.transaction_ids
-    )
-    return {"job_id": scheduled_job_id, "status": "queued"}
+    # Wake the runner only after the row is committed and the lock released, so
+    # its own connection can't deadlock on our write lock.
+    runner.wake()
+    return {"job_id": job_id, "status": "queued"}
+
+
+def _run_next_queued_job() -> bool:
+    """Claim and run the oldest queued sorting job, if the way is clear. Returns
+    whether one ran. The job runner's one unit of work.
+
+    Held back while another job is running (a sort, a re-embed, a model
+    download): those must not overlap. The look and the claim are one write
+    transaction, and the claim only takes a row that is still queued, so two
+    runners (a thread that outlived a restart, say) can never both run it.
+    """
+    conn = _open_job_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # The runner is the one observer that is always awake, so it reaps too:
+            # a running row whose worker died would otherwise hold the line.
+            _reap_stale_jobs(conn)
+            if conn.execute("SELECT 1 FROM annotation_jobs WHERE status = 'running' LIMIT 1").fetchone():
+                conn.commit()
+                return False
+            row = conn.execute(
+                "SELECT id, statement_id, transaction_ids FROM annotation_jobs "
+                "WHERE status = 'queued' AND kind = 'annotate' ORDER BY created_at, id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return False
+            claimed = conn.execute(
+                "UPDATE annotation_jobs SET status='running', attempts = attempts + 1, "
+                "updated_at=datetime('now') WHERE id = ? AND status = 'queued'",
+                (row["id"],),
+            ).rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+    if not claimed:
+        return True  # another runner took it first: look again straight away
+    transaction_ids = json.loads(row["transaction_ids"]) if row["transaction_ids"] else None
+    # Looked up by name at call time so a test can stand in for the worker.
+    _run_annotation_job(row["id"], row["statement_id"], transaction_ids)
+    return True
+
+
+# The one runner for this process; the app's lifespan starts and stops it.
+runner = JobRunner(_run_next_queued_job)
+
+
+@router.post("/auto-annotate/jobs", status_code=202)
+def start_auto_annotate_job(
+    body: AutoAnnotateRequest,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Start auto-annotation in the background; poll GET /annotations/jobs/{id} for progress."""
+    return enqueue_annotation_job(conn, body.statement_id, transaction_ids=body.transaction_ids)
 
 
 @router.get("/jobs")
@@ -285,10 +371,11 @@ def list_active_annotation_jobs(active: int = 0, conn: sqlite3.Connection = Depe
     """
     if _reap_stale_jobs(conn):
         conn.commit()
+    # Active: the running job first, then the queue in the order it arrived, so
+    # the progress card follows the work as it happens. History: newest first.
     where = "WHERE status IN ('queued','running')" if active else ""
-    rows = conn.execute(
-        f"SELECT * FROM annotation_jobs {where} ORDER BY created_at DESC"
-    ).fetchall()
+    order = "(status = 'running') DESC, created_at ASC, id ASC" if active else "created_at DESC, id DESC"
+    rows = conn.execute(f"SELECT * FROM annotation_jobs {where} ORDER BY {order}").fetchall()
     jobs = []
     for row in rows:
         job = dict(row)
@@ -342,7 +429,7 @@ def create_annotation(
         # edited via PATCH so its original_source/reasoning history survives.
         raise HTTPException(
             status_code=409,
-            detail=f"Transaction {body.transaction_id} is already annotated; PATCH it to edit.",
+            detail="This payment was just sorted. Reopen it to change its category.",
         )
     conn.commit()
     # Embed immediately so this annotation can serve as a RAG donor (best-effort)
@@ -386,17 +473,26 @@ def _patch_from_body(conn: sqlite3.Connection, existing: dict, body: AnnotationP
     return patch
 
 
-def _apply_correction(conn: sqlite3.Connection, existing: dict, patch: dict) -> None:
+def _record(conn: sqlite3.Connection, capture: UndoCapture | None, source: str, category: str, feedback_type: str) -> None:
+    """Calibration feedback; through the answer's undo capture when it has one,
+    so the undo takes back exactly what this answer counted."""
+    if capture is None:
+        record_feedback(conn, source, category, feedback_type)
+    else:
+        capture.feedback(conn, source, category, feedback_type)
+
+
+def _apply_correction(conn: sqlite3.Connection, existing: dict, patch: dict, capture: UndoCapture | None = None) -> None:
     """Record calibration feedback against the machine label, then apply. Caller commits."""
     if existing["source"] in _MODEL_SOURCES:
-        record_feedback(conn, existing["source"], existing["category"], _classify_feedback(existing, patch))
+        _record(conn, capture, existing["source"], existing["category"], _classify_feedback(existing, patch))
     update_annotation(conn, existing["id"], patch)
 
 
-def _apply_confirmation(conn: sqlite3.Connection, existing: dict) -> None:
+def _apply_confirmation(conn: sqlite3.Connection, existing: dict, capture: UndoCapture | None = None) -> None:
     """A human vouches for the label as is. Caller commits."""
     if existing["source"] in _MODEL_SOURCES:
-        record_feedback(conn, existing["source"], existing["category"], "confirmed")
+        _record(conn, capture, existing["source"], existing["category"], "confirmed")
     update_annotation(conn, existing["id"], {"confidence": 1.0})
 
 
@@ -408,13 +504,13 @@ def patch_annotation(
 ):
     existing = get_annotation(conn, annotation_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
 
     patch = _patch_from_body(conn, existing, body)
     if patch:
         _apply_correction(conn, existing, patch)
         conn.commit()
-        # Corrected annotations are trusted donors — refresh the embedding (best-effort)
+        # Corrected annotations are trusted donors - refresh the embedding (best-effort)
         embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
@@ -443,16 +539,23 @@ def confirm_annotation(
     """
     existing = get_annotation(conn, annotation_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
     if existing["category"] != body.category:
-        raise HTTPException(status_code=409, detail=f"This transaction is now labeled {existing['category']}")
+        raise HTTPException(status_code=409, detail=f"This payment is now sorted as {existing['category']}")
 
-    _apply_confirmation(conn, existing)
+    taught = [existing["transaction_id"]]
+    capture = UndoCapture(conn, taught)
+    _apply_confirmation(conn, existing, capture)
     conn.commit()
     embed_transaction(conn, existing["transaction_id"])
 
     updated = _as_response(get_annotation(conn, annotation_id))
-    updated["reevaluated"] = reevaluate_after_teaching(conn, [existing["transaction_id"]])
+    # Only now: the neighbours of a payment that was never embedded are found by
+    # the vector the line above just stored.
+    candidates = reevaluation_candidates(conn, taught)
+    capture.include(conn, candidates)
+    updated["reevaluated"] = reevaluate_after_teaching(conn, taught, candidates)
+    updated["undo_token"] = capture.finish(conn)
     return updated
 
 
@@ -497,7 +600,8 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
     as no model guess was involved; if a sorting run annotated it a moment ago,
     it is corrected like any other member. So the review queue answers every
     card through here, one payment or many. Then the new labels re-decide the
-    machine labels they could change."""
+    machine labels they could change. The response carries an undo_token for
+    POST /review-queue/undo."""
     try:
         category_id, subcategory_id = require_category_ids(conn, body.label.category, body.label.subcategory)
     except CategoryError as e:
@@ -510,8 +614,10 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
         patch["merchant"] = body.label.merchant
     if "tags" in body.label.model_fields_set:
         patch["tags"] = dump_string_list(body.label.tags)
+    answered = list(dict.fromkeys(body.transaction_ids))
+    capture = UndoCapture(conn, answered)
     taught = []
-    for transaction_id in dict.fromkeys(body.transaction_ids):
+    for transaction_id in answered:
         existing = get_annotation_by_transaction(conn, transaction_id)
         if existing is None and _label_by_hand(conn, transaction_id, patch):
             taught.append(transaction_id)
@@ -519,11 +625,15 @@ def bulk_label(body: BulkLabelRequest, conn: sqlite3.Connection = Depends(get_db
         existing = existing or get_annotation_by_transaction(conn, transaction_id)
         if existing is None:
             continue  # the payment is gone
-        _apply_correction(conn, existing, patch)
+        _apply_correction(conn, existing, patch, capture)
         taught.append(transaction_id)
     conn.commit()
     embed_transactions(conn, taught)
-    return {"updated": len(taught), "reevaluated": reevaluate_after_teaching(conn, taught)}
+    # After the embed: a payment that was never embedded has no neighbours until it has a vector.
+    candidates = reevaluation_candidates(conn, taught)
+    capture.include(conn, candidates)
+    reevaluated = reevaluate_after_teaching(conn, taught, candidates)
+    return {"updated": len(taught), "reevaluated": reevaluated, "undo_token": capture.finish(conn)}
 
 
 class BulkCategoryRequest(BaseModel):
@@ -614,12 +724,12 @@ def similar_candidates(
     """
     ann = get_annotation(conn, annotation_id)
     if ann is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
     txn_row = conn.execute(
         "SELECT * FROM transactions WHERE id = ?", (ann["transaction_id"],)
     ).fetchone()
     if txn_row is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="Payment not found")
     txn = dict(txn_row)
 
     candidate_ids: dict[str, float | None] = {}  # transaction_id → similarity
@@ -652,7 +762,7 @@ def similar_candidates(
         f"""
         SELECT a.id AS annotation_id, a.category, a.subcategory, a.merchant, a.source,
                a.confidence, t.id AS transaction_id, t.txn_date, t.amount,
-               t.debit_credit, t.raw_description
+               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.upi_meta
         FROM annotations a JOIN transactions t ON t.id = a.transaction_id
         WHERE t.id IN ({placeholders})
         """,
@@ -671,7 +781,7 @@ def similar_candidates(
         out.append(item)
     # Different-label candidates first (the ones worth fixing), then by similarity.
     out.sort(key=lambda x: (not x["differs"], -(x["similarity"] or 0.0)))
-    return out
+    return with_payee(conn, out)
 
 
 @router.post("/{annotation_id}/apply-to-similar")
@@ -686,11 +796,13 @@ def apply_to_similar(
     Each target is treated as a human decision (the user explicitly selected it):
     feedback is recorded against the target's machine source, source flips to
     manual (original_source preserved by update_annotation), confidence 1.0.
+    The response carries an undo_token for POST /review-queue/undo.
     """
     donor = get_annotation(conn, annotation_id)
     if donor is None:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+        raise HTTPException(status_code=404, detail=CHANGED_ELSEWHERE)
 
+    capture = UndoCapture(conn, list(dict.fromkeys(body.transaction_ids)))
     applied = 0
     skipped = 0
     for txn_id in body.transaction_ids:
@@ -706,12 +818,12 @@ def apply_to_similar(
             "confidence": 1.0,
         }
         feedback_type = _classify_feedback(target, patch)
-        record_feedback(conn, target["source"], target["category"], feedback_type)
+        capture.feedback(conn, target["source"], target["category"], feedback_type)
         update_annotation(conn, target["id"], patch)
         applied += 1
     conn.commit()
     background_tasks.add_task(_embed_in_background, list(body.transaction_ids))
-    return {"applied": applied, "skipped": skipped}
+    return {"applied": applied, "skipped": skipped, "undo_token": capture.finish(conn)}
 
 
 @router.get("/run-summary")
@@ -748,9 +860,14 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
     """
     from finance_copilot.db.queries.learned_rules import list_learned_rules
 
+    rules = list_learned_rules(conn)
+    # The key is internal; what a person reads is the payee's name, resolved the
+    # same way every other screen does.
+    labels = payee_labels(conn, [r.counterparty_key for r in rules])
     return [
         {
             "counterparty_key": r.counterparty_key,
+            "payee": labels.get(r.counterparty_key, r.counterparty_key),
             "category": r.category,
             "subcategory": r.subcategory,
             "merchant": r.merchant,
@@ -759,7 +876,7 @@ def learned_rules(conn: sqlite3.Connection = Depends(get_db)):
             "purity": r.purity,
             "direction": r.direction,
         }
-        for r in list_learned_rules(conn)
+        for r in rules
     ]
 
 
@@ -800,6 +917,8 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
     items = take_whole_groups(
         group_review_queue(list_review_queue(conn, get_confidence_threshold(conn))), REVIEW_QUEUE_PAGE
     )
+    with_payee(conn, items)
+    attach_suggestions(conn, items)
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))
         # Dev mode: surface the captured reasoning trace; otherwise drop the raw
@@ -848,11 +967,29 @@ class SkipRequest(BaseModel):
 def skip_review_item(body: SkipRequest, conn: sqlite3.Connection = Depends(get_db)):
     """Snooze one payment out of the review queue - a skip that persists across
     sessions instead of silently reappearing (4.15). Keyed by transaction so a
-    payment with no annotation can be set aside too."""
+    payment with no annotation can be set aside too. Returns an undo_token."""
+    capture = UndoCapture(conn, [body.transaction_id])
     if not snooze_transaction(conn, body.transaction_id):
-        raise HTTPException(status_code=404, detail=f"Transaction {body.transaction_id} not found")
+        raise HTTPException(status_code=404, detail=f"Payment {body.transaction_id} not found")
     conn.commit()
-    return {"snoozed": True}
+    return {"snoozed": True, "undo_token": capture.finish(conn)}
+
+
+class UndoRequest(BaseModel):
+    token: str
+
+
+@router.post("/review-queue/undo", status_code=200)
+def undo_review_answer(body: UndoRequest, conn: sqlite3.Connection = Depends(get_db)):
+    """Take back one Teach Me answer: every payment it touched goes back to
+    exactly what it was (annotation, set-aside state, review counters). 409 with
+    a plain message when the answer is too old, was already undone, or one of
+    its payments has changed since."""
+    try:
+        restored = undo(conn, body.token)
+    except UndoError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"restored": restored}
 
 
 def _classify_feedback(existing: dict, patch: dict) -> str:

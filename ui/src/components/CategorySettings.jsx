@@ -3,6 +3,9 @@ import { Plus, Pencil, GitMerge, Check, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import TaxonomyHealth from './TaxonomyHealth.jsx'
+import InlineError from './InlineError.jsx'
+import { couldnt } from '../lib/errors.js'
+import { count } from '../lib/plural.js'
 
 // Category management (4.13): add / rename / merge subcategories under each
 // top-level category. Top-level categories are fixed; subcategories are the
@@ -17,19 +20,21 @@ export default function CategorySettings() {
   const [editName, setEditName] = useState('')
   const [merging, setMerging] = useState(null)    // subcategory id being merged
   const [health, setHealth] = useState(null)
+  const [loadError, setLoadError] = useState(null)
 
   async function load() {
     try {
       const [categories, tidy] = await Promise.all([api.get('/categories'), api.get('/categories/tidy-up')])
       setCats(categories)
       setHealth(tidy)
+      setLoadError(null)
     } catch (e) {
-      toast(`Couldn't load categories - ${e.message}`, 'error')
+      setLoadError(e)
     } finally {
       setLoading(false)
     }
   }
-  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [])
 
   const parents = cats.filter(c => c.parent_id === null)
   const subsOf = pid => cats.filter(c => c.parent_id === pid)
@@ -43,7 +48,7 @@ export default function CategorySettings() {
       await load()
       toast(`Added "${name}"`, 'success')
     } catch (e) {
-      toast(`Couldn't add - ${e.message}`, 'error')
+      toast(couldnt('add', e), 'error')
     }
   }
 
@@ -56,7 +61,7 @@ export default function CategorySettings() {
       await load()
       toast('Renamed', 'success')
     } catch (e) {
-      toast(`Couldn't rename - ${e.message}`, 'error')
+      toast(couldnt('rename', e), 'error')
     }
   }
 
@@ -65,24 +70,28 @@ export default function CategorySettings() {
       const { moved } = await api.post(`/categories/subcategories/${sourceId}/merge`, { target_id: targetId })
       setMerging(null)
       await load()
-      toast(`Merged - ${moved} transaction${moved === 1 ? '' : 's'} moved`, 'info')
+      toast(`Merged - ${count(moved, 'payment')} moved`, 'info')
     } catch (e) {
-      toast(`Couldn't merge - ${e.message}`, 'error')
+      toast(couldnt('merge', e), 'error')
     }
   }
 
-  if (loading) return <p className="text-sm text-[#475569]">Loading…</p>
+  if (loading) return <p className="text-sm text-[#94a3b8]">Loading…</p>
+  if (loadError && cats.length === 0) return <InlineError what="your categories" error={loadError} onRetry={load} />
 
   return (
     <div className="space-y-5">
       <div>
         <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Categories</h2>
-        <p className="text-xs text-[#64748b] leading-relaxed max-w-xl">
-          Refine the subcategories your copilot sorts transactions into. Rename one and
-          the change follows every transaction already using it; merge two to fold their
-          transactions together.
+        <p className="text-xs text-[#94a3b8] leading-relaxed max-w-xl">
+          Refine the subcategories your payments are sorted into. Rename one and
+          the change follows every payment already using it; merge two to fold their
+          payments together.
         </p>
       </div>
+
+      {/* A reload that failed (after a merge, say) leaves the list as it was, which may be out of date: say so. */}
+      {loadError && <InlineError what="your categories" error={loadError} onRetry={load} />}
 
       <TaxonomyHealth health={health} categories={cats} onChanged={load} />
 
@@ -95,7 +104,7 @@ export default function CategorySettings() {
                 <span className="text-sm font-medium text-[#e2e8f0]">{parent.name}</span>
                 <button
                   onClick={() => { setAdding(parent.id); setAddName('') }}
-                  className="flex items-center gap-1 text-xs text-[#6366f1] hover:text-[#818cf8] transition-colors"
+                  className="flex items-center gap-1 text-xs text-[#818cf8] hover:text-[#818cf8] transition-colors"
                 >
                   <Plus size={13} /> Add
                 </button>
@@ -113,12 +122,12 @@ export default function CategorySettings() {
                       className="flex-1 bg-[#0a0b10] border border-[#6366f1] text-[#e2e8f0] px-2.5 py-1.5 rounded text-sm focus:outline-none"
                     />
                     <button onClick={() => addSub(parent.id)} className="text-[#86efac] hover:opacity-80"><Check size={15} /></button>
-                    <button onClick={() => setAdding(null)} className="text-[#64748b] hover:text-[#94a3b8]"><X size={15} /></button>
+                    <button onClick={() => setAdding(null)} className="text-[#94a3b8] hover:text-[#e2e8f0]"><X size={15} /></button>
                   </div>
                 )}
 
                 {subs.length === 0 && adding !== parent.id && (
-                  <p className="px-4 py-2.5 text-xs text-[#475569]">No subcategories</p>
+                  <p className="px-4 py-2.5 text-xs text-[#94a3b8]">No subcategories</p>
                 )}
 
                 {subs.map(sub => (
@@ -133,7 +142,7 @@ export default function CategorySettings() {
                           className="flex-1 bg-[#0a0b10] border border-[#6366f1] text-[#e2e8f0] px-2.5 py-1.5 rounded text-sm focus:outline-none"
                         />
                         <button onClick={() => renameSub(sub.id)} className="text-[#86efac] hover:opacity-80"><Check size={15} /></button>
-                        <button onClick={() => setEditing(null)} className="text-[#64748b] hover:text-[#94a3b8]"><X size={15} /></button>
+                        <button onClick={() => setEditing(null)} className="text-[#94a3b8] hover:text-[#e2e8f0]"><X size={15} /></button>
                       </>
                     ) : merging === sub.id ? (
                       <>
@@ -149,7 +158,7 @@ export default function CategorySettings() {
                             <option key={s.id} value={s.id}>{s.name}</option>
                           ))}
                         </select>
-                        <button onClick={() => setMerging(null)} className="text-[#64748b] hover:text-[#94a3b8]"><X size={15} /></button>
+                        <button onClick={() => setMerging(null)} className="text-[#94a3b8] hover:text-[#e2e8f0]"><X size={15} /></button>
                       </>
                     ) : (
                       <>
@@ -157,7 +166,7 @@ export default function CategorySettings() {
                         <button
                           onClick={() => { setEditing(sub.id); setEditName(sub.name) }}
                           title="Rename"
-                          className="opacity-0 group-hover:opacity-100 text-[#64748b] hover:text-[#a5b4fc] transition-all"
+                          className="opacity-0 group-hover:opacity-100 text-[#94a3b8] hover:text-[#a5b4fc] transition-all"
                         >
                           <Pencil size={13} />
                         </button>
@@ -165,7 +174,7 @@ export default function CategorySettings() {
                           <button
                             onClick={() => setMerging(sub.id)}
                             title="Merge into another subcategory"
-                            className="opacity-0 group-hover:opacity-100 text-[#64748b] hover:text-[#a5b4fc] transition-all"
+                            className="opacity-0 group-hover:opacity-100 text-[#94a3b8] hover:text-[#a5b4fc] transition-all"
                           >
                             <GitMerge size={13} />
                           </button>

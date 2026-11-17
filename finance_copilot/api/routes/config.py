@@ -75,7 +75,7 @@ class LlmConfigPatch(BaseModel):
 @router.get("/llm")
 def get_llm(conn: sqlite3.Connection = Depends(get_db)):
     """Effective BYOM/LLM config for the Settings › AI & Model form. The API key is
-    never returned — only a boolean `llm_api_key_set` indicating one is stored."""
+    never returned - only a boolean `llm_api_key_set` indicating one is stored."""
     return get_llm_config(conn)
 
 
@@ -85,12 +85,12 @@ def update_llm(body: LlmConfigPatch, conn: sqlite3.Connection = Depends(get_db))
     values = body.model_dump(exclude_none=True)
     provider = values.get("llm_provider")
     if provider is not None and provider not in _VALID_PROVIDERS:
-        raise HTTPException(status_code=422, detail=f"provider must be one of {sorted(_VALID_PROVIDERS)}")
+        raise HTTPException(status_code=422, detail=f"Pick one of: {', '.join(sorted(_VALID_PROVIDERS))}.")
     embed_provider = values.get("embedding_provider")
     if embed_provider is not None and embed_provider not in _VALID_EMBEDDING_PROVIDERS:
         raise HTTPException(
             status_code=422,
-            detail=f"embedding_provider must be one of {sorted(_VALID_EMBEDDING_PROVIDERS)}",
+            detail=f"Pick one of: {', '.join(sorted(_VALID_EMBEDDING_PROVIDERS))}.",
         )
     # Only a switch to "local" is refused. A user who chose it on another Python
     # still has it stored, and the form re-sends every field, so refusing the
@@ -102,7 +102,7 @@ def update_llm(body: LlmConfigPatch, conn: sqlite3.Connection = Depends(get_db))
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "Built-in embeddings aren't available on this Python version. "
+                    "The built-in matcher isn't available on this Python version. "
                     "Use Ollama, or run Finance Copilot with Python 3.14: "
                     "uvx --python 3.14 finance-copilot"
                 ),

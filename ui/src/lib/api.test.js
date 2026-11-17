@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { pollAnnotationJob, runAnnotationJob, JobBusyError, MAX_POLL_FAILURES } from './api.js'
+import { api, pollAnnotationJob, runAnnotationJob, JobBusyError, MAX_POLL_FAILURES } from './api.js'
 
 function respond(status, body) {
   return Promise.resolve(new Response(JSON.stringify(body), {
@@ -49,7 +49,7 @@ describe('runAnnotationJob', () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'reembed', statement_id: null })))
     const run = runAnnotationJob({ statement_id: 's1' }, null, 0)
     await expect(run).rejects.toBeInstanceOf(JobBusyError)
-    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("memory is being rebuilt")
+    await expect(runAnnotationJob({ statement_id: 's1' }, null, 0)).rejects.toThrow("Matching is being updated")
     expect(fetch).toHaveBeenCalledTimes(2) // never polled the other job
   })
 
@@ -63,7 +63,7 @@ describe('runAnnotationJob', () => {
   it("refuses another statement's run", async () => {
     vi.stubGlobal('fetch', vi.fn(() => attached({ kind: 'annotate', statement_id: 's2' })))
     await expect(runAnnotationJob({ statement_id: 's1' }, null, 0))
-      .rejects.toThrow('Another categorization run is in progress')
+      .rejects.toThrow('Another sort is already running')
   })
 
   it('re-attaches to the same run (a double-click, a second tab)', async () => {
@@ -78,5 +78,27 @@ describe('runAnnotationJob', () => {
       .mockReturnValueOnce(respond(202, { job_id: 'new', status: 'queued' }))
       .mockReturnValueOnce(respond(200, { status: 'completed', result: { total_processed: 1 } })))
     await expect(runAnnotationJob({}, null, 0)).resolves.toEqual({ total_processed: 1 })
+  })
+})
+
+describe('error messages', () => {
+  it('turns a FastAPI 422 list into words, not [object Object]', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => respond(422, {
+      detail: [
+        { type: 'missing', loc: ['body', 'name'], msg: 'Field required', input: {} },
+        { type: 'value_error', loc: ['query', 'limit'], msg: 'Value error, must be at most 1000' },
+      ],
+    })))
+    const err = await api.get('/x').catch(e => e)
+    expect(err.status).toBe(422)
+    expect(err.message).toBe('name: Field required. limit: must be at most 1000')
+    expect(err.message).not.toContain('[object')
+  })
+
+  it('keeps a plain string detail and falls back to the raw body', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => respond(409, { detail: 'You already have a group called "Goa".' })))
+    expect((await api.post('/groups', {}).catch(e => e)).message).toBe('You already have a group called "Goa".')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('Internal Server Error', { status: 500 }))))
+    expect((await api.get('/x').catch(e => e)).message).toBe('Internal Server Error')
   })
 })

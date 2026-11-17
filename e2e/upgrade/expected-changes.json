@@ -1,5 +1,5 @@
 {
-  "version": "0.1.3",
+  "version": "0.2.0",
   "from": "0.1.2",
   "changes": [
     {
@@ -288,6 +288,296 @@
         "changed"
       ],
       "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized. The journey checks the figure never shrinks."
+    },
+    {
+      "id": "stored-statements-sorted-count",
+      "scope": "stored",
+      "path": "statements[*].sorted_count",
+      "kinds": [
+        "added"
+      ],
+      "reason": "A statement says how many of its payments are sorted, counted the way Teach Me counts: a payment is sorted when it has a real category and is not a machine guess below your confidence bar. It replaces the old annotated count, which counted every payment the machine had labelled, however unsure. The journey checks each figure against the payments themselves."
+    },
+    {
+      "id": "stored-statements-annotated-count-replaced",
+      "scope": "stored",
+      "path": "statements[*].annotated_count",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "Replaced by the sorted count. The journey checks that the old figure was the number of labelled payments, and that no statement has more sorted payments than it had labelled ones."
+    },
+    {
+      "id": "stored-statements-embedded-count-dropped",
+      "scope": "stored",
+      "path": "statements[*].embedded_count",
+      "kinds": [
+        "removed"
+      ],
+      "from": 0,
+      "reason": "The statement list no longer reports how many payments have a vector in the AI memory, because that is a machine detail and not something to act on. It was 0 here: the journey runs with no embedding model."
+    },
+    {
+      "id": "stored-payee-names-not-set",
+      "scope": "stored",
+      "path": [
+        "transactions[*].display_name",
+        "transactions[*].payee_name",
+        "transactions[*].note",
+        "groups[*].members[*].display_name",
+        "groups[*].members[*].payee_name",
+        "groups[*].members[*].note"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "A payment can now carry a name you gave it (display_name), and its payee a name you gave the payee (payee_name). The journey renames nothing, so both are empty, and so is the cleaned-up note, which no sample or fixture payment has."
+    },
+    {
+      "id": "stored-payee-label-fields",
+      "scope": "stored",
+      "path": [
+        "transactions[*].payee",
+        "transactions[*].payee_all",
+        "transactions[*].channel",
+        "groups[*].members[*].payee",
+        "groups[*].members[*].payee_all",
+        "groups[*].members[*].channel",
+        "groups[*].members[*].counterparty_key",
+        "groups[*].members[*].merchant"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Every payment now says what it is called (payee, and payee_all for the payee as a whole), and by which channel it was made (UPI, NEFT, Card...). A group member carries the same fields as its payment. These are read off what is stored and change nothing in it. The journey checks that a payment reads as its merchant, or else as the payee exactly as the bank printed it, and that a group member agrees with its payment."
+    },
+    {
+      "id": "stored-learned-rules-payee",
+      "scope": "stored",
+      "path": "learnedRules[*].payee",
+      "kinds": [
+        "added"
+      ],
+      "reason": "A learned rule in Settings > Rules shows the name of its payee. The journey checks it is the name that payee goes by on its payments."
+    },
+    {
+      "id": "stored-payee-names-table",
+      "scope": "stored",
+      "path": "schema.tableRows.payee_names",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 037 adds the table that holds the names you give to payees. It starts empty."
+    },
+    {
+      "id": "stored-review-undo-table",
+      "scope": "stored",
+      "path": "schema.tableRows.review_undo",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 038 adds the table that lets Teach Me undo an answer. It starts empty."
+    },
+    {
+      "id": "stored-column-display-name",
+      "scope": "stored",
+      "path": "schema.addedColumns[transactions_display_name]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 037 adds the column that holds the name you give to a single payment. Every payment starts with none."
+    },
+    {
+      "id": "stored-column-job-scope",
+      "scope": "stored",
+      "path": "schema.addedColumns[annotation_jobs_transaction_ids]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 039 lets a waiting sorting job remember which payments it covers. Jobs that already ran have no scope."
+    },
+    {
+      "id": "stored-column-job-attempts",
+      "scope": "stored",
+      "path": "schema.addedColumns[annotation_jobs_attempts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 040 counts how many times a sorting job has been started."
+    },
+    {
+      "id": "stored-job-attempts-start-at-zero",
+      "scope": "stored",
+      "path": "schema.jobAttempts[*].attempts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "A sorting job that finished before the upgrade starts with an attempt count of 0, and the upgrade starts none."
+    },
+    {
+      "id": "stored-migration-027",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[027_strip_balance_label_from_descriptions]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 027 strips a trailing balance label from descriptions. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-028",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[028_embedding_text_hash]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 028 records which text each AI-memory vector was built from. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-029",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[029_suppressions_per_direction]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 029 keeps dismissed learned rules per payee and direction. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-030",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[030_clear_bank_line_merchants]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 030 clears merchant names a machine copied from the bank line. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-031",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[031_review_policies]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 031 adds review policies. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-032",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[032_annotation_source_policy]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 032 lets a label made by a review policy carry its own source. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-033",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[033_drop_unused_duplicate_subcategories]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 033 deletes an unused duplicate subcategory. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-034",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[034_taxonomy_dismissals]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 034 adds the tidy-up suggestions you dismissed. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-035",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[035_review_snooze_on_transactions]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 035 moves \"skipped in Teach Me\" from the label to the payment. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-036",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[036_backfill_annotation_category_ids]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 036 fills category ids the old sample-data seeder left empty. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-037",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[037_payee_names]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 037 adds payee and payment names. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-038",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[038_review_undo]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 038 adds the records that let Teach Me undo an answer. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-039",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[039_annotation_job_scope]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 039 lets a waiting sorting job remember its payments. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-migration-040",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[040_annotation_job_attempts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 040 counts how many times a sorting job has been started. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "figures-recurring-name-as-printed",
+      "scope": "derived",
+      "path": "months.*.recurring[Chai Wala Corner]",
+      "kinds": [
+        "removed"
+      ],
+      "from": {
+        "name": "Chai Wala Corner",
+        "category": null,
+        "amount": 30,
+        "cadence": "monthly",
+        "active": true
+      },
+      "reason": "A recurring charge to a payee with no merchant name is listed under the payee as the bank printed it, instead of the printed name in title case, so Recurring, Money Map and the Ledger call it the same thing."
+    },
+    {
+      "id": "figures-recurring-name-as-printed-new",
+      "scope": "derived",
+      "path": "months.*.recurring[CHAI WALA CORNER]",
+      "kinds": [
+        "added"
+      ],
+      "to": {
+        "name": "CHAI WALA CORNER",
+        "category": null,
+        "amount": 30,
+        "cadence": "monthly",
+        "active": true
+      },
+      "reason": "The same row under its new name. Its amount, cadence and category are unchanged, which the journey checks for every recurring row: a name may change in case and nothing else."
     }
   ]
 }

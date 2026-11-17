@@ -275,7 +275,7 @@ def _stories(led: Ledger, months: list[tuple[int, int]]) -> None:
     led.groups.append({
         "id": "demo_grp_goa",
         "name": "Goa trip with Rahul & Neha",
-        "note": "Long weekend in Goa; I paid, both settled their shares.",
+        "note": "Long weekend in Goa; you paid, both settled their shares.",
         "members": [
             (flight, "split", friends),
             (hotel, "split", friends),
@@ -481,6 +481,11 @@ def wipe(conn) -> int:
     if not conn.execute("SELECT EXISTS (SELECT 1 FROM statements)").fetchone()[0]:
         conn.execute("DELETE FROM feedback_stats")
         conn.execute("DELETE FROM learned_rule_suppressions")
+    # A name the user gave a payee that only the sample paid is gone with it, on a
+    # mixed ledger too; a payee with a payment left keeps its name.
+    conn.execute(
+        "DELETE FROM payee_names WHERE counterparty_key NOT IN "
+        "(SELECT counterparty_key FROM transactions WHERE counterparty_key IS NOT NULL)")
     conn.commit()
     return removed
 

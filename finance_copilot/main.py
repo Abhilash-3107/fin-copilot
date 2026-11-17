@@ -55,12 +55,32 @@ async def lifespan(app: FastAPI):
     from finance_copilot.db.lifecycle import reconcile_database
 
     today()  # a malformed FC_TODAY should stop the app here, not on the first demo load
-    conn = get_connection()
+    # Before anything touches the ledger or its jobs: a second copy on this
+    # folder must stop here, not reap and run the first copy's work.
+    from pathlib import Path
+
+    from finance_copilot.db.folder_lock import lock_data_folder, unlock_data_folder
+
+    folder = Path(settings.db_path).parent
+    took_lock = lock_data_folder(folder)
     try:
-        reconcile_database(conn)
+        conn = get_connection()
+        try:
+            reconcile_database(conn)
+        finally:
+            conn.close()
+        # Sorting jobs wait in the database; this one thread runs them in turn,
+        # starting with any a previous run left queued.
+        from finance_copilot.api.routes.annotations import runner
+
+        runner.start()
+        try:
+            yield
+        finally:
+            runner.stop()
     finally:
-        conn.close()
-    yield
+        if took_lock:
+            unlock_data_folder(folder)
 
 
 app = FastAPI(title="Finance Copilot", lifespan=lifespan)
@@ -172,7 +192,7 @@ def health():
             pass
 
     def _model_status(name: str) -> dict:
-        # Ollama names may include tags like "qwen3.5:7b" — match prefix too
+        # Ollama names may include tags like "qwen3.5:7b" - match prefix too
         is_loaded = any(m == name or m.startswith(name + ":") for m in loaded)
         is_pulled = any(m == name or m.startswith(name + ":") for m in pulled)
         if is_loaded:
@@ -188,11 +208,14 @@ def health():
     provider = settings.llm_provider
     if provider == "none":
         ai_message = (
-            "AI is off. Parsing, rules, and your saved history still categorize "
-            "what they can; add a provider in Settings > AI & Model for the rest."
+            "Sorting is using your rules and remembered payees only. "
+            "Add an AI model to sort the rest."
         )
     elif provider == "ollama" and not ollama_ok:
-        ai_message = "Ollama isn't reachable right now, so AI categorization is paused."
+        ai_message = (
+            "Ollama isn't reachable right now, so sorting is using your rules "
+            "and remembered payees only."
+        )
     else:
         ai_message = ""
     from finance_copilot.pipeline.embed import local_embeddings_installed

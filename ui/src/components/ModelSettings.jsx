@@ -1,22 +1,28 @@
-import { useEffect, useState } from 'react'
-import { CheckCircle2, XCircle, Loader2, Plug } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { CheckCircle2, XCircle, Loader2, Plug, ChevronDown } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import InlineError from './InlineError.jsx'
+import { count } from '../lib/plural.js'
+import { couldnt } from '../lib/errors.js'
+import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 
 const PROVIDERS = [
-  { id: 'ollama', label: 'Ollama', hint: 'Local models on your machine (default). Private, no API key.' },
-  { id: 'local', label: 'On this computer', hint: 'Downloads a model once (~2.7GB), then categorization runs fully offline inside the app. Needs the local-llm add-on.' },
-  { id: 'openai', label: 'OpenAI-compatible', hint: 'Any /chat/completions endpoint: OpenAI, LM Studio, vLLM, OpenRouter.' },
-  { id: 'none', label: 'Disabled', hint: 'No AI. Categorization falls back to rules and your history only.' },
+  { id: 'ollama', label: 'Ollama', hint: 'Models running on your computer through Ollama. Private, no key needed.' },
+  { id: 'local', label: 'On this computer', hint: 'Downloads a model once (~2.7GB), then sorting runs fully offline in the app. Needs the local-llm add-on.' },
+  { id: 'openai', label: 'OpenAI-compatible', hint: 'A model you reach over the internet or your network, such as OpenAI, LM Studio or OpenRouter.' },
+  { id: 'none', label: 'Disabled', hint: 'No AI. Sorting uses your rules and remembered payees only.' },
 ]
 
-const EMBED_PROVIDERS = [
-  { id: 'local', label: 'Built-in', hint: 'Runs inside the app - nothing to install. Downloads a small model (~100MB) on first use.' },
-  { id: 'ollama', label: 'Ollama', hint: 'nomic-embed-text via your local Ollama.' },
-  { id: 'none', label: 'Off', hint: 'No memory: matching from your history is disabled; rules still work.' },
+// How payments are matched with ones you have already sorted. Developer detail,
+// so it lives under Advanced.
+const MATCH_PROVIDERS = [
+  { id: 'local', label: 'Built-in', hint: 'Runs inside the app - nothing to install. Downloads a small model (~100MB) the first time.' },
+  { id: 'ollama', label: 'Ollama', hint: 'Uses the nomic-embed-text model in your local Ollama.' },
+  { id: 'none', label: 'Off', hint: 'Similar payments are not matched. Your rules still work.' },
 ]
 
-const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#475569]'
+const field = 'w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-3 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1] placeholder:text-[#94a3b8]'
 const label = 'block text-xs text-[#94a3b8] mb-1'
 
 // Local-AI management: shows exactly one of (install hint | download button |
@@ -38,7 +44,7 @@ function LocalAICard() {
         const j = await api.get(`/annotations/jobs/${job.job_id ?? job.id}`)
         setJob({ ...j, job_id: j.id })
         if (j.status === 'completed') { toast('Local model ready', 'success'); refresh() }
-        if (j.status === 'failed') { toast(`Download stopped - ${j.error ?? 'unknown error'}`, 'error'); refresh() }
+        if (j.status === 'failed') { toast("Couldn't finish the download. Use Resume download to try again.", 'error'); refresh() }
       } catch { /* transient poll error; keep trying */ }
     }, 1000)
     return () => clearInterval(t)
@@ -49,7 +55,7 @@ function LocalAICard() {
       const j = await api.post('/local-llm/download', {})
       setJob(j)
     } catch (e) {
-      toast(e.message, 'error', 8000)
+      toast(couldnt('start the download', e), 'error', 8000)
     }
   }
 
@@ -63,11 +69,11 @@ function LocalAICard() {
       toast('Model removed', 'info')
       refresh()
     } catch (e) {
-      toast(`Couldn't remove - ${e.message}`, 'error')
+      toast(couldnt('remove', e), 'error')
     }
   }
 
-  if (!status) return <p className="text-sm text-[#475569]">Checking local AI…</p>
+  if (!status) return <p className="text-sm text-[#94a3b8]">Checking the model on this computer…</p>
 
   const downloading = job && (job.status === 'queued' || job.status === 'running')
   const pct = downloading && job.total ? Math.round((job.processed / job.total) * 100) : 0
@@ -77,7 +83,7 @@ function LocalAICard() {
       {!status.extra_installed ? (
         <>
           <p className="text-sm text-[#e2e8f0]">The local-llm add-on isn't installed.</p>
-          <p className="text-xs text-[#64748b]">Restart the app with it included:</p>
+          <p className="text-xs text-[#94a3b8]">Restart the app with it included:</p>
           <code className="block text-xs bg-[#0f1117] border border-[#2d3148] rounded-md px-3 py-2 text-[#a5b4fc] overflow-x-auto">
             {status.install_hint.uvx}
           </code>
@@ -91,14 +97,14 @@ function LocalAICard() {
           <div className="h-1.5 rounded-full bg-[#1e2235] overflow-hidden">
             <div className="h-full bg-[#6366f1] transition-all" style={{ width: `${pct}%` }} />
           </div>
-          <p className="text-xs text-[#64748b]">
+          <p className="text-xs text-[#94a3b8]">
             Safe to keep using the app. If the download is interrupted, it resumes where it left off.
           </p>
         </>
       ) : status.model_present ? (
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm text-[#e2e8f0]">
-            Model ready <span className="text-xs text-[#64748b]">({status.quant}, {(status.size / 1024 ** 3).toFixed(1)}GB on disk)</span>
+            Model ready <span className="text-xs text-[#94a3b8]">({status.quant}, {(status.size / 1024 ** 3).toFixed(1)}GB on disk)</span>
           </p>
           <button onClick={removeModel} className="text-xs text-[#f87171] hover:opacity-80">Remove model</button>
         </div>
@@ -110,11 +116,11 @@ function LocalAICard() {
           <div className="flex items-center gap-3">
             <button
               onClick={startDownload}
-              className="bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90"
+              className="bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90"
             >
               {status.download_partial ? 'Resume download' : 'Enable local AI'}
             </button>
-            <span className="text-xs text-[#64748b]">
+            <span className="text-xs text-[#94a3b8]">
               Downloads {(status.size / 1024 ** 3).toFixed(1)}GB once, into your app data folder.
             </span>
           </div>
@@ -124,26 +130,139 @@ function LocalAICard() {
   )
 }
 
-// Settings › AI & Model: bring-your-own-model config (provider, endpoint, model,
-// key) with a test-connection button - replaces the .env-only setup.
+// A sentence on what is sorting payments right now, from the saved settings
+// and what the server can reach. Plain words first; the controls come after it.
+function AiStatus({ saved, health, localReady }) {
+  let ok = false
+  let text = null
+  if (saved.llm_provider === 'none') {
+    text = health?.ai_message || 'Sorting is using your rules and remembered payees only. Add an AI model to sort the rest.'
+  } else if (saved.llm_provider === 'ollama') {
+    if (!health) return null
+    ok = health.ollama === 'ok'
+    text = ok
+      ? `Sorting uses ${saved.ollama_model || 'your Ollama model'} through Ollama on your computer. It is reachable.`
+      : health.ai_message || "Ollama isn't reachable right now, so sorting is using your rules and remembered payees only."
+  } else if (saved.llm_provider === 'local') {
+    ok = localReady === true
+    text = ok
+      ? 'Sorting uses the model on this computer.'
+      : "The model on this computer isn't ready yet, so sorting is using your rules and remembered payees only."
+  } else {
+    text = `Sorting uses ${saved.llm_model || 'your model'}${saved.llm_base_url ? ` at ${saved.llm_base_url}` : ''}. Use Test connection to check that it is reachable.`
+  }
+  return (
+    <p
+      role="status"
+      className="flex items-start gap-2 rounded-lg border border-[#2d3148] bg-[#13151f] px-4 py-3 text-sm leading-relaxed text-[#e2e8f0]"
+    >
+      <span
+        aria-hidden="true"
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${ok ? 'bg-[#4ade80]' : 'bg-[#f59e0b]'}`}
+      />
+      <span>{text}</span>
+    </p>
+  )
+}
+
+// How many sorted payments are ready to match against, and the one way to get
+// the rest ready. Only sorted payments count: they are the ones that serve as
+// examples. Update now is there only when something is missing, and says why
+// when it can't run (matching off or unreachable, or a job holding the line).
+function MatchingCoverage({ health, reloadKey }) {
+  const toast = useToast()
+  const jobActive = !!useAnnotationJob()?.job
+  const [coverage, setCoverage] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    setError(null)
+    return api.get('/embeddings/coverage').then(setCoverage).catch(setError)
+  }, [])
+  // Again whenever the provider is saved or a job ends: both change the numbers.
+  useEffect(() => { load() }, [load, reloadKey, jobActive])
+
+  async function update() {
+    setBusy(true)
+    try {
+      const result = await api.post('/embeddings/generate', {})
+      toast(result.embedded ? `${count(result.embedded, 'more payment')} ready to match` : 'Nothing new to match', 'success')
+    } catch (e) {
+      toast(couldnt('update matching', e), 'error')
+    } finally {
+      setBusy(false)
+      await load()
+    }
+  }
+
+  if (error) return <InlineError what="the matching status" error={error} onRetry={load} compact />
+  if (coverage == null) return <p className="text-xs text-[#94a3b8]">Loading…</p>
+  if (coverage.total === 0) return <p className="text-xs text-[#94a3b8]">No sorted payments to match yet. Add a statement first.</p>
+
+  const missing = coverage.ready < coverage.total
+  const blocked = coverage.unavailable
+    || (health?.embeddings === 'unavailable' ? "Ollama isn't reachable right now." : null)
+    || (jobActive ? 'Finance Copilot is busy sorting. Try again when it finishes.' : null)
+  return (
+    <div>
+      <p className="text-sm tabular-nums text-[#e2e8f0]">
+        {coverage.ready} of {count(coverage.total, 'payment')} ready to match
+      </p>
+      {missing && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            onClick={update}
+            disabled={busy || !!blocked}
+            aria-describedby={blocked ? 'update-now-reason' : undefined}
+            className="rounded-md bg-[#4f46e5] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            {busy ? 'Updating…' : 'Update now'}
+          </button>
+          {blocked && <span id="update-now-reason" className="text-xs text-[#94a3b8]">{blocked}</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Settings › AI & Model: which AI sorts your payments, in plain words first,
+// then the provider choice (bring your own model: provider, endpoint, model,
+// key) with a test-connection button. What the machinery does behind it sits
+// under Advanced.
 export default function ModelSettings() {
   const toast = useToast()
   const [cfg, setCfg] = useState(null)
+  // The settings as stored, which the status sentence describes; `cfg` also
+  // holds what is typed but not saved yet.
+  const [saved, setSaved] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState(null)
   const [health, setHealth] = useState(null)
+  const [localReady, setLocalReady] = useState(null)
+  const [advanced, setAdvanced] = useState(false)
   // Missing field (older server) or health not loaded yet: assume available.
   const builtinAvailable = health?.local_embeddings_available !== false
 
-  useEffect(() => {
+  const [loadError, setLoadError] = useState(null)
+  const loadConfig = useCallback(() => {
+    setLoadError(null)
     api.get('/config/llm')
-      .then(c => setCfg({ ...c, llm_api_key: '' }))
-      .catch(e => toast(`Couldn't load model settings - ${e.message}`, 'error'))
+      .then(c => { setCfg({ ...c, llm_api_key: '' }); setSaved(c) })
+      .catch(setLoadError)
       .finally(() => setLoading(false))
     api.get('/health').then(setHealth).catch(() => {})
-  }, [toast])
+  }, [])
+  useEffect(() => { loadConfig() }, [loadConfig])
+
+  // Whether the model on this computer is there, for the status sentence.
+  useEffect(() => {
+    if (saved?.llm_provider !== 'local') return
+    api.get('/local-llm/status').then(st => setLocalReady(!!st.model_present)).catch(() => setLocalReady(false))
+  }, [saved?.llm_provider])
 
   function set(key, value) {
     setCfg(c => ({ ...c, [key]: value }))
@@ -167,21 +286,23 @@ export default function ModelSettings() {
       if (cfg.llm_api_key) payload.llm_api_key = cfg.llm_api_key
       const updated = await api.put('/config/llm', payload)
       setCfg({ ...updated, llm_api_key: '' })
-      toast('Model settings saved', 'success')
-      // A different embedding model = a different vector space: everything must
-      // be re-embedded before matching from history works again. Kick the
-      // background rebuild right away; RAG (not the app) is paused while it runs.
+      setSaved(updated)
+      api.get('/health').then(setHealth).catch(() => {})
+      toast('AI settings saved', 'success')
+      // Matching payments a different way means every payment must be
+      // matched again before matching works. Start it right away, in the
+      // background; matching (not the app) is paused while it runs.
       if (updated.embedding_model_changed) {
         try {
           await api.post('/embeddings/reembed')
-          toast('Rebuilding your copilot\'s memory in the background - matching from history resumes when it finishes', 'info', 8000)
+          toast('Updating matching in the background. Similar payments can be matched again when it finishes.', 'info', 8000)
         } catch (e) {
-          toast(`Couldn't start the memory rebuild - ${e.message}`, 'error')
+          toast(couldnt('start updating matching', e), 'error')
         }
       }
       return true
     } catch (e) {
-      toast(`Couldn't save - ${e.message}`, 'error')
+      toast(couldnt('save', e), 'error')
       return false
     } finally {
       setSaving(false)
@@ -201,42 +322,26 @@ export default function ModelSettings() {
       const r = await api.post('/config/llm/test')
       setResult(r)
     } catch (e) {
-      setResult({ ok: false, detail: e.message })
+      setResult({ ok: false, detail: couldnt('test the connection', e) })
     } finally {
       setTesting(false)
     }
   }
 
-  if (loading || !cfg) return <p className="text-sm text-[#475569]">Loading…</p>
+  if (loadError) return <InlineError what="your model settings" error={loadError} onRetry={loadConfig} />
+  if (loading || !cfg) return <p className="text-sm text-[#94a3b8]">Loading…</p>
 
   const provider = cfg.llm_provider
 
   return (
     <div className="space-y-6 max-w-xl">
       <div>
-        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI provider</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed">
-          Bring your own model. Your copilot uses this to categorize transactions the
-          rules and your history can't resolve on their own.
+        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI model</h2>
+        <p className="text-xs text-[#94a3b8] mb-3 leading-relaxed">
+          Rules and your remembered payees sort what they can. A model, if you connect
+          one, takes the payments they can't resolve on their own.
         </p>
-        {health?.ai_message && (
-          <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
-            {health.ai_message}
-          </p>
-        )}
-        {health && !health.ai_message && health.embeddings === 'unavailable' && (
-          <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 mb-3 leading-relaxed">
-            {health.embedding_provider === 'local'
-              ? <>The AI's memory (similar-transaction matching) is paused: built-in embeddings
-                  aren't available on this Python version. Switch AI memory to Ollama below, or
-                  run <code className="text-[#c7d2fe]">uvx --python 3.14 finance-copilot</code>.</>
-              : builtinAvailable
-                ? <>The AI's memory (similar-transaction matching) is paused because Ollama isn't
-                    reachable. Switch AI memory to Built-in below to run it inside the app instead.</>
-                : <>The AI's memory (similar-transaction matching) is paused because Ollama isn't
-                    reachable.</>}
-          </p>
-        )}
+        {saved && <div className="mb-3"><AiStatus saved={saved} health={health} localReady={localReady} /></div>}
         <div className="space-y-2">
           {PROVIDERS.map(p => (
             <label
@@ -254,7 +359,7 @@ export default function ModelSettings() {
               />
               <div>
                 <div className="text-sm text-[#e2e8f0]">{p.label}</div>
-                <div className="text-xs text-[#64748b] mt-0.5">{p.hint}</div>
+                <div className="text-xs text-[#94a3b8] mt-0.5">{p.hint}</div>
               </div>
             </label>
           ))}
@@ -301,47 +406,89 @@ export default function ModelSettings() {
         </div>
       )}
 
-      <div>
-        <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">AI memory (embeddings)</h2>
-        <p className="text-xs text-[#64748b] mb-3 leading-relaxed">
-          How your copilot remembers past transactions so similar ones categorize
-          themselves. Switching rebuilds the memory from scratch - it runs in the
-          background and matching from history pauses until it's done.
-        </p>
-        <div className="space-y-2">
-          {EMBED_PROVIDERS.map(p => {
-            const disabled = p.id === 'local' && !builtinAvailable
-            return (
-              <label
-                key={p.id}
-                className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
-                  disabled
-                    ? 'border-[#2d3148] opacity-60 cursor-not-allowed'
-                    : cfg.embedding_provider === p.id
-                      ? 'border-[#6366f1] bg-[#13151f] cursor-pointer'
-                      : 'border-[#2d3148] hover:border-[#3d4468] cursor-pointer'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="embedding_provider"
-                  checked={cfg.embedding_provider === p.id}
-                  disabled={disabled}
-                  onChange={() => set('embedding_provider', p.id)}
-                  className="mt-0.5 accent-[#6366f1]"
-                />
-                <div>
-                  <div className="text-sm text-[#e2e8f0]">{p.label}</div>
-                  <div className="text-xs text-[#64748b] mt-0.5">
-                    {disabled
-                      ? <>Not available on this Python version. Run <code className="text-[#94a3b8]">uvx --python 3.14 finance-copilot</code> to use it.</>
-                      : p.hint}
-                  </div>
-                </div>
-              </label>
-            )
-          })}
-        </div>
+      {/* Advanced: the machinery behind sorting. */}
+      <div className="rounded-lg border border-[#2d3148]">
+        <button
+          type="button"
+          onClick={() => setAdvanced(a => !a)}
+          aria-expanded={advanced}
+          aria-controls="advanced-model-settings"
+          className="flex w-full items-center justify-between px-4 py-3 text-sm text-[#e2e8f0] hover:bg-[#13151f] rounded-lg transition-colors"
+        >
+          Advanced
+          <ChevronDown size={15} className={`text-[#94a3b8] transition-transform ${advanced ? 'rotate-180' : ''}`} />
+        </button>
+        {advanced && (
+          <div id="advanced-model-settings" className="space-y-5 border-t border-[#2d3148] px-4 py-4">
+            <div>
+              <h2 className="text-sm font-semibold text-[#e2e8f0] mb-1">Matching similar payments</h2>
+              <p className="text-xs text-[#94a3b8] leading-relaxed">
+                Finance Copilot compares a new payment with ones you already sorted, so it
+                can sort similar ones on its own. All of it stays on your computer.
+              </p>
+            </div>
+
+            {health && !health.ai_message && health.embeddings === 'unavailable' && (
+              <p className="text-xs text-[#94a3b8] bg-[#13151f] border border-[#2d3148] rounded-md px-3 py-2 leading-relaxed">
+                {health.embedding_provider === 'local'
+                  ? <>Matching similar payments is paused: the built-in matcher isn't available on
+                      this Python version. Switch to Ollama below, or run{' '}
+                      <code className="text-[#c7d2fe]">uvx --python 3.14 finance-copilot</code>.</>
+                  : builtinAvailable
+                    ? <>Matching similar payments is paused because Ollama isn't reachable. Switch
+                        to Built-in below to run it inside the app instead.</>
+                    : <>Matching similar payments is paused because Ollama isn't reachable.</>}
+              </p>
+            )}
+
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">How payments are matched</h3>
+              <p className="text-xs text-[#94a3b8] mb-2 leading-relaxed">
+                Changing this updates matching for every payment. It runs in the background
+                and matching pauses until it's done.
+              </p>
+              <div className="space-y-2">
+                {MATCH_PROVIDERS.map(p => {
+                  const disabled = p.id === 'local' && !builtinAvailable
+                  return (
+                    <label
+                      key={p.id}
+                      className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-colors ${
+                        disabled
+                          ? 'border-[#2d3148] opacity-60 cursor-not-allowed'
+                          : cfg.embedding_provider === p.id
+                            ? 'border-[#6366f1] bg-[#13151f] cursor-pointer'
+                            : 'border-[#2d3148] hover:border-[#3d4468] cursor-pointer'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="embedding_provider"
+                        checked={cfg.embedding_provider === p.id}
+                        disabled={disabled}
+                        onChange={() => set('embedding_provider', p.id)}
+                        className="mt-0.5 accent-[#6366f1]"
+                      />
+                      <div>
+                        <div className="text-sm text-[#e2e8f0]">{p.label}</div>
+                        <div className="text-xs text-[#94a3b8] mt-0.5">
+                          {disabled
+                            ? <>Not available on this Python version. Run <code className="text-[#cbd5e1]">uvx --python 3.14 finance-copilot</code> to use it.</>
+                            : p.hint}
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-1.5">Ready to match</h3>
+              <MatchingCoverage health={health} reloadKey={saved?.embedding_provider} />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Test result banner */}
@@ -358,7 +505,7 @@ export default function ModelSettings() {
         <button
           onClick={save}
           disabled={saving}
-          className="bg-[#6366f1] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          className="bg-[#4f46e5] text-white px-4 py-2 rounded-md text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>

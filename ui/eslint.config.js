@@ -48,5 +48,28 @@ export default [
     languageOptions: {
       globals: { ...globals.node, ...globals.vitest },
     },
+    rules: {
+      // vi.waitFor polls outside act(), so a state update it waits on logs an
+      // "not wrapped in act" warning. Testing Library's waitFor wraps it.
+      'no-restricted-properties': ['error', {
+        object: 'vi',
+        property: 'waitFor',
+        message: "Use waitFor from '@testing-library/react': vi.waitFor polls outside act().",
+      }],
+      // A router built straight from react-router-dom lacks the future flags
+      // and makes React Router warn on every test. Use src/test/router.jsx.
+      'no-restricted-imports': ['error', {
+        paths: [{
+          name: 'react-router-dom',
+          importNames: ['MemoryRouter', 'HashRouter', 'BrowserRouter'],
+          message: "Import the router from the test helper (src/test/router.jsx): it sets the app's future flags.",
+        }],
+      }],
+    },
+  },
+  // The helper itself is the one place that builds routers.
+  {
+    files: ['src/test/router.jsx'],
+    rules: { 'no-restricted-imports': 'off' },
   },
 ]

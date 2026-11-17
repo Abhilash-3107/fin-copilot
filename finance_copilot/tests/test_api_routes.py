@@ -50,7 +50,7 @@ def client_conn():
 
     conn = _make_conn()
     app.dependency_overrides[api_get_db] = lambda: conn
-    # Embedding service isn't available in tests — stub the best-effort embed call.
+    # Embedding service isn't available in tests - stub the best-effort embed call.
     # No context manager on TestClient: lifespan would migrate the real settings.db_path.
     # Background re-embeds open their own connection to settings.db_path (the
     # real ledger in a dev checkout) - never let a test reach it.
@@ -81,6 +81,27 @@ class TestHealthLocalEmbeddings:
             "finance_copilot.pipeline.embed.local_embeddings_installed", return_value=False
         ):
             assert client.get("/api/health").json()["embeddings"] == "unavailable"
+
+
+class TestHealthSaysWhatSortingUses:
+    """With no model to ask, the health message says so in the app's own words."""
+
+    def test_no_model_means_rules_and_remembered_payees_only(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        message = client.get("/api/health").json()["ai_message"]
+        assert message.startswith("Sorting is using your rules and remembered payees only")
+
+    def test_an_unreachable_ollama_says_the_same(self, client_conn, monkeypatch):
+        from finance_copilot.config import settings
+        client, _, _ = client_conn
+        monkeypatch.setattr(settings, "llm_provider", "ollama")
+        # Never ask a real Ollama: the answer must not depend on this machine.
+        with patch("finance_copilot.main.httpx.get", side_effect=OSError("refused")):
+            message = client.get("/api/health").json()["ai_message"]
+        assert "Ollama isn't reachable" in message
+        assert "rules and remembered payees only" in message
 
 
 class TestApiTokenGate:
@@ -1020,7 +1041,7 @@ class TestAnnotationJobs:
         conn.commit()
         job = client.get("/api/annotations/jobs/zombie").json()
         assert job["status"] == "failed"
-        assert "stale" in job["error"]
+        assert "did not finish" in job["error"]
 
     def test_poll_does_not_block_on_live_worker_write_lock(self, file_db_client):
         """A live worker holds the write lock across a slow LLM call. Polling
@@ -1150,7 +1171,7 @@ class TestAnnotationJobs:
             assert client.get("/api/annotations/jobs/slow").json()["status"] == "running"
             orphan = client.get("/api/annotations/jobs/orphan").json()
         assert orphan["status"] == "failed"
-        assert "stale" in orphan["error"]
+        assert "did not finish" in orphan["error"]
 
     def test_every_job_worker_registers_as_live(self):
         from finance_copilot.api.routes.annotations import _run_annotation_job
@@ -1251,18 +1272,21 @@ class TestAnnotationJobs:
 
         zombie = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='zombie'").fetchone()
         assert zombie["status"] == "failed"
-        assert "stale" in zombie["error"]
+        assert "did not finish" in zombie["error"]
 
-    def test_startup_reaps_orphaned_jobs(self, file_db_client):
-        """Restarting the server fails any job the previous process left
-        in-flight, even a fresh one - a single-process app can't have live
-        jobs at boot."""
+    def test_startup_requeues_sorting_and_fails_the_other_kinds(self, file_db_client):
+        """Restarting the server settles every in-flight job, even a fresh one -
+        a single-process app can't have live jobs at boot. A sorting job, waiting
+        or interrupted mid-run, goes back in line (it skips payments already
+        labelled, so running it again finishes the statement). A queued or
+        running re-embed or download lost its thread, so it fails."""
         from finance_copilot.api.routes.annotations import reap_interrupted_jobs
-        from finance_copilot.main import app
 
         client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q1','queued')")
         conn.execute("INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('r1','running',10,4)")
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('qe','queued','reembed')")
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('re','running','reembed')")
         conn.commit()
 
         assert reap_interrupted_jobs(conn) == 2
@@ -1270,17 +1294,33 @@ class TestAnnotationJobs:
             row["id"]: row["status"]
             for row in conn.execute("SELECT id, status FROM annotation_jobs").fetchall()
         }
-        assert statuses == {"q1": "failed", "r1": "failed"}
+        assert statuses == {"q1": "queued", "r1": "queued", "qe": "failed", "re": "failed"}
+        assert "app closed" in conn.execute("SELECT error FROM annotation_jobs WHERE id='re'").fetchone()[0]
 
-        # And the lifespan actually invokes it: entering the client context
-        # runs startup against the same file-backed DB.
+    def test_startup_runs_the_sorting_jobs_left_queued(self, file_db_client):
+        """The lifespan starts the runner, which picks up a job queued before
+        the restart and runs it; the app stops it cleanly on shutdown."""
+        import time
+
+        from finance_copilot.api.routes.annotations import runner
+        from finance_copilot.main import app
+
+        client, conn = file_db_client
         conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('q2','queued')")
+        conn.execute("INSERT INTO annotation_jobs (id, status) VALUES ('r2','running')")
         conn.commit()
         with TestClient(app):
-            pass
-        row = conn.execute("SELECT status, error FROM annotation_jobs WHERE id='q2'").fetchone()
-        assert row["status"] == "failed"
-        assert "restart" in row["error"]
+            assert runner.alive
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                statuses = [r[0] for r in conn.execute("SELECT status FROM annotation_jobs WHERE id IN ('q2','r2')")]
+                if all(status == "completed" for status in statuses):
+                    break
+                time.sleep(0.05)
+        assert not runner.alive
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='q2'").fetchone()[0] == "completed"
+        # The sort the restart interrupted is run again, not lost.
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='r2'").fetchone()[0] == "completed"
 
 
 class TestStatementUploadDedup:
@@ -1296,7 +1336,7 @@ class TestStatementUploadDedup:
                 return True
 
             def parse(self, path, password=None):
-                # Spans two months on purpose — period metadata must cover both
+                # Spans two months on purpose - period metadata must cover both
                 return [
                     Transaction(txn_date=date(2026, 1, 5), amount=100.0,
                                 debit_credit="debit", raw_description="TEST TXN 1"),
@@ -1345,7 +1385,10 @@ class TestStatementUploadDedup:
 
     def test_upload_route_returns_409(self, client_conn):
         client, conn, _ = client_conn
-        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=self._fake_parser()):
+        # The sorting job an upload queues opens its own connection to the
+        # real db path; this test is about the dedup, so it must not run.
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=self._fake_parser()), \
+                patch("finance_copilot.api.routes.annotations._run_annotation_job"):
             files = {"file": ("stmt.pdf", b"%PDF same bytes", "application/pdf")}
             first = client.post("/api/statements/upload", files=files)
             assert first.status_code == 200
@@ -1379,7 +1422,7 @@ def _seed_upi_txn(conn, txn_id, ann_id, name, source="llm", category="Miscellane
 
 class TestApplyToSimilar:
     """Embedding service is stubbed out in tests, so candidates come from the
-    same-counterparty-identity path — which must work without embeddings."""
+    same-counterparty-identity path - which must work without embeddings."""
 
     def test_similar_lists_same_identity_machine_rows(self, client_conn):
         client, conn, _ = client_conn
@@ -1405,7 +1448,7 @@ class TestApplyToSimilar:
         _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="llm", category="Miscellaneous")
         resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
         assert resp.status_code == 200
-        assert resp.json() == {"applied": 1, "skipped": 0}
+        assert {k: v for k, v in resp.json().items() if k != "undo_token"} == {"applied": 1, "skipped": 0}
         row = conn.execute("SELECT * FROM annotations WHERE id='a2'").fetchone()
         assert row["category"] == "Entertainment"
         assert row["source"] == "manual"
@@ -1421,7 +1464,7 @@ class TestApplyToSimilar:
         _seed_upi_txn(conn, "t1", "a1", "SANYA PRASHANT", source="manual", category="Entertainment")
         _seed_upi_txn(conn, "t2", "a2", "SANYA PRASHANT", source="manual", category="Transfers")
         resp = client.post("/api/annotations/a1/apply-to-similar", json={"transaction_ids": ["t2"]})
-        assert resp.json() == {"applied": 0, "skipped": 1}
+        assert {k: v for k, v in resp.json().items() if k != "undo_token"} == {"applied": 0, "skipped": 1}
         row = conn.execute("SELECT category FROM annotations WHERE id='a2'").fetchone()
         assert row["category"] == "Transfers"
 
@@ -1442,6 +1485,24 @@ class TestLearnedRulesEndpoint:
         rows = resp.json()
         assert [r["counterparty_key"] for r in rows] == ["SWIGGY"]
         assert rows[0]["support"] == 3 and rows[0]["category"] == "Food & Dining"
+
+    def test_names_the_payee_the_way_the_rest_of_the_app_does(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')")
+        for i in range(3):
+            conn.execute("INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) VALUES (?, 's1', '2026-01-10', 100, 'debit', ?, 'CHAI WALA CORNER')", (f"c{i}", f"UPI/CHAI WALA CORNER/50157191952{i}/PAYTM QR/tea"))
+            conn.execute("INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, 'Food & Dining', 1.0, 'manual')", (f"ac{i}", f"c{i}"))
+        conn.commit()
+        row = client.get("/api/annotations/learned-rules").json()[0]
+        # The rule is keyed by the internal counterparty key; a person reads the payee name.
+        assert row["counterparty_key"] == "CHAI WALA CORNER"
+        assert row["payee"] == "CHAI WALA CORNER"
+        # A name the user gave the payee wins.
+        from finance_copilot.db.queries.payee import set_payee_name
+
+        set_payee_name(conn, "CHAI WALA CORNER", "Chai Wala Corner")
+        conn.commit()
+        assert client.get("/api/annotations/learned-rules").json()[0]["payee"] == "Chai Wala Corner"
 
     def test_dismiss_removes_rule_from_listing(self, client_conn):
         client, conn, _ = client_conn
@@ -1474,6 +1535,152 @@ class TestPeopleRelationship:
         # Clearing the relationship.
         cleared = client.patch(f"/api/people/{pid}", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": None})
         assert cleared.json()["relationship"] is None
+
+
+class TestPeoplePatchLeavesOmittedFieldsAlone:
+    """A PATCH changes what it names. The People page used to send {name, upi}
+    and the relationship was written back as NULL ("dad" became nothing)."""
+
+    def _person(self, client):
+        return client.post(
+            "/api/people", json={"name": "Ananta", "upi": "ananta@oksbi", "relationship": "dad"}
+        ).json()["id"]
+
+    def test_editing_the_match_keeps_the_relationship(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        resp = client.patch(f"/api/people/{pid}", json={"upi": "ananta2@oksbi"})
+        assert resp.status_code == 200
+        assert resp.json()["upi"] == "ananta2@oksbi"
+        assert resp.json()["relationship"] == "dad"
+        assert resp.json()["name"] == "Ananta"
+
+    def test_editing_the_relationship_keeps_name_and_match(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        resp = client.patch(f"/api/people/{pid}", json={"relationship": "father"})
+        assert (resp.json()["name"], resp.json()["upi"], resp.json()["relationship"]) == (
+            "Ananta", "ananta@oksbi", "father",
+        )
+
+    def test_an_explicit_null_still_clears(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        assert client.patch(f"/api/people/{pid}", json={"relationship": None}).json()["relationship"] is None
+        assert client.patch(f"/api/people/{pid}", json={"upi": None}).json()["upi"] is None
+
+    def test_a_blank_name_is_still_refused_and_an_unknown_person_is_404(self, client_conn):
+        client, _, _ = client_conn
+        pid = self._person(client)
+        assert client.patch(f"/api/people/{pid}", json={"name": "  "}).status_code == 422
+        assert client.patch("/api/people/nope", json={"relationship": "x"}).status_code == 404
+
+    def test_a_legacy_short_match_does_not_block_editing_another_field(self, client_conn):
+        client, conn, _ = client_conn
+        conn.execute("INSERT INTO people (id, name, upi) VALUES ('old', 'Old Friend', 'ab')")
+        conn.commit()
+        assert client.patch("/api/people/old", json={"relationship": "friend"}).status_code == 200
+        assert client.patch("/api/people/old", json={"upi": "ab"}).status_code == 422
+
+
+class TestSimultaneousCreates:
+    """Two requests at once must not both pass the duplicate check and both insert."""
+
+    @pytest.fixture
+    def file_db(self, tmp_path, monkeypatch):
+        from finance_copilot.api.deps import get_db as api_get_db
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.main import app
+
+        db_path = str(tmp_path / "race.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        conn = dbc.get_migrated_db(db_path)
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield app, conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    @staticmethod
+    def _slow(monkeypatch, module, name):
+        """Hold the duplicate check open after it answered, so a second request
+        that is not locked out gets through the same check before the first inserts."""
+        import time
+
+        real = getattr(module, name)
+
+        def slow(*args, **kwargs):
+            found = real(*args, **kwargs)
+            time.sleep(0.3)
+            return found
+
+        monkeypatch.setattr(module, name, slow)
+
+    @staticmethod
+    def _fire(app, calls):
+        import threading
+
+        results = [None] * len(calls)
+
+        def run(i, call):
+            results[i] = call(TestClient(app)).status_code
+
+        threads = [threading.Thread(target=run, args=(i, c)) for i, c in enumerate(calls)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return sorted(results)
+
+    def test_two_creates_of_one_group_make_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import groups as groups_routes
+
+        app, conn = file_db
+        self._slow(monkeypatch, groups_routes, "find_group_by_name")
+        post = lambda c: c.post("/api/groups", json={"name": "Goa"})  # noqa: E731
+        assert self._fire(app, [post, post]) == [201, 409]
+        assert conn.execute("SELECT COUNT(*) FROM transaction_groups").fetchone()[0] == 1
+
+    def test_two_creates_of_one_person_make_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import people as people_routes
+
+        app, conn = file_db
+        self._slow(monkeypatch, people_routes, "find_duplicate_person")
+        post = lambda c: c.post("/api/people", json={"name": "Neha", "upi": "neha@paytm"})  # noqa: E731
+        assert self._fire(app, [post, post]) == [201, 409]
+        assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 1
+
+    def test_two_renames_to_one_group_name_leave_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import groups as groups_routes
+
+        app, conn = file_db
+        client = TestClient(app)
+        a = client.post("/api/groups", json={"name": "A"}).json()["id"]
+        b = client.post("/api/groups", json={"name": "B"}).json()["id"]
+        self._slow(monkeypatch, groups_routes, "find_group_by_name")
+        rename = lambda gid: (lambda c: c.patch(f"/api/groups/{gid}", json={"name": "Same"}))  # noqa: E731
+        assert self._fire(app, [rename(a), rename(b)]) == [200, 409]
+        assert conn.execute("SELECT COUNT(*) FROM transaction_groups WHERE name = 'Same'").fetchone()[0] == 1
+
+    def test_two_edits_to_one_person_identity_leave_one(self, file_db, monkeypatch):
+        from finance_copilot.api.routes import people as people_routes
+
+        app, conn = file_db
+        client = TestClient(app)
+        a = client.post("/api/people", json={"name": "Neha", "upi": "a@paytm"}).json()["id"]
+        b = client.post("/api/people", json={"name": "Neha", "upi": "b@paytm"}).json()["id"]
+        self._slow(monkeypatch, people_routes, "find_duplicate_person")
+        edit = lambda pid: (lambda c: c.patch(f"/api/people/{pid}", json={"upi": "same@paytm"}))  # noqa: E731
+        assert self._fire(app, [edit(a), edit(b)]) == [200, 409]
+        assert conn.execute("SELECT COUNT(*) FROM people WHERE upi = 'same@paytm'").fetchone()[0] == 1
 
 
 class TestGroupHeaderRefresh:
@@ -1515,3 +1722,509 @@ class TestGroupHeaderRefresh:
         after = client.get(f"/api/groups/{gid}").json()
         assert after["summary"]["member_count"] == 1
         assert after["summary"]["your_share"] == 220.0
+
+
+class TestUploadStartsSorting:
+    """A statement that lands is sorted by the server, with no click and no browser."""
+
+    @pytest.fixture
+    def file_db_client(self, tmp_path, monkeypatch):
+        from finance_copilot.api.deps import get_db as api_get_db
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.main import app
+
+        db_path = str(tmp_path / "upload.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        # No model: rules, remembered payees and policies are the whole pipeline.
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        conn = dbc.get_migrated_db(db_path)
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield TestClient(app), conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    @staticmethod
+    def _parser(rows):
+        from finance_copilot.models.transaction import Transaction
+        from finance_copilot.parsers.base import StatementParser
+
+        class FakeParser(StatementParser):
+            bank_name = "fake"
+            version = "1"
+
+            def detect(self, path, password=None):
+                return True
+
+            def parse(self, path, password=None):
+                return [
+                    Transaction(txn_date=date(2026, 1, day), amount=100.0,
+                                debit_credit="debit", raw_description=desc)
+                    for day, desc in rows
+                ]
+
+        return FakeParser()
+
+    def _upload(self, client, parser, content=b"%PDF one", name="stmt.pdf"):
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
+            return client.post("/api/statements/upload", files={"file": (name, content, "application/pdf")})
+
+    def test_upload_queues_a_job_for_the_statement_and_it_runs(self, file_db_client):
+        client, conn = file_db_client
+        resp = self._upload(client, self._parser([(5, "Netflix subscription"), (6, "zqx unknown vendor")]))
+        assert resp.status_code == 200
+        body = resp.json()
+        # What the page needs to say "2 payments added, balance checks out".
+        assert body["transaction_count"] == 2
+        assert body["balance_check"] == {"checked": 0, "consistent": 0, "balanced": True}
+
+        job = client.get(f"/api/annotations/jobs/{body['sorting_job_id']}").json()
+        assert job["statement_id"] == body["id"]
+        assert job["kind"] == "annotate"
+        # TestClient runs background tasks before returning, so the job is done.
+        assert job["status"] == "completed"
+        assert job["result"]["rule_matched"] == 1
+
+    def test_with_no_model_the_rules_still_sort_and_the_rest_stays_unsorted(self, file_db_client):
+        client, conn = file_db_client
+        body = self._upload(client, self._parser([(5, "Netflix subscription"), (6, "zqx unknown vendor")])).json()
+
+        job = client.get(f"/api/annotations/jobs/{body['sorting_job_id']}").json()
+        assert job["result"]["ai_active"] is False
+        assert job["result"]["llm_failed"] == 1
+        annotated = conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0]
+        assert annotated == 1
+        # Nobody decided the other row, so it is left for Teach Me.
+        assert conn.execute(
+            "SELECT COUNT(*) FROM transactions t LEFT JOIN annotations a ON a.transaction_id = t.id "
+            "WHERE a.id IS NULL"
+        ).fetchone()[0] == 1
+
+    def test_a_failed_ingest_queues_nothing(self, file_db_client):
+        client, conn = file_db_client
+        resp = self._upload(client, None)
+        assert resp.status_code == 422
+        assert conn.execute("SELECT COUNT(*) FROM annotation_jobs").fetchone()[0] == 0
+
+    def test_a_duplicate_file_queues_nothing_more(self, file_db_client):
+        client, conn = file_db_client
+        parser = self._parser([(5, "Netflix subscription")])
+        assert self._upload(client, parser).status_code == 200
+        assert self._upload(client, parser).status_code == 409
+        assert conn.execute("SELECT COUNT(*) FROM annotation_jobs").fetchone()[0] == 1
+
+    def test_a_file_that_is_not_a_pdf_is_refused_before_parsing(self, file_db_client):
+        client, conn = file_db_client
+        with patch("finance_copilot.pipeline.ingest.detect_parser") as detect:
+            resp = client.post(
+                "/api/statements/upload",
+                files={"file": ("notes.txt", b"just some words", "text/plain")},
+            )
+        assert resp.status_code == 422
+        assert "notes.txt" in resp.json()["detail"]
+        assert "PDF" in resp.json()["detail"]
+        detect.assert_not_called()
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0
+
+    def test_a_second_upload_while_a_job_runs_queues_behind_it(self, file_db_client):
+        """Not attached to the running job (it covers another statement) and not
+        refused: its own job waits in line, and nothing runs beside the one
+        that is running."""
+        client, conn = file_db_client
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, total, processed) VALUES ('busy','running',10,4)"
+        )
+        conn.commit()
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job") as worker:
+            resp = self._upload(client, self._parser([(5, "Netflix subscription")]))
+        assert resp.status_code == 200
+        job_id = resp.json()["sorting_job_id"]
+        assert job_id != "busy"
+        worker.assert_not_called()
+        row = conn.execute("SELECT status, statement_id FROM annotation_jobs WHERE id = ?", (job_id,)).fetchone()
+        assert row["status"] == "queued"
+        assert row["statement_id"] == resp.json()["id"]
+
+    def test_a_job_queue_that_fails_does_not_fail_the_upload(self, file_db_client):
+        client, conn = file_db_client
+        with patch(
+            "finance_copilot.api.routes.statements.enqueue_annotation_job", side_effect=RuntimeError("boom")
+        ):
+            resp = self._upload(client, self._parser([(5, "Netflix subscription")]))
+        assert resp.status_code == 200
+        assert resp.json()["sorting_job_id"] is None
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 1
+
+    def test_the_active_listing_puts_the_running_job_first(self, file_db_client):
+        client, conn = file_db_client
+        conn.execute("INSERT INTO annotation_jobs (id, status, created_at) VALUES ('later','queued','2026-01-02 00:00:00')")
+        conn.execute("INSERT INTO annotation_jobs (id, status, created_at) VALUES ('first','running','2026-01-01 00:00:00')")
+        conn.execute("INSERT INTO annotation_jobs (id, status, created_at) VALUES ('queued_early','queued','2026-01-01 12:00:00')")
+        conn.commit()
+        with patch("finance_copilot.api.live_jobs._live", {"first", "later", "queued_early"}):
+            ids = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json()]
+        assert ids == ["first", "queued_early", "later"]
+
+
+class TestJobRunner:
+    """Sorting jobs wait in the table; one runner thread takes them in turn."""
+
+    @pytest.fixture
+    def db(self, tmp_path, monkeypatch):
+        from finance_copilot.api.deps import get_db as api_get_db
+        from finance_copilot.config import settings
+        from finance_copilot.db import connection as dbc
+        from finance_copilot.main import app
+
+        db_path = str(tmp_path / "runner.db")
+        monkeypatch.setattr(settings, "db_path", db_path)
+        monkeypatch.setattr(settings, "llm_provider", "none")
+        conn = dbc.get_migrated_db(db_path)
+
+        def override():
+            c = dbc.get_connection(db_path)
+            try:
+                yield c
+            finally:
+                c.close()
+
+        app.dependency_overrides[api_get_db] = override
+        yield TestClient(app), conn
+        app.dependency_overrides.pop(api_get_db, None)
+        conn.close()
+
+    @staticmethod
+    def _queue(conn, job_id, created_at, statement_id=None, transaction_ids=None, kind="annotate"):
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, kind, statement_id, transaction_ids, created_at, updated_at) "
+            "VALUES (?, 'queued', ?, ?, ?, ?, datetime('now'))",
+            (job_id, kind, statement_id, transaction_ids, created_at),
+        )
+        conn.commit()
+
+    @staticmethod
+    def _complete(job_id):
+        from finance_copilot.api.routes.annotations import _open_job_connection
+
+        c = _open_job_connection()
+        c.execute("UPDATE annotation_jobs SET status='completed' WHERE id=?", (job_id,))
+        c.commit()
+        c.close()
+
+    def test_queued_jobs_run_once_each_oldest_first_ties_by_id(self, db):
+        import json as _json
+
+        from finance_copilot.api.routes.annotations import runner
+
+        _, conn = db
+        self._queue(conn, "c", "2026-01-01 00:00:02", statement_id="sc")
+        self._queue(conn, "b", "2026-01-01 00:00:01", statement_id="sb", transaction_ids=_json.dumps(["t9"]))
+        self._queue(conn, "a", "2026-01-01 00:00:01", statement_id="sa")
+        ran = []
+
+        def fake(job_id, statement_id, transaction_ids):
+            ran.append((job_id, statement_id, transaction_ids))
+            self._complete(job_id)
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", fake):
+            while runner.run_one():
+                pass
+        assert ran == [("a", "sa", None), ("b", "sb", ["t9"]), ("c", "sc", None)]
+
+    def test_a_running_job_of_another_kind_holds_the_line(self, db):
+        from finance_copilot.api.routes.annotations import runner
+
+        _, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('re','running','reembed')")
+        conn.commit()
+        self._queue(conn, "q", "2026-01-01 00:00:00")
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job") as worker, \
+                patch("finance_copilot.api.live_jobs._live", {"re"}):
+            while runner.run_one():
+                pass
+        worker.assert_not_called()
+
+    def test_the_runner_survives_a_job_that_raises_and_runs_the_next(self):
+        import threading
+
+        from finance_copilot.api.live_jobs import JobRunner
+
+        todo = ["boom", "second"]
+        ran = []
+        done = threading.Event()
+
+        def run_next():
+            if not todo:
+                return False
+            name = todo.pop(0)
+            if name == "boom":
+                raise RuntimeError("could not even start")
+            ran.append(name)
+            done.set()
+            return True
+
+        r = JobRunner(run_next, poll_seconds=0.02)
+        r.start()
+        try:
+            assert done.wait(5)
+        finally:
+            r.stop()
+        assert ran == ["second"]
+        assert not r.alive
+
+    def test_start_is_once_per_process_and_stop_is_clean(self):
+        from finance_copilot.api.live_jobs import JobRunner
+
+        r = JobRunner(lambda: False, poll_seconds=0.02)
+        r.start()
+        first = r._thread
+        r.start()
+        assert r._thread is first
+        assert r.alive
+        r.stop()
+        assert not r.alive
+        assert not first.is_alive()
+
+    def test_a_wake_up_runs_a_job_without_waiting_for_the_poll(self):
+        import threading
+
+        from finance_copilot.api.live_jobs import JobRunner
+
+        todo = []
+        ran = threading.Event()
+
+        def run_next():
+            if todo:
+                todo.pop()
+                ran.set()
+                return True
+            return False
+
+        r = JobRunner(run_next, poll_seconds=60)
+        r.start()
+        try:
+            todo.append(1)
+            r.wake()
+            assert ran.wait(5)
+        finally:
+            r.stop()
+
+    def test_a_queued_job_is_not_reaped_while_it_waits(self, db):
+        """Backdate a waiting sorting job past the stale window: with the
+        runner alive it is waiting its turn, not an orphan."""
+        from finance_copilot.api.routes.annotations import runner
+
+        client, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
+        conn.commit()
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        self._queue(conn, "waiting_embed", "2026-01-01 00:00:00", kind="reembed")
+        conn.execute("UPDATE annotation_jobs SET updated_at = datetime('now', '-1 hour')")
+        conn.commit()
+
+        with patch("finance_copilot.api.live_jobs._live", {"busy"}), \
+                patch.object(type(runner), "alive", new=True):
+            active = client.get("/api/annotations/jobs?active=1").json()
+        by_id = {j["id"]: j["status"] for j in active}
+        assert by_id == {"busy": "running", "waiting": "queued"}
+        # A queued re-embed has no runner behind it: it is reaped as before.
+        assert conn.execute("SELECT status FROM annotation_jobs WHERE id='waiting_embed'").fetchone()[0] == "failed"
+
+    def test_without_a_runner_a_quiet_queued_job_is_reaped(self, db):
+        client, conn = db
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        conn.execute("UPDATE annotation_jobs SET updated_at = datetime('now', '-1 hour')")
+        conn.commit()
+        assert client.get("/api/annotations/jobs?active=1").json() == []
+
+    def test_a_manual_start_attaches_to_the_running_job_not_a_queued_one(self, db):
+        client, conn = db
+        self._queue(conn, "waiting", "2026-01-01 00:00:00")
+        conn.execute(
+            "INSERT INTO annotation_jobs (id, status, created_at) VALUES ('doing','running','2026-01-02 00:00:00')"
+        )
+        conn.commit()
+        resp = client.post("/api/annotations/auto-annotate/jobs", json={})
+        assert resp.json()["job_id"] == "doing"
+        assert resp.json()["attached"] is True
+
+    def test_active_listing_breaks_ties_by_id(self, db):
+        client, conn = db
+        for jid in ("b", "a"):
+            self._queue(conn, jid, "2026-01-01 00:00:00")
+        with patch("finance_copilot.api.live_jobs._live", {"a", "b"}):
+            ids = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json()]
+        assert ids == ["a", "b"]
+
+    def test_a_manual_scoped_job_remembers_its_transactions(self, db):
+        client, conn = db
+        seen = []
+
+        def fake(job_id, sid, tids):
+            seen.append((sid, tids))
+            self._complete(job_id)
+
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job", fake):
+            resp = client.post(
+                "/api/annotations/auto-annotate/jobs", json={"statement_id": "s1", "transaction_ids": ["t1", "t2"]}
+            )
+        assert resp.status_code == 202
+        assert seen == [("s1", ["t1", "t2"])]
+
+    def test_many_queued_uploads_do_not_hold_request_threads(self, db):
+        """45 statements queued behind a running job: every upload returns, the
+        API still answers, and the only extra thread is the one runner."""
+        import threading
+
+        client, conn = db
+        conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
+        conn.commit()
+        before = threading.active_count()
+        parser = TestUploadStartsSorting._parser([(5, "zqx vendor")])
+        ids = []
+        for i in range(45):
+            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
+                r = client.post(
+                    "/api/statements/upload",
+                    files={"file": (f"s{i}.pdf", f"%PDF {i}".encode(), "application/pdf")},
+                )
+            assert r.status_code == 200
+            ids.append(r.json()["sorting_job_id"])
+        assert threading.active_count() == before
+        queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
+        assert queued == ids
+
+
+class TestStatementListSortedCount:
+    """One meaning of "sorted": the payments Teach Me is not waiting on."""
+
+    def test_sorted_count_leaves_out_guesses_below_the_bar_and_unsorted_rows(self, client_conn):
+        client, conn, _ = client_conn
+        _seed_annotated_txn(conn, "t_user", "a_user", source="manual", confidence=1.0)
+        _seed_annotated_txn(conn, "t_sure", "a_sure", source="llm", confidence=0.95)
+        _seed_annotated_txn(conn, "t_guess", "a_guess", source="llm", confidence=0.4)
+        _seed_annotated_txn(conn, "t_uncat", "a_uncat", source="llm", confidence=0.95, category="Uncategorized")
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+            "VALUES ('t_none', 's1', '2026-01-16', 5.0, 'debit', 'zqx')"
+        )
+        conn.commit()
+
+        stmt = client.get("/api/statements").json()[0]
+        assert stmt["txn_count"] == 5
+        assert stmt["sorted_count"] == 2
+        assert "annotated_count" not in stmt
+        # Exactly what Teach Me holds, so the table and the queue agree.
+        queue = client.get("/api/annotations/review-queue").json()
+        waiting = len(queue["items"]) if isinstance(queue, dict) else len(queue)
+        assert stmt["txn_count"] - stmt["sorted_count"] == waiting
+
+    def test_upload_response_checks_only_its_own_balance(self, client_conn):
+        client, conn, _ = client_conn
+        from finance_copilot.db.queries.transactions import statement_balance_checks
+
+        parser = TestUploadStartsSorting._parser([(5, "Netflix subscription")])
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser), \
+                patch("finance_copilot.api.routes.statements.statement_balance_checks",
+                      wraps=statement_balance_checks) as spy:
+            r = client.post("/api/statements/upload", files={"file": ("a.pdf", b"%PDF a", "application/pdf")})
+        assert r.status_code == 200
+        assert spy.call_args.kwargs.get("statement_id") == r.json()["id"]
+
+
+class TestGroupNames:
+    """R2 D: a group name is unique (case and spacing ignored) and a group can be edited."""
+
+    def test_duplicate_group_is_refused_with_a_plain_message(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/groups", json={"name": "Coorg weekend"}).status_code == 201
+        for again in ("Coorg weekend", "  coorg WEEKEND ", "COORG weekend"):
+            resp = client.post("/api/groups", json={"name": again})
+            assert resp.status_code == 409
+            assert resp.json()["detail"] == 'You already have a group called "Coorg weekend".'
+        assert len(client.get("/api/groups").json()) == 1
+
+    def test_name_is_trimmed_and_cannot_be_blank(self, client_conn):
+        client, _, _ = client_conn
+        made = client.post("/api/groups", json={"name": "  Goa  "})
+        assert made.status_code == 201
+        assert made.json()["name"] == "Goa"
+        assert client.post("/api/groups", json={"name": "   "}).status_code == 422
+
+    def test_patch_renames_and_edits_note_and_labels(self, client_conn):
+        client, _, _ = client_conn
+        gid = client.post("/api/groups", json={"name": "Trip", "note": "old"}).json()["id"]
+        resp = client.patch(f"/api/groups/{gid}", json={"name": " Goa trip ", "note": "Flights split", "labels": ["travel"]})
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Goa trip"
+        assert resp.json()["note"] == "Flights split"
+        assert resp.json()["labels"] == ["travel"]
+        # A field left out stays; a blank note clears it.
+        only_note = client.patch(f"/api/groups/{gid}", json={"note": ""}).json()
+        assert only_note["note"] is None
+        assert only_note["name"] == "Goa trip"
+        assert only_note["labels"] == ["travel"]
+
+    def test_patch_cannot_take_another_groups_name(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/groups", json={"name": "Flat"})
+        gid = client.post("/api/groups", json={"name": "Trip"}).json()["id"]
+        resp = client.patch(f"/api/groups/{gid}", json={"name": "flat"})
+        assert resp.status_code == 409
+        assert client.get(f"/api/groups/{gid}").json()["name"] == "Trip"
+        # Changing only its own capitalisation is fine.
+        assert client.patch(f"/api/groups/{gid}", json={"name": "TRIP"}).status_code == 200
+        assert client.patch(f"/api/groups/{gid}", json={"name": " "}).status_code == 422
+
+    def test_patch_unknown_group_is_404(self, client_conn):
+        client, _, _ = client_conn
+        assert client.patch("/api/groups/nope", json={"name": "x"}).status_code == 404
+
+
+class TestPeopleDuplicates:
+    """R2 D: two real people can share a name, so only the same name AND the
+    same match-token (or both without one) counts as the same person."""
+
+    def test_same_name_and_handle_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"}).status_code == 201
+        resp = client.post("/api/people", json={"name": " neha gupta ", "upi": "NEHA@paytm"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == 'You already have Neha Gupta with the match "neha@paytm".'
+        assert len(client.get("/api/people").json()) == 1
+
+    def test_same_name_without_handles_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta"})
+        resp = client.post("/api/people", json={"name": "Neha Gupta"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "You already have Neha Gupta."
+
+    def test_same_name_with_a_different_handle_is_allowed(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        assert client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha.g@okaxis"}).status_code == 201
+        assert client.post("/api/people", json={"name": "Neha Gupta"}).status_code == 201
+
+    def test_blank_name_is_refused(self, client_conn):
+        client, _, _ = client_conn
+        assert client.post("/api/people", json={"name": "  "}).status_code == 422
+
+    def test_edit_cannot_turn_one_person_into_another(self, client_conn):
+        client, _, _ = client_conn
+        client.post("/api/people", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        other = client.post("/api/people", json={"name": "Neha Gupta", "upi": "n2@okaxis"}).json()["id"]
+        clash = client.patch(f"/api/people/{other}", json={"name": "Neha Gupta", "upi": "neha@paytm"})
+        assert clash.status_code == 409
+        # Saving a person unchanged, or changing only the relationship, is fine.
+        ok = client.patch(f"/api/people/{other}", json={"name": "Neha Gupta", "upi": "n2@okaxis", "relationship": "friend"})
+        assert ok.status_code == 200

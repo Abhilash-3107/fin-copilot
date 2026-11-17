@@ -1,17 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { HashRouter } from 'react-router-dom'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { HashRouter } from '../test/router.jsx'
 
 const { mockApi } = vi.hoisted(() => ({
   mockApi: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn(), upload: vi.fn() },
 }))
-vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class extends Error {} }))
+const { pollJob } = vi.hoisted(() => ({ pollJob: vi.fn() }))
+vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class extends Error {}, pollAnnotationJob: pollJob }))
 const noopToast = () => {}
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => noopToast,
 }))
-const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: null } }))
+const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: null, watchJobs: null } }))
 vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
   useAnnotationJob: () => jobCtx,
 }))
@@ -23,12 +24,29 @@ vi.mock('../contexts/DemoDataContext.jsx', () => ({
 
 const stmt = {
   id: 's1', bank_name: 'kotak', statement_month: '2026-07', balance_check: null,
-  txn_count: 10, annotated_count: 2, embedded_count: 10, uploaded_at: '2026-07-01T10:00:00',
+  txn_count: 10, sorted_count: 2, uploaded_at: '2026-07-01T10:00:00',
 }
+
+const uploaded = (id, extra = {}) => ({
+  id, bank_name: 'kotak', statement_month: '2026-07', warnings: [],
+  transaction_count: 8, balance_check: { checked: 7, consistent: 7, balanced: true },
+  sorting_job_id: `job-${id}`, ...extra,
+})
+// 8 rows: 5 by rules, 2 from history, 1 left undecided (no model).
+const SORTED = {
+  total_processed: 8, rule_matched: 5, rag_direct_annotated: 2, llm_annotated: 0,
+  llm_failed: 1, low_confidence: 0, already_annotated: 0, ai_active: false, llm_error: null,
+}
+
+// What GET /statements says once sorting has ended: the one definition of sorted.
+const ledgerRows = (...rows) => rows.map(([id, total, sorted]) => ({ ...stmt, id, txn_count: total, sorted_count: sorted }))
 
 import Upload from './Upload.jsx'
 
 const renderUpload = () => render(<HashRouter><Upload /></HashRouter>)
+
+// "Add statement" for one file, "Add 2 statements" for two.
+const ADD_BUTTON = /^Add (\d+ statements|statement)$/
 
 const pdf = () => new File(['%PDF-1.4'], 'statement.pdf', { type: 'application/pdf' })
 
@@ -37,12 +55,15 @@ describe('Upload', () => {
     vi.clearAllMocks()
     jobCtx.job = null
     jobCtx.startAnnotation = vi.fn()
+    jobCtx.watchJobs = vi.fn()
+    pollJob.mockResolvedValue(SORTED)
     Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
     mockApi.get.mockResolvedValue([])
-    mockApi.upload.mockResolvedValue({ bank_name: 'kotak', statement_month: '2026-07', warnings: [] })
+    mockApi.upload.mockResolvedValue(uploaded('s1'))
   })
 
   it('clears the file input after a pick, so the same file can be picked again', async () => {
+    mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
     const { container } = renderUpload()
     const input = container.querySelector('input[type=file]')
     // jsdom does not model a file input's path value, so record what the page
@@ -60,32 +81,48 @@ describe('Upload', () => {
     expect(screen.getByText('statement.pdf')).toBeInTheDocument()
     expect(writes).toEqual([''])
 
-    fireEvent.click(screen.getByRole('button', { name: /upload/i }))
+    fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
     await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.queryByText('statement.pdf')).not.toBeInTheDocument())
+    await screen.findByText('7 sorted, 1 needs you')
 
     fireEvent.change(input, { target: { files: [pdf()] } })
-    expect(screen.getByText('statement.pdf')).toBeInTheDocument()
+    expect(writes).toEqual(['', ''])
+    expect(screen.getByRole('button', { name: ADD_BUTTON })).toBeInTheDocument()
   })
 
-  it("Categorize runs through the job flow and shows that run's result", async () => {
+  it('shows a statement\'s warnings on its own row', async () => {
+    mockApi.upload.mockResolvedValueOnce(uploaded('s1', { warnings: ['2 rows had no date and were skipped.'] }))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+    fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+    const row = (await screen.findByText('statement.pdf')).closest('li')
+    expect(await within(row).findByText('2 rows had no date and were skipped.')).toBeInTheDocument()
+  })
+
+  it("Sort again runs through the job flow and shows that run's result", async () => {
     mockApi.get.mockResolvedValue([stmt])
     jobCtx.startAnnotation.mockResolvedValue({
       total_processed: 8, rule_matched: 5, rag_direct_annotated: 1, llm_annotated: 2,
       llm_failed: 0, low_confidence: 0, already_annotated: 2, ai_active: true, llm_error: null,
     })
     renderUpload()
-    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /sort again/i }))
     await waitFor(() => expect(jobCtx.startAnnotation).toHaveBeenCalledWith({ statement_id: 's1' }))
     expect(await screen.findByText('Figured out by AI: 2')).toBeInTheDocument()
     expect(mockApi.post).not.toHaveBeenCalledWith('/annotations/auto-annotate', expect.anything())
   })
 
-  it('every Categorize waits while another run is tracked', async () => {
+  it('counts a statement as sorted by what Teach Me is not waiting on', async () => {
+    mockApi.get.mockResolvedValue([{ ...stmt, sorted_count: 6 }])
+    renderUpload()
+    expect(await screen.findByText(/Partial · 6\/10/)).toBeInTheDocument()
+  })
+
+  it('every Sort again waits while another run is tracked', async () => {
     mockApi.get.mockResolvedValue([stmt])
     jobCtx.job = { status: 'running', kind: 'reembed' }
     renderUpload()
-    expect(await screen.findByRole('button', { name: /categorize/i })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: /sort again/i })).toBeDisabled()
   })
 
   it('shows the provider error in the results panel', async () => {
@@ -95,9 +132,11 @@ describe('Upload', () => {
       ai_active: true, llm_error: 'provider refused the request (HTTP 404)',
     })
     renderUpload()
-    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
-    expect(await screen.findByText(/isn.t available \(provider refused the request \(HTTP 404\)\)/))
+    fireEvent.click(await screen.findByRole('button', { name: /sort again/i }))
+    expect(await screen.findByText(/Your AI model stopped answering, so this run stopped using it/))
       .toBeInTheDocument()
+    // The provider's own words are for Test connection, not for this panel.
+    expect(screen.queryByText(/HTTP 404/)).not.toBeInTheDocument()
   })
 
   // The page lives under a HashRouter, so a plain href="/settings" opens the
@@ -109,7 +148,7 @@ describe('Upload', () => {
       ai_active: true, llm_error: 'provider refused the request (HTTP 404)',
     })
     renderUpload()
-    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /sort again/i }))
     const link = await screen.findByRole('link', { name: /Settings › AI & Model/ })
     expect(link.getAttribute('href')).toBe('#/settings?tab=ai')
   })
@@ -121,7 +160,7 @@ describe('Upload', () => {
       ai_active: false, llm_error: null,
     })
     renderUpload()
-    fireEvent.click(await screen.findByRole('button', { name: /categorize/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /sort again/i }))
     const link = await screen.findByRole('link', { name: /Settings › AI & Model/ })
     expect(link.getAttribute('href')).toBe('#/settings?tab=ai')
   })
@@ -132,7 +171,17 @@ describe('Upload', () => {
     expect(await screen.findByText(/still has sample data/)).toBeInTheDocument()
     // One remove action per screen: the bar's. The notice only explains.
     expect(screen.queryByRole('button', { name: 'Remove sample data' })).not.toBeInTheDocument()
-    expect(container.querySelector('.pointer-events-none')).not.toBeNull()
+    // The dropzone is disabled for assistive tech, and its words are not dimmed
+    // (a faded line fails contrast): only the frame goes quiet.
+    const zone = screen.getByText(/Drop your bank statements here/).closest('[aria-disabled]')
+    expect(zone).toHaveAttribute('aria-disabled', 'true')
+    expect(zone.className).not.toMatch(/opacity-/)
+    expect(zone.querySelector('p').className).not.toMatch(/opacity-/)
+    const picker = container.querySelector('input[type="file"]')
+    expect(picker).toBeDisabled()
+    const open = vi.spyOn(picker, 'click')
+    fireEvent.click(zone)
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('shows no sample-data notice on a ledger without it', async () => {
@@ -153,9 +202,10 @@ describe('Upload', () => {
   it('refreshes the sample-data status after deleting a statement', async () => {
     mockApi.get.mockResolvedValue([stmt])
     mockApi.delete.mockResolvedValue({})
-    const { container } = renderUpload()
+    renderUpload()
     await screen.findByText('kotak')
-    fireEvent.click(container.querySelector('svg.lucide-trash2').closest('button'))
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1'))
     await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
@@ -164,11 +214,344 @@ describe('Upload', () => {
   it('refreshes the sample-data status after resetting a statement', async () => {
     mockApi.get.mockResolvedValue([stmt])
     mockApi.delete.mockResolvedValue({})
-    const { container } = renderUpload()
+    renderUpload()
     await screen.findByText('kotak')
-    fireEvent.click(container.querySelector('svg.lucide-rotate-ccw').closest('button'))
-    fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Start over' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
     await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
     await waitFor(() => expect(demoCtx.refresh).toHaveBeenCalledTimes(1))
+  })
+
+  describe('renaming from the menu', () => {
+    const rename = async () => {
+      mockApi.get.mockResolvedValue([stmt])
+      renderUpload()
+      await screen.findByText('kotak')
+      fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+      return screen.getByDisplayValue('kotak')
+    }
+
+    it('returns focus to the More button after a save', async () => {
+      mockApi.patch.mockResolvedValue({})
+      const input = await rename()
+      expect(input).toHaveFocus()
+      fireEvent.change(input, { target: { value: 'HDFC' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { bank_name: 'HDFC' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: 'More for kotak - Jul 2026' })).toHaveFocus())
+    })
+
+    it('returns focus to the More button after Escape', async () => {
+      const input = await rename()
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(screen.getByRole('button', { name: 'More for kotak - Jul 2026' })).toHaveFocus()
+    })
+  })
+
+  it('says tags go too before starting a statement over', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.delete.mockRejectedValue(Object.assign(new Error('Start over once sorting finishes.'), { status: 409 }))
+    renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Start over' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('every category and tag on "kotak - Jul 2026"')
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }))
+    await waitFor(() => expect(mockApi.delete).toHaveBeenCalledWith('/statements/s1/data'))
+  })
+
+  it('keeps only Sort again on the row, with rename, start over and delete in a menu, and no memory controls', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    renderUpload()
+    await screen.findByText('kotak')
+    expect(screen.getByRole('button', { name: /sort again/i })).toBeInTheDocument()
+    expect(screen.queryByText(/memory|build|rebuild/i)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader').map(h => h.textContent.trim()))
+      .toEqual(['Bank', 'Month', 'Balanced', 'Sorted', 'Added', 'Actions'])
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Rename', 'Start over', 'Delete'])
+  })
+
+  it('renames a statement from its menu', async () => {
+    mockApi.get.mockResolvedValue([stmt])
+    mockApi.patch.mockResolvedValue({})
+    renderUpload()
+    await screen.findByText('kotak')
+    fireEvent.click(screen.getByRole('button', { name: 'More for kotak - Jul 2026' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+    const input = screen.getByDisplayValue('kotak')
+    fireEvent.change(input, { target: { value: 'Kotak savings' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/statements/s1', { bank_name: 'Kotak savings' }))
+  })
+
+  describe('before the first upload', () => {
+    it('says which banks work, what happens with a locked PDF, where the file stays and what happens next', async () => {
+      renderUpload()
+      await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
+      expect(screen.getByText(/Kotak statements/)).toBeInTheDocument()
+      expect(screen.getByText(/running-balance column/)).toBeInTheDocument()
+      expect(screen.getByText(/password-protected PDFs work/i)).toBeInTheDocument()
+      expect(screen.getByText(
+        /Your statement stays on this computer\. If you connect an online AI model in Settings, each payment.s date, amount, description and note are sent to it for sorting, along with a few similar payments you have already sorted and how you sorted them\./,
+      )).toBeInTheDocument()
+      expect(screen.getByText(/balance is checked, then sorting starts by itself/i)).toBeInTheDocument()
+    })
+
+    it('leaves the hosted demo to its own message', async () => {
+      Object.assign(demoCtx, { sample: true, hosted: true })
+      renderUpload()
+      await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
+      expect(screen.queryByText(/Kotak statements/)).not.toBeInTheDocument()
+    })
+
+    it('gives way to the files once some are chosen', async () => {
+      const { container } = renderUpload()
+      await screen.findByText(/No statements yet/)
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      expect(screen.queryByText(/Kotak statements/)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('several files', () => {
+    const named = name => new File(['%PDF-1.4'], name, { type: 'application/pdf' })
+
+    it('lets the picker take several files', async () => {
+      const { container } = renderUpload()
+      await screen.findByText(/No statements yet/)
+      expect(container.querySelector('input[type=file]').multiple).toBe(true)
+    })
+
+    it('uploads them one after another, each with its own result and a sorted summary', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 8]))
+      mockApi.upload
+        .mockResolvedValueOnce(uploaded('s1'))
+        .mockResolvedValueOnce(uploaded('s2', { bank_name: 'hdfc' }))
+      pollJob
+        .mockResolvedValueOnce(SORTED)
+        .mockResolvedValueOnce({ ...SORTED, rule_matched: 6, rag_direct_annotated: 2, llm_failed: 0 })
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [named('a.pdf'), named('b.pdf')] } })
+      expect(screen.getByText('a.pdf')).toBeInTheDocument()
+      expect(screen.getByText('b.pdf')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+
+      expect(await screen.findByText('7 sorted, 1 needs you')).toBeInTheDocument()
+      expect(await screen.findByText('8 sorted, 0 need you')).toBeInTheDocument()
+      expect(mockApi.upload).toHaveBeenCalledTimes(2)
+      expect(mockApi.upload.mock.calls[0][1].get('file').name).toBe('a.pdf')
+      expect(mockApi.upload.mock.calls[1][1].get('file').name).toBe('b.pdf')
+      // Each row reports what went in and the balance check.
+      expect(screen.getAllByText(/8 payments added/)).toHaveLength(2)
+      expect(screen.getAllByText(/Balance checks out/)).toHaveLength(2)
+      // One account of the whole drop, with the way on.
+      expect(screen.getByRole('status')).toHaveTextContent('Finished: 15 sorted, 1 needs you')
+      expect(screen.getByRole('link', { name: /Teach Me/ }).getAttribute('href')).toBe('#/review')
+    })
+
+    it('keeps a drop in progress when more files are picked mid-drop', async () => {
+      let finishFirst
+      mockApi.upload
+        .mockImplementationOnce(() => new Promise(resolve => { finishFirst = () => resolve(uploaded('s1')) }))
+        .mockResolvedValueOnce(uploaded('s2'))
+      pollJob.mockReturnValue(new Promise(() => {}))
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      fireEvent.change(input, { target: { files: [named('a.pdf'), named('b.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText('Reading the statement…')).toBeInTheDocument()
+
+      // A third file is picked while a.pdf is being read and b.pdf waits its turn.
+      fireEvent.change(input, { target: { files: [named('c.pdf')] } })
+      expect(screen.getByText('a.pdf')).toBeInTheDocument()
+      expect(screen.getByText('c.pdf')).toBeInTheDocument()
+
+      finishFirst()
+      // The drop carries on: b.pdf is still uploaded, and a.pdf shows its sorting.
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(2))
+      expect(screen.getByText('a.pdf')).toBeInTheDocument()
+      expect(screen.getByText('b.pdf')).toBeInTheDocument()
+      expect(screen.getAllByText(/Waiting to sort|Getting started/).length).toBeGreaterThan(0)
+    })
+
+    it('lets only finished files make way for a new pick', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      fireEvent.change(input, { target: { files: [named('a.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      await screen.findByText('7 sorted, 1 needs you')
+      fireEvent.change(input, { target: { files: [named('b.pdf')] } })
+      expect(screen.queryByText('a.pdf')).not.toBeInTheDocument()
+      expect(screen.getByText('b.pdf')).toBeInTheDocument()
+    })
+
+    it('keeps going when one file fails, says why, and lets that file be retried', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7], ['s2', 8, 7]))
+      mockApi.upload
+        .mockRejectedValueOnce(Object.assign(new Error('This PDF is password-protected. Enter its password and add it again.'), { status: 422 }))
+        .mockResolvedValueOnce(uploaded('s2'))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [named('locked.pdf'), named('open.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+
+      expect(await screen.findByText(/Couldn't read this file\. This PDF is password-protected/)).toBeInTheDocument()
+      expect(await screen.findByText('7 sorted, 1 needs you')).toBeInTheDocument()
+      expect(mockApi.upload).toHaveBeenCalledTimes(2)
+
+      // Enter the password and upload again: only the failed file goes up.
+      mockApi.upload.mockResolvedValueOnce(uploaded('s1'))
+      fireEvent.change(screen.getByPlaceholderText(/Password/), { target: { value: 'hunter2' } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(3))
+      const retry = mockApi.upload.mock.calls[2][1]
+      expect(retry.get('file').name).toBe('locked.pdf')
+      expect(retry.get('password')).toBe('hunter2')
+    })
+
+    it('refuses a file that is not a PDF before anything is uploaded', async () => {
+      const { container } = renderUpload()
+      const txt = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [txt, named('ok.pdf')] } })
+
+      expect(screen.getByRole('alert')).toHaveTextContent("notes.txt isn't a PDF")
+      expect(screen.queryByText('notes.txt', { selector: 'span' })).not.toBeInTheDocument()
+      // The PDF next to it is still taken.
+      expect(screen.getByText('ok.pdf')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
+    })
+
+    it('keeps the refusal on screen while the PDFs go up, until the next pick', async () => {
+      const { container } = renderUpload()
+      const input = container.querySelector('input[type=file]')
+      const txt = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+      fireEvent.change(input, { target: { files: [txt, named('ok.pdf')] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      await waitFor(() => expect(mockApi.upload).toHaveBeenCalledTimes(1))
+      expect(screen.getByRole('alert')).toHaveTextContent("notes.txt isn't a PDF")
+
+      // The next pick replaces it: with only PDFs there is nothing to refuse.
+      fireEvent.change(input, { target: { files: [named('next.pdf')] } })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('refuses a dropped non-PDF the same way', async () => {
+      const { container } = renderUpload()
+      await screen.findByText(/No statements yet/)
+      const zone = container.querySelector('input[type=file]').parentElement
+      const txt = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+      fireEvent.drop(zone, { dataTransfer: { files: [txt] } })
+      expect(screen.getByRole('alert')).toHaveTextContent("notes.txt isn't a PDF")
+      expect(mockApi.upload).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('sorting starts by itself', () => {
+    it('reports what the statements table says, not the job counters', async () => {
+      // The job counted 7 of 8 as decided, but by the review bar Teach Me uses
+      // only 5 are sorted: the page must agree with the table and the queue.
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 5]))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText('5 sorted, 3 need you', { selector: 'p' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Finished: 5 sorted, 3 need you')
+    })
+
+    it('shows progress and then the outcome without a click on anything else', async () => {
+      mockApi.get.mockResolvedValue(ledgerRows(['s1', 8, 7]))
+      let finish
+      pollJob.mockImplementation((_id, onProgress) => {
+        onProgress({ status: 'running', processed: 3, total: 8 })
+        return new Promise(r => { finish = r })
+      })
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+
+      expect(await screen.findByText('Sorting 3 of 8')).toBeInTheDocument()
+      // The floating progress card is pointed at the job the server started.
+      expect(jobCtx.watchJobs).toHaveBeenCalled()
+      expect(mockApi.post).not.toHaveBeenCalled()
+      expect(jobCtx.startAnnotation).not.toHaveBeenCalled()
+
+      finish(SORTED)
+      expect(await screen.findByText('7 sorted, 1 needs you')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /Teach Me/ })).toBeInTheDocument()
+      // The table is reloaded so its Sorted column catches up.
+      expect(mockApi.get.mock.calls.filter(([p]) => p === '/statements').length).toBeGreaterThan(1)
+    })
+
+    it('says a job waiting behind another is waiting', async () => {
+      pollJob.mockImplementation((_id, onProgress) => {
+        onProgress({ status: 'queued', processed: 0, total: 0 })
+        return new Promise(() => {})
+      })
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText('Waiting to sort')).toBeInTheDocument()
+    })
+
+    it('says plainly when no model is connected, with the way to Settings', async () => {
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText(/No model is connected/)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /Settings › AI & Model/ }).getAttribute('href')).toBe('#/settings?tab=ai')
+    })
+
+    it('says when the model stopped answering partway, with the way to Settings', async () => {
+      pollJob.mockResolvedValue({ ...SORTED, ai_active: true, llm_error: 'connection refused' })
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText(/Your AI model stopped answering/)).toBeInTheDocument()
+      expect(screen.queryByText(/connection refused/)).not.toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /Settings › AI & Model/ }).getAttribute('href')).toBe('#/settings?tab=ai')
+    })
+
+    it('reports a sorting job that failed, and keeps the statement', async () => {
+      pollJob.mockRejectedValue(new Error('Went stale without a worker'))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      expect(await screen.findByText(/Sorting stopped/)).toBeInTheDocument()
+      expect(screen.getByText(/8 payments added/)).toBeInTheDocument()
+    })
+  })
+})
+
+describe('Upload when the statement list fails', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    jobCtx.job = null
+    jobCtx.startAnnotation = vi.fn()
+    Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
+  })
+
+  it('says the list could not load, never "No statements yet", and recovers on Retry', async () => {
+    mockApi.get.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderUpload()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Couldn't load your statements.")
+    expect(screen.queryByText(/No statements yet/)).not.toBeInTheDocument()
+    mockApi.get.mockResolvedValue([stmt])
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('kotak')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not flash "No statements yet" while the list is still loading', async () => {
+    let release
+    mockApi.get.mockReturnValue(new Promise(resolve => { release = () => resolve([]) }))
+    renderUpload()
+    expect(screen.queryByText(/No statements yet/)).not.toBeInTheDocument()
+    release()
+    expect(await screen.findByText(/No statements yet/)).toBeInTheDocument()
   })
 })

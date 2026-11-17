@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Chart as ChartJS, CategoryScale, LinearScale,
@@ -13,6 +13,8 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import InlineError from '../components/InlineError.jsx'
+import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -25,11 +27,12 @@ import {
   FilePlus2, TrendingUp, HelpCircle,
   CheckCircle2, CalendarClock, ArrowRight, Sparkles,
 } from 'lucide-react'
+import { couldnt } from '../lib/errors.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ChartTooltip, Filler)
 
 const card = 'bg-[#13151f] border border-[#2d3148] rounded-xl'
-const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#64748b]'
+const cardTitle = 'text-xs font-semibold uppercase tracking-wider text-[#94a3b8]'
 
 function ordinal(n) {
   const rest = n % 100
@@ -108,17 +111,17 @@ function SetupStage({ annotation, verdict, month, annotating, onSort }) {
           style={{ background: 'linear-gradient(90deg, #6366f1, #a78bfa)' }}
         />
         <p className="text-xl leading-relaxed text-[#e2e8f0]">
-          {annotation.total} transaction{many ? 's' : ''} from {dayjs(month).format('MMMM')} {many ? 'are' : 'is'} in.
+          {count(annotation.total, 'payment')} from {dayjs(month).format('MMMM')} {many ? 'are' : 'is'} in.
         </p>
         <p className="mt-1 text-sm text-[#94a3b8]">
-          Your copilot hasn't sorted them yet - run it to see the full picture.
+          They aren't sorted yet - sort them to see the full picture.
         </p>
         <button
           onClick={onSort}
           disabled={annotating}
           className="mt-4 inline-flex items-center gap-2 rounded-lg bg-[#7c3aed] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#6d28d9] disabled:cursor-default disabled:opacity-60"
         >
-          <Sparkles size={15} /> {annotating ? 'Sorting…' : 'Sort my transactions'}
+          <Sparkles size={15} /> {annotating ? 'Sorting…' : 'Sort payments'}
         </button>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -147,7 +150,7 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub, hint }) {
           <Delta delta={delta} label={vs} goodWhenDown={goodWhenDown} />
         </p>
       )}
-      {sub && <p className="mt-0.5 text-xs text-[#475569]">{sub}</p>}
+      {sub && <p className="mt-0.5 text-xs text-[#94a3b8]">{sub}</p>}
     </Link>
   )
   return hint ? (
@@ -162,11 +165,17 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub, hint }) {
 // One ranked list of things worth doing, each a sentence and a doorway into
 // the page where it gets done. Never more than four; an empty list is a
 // reward ("all caught up"), not blank space.
-function AttentionList({ items }) {
+function AttentionList({ items, countsError, onRetryCounts }) {
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>Needs your attention</p>
-      {items.length === 0 ? (
+      {countsError && (
+        <InlineError
+          what="the guesses waiting in Teach Me" error={countsError} onRetry={onRetryCounts}
+          className="m-3"
+        />
+      )}
+      {items.length === 0 && countsError ? null : items.length === 0 ? (
         <div className="flex items-center gap-3 px-4 py-6">
           <CheckCircle2 size={20} className="shrink-0 text-emerald-400" />
           <p className="text-sm text-[#94a3b8]">All caught up - nothing needs you right now.</p>
@@ -186,7 +195,7 @@ function AttentionList({ items }) {
                   <item.icon size={16} />
                 </span>
                 <span className="min-w-0 flex-1 text-sm text-[#e2e8f0]">{item.text}</span>
-                <span className="hidden shrink-0 items-center gap-1 text-xs text-[#6366f1] group-hover:text-[#a5b4fc] sm:flex">
+                <span className="hidden shrink-0 items-center gap-1 text-xs text-[#818cf8] group-hover:text-[#a5b4fc] sm:flex">
                   {item.cta} <ArrowRight size={13} />
                 </span>
               </Link>
@@ -237,7 +246,7 @@ function BalanceCard({ balance, month }) {
     scales: {
       x: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, maxTicksLimit: 6,
+          color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 6,
           callback(value) {
             return dayjs(this.getLabelForValue(value)).format('D MMM')
           },
@@ -246,7 +255,7 @@ function BalanceCard({ balance, month }) {
       },
       y: {
         ticks: {
-          color: '#64748b', font: { size: 11 }, maxTicksLimit: 5,
+          color: '#94a3b8', font: { size: 11 }, maxTicksLimit: 5,
           callback: tick,
         },
         grid: { color: '#1e2235' },
@@ -260,7 +269,7 @@ function BalanceCard({ balance, month }) {
         {points.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-[#475569]">
+          <div className="flex h-full items-center justify-center text-sm text-[#94a3b8]">
             Balance history appears once statements are imported
           </div>
         )}
@@ -298,7 +307,7 @@ function CommittedCard({ recurring, summary }) {
         )}
       </div>
       {committed.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">
           No monthly commitments spotted yet - they show up after a few months of statements.
         </p>
       ) : (
@@ -309,9 +318,9 @@ function CommittedCard({ recurring, summary }) {
               className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm border-b border-[#1a1d27] last:border-0"
             >
               <div className="flex min-w-0 items-center gap-2.5">
-                <CalendarClock size={14} className="shrink-0 text-[#64748b]" />
+                <CalendarClock size={14} className="shrink-0 text-[#94a3b8]" />
                 <span className="truncate text-[#e2e8f0]">{r.name}</span>
-                <span className="hidden text-xs text-[#64748b] sm:inline">
+                <span className="hidden text-xs text-[#94a3b8] sm:inline">
                   {r.units > 1
                     ? `${r.units} ${r.category === 'Investments' ? 'SIPs' : 'charges'}`
                     : `around the ${ordinal(dayjs(r.last_date).date())}`}
@@ -324,7 +333,7 @@ function CommittedCard({ recurring, summary }) {
           ))}
           {rest.length > 0 && (
             <li className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
-              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span className="text-[#94a3b8]">and {rest.length} more</span>
               <span className="tabular-nums text-[#94a3b8]">
                 <Amount value={rest.reduce((sum, r) => sum + r.amount, 0)} decimals={0} />
               </span>
@@ -334,7 +343,7 @@ function CommittedCard({ recurring, summary }) {
       )}
       <Link
         to="/insights"
-        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#818cf8] hover:text-[#a5b4fc]"
       >
         All subscriptions and SIPs on Money Map →
       </Link>
@@ -356,7 +365,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
         Where {dayjs(month).format('MMMM')}'s money went
       </p>
       {top.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-[#475569]">No spending recorded this month.</p>
+        <p className="px-4 py-3 text-sm text-[#94a3b8]">No spending recorded this month.</p>
       ) : (
         <ul className="px-4 py-2">
           {top.map(c => (
@@ -380,7 +389,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
           ))}
           {rest.length > 0 && (
             <li className="-mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_5rem] items-center gap-3 px-1 py-2 text-sm">
-              <span className="text-[#64748b]">and {rest.length} more</span>
+              <span className="text-[#94a3b8]">and {rest.length} more</span>
               <span />
               <span className="text-right tabular-nums text-[#94a3b8]">
                 <Amount value={rest.reduce((sum, v) => sum + v, 0)} decimals={0} />
@@ -391,7 +400,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
       )}
       <Link
         to="/insights"
-        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#6366f1] hover:text-[#a5b4fc]"
+        className="block border-t border-[#2d3148] px-4 py-2.5 text-xs text-[#818cf8] hover:text-[#a5b4fc]"
       >
         See the full picture on Money Map →
       </Link>
@@ -403,17 +412,19 @@ function TopSpendingCard({ categories, breakdown, month }) {
 // changed, weakest first, each with the sample size behind it (4.19). Clicking
 // through opens those transactions so you can teach it. Replaces the old filler
 // "most of your money went to…" card with something actionable.
-function AccuracyCard({ rows }) {
+function AccuracyCard({ rows, error, onRetry }) {
   const weak = rows.slice(0, 4)
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
-        Where I need your help most
+        Where your help matters most
       </p>
-      {weak.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-[#475569] leading-relaxed">
-          Not enough corrections yet to spot weak categories. Verify a few in Teach Me
-          and the shakiest ones will surface here.
+      {error ? (
+        <InlineError what="the accuracy figures" error={error} onRetry={onRetry} className="m-3" />
+      ) : weak.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-[#94a3b8] leading-relaxed">
+          Not enough answers yet to spot weak categories. Answer a few in Teach Me
+          and the ones that need your help most will show up here.
         </p>
       ) : (
         <ul className="px-4 py-2">
@@ -435,7 +446,7 @@ function AccuracyCard({ rows }) {
                   </span>
                   <span className="text-right tabular-nums text-[#94a3b8]">
                     {pct}%
-                    <span className="block text-[10px] text-[#475569]">n={r.reviewed}</span>
+                    <span className="block text-[10px] text-[#94a3b8]">{count(r.reviewed, 'answer')}</span>
                   </span>
                 </Link>
               </li>
@@ -451,47 +462,30 @@ export default function Dashboard() {
   const toast = useToast()
   const { refresh: refreshDemoData } = useDemoData()
   const { month: periodMonth } = usePeriod()
-  const [data, setData] = useState(null)
-  // Low-confidence guesses waiting in Teach Me (every month, not just this one).
-  const [guessCount, setGuessCount] = useState(0)
-  const [accuracy, setAccuracy] = useState([])
-  const [loading, setLoading] = useState(true)
+  // Each block loads on its own, so one that fails says so in its own place
+  // (with Retry) and never reads as "you have no data".
+  // Month-anchored like Money Map: "All time" falls back to the latest month
+  // with data (the server's default), and the picker (allowAll={false}) shows
+  // that month rather than a value the figures do not honour.
+  const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
+  const summaryLoad = useLoad(useCallback(
+    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
+  ))
+  // Counts only: the queue itself can be thousands of rows long. Low-confidence
+  // guesses waiting in Teach Me span every month, not just this one.
+  const countsLoad = useLoad(useCallback(() => api.get('/annotations/review-queue/counts'), []))
+  const accuracyLoad = useLoad(useCallback(() => api.get('/annotations/accuracy'), []))
+  // Sorting, loading the demo and the page's Retry change all three at once.
+  const reloadAll = () => { summaryLoad.reload(); countsLoad.reload(); accuracyLoad.reload() }
+  const data = summaryLoad.data
+  const loading = summaryLoad.loading
+  const guessCount = countsLoad.data?.guesses ?? 0
+  const accuracy = accuracyLoad.data ?? []
   // Any tracked run (this page, another page, or re-attached after a reload)
   // holds the single job slot, so the sort button waits for it.
   const { job, startAnnotation } = useAnnotationJob()
   const [annotating, setAnnotating] = useState(false)
   const [seedingDemo, setSeedingDemo] = useState(false)
-  const [reloadKey, setReloadKey] = useState(0)
-
-  // Month-anchored like Money Map: "All time" falls back to the latest month
-  // with data (the server's default), and the picker (allowAll={false}) shows
-  // that month rather than a value the figures do not honour.
-  const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      try {
-        const [summary, counts, acc] = await Promise.all([
-          api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`),
-          // Counts only: the queue itself can be thousands of rows long.
-          api.get('/annotations/review-queue/counts').catch(() => null),
-          api.get('/annotations/accuracy').catch(() => []),
-        ])
-        if (cancelled) return
-        setData(summary)
-        setGuessCount(counts?.guesses ?? 0)
-        setAccuracy(acc)
-      } catch (e) {
-        if (!cancelled) toast(`Couldn't load your data - ${e.message}`, 'error')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [requestMonth, toast, reloadKey])
 
   // Sweep every pending transaction, not just one statement: a multi-statement
   // upload should still resolve with one click. On success the refetch flips
@@ -502,9 +496,9 @@ export default function Dashboard() {
       const result = await startAnnotation({})
       const summary = annotationSummary(result)
       toast(summary.message, summary.type, summaryDuration(summary))
-      setReloadKey(k => k + 1)
+      reloadAll()
     } catch (e) {
-      toast(`Sorting failed - ${e.message}`, 'error')
+      toast(couldnt('sort', e), 'error')
     } finally {
       setAnnotating(false)
     }
@@ -514,11 +508,11 @@ export default function Dashboard() {
     setSeedingDemo(true)
     try {
       const s = await api.post('/data/demo')
-      toast(`Demo loaded: ${count(s.transactions, 'transaction')} across ${count(s.months, 'month')}`, 'success', 5000)
+      toast(`Demo loaded: ${count(s.transactions, 'payment')} across ${count(s.months, 'month')}`, 'success', 5000)
       refreshDemoData()
-      setReloadKey(k => k + 1)
+      reloadAll()
     } catch (e) {
-      toast(`Couldn't load demo data - ${e.message}`, 'error')
+      toast(couldnt('load demo data', e), 'error')
     } finally {
       setSeedingDemo(false)
     }
@@ -588,7 +582,7 @@ export default function Dashboard() {
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Your money at a glance
           {data?.month && (
-            <span className="text-sm font-normal text-[#64748b]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
+            <span className="text-sm font-normal text-[#94a3b8]"> · {dayjs(data.month).format('MMMM YYYY')}</span>
           )}
           {coverage && (
             <span className="ml-2 rounded-full bg-[#2a2310] px-2 py-0.5 text-xs font-normal text-[#fbbf24]">
@@ -608,12 +602,14 @@ export default function Dashboard() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-[#475569]">Pulling it together…</p>
+        <p className="text-sm text-[#94a3b8]">Pulling it together…</p>
+      ) : summaryLoad.error ? (
+        <InlineError what="your dashboard" error={summaryLoad.error} onRetry={reloadAll} />
       ) : !data?.month ? (
         <div className={`${card} p-8 text-center`}>
           <p className="text-lg text-[#e2e8f0]">Welcome! Let's get your money on the map.</p>
-          <p className="mt-2 text-sm text-[#64748b]">
-            Upload a bank statement and your copilot will sort every transaction for you.
+          <p className="mt-2 text-sm text-[#94a3b8]">
+            Add a bank statement and every payment gets sorted for you.
           </p>
           <div className="mt-4 flex items-center justify-center gap-3">
             <Link
@@ -630,7 +626,7 @@ export default function Dashboard() {
               {seedingDemo ? 'Loading…' : 'Load demo data'}
             </button>
           </div>
-          <p className="mt-3 text-xs text-[#475569]">
+          <p className="mt-3 text-xs text-[#94a3b8]">
             No statement handy? The demo fills four months of realistic sample data - remove it
             anytime from the banner or Settings › Data.
           </p>
@@ -670,7 +666,7 @@ export default function Dashboard() {
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
             <div className="lg:col-span-3">
-              <AttentionList items={attention.slice(0, 4)} />
+              <AttentionList items={attention.slice(0, 4)} countsError={countsLoad.error} onRetryCounts={countsLoad.reload} />
             </div>
             <div className="lg:col-span-2">
               <BalanceCard balance={data.balance} month={data.month} />
@@ -682,7 +678,7 @@ export default function Dashboard() {
             <TopSpendingCard categories={data.categories} breakdown={data.breakdown} month={data.month} />
           </div>
 
-          <AccuracyCard rows={accuracy} />
+          <AccuracyCard rows={accuracy} error={accuracyLoad.error} onRetry={accuracyLoad.reload} />
         </>
       )}
     </div>
