@@ -66,11 +66,18 @@ _TABLE_HEADING_RE = re.compile(
 )
 
 
+def header_above_table(page_text: str) -> str | None:
+    """The text above the transaction table, or None when no table heading is found
+    (then the header cannot be told from the payments)."""
+    heading = _TABLE_HEADING_RE.search(page_text)
+    return page_text[: heading.start()] if heading else None
+
+
 def statement_header(page_text: str) -> str:
     """The text above the transaction table: who the account is, and for when.
     The whole text when no table heading is found."""
-    heading = _TABLE_HEADING_RE.search(page_text)
-    return page_text[: heading.start()] if heading else page_text
+    header = header_above_table(page_text)
+    return page_text if header is None else header
 
 
 def identify_bank(page_text: str) -> str | None:

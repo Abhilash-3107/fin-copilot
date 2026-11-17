@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 
-from finance_copilot.parsers.bank_identity import statement_header
+from finance_copilot.parsers.bank_identity import header_above_table
 
 _DAY_MONTH_YEAR = r"\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}"
 _DAY_MONTH_NAME_YEAR = r"\d{1,2}(?:st|nd|rd|th)?[ \-/.]*[A-Za-z]{3,9}\.?,?[ \-/.]*\d{2,4}"
@@ -25,13 +25,17 @@ _DATE = (
 # Between the two dates: words, or a hyphen, en dash or long dash. The characters
 # are built here so this source holds none of the long ones.
 _DASHES = "-" + chr(0x2013) + chr(0x2014)
-_TO = rf"\s*(?:to|till|until|through|and|[{_DASHES}])\s*"
+_TO = rf"\s*(?:(?:to|till|until|through|and)\s*:?|[{_DASHES}])\s*"
 _LABEL = (
     r"(?:statement\s+period|period|for\s+the\s+period|statement\s+(?:for|from)|from|between)"
 )
 
 _LABELLED = re.compile(rf"\b{_LABEL}\s*[:\-]?\s*({_DATE}){_TO}({_DATE})", re.IGNORECASE)
 _BARE = re.compile(rf"(?<![\w/.\-])({_DATE}){_TO}({_DATE})(?![\w/])", re.IGNORECASE)
+
+# No statement covers more than a year; a pair of dates further apart than this
+# (a fixed deposit's term, a customer-since range) is something else.
+MAX_PERIOD_DAYS = 366
 
 _FORMATS = (
     "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d.%m.%Y", "%d.%m.%y",
@@ -56,13 +60,21 @@ def _parse_date(text: str) -> date | None:
 
 def parse_printed_period(page_text: str) -> tuple[date, date] | None:
     """The (first, last) day a statement says it covers, from its first page's
-    text; None when the header says nothing readable. Never raises."""
+    text; None when the header says nothing readable. Never raises.
+
+    Only the header is read, the text above the payment table: with no table
+    heading the header cannot be told from payment lines, so nothing is read. A
+    labelled period ("Statement period", "From ... To ...") wins over a bare pair
+    of dates, and a pair spanning more than a year is not a statement period.
+    """
     try:
-        header = statement_header(page_text)
+        header = header_above_table(page_text)
+        if header is None:
+            return None
         for pattern in (_LABELLED, _BARE):
             for match in pattern.finditer(header):
                 start, end = _parse_date(match.group(1)), _parse_date(match.group(2))
-                if start and end and start <= end:
+                if start and end and start <= end and (end - start).days < MAX_PERIOD_DAYS:
                     return start, end
     except Exception:
         return None

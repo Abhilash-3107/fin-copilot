@@ -5,7 +5,7 @@ import hashlib
 import logging
 import re
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pdfplumber
@@ -16,6 +16,7 @@ from finance_copilot.db.queries.accounts import account_labels, label_for_statem
 from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
 from finance_copilot.models.transaction import Statement, Transaction
 from finance_copilot.parsers.description import KNOWN_SHAPES
+from finance_copilot.parsers.period import MAX_PERIOD_DAYS
 from finance_copilot.parsers.registry import detect_parser
 
 logger = logging.getLogger(__name__)
@@ -243,19 +244,33 @@ def _check_unlocks(pdf_path: str, password: str | None) -> None:
             raise PasswordRequiredError(password_given=bool(password)) from exc
 
 
+# A statement can start a little before its first payment and end a little after
+# its last, not by months.
+_PRINTED_PERIOD_SLACK_DAYS = 31
+
+
 def _sane_printed_period(
     printed: tuple[date, date] | None, first_payment: date, last_payment: date
 ) -> tuple[date, date] | None:
-    """The printed period, kept only when every payment falls inside it. One that
-    leaves a payment out was misread (a date from somewhere else on the page), and
-    a wrong period is worse than none."""
+    """The printed period, kept only when it holds every payment, starts no more
+    than a month before the first and ends no more than a month after the last,
+    and covers no more than a year. Anything else was misread (a date from
+    somewhere else on the page), and a wrong period is worse than none."""
     if printed is None:
         return None
-    if printed[0] <= first_payment and last_payment <= printed[1]:
+    start, end = printed
+    slack = timedelta(days=_PRINTED_PERIOD_SLACK_DAYS)
+    if (
+        start <= first_payment
+        and last_payment <= end
+        and start >= first_payment - slack
+        and end <= last_payment + slack
+        and (end - start).days < MAX_PERIOD_DAYS
+    ):
         return printed
     logger.warning(
         "ignoring the printed period %s to %s: payments run from %s to %s",
-        printed[0], printed[1], first_payment, last_payment,
+        start, end, first_payment, last_payment,
     )
     return None
 
