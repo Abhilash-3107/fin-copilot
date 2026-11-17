@@ -13,11 +13,16 @@ from pdfminer.pdfdocument import PDFPasswordIncorrect
 
 from finance_copilot.db.connection import get_migrated_db, write_transaction
 from finance_copilot.db.queries.accounts import account_labels, label_for_statement, resolve_account
-from finance_copilot.db.queries.transactions import insert_statement, insert_transaction
+from finance_copilot.db.queries.transactions import (
+    balance_chain_check,
+    insert_statement,
+    insert_transaction,
+)
 from finance_copilot.models.transaction import Statement, Transaction
 from finance_copilot.parsers.description import KNOWN_SHAPES
 from finance_copilot.parsers.period import MAX_PERIOD_DAYS
 from finance_copilot.parsers.registry import detect_parser
+from finance_copilot.pipeline.dedup import split_new_rows
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +222,18 @@ class DuplicateStatementError(ValueError):
         self.existing = existing
 
 
+class NothingNewError(ValueError):
+    """Raised when every payment of the file is already in the account it belongs to."""
+
+    def __init__(self, count: int, account_label: str):
+        what = (
+            "the one payment in this file is"
+            if count == 1
+            else f"all {count} payments in this file are"
+        )
+        super().__init__(f"Nothing new: {what} already in {account_label}.")
+
+
 class PasswordRequiredError(ValueError):
     """Raised when the PDF is encrypted and no password, or the wrong one, was given."""
 
@@ -296,7 +313,10 @@ def ingest_pdf(
     """Parse a PDF and persist the statement + all transactions to the DB.
 
     Returns the created Statement. Raises ValueError if no parser recognises the
-    PDF, or DuplicateStatementError if this exact file was already ingested.
+    PDF, DuplicateStatementError if this exact file was already ingested, or
+    NothingNewError if the account already holds every payment in it. A file that
+    overlaps what the account has adds only its new payments (pipeline/dedup.py);
+    the statement records what its file held and what it added.
     """
     file_sha256 = hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest()
 
@@ -337,8 +357,12 @@ def ingest_pdf(
             printed_end=printed[1] if printed else None,
         )
 
-        for txn in transactions:
-            txn.statement_id = statement.id
+        # The balance check is the file's, over every payment it printed: the
+        # ones that were new are not a chain when an earlier file had the rest.
+        statement.rows_in_file = len(transactions)
+        statement.balance_checked, statement.balance_consistent = balance_chain_check(
+            (t.running_balance, t.amount, t.debit_credit) for t in transactions
+        )
 
         # Choosing the account and writing the statement are one step under the
         # write lock: two statements arriving together for a new account must
@@ -351,8 +375,21 @@ def ingest_pdf(
             statement.account_id, statement.account_is_new = resolve_account(
                 _conn, statement.bank_name, statement.account_ref
             )
+            split = split_new_rows(_conn, statement.account_id, transactions)
+            if not split.new:
+                raise NothingNewError(
+                    len(transactions), account_labels(_conn)[statement.account_id]
+                )
+            statement.rows_added = len(split.new)
+            if split.overlaps_without_match:
+                statement.notices.append(
+                    f"This file covers dates already in {account_labels(_conn)[statement.account_id]}, "
+                    "but none of its payments match. If it is another account, "
+                    "move it with Move to account."
+                )
             insert_statement(_conn, statement)
-            for txn in transactions:
+            for txn in split.new:
+                txn.statement_id = statement.id
                 insert_transaction(_conn, txn)
     finally:
         if conn is None:

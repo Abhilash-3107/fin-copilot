@@ -26,10 +26,16 @@ from finance_copilot.db.queries.accounts import (
 from finance_copilot.db.queries.annotations import sorted_counts_by_statement
 from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.embeddings import delete_embeddings
-from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
+from finance_copilot.db.queries.transactions import (
+    delete_payments,
+    list_transactions,
+    statement_balance_checks,
+)
 from finance_copilot.demo_seed import has_demo_data
+from finance_copilot.pipeline.dedup import payments_account_already_has
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
+    NothingNewError,
     check_continuity,
     check_description_formats,
     ingest_pdf,
@@ -105,14 +111,18 @@ def upload_statement(
     try:
         try:
             statement = ingest_pdf(tmp_path, password=password, conn=conn)
-        except DuplicateStatementError as exc:
+        except (DuplicateStatementError, NothingNewError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         os.unlink(tmp_path)
 
-    warnings = check_continuity(conn, statement) + check_description_formats(conn, statement)
+    warnings = (
+        check_continuity(conn, statement)
+        + statement.notices
+        + check_description_formats(conn, statement)
+    )
 
     # Sorting starts by itself. Failing to queue it must not fail an upload that
     # already landed: the statement is there and "Sort again" still works.
@@ -134,6 +144,10 @@ def upload_statement(
         **_public(statement.model_dump()),
         "warnings": warnings,
         "transaction_count": transaction_count,
+        # What the file held, what of it was new, and what the account had already.
+        "rows_in_file": statement.rows_in_file,
+        "rows_added": statement.rows_added,
+        "rows_already_in": statement.rows_in_file - statement.rows_added,
         "balance_check": balance_check,
         "sorting_job_id": sorting_job_id,
         "account_label": label_for_statement(account_labels(conn), statement.model_dump()),
@@ -165,6 +179,7 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     # trust indicator (4.20). One extra windowed query, merged in by id.
     checks = statement_balance_checks(conn)
     sorted_counts = sorted_counts_by_statement(conn, get_confidence_threshold(conn))
+    shared = _shared_with_later(conn)
     labels = account_labels(conn)
     result = []
     for row in rows:
@@ -173,8 +188,33 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         d = _public(d)
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
+        d["shared_with_later"] = shared.get(d["id"], 0)
         result.append(d)
     return result
+
+
+def _shared_with_later(conn: sqlite3.Connection) -> dict[str, int]:
+    """{statement id: how many of its payments a later statement of the account
+    also had}. A later file that skipped payments (rows_added below rows_in_file)
+    left the earlier statement as their only holder, so deleting the earlier one
+    takes them for good. The later file's rows are not stored, so its dates stand
+    for them: the bank prints every payment of the days it covers."""
+    return {
+        r["id"]: r["n"]
+        for r in conn.execute(
+            """
+            SELECT s.id AS id, COUNT(DISTINCT t.id) AS n
+            FROM statements s
+            JOIN transactions t ON t.statement_id = s.id
+            JOIN statements l ON l.account_id = s.account_id AND l.id != s.id
+                AND (l.uploaded_at > s.uploaded_at
+                     OR (l.uploaded_at = s.uploaded_at AND l.rowid > s.rowid))
+                AND l.rows_in_file > l.rows_added
+                AND t.txn_date BETWEEN l.period_start AND l.period_end
+            GROUP BY s.id
+            """
+        )
+    }
 
 
 @contextlib.contextmanager
@@ -264,13 +304,38 @@ def patch_statement(
                 raise HTTPException(status_code=404, detail="Account not found")
             if statement["account_id"] != target:
                 _refuse_while_sorting(conn, statement_id, "Move it")
+        already_there = 0
+        deleted = False
         if statement["account_id"] != target:
-            conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
+            # The target may hold some of these payments already (the file first
+            # landed in the wrong account): the account's own copies stay, the
+            # duplicates go, and a statement left with no payments goes too.
+            duplicates = payments_account_already_has(conn, statement_id, target)
+            already_there = len(duplicates)
+            if duplicates:
+                delete_payments(conn, duplicates)
+                conn.execute(
+                    "UPDATE statements SET rows_added = MAX(COALESCE(rows_added, 0) - ?, 0) WHERE id = ?",
+                    (already_there, statement_id),
+                )
+            deleted = conn.execute(
+                "SELECT NOT EXISTS (SELECT 1 FROM transactions WHERE statement_id = ?)", (statement_id,)
+            ).fetchone()[0] == 1
+            if deleted:
+                conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+                conn.execute(
+                    "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
+                    (statement_id,),
+                )
+            else:
+                conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
             delete_empty_accounts(conn)
     return {
         "id": statement_id,
         "account_id": target,
         "account_label": account_labels(conn)[target],
+        "rows_already_there": already_there,
+        "statement_deleted": deleted,
     }
 
 
@@ -293,20 +358,7 @@ def delete_statement(
             ).fetchall()
         ]
 
-        if txn_ids:
-            placeholders = ",".join("?" * len(txn_ids))
-            conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
-            delete_embeddings(conn, txn_ids)
-            # transaction_links references transactions(id) without ON DELETE CASCADE,
-            # so links must go before the transactions or the FK check (PRAGMA
-            # foreign_keys=ON) aborts the delete. A link can cross a statement
-            # boundary, so match on either endpoint.
-            conn.execute(
-                f"DELETE FROM transaction_links "
-                f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
-                txn_ids + txn_ids,
-            )
-            conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+        delete_payments(conn, txn_ids)
 
         conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
         delete_empty_accounts(conn)

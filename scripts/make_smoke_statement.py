@@ -5,6 +5,11 @@ and opens on October's closing balance, so uploading both raises no gap warning.
 sample_statement_other_bank.pdf is a second account at another bank (its IFSC
 names HDFC), October 2026, whose printed period covers the whole month although
 its last payment is on the 12th.
+sample_statement_overlap.pdf is the same account as sample_statement.pdf for
+5 October to 15 November 2026: it repeats the last four October payments and all
+of November, with the same running balances, and adds three payments after
+November's last one (10, 12 and 15 November). Added after both months, it brings
+only those three; added first, the months bring the rest.
 
 A small, entirely fictional bank statement that the generic parser accepts:
 a ruled table (pdfplumber's default lines strategy) with date / narration /
@@ -67,6 +72,15 @@ OTHER_BANK_ROWS = [
     ("12/10/2026", "ACH/SIP/SAMPLE INDEX FUND", 3000.00, None),
 ]
 
+# The rows of sample_statement.pdf from the 5th on, all of sample_statement_nov.pdf,
+# and what the bank printed after them. Its opening balance is the balance after
+# the 4th, so every running balance equals the one the two months carry.
+OVERLAP_NEW_ROWS = [
+    ("10/11/2026", "UPI/SWIGGY/ORDER/500112238/UPI", 276.00, None),
+    ("12/11/2026", "UPI/ZEPTO/ORDER/500112239/UPI", 431.25, None),
+    ("15/11/2026", "UPI/RAHUL MEHTA/500112240/LUNCH SHARE", None, 320.00),
+]
+
 
 def build(
     out: Path, opening: float, rows: list, period: str,
@@ -109,6 +123,17 @@ def build(
     return balance
 
 
+def build_overlap(out: Path) -> float:
+    """The overlapping statement of sample_statement.pdf's account, built from the
+    rows of the two month fixtures so its balances match theirs."""
+    opening = OPENING
+    for _, _, debit, credit in ROWS[:4]:
+        opening = round(opening - (debit or 0) + (credit or 0), 2)
+    return build(
+        out, opening, ROWS[4:] + NOV_ROWS + OVERLAP_NEW_ROWS, "05/10/2026 - 15/11/2026",
+    )
+
+
 def main() -> None:
     closing = build(FIXTURES / "sample_statement.pdf", OPENING, ROWS, "01/10/2026 - 08/10/2026")
     build(FIXTURES / "sample_statement_nov.pdf", closing, NOV_ROWS, "01/11/2026 - 08/11/2026")
@@ -116,6 +141,7 @@ def main() -> None:
         FIXTURES / "sample_statement_other_bank.pdf", 60000.00, OTHER_BANK_ROWS,
         "01/10/2026 - 31/10/2026", account="XXXX4321", ifsc="HDFC0000123",
     )
+    build_overlap(FIXTURES / "sample_statement_overlap.pdf")
 
 
 if __name__ == "__main__":

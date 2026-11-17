@@ -49,5 +49,13 @@ class Statement(BaseModel):
     account_id: str | None = None    # the account the statement belongs to, set at ingest
     printed_start: date | None = None  # first day the statement says it covers (header), if readable
     printed_end: date | None = None    # last day the statement says it covers (header), if readable
-    # Not stored: whether ingest created the account for this statement.
+    # What the file held and what of it was new (the rest was already in the
+    # account), and the running-balance check of the whole file as parsed.
+    rows_in_file: int | None = None
+    rows_added: int | None = None
+    balance_checked: int | None = None
+    balance_consistent: int | None = None
+    # Not stored: whether ingest created the account for this statement, and what
+    # ingest noticed about the file that the person should read (shown on its row).
     account_is_new: bool = Field(default=False, exclude=True)
+    notices: list[str] = Field(default_factory=list, exclude=True)

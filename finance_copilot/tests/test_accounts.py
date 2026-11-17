@@ -739,11 +739,11 @@ class TestAccountRoutes:
 class TestUploadResponse:
     def test_the_upload_says_which_account_and_whether_it_is_new(self, api):
         client, conn = api
-        parser = _FakeParser("kotak", "5551111", _rows(10000, 1))
-        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser), \
-                patch("finance_copilot.api.routes.annotations._run_annotation_job"):
-            first = client.post("/api/statements/upload", files={"file": ("a.pdf", b"%PDF one", "application/pdf")})
-            second = client.post("/api/statements/upload", files={"file": ("b.pdf", b"%PDF two", "application/pdf")})
+        with patch("finance_copilot.api.routes.annotations._run_annotation_job"):
+            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=_FakeParser("kotak", "5551111", _rows(10000, 1))):
+                first = client.post("/api/statements/upload", files={"file": ("a.pdf", b"%PDF one", "application/pdf")})
+            with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=_FakeParser("kotak", "5551111", _rows(9700, 10))):
+                second = client.post("/api/statements/upload", files={"file": ("b.pdf", b"%PDF two", "application/pdf")})
         assert first.status_code == 200, first.text
         a, b = first.json(), second.json()
         assert a["account_is_new"] is True and b["account_is_new"] is False

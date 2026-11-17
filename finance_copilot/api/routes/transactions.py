@@ -24,6 +24,7 @@ from finance_copilot.db.queries.payee import (
 from finance_copilot.db.queries.transactions import (
     list_transaction_facets,
     list_transactions,
+    payment_months,
     summarize_transactions,
 )
 
@@ -99,6 +100,14 @@ def get_transactions_summary(
     """Count and totals of every row the same filters match on the list, so a
     filtered view can say what it adds up to."""
     return summarize_transactions(conn, **filters)
+
+
+@router.get("/months")
+def get_payment_months(conn: sqlite3.Connection = Depends(get_db)):
+    """The months that have payments, oldest first: what the period picker offers.
+    A statement can cover several months or part of one, so these come from the
+    payments themselves."""
+    return {"months": payment_months(conn)}
 
 
 @router.get("/facets")

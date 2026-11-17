@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
 
 
@@ -14,8 +16,9 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
         INSERT OR IGNORE INTO statements
             (id, bank_name, parser_version, statement_month, period_start, period_end,
              file_sha256, opening_balance, closing_balance, account_ref,
-             account_id, printed_start, printed_end)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             account_id, printed_start, printed_end,
+             rows_in_file, rows_added, balance_checked, balance_consistent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (statement.id, statement.bank_name, statement.parser_version,
          statement.statement_month,
@@ -24,64 +27,110 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
          statement.file_sha256, statement.opening_balance, statement.closing_balance,
          statement.account_ref, statement.account_id,
          statement.printed_start.isoformat() if statement.printed_start else None,
-         statement.printed_end.isoformat() if statement.printed_end else None),
+         statement.printed_end.isoformat() if statement.printed_end else None,
+         statement.rows_in_file, statement.rows_added,
+         statement.balance_checked, statement.balance_consistent),
     )
 
 
-def statement_balance_checks(
-    conn: sqlite3.Connection, tolerance: float = 0.01, statement_id: str | None = None
-) -> dict[str, dict]:
-    """Per-statement running-balance reconciliation, keyed by statement_id.
+# Paise-level rounding noise in parsed amounts and balances.
+_BALANCE_TOLERANCE = 0.01
 
-    For each consecutive pair of balance-carrying rows (in parse order), checks
-    that the balance delta matches the signed amount between them - the same
-    rigor the parser used to pick the layout, recomputed from the stored
-    running_balance so the UI can show "N/N rows balanced" and flag any break.
+
+def balance_chain_check(
+    rows: Iterable[tuple[float | None, float, str | None]], tolerance: float = _BALANCE_TOLERANCE
+) -> tuple[int, int]:
+    """Running-balance reconciliation of one statement's payments, in the order
+    the statement lists them: (running_balance, amount, debit_credit) each.
+
+    For each consecutive pair of balance-carrying payments, checks that the
+    balance delta matches the signed amount of the later one - the rigor the
+    parser used to pick the layout, so the UI can show "N/N rows balanced" and
+    flag any break. A payment with no balance is skipped, not a break in the
+    chain. Returns (checked, consistent). A statement with no chain has
+    checked == 0: nothing to contradict.
+
+    Migration 043 backfilled stored statements with the same rule in SQL.
+    """
+    checked = consistent = 0
+    prev: float | None = None
+    for balance, amount, direction in rows:
+        if balance is None:
+            continue
+        if prev is not None and direction is not None:
+            checked += 1
+            expected = amount if direction == "credit" else -amount
+            if abs((balance - prev) - expected) <= tolerance:
+                consistent += 1
+        prev = balance
+    return checked, consistent
+
+
+def statement_balance_checks(
+    conn: sqlite3.Connection, statement_id: str | None = None
+) -> dict[str, dict]:
+    """Per-statement running-balance reconciliation, keyed by statement id.
 
     Returns {statement_id: {"checked": int, "consistent": int, "balanced": bool}}.
     A statement with no balance chain (checked == 0) is reported balanced=True
     (nothing to contradict), so the UI shows a check only when checked > 0.
     With statement_id, only that statement is computed.
+
+    The check is stored with the statement when it is added, over the whole file
+    as parsed (a file that overlapped an earlier one stores only the payments
+    that were new, which are not a chain). A statement written without it (the
+    sample data) is checked from its stored payments.
     """
-    rows = conn.execute(
-        """
-        WITH chain AS (
-            SELECT
-                statement_id,
-                running_balance,
-                amount,
-                debit_credit,
-                LAG(running_balance) OVER (
-                    PARTITION BY statement_id ORDER BY rowid
-                ) AS prev_balance
-            FROM transactions
-            WHERE running_balance IS NOT NULL AND (? IS NULL OR statement_id = ?)
-        )
-        SELECT
-            statement_id,
-            COUNT(*) AS checked,
-            SUM(
-                CASE WHEN ABS(
-                    (running_balance - prev_balance)
-                    - (CASE WHEN debit_credit = 'credit' THEN amount ELSE -amount END)
-                ) <= ? THEN 1 ELSE 0 END
-            ) AS consistent
-        FROM chain
-        WHERE prev_balance IS NOT NULL AND debit_credit IS NOT NULL
-        GROUP BY statement_id
-        """,
-        (statement_id, statement_id, tolerance),
-    ).fetchall()
     out: dict[str, dict] = {}
-    for r in rows:
-        checked = r["checked"] or 0
-        consistent = r["consistent"] or 0
-        out[r["statement_id"]] = {
-            "checked": checked,
-            "consistent": consistent,
-            "balanced": consistent == checked,
-        }
+    unchecked: list[str] = []
+    for r in conn.execute(
+        "SELECT id, balance_checked, balance_consistent FROM statements WHERE (? IS NULL OR id = ?)",
+        (statement_id, statement_id),
+    ):
+        if r["balance_checked"] is None or r["balance_consistent"] is None:
+            unchecked.append(r["id"])
+        else:
+            out[r["id"]] = _check_result(r["balance_checked"], r["balance_consistent"])
+    for stmt_id in unchecked:
+        rows = conn.execute(
+            "SELECT running_balance, amount, debit_credit FROM transactions "
+            "WHERE statement_id = ? ORDER BY rowid",
+            (stmt_id,),
+        )
+        out[stmt_id] = _check_result(*balance_chain_check((r[0], r[1], r[2]) for r in rows))
     return out
+
+
+def _check_result(checked: int, consistent: int) -> dict:
+    return {"checked": checked, "consistent": consistent, "balanced": consistent == checked}
+
+
+def delete_payments(conn: sqlite3.Connection, txn_ids: list[str]) -> None:
+    """Remove payments with everything that hangs off them: their labels, their
+    embeddings and their links. Call it inside the caller's write transaction."""
+    if not txn_ids:
+        return
+    placeholders = ",".join("?" * len(txn_ids))
+    conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+    delete_embeddings(conn, txn_ids)
+    # transaction_links references transactions(id) without ON DELETE CASCADE, so
+    # links must go before the transactions or the FK check aborts the delete. A
+    # link can cross a statement boundary, so match on either endpoint.
+    conn.execute(
+        f"DELETE FROM transaction_links WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
+        txn_ids + txn_ids,
+    )
+    conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+
+
+def payment_months(conn: sqlite3.Connection) -> list[str]:
+    """Every month ('YYYY-MM') that has at least one payment, oldest first. A
+    statement can span several months, so months come from payments, not statements."""
+    return [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT strftime('%Y-%m', txn_date) FROM transactions ORDER BY 1"
+        )
+    ]
 
 
 def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:

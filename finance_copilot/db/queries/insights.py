@@ -53,6 +53,7 @@ from statistics import median
 from finance_copilot.db.queries.accounts import account_label
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
 from finance_copilot.db.queries.payee import payee_labels
+from finance_copilot.db.queries.transactions import payment_months
 
 NON_SPEND_CATEGORIES = ("Self Transfers", "Investments", "Transfers", "Income")
 
@@ -840,11 +841,7 @@ def _annotation_coverage(conn: sqlite3.Connection, month: str) -> dict:
 
 
 def summarize_insights(conn: sqlite3.Connection, month: str | None = None) -> dict:
-    months = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT strftime('%Y-%m', txn_date) FROM transactions ORDER BY 1"
-        )
-    ]
+    months = payment_months(conn)
     if not months:
         return {"months": [], "month": None}
     if month is None or month not in months:

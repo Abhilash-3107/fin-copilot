@@ -2089,9 +2089,10 @@ class TestJobRunner:
         conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
         conn.commit()
         before = threading.active_count()
-        parser = TestUploadStartsSorting._parser([(5, "zqx vendor")])
         ids = []
         for i in range(45):
+            # Each statement has its own payment: one that repeats an earlier file's is not added.
+            parser = TestUploadStartsSorting._parser([(5, f"zqx vendor {i}")])
             with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
                 r = client.post(
                     "/api/statements/upload",
