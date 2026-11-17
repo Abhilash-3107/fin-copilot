@@ -142,7 +142,7 @@ function NewAccountForm({ onMove }) {
           type="button"
           onClick={() => onMove(name)}
           disabled={!ready}
-          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:hover:opacity-50"
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:hover:opacity-50 disabled:cursor-not-allowed"
         >
           Move to a new account
         </button>
