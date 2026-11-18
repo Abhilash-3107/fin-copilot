@@ -70,6 +70,23 @@ def _snapshot(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str,
     return out
 
 
+def _with_partners(conn: sqlite3.Connection, transaction_ids: list[str]) -> list[str]:
+    """These payments and the payments they are paired with in a transfer. An answer
+    that gives a paired payment another category takes the pair apart, which changes
+    the partner too (its pair label goes), so the partner is part of what an undo
+    must put back."""
+    out = list(dict.fromkeys(transaction_ids))
+    for chunk in _chunks(list(out)):
+        marks = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT txn_a, txn_b FROM transaction_links WHERE link_type = 'transfer' "
+            f"AND (txn_a IN ({marks}) OR txn_b IN ({marks}))",
+            (*chunk, *chunk),
+        ):
+            out.extend(t for t in (row["txn_a"], row["txn_b"]) if t not in out)
+    return out
+
+
 def _complete(state: dict | None) -> dict | None:
     """A snapshot stored before pairing existed has no link or unpaired entry."""
     if state is None:
@@ -80,21 +97,23 @@ def _complete(state: dict | None) -> dict | None:
 class UndoCapture:
     """Snapshot before an answer; `finish` stores the record and returns its token.
 
-    `transaction_ids` are the payments the answer is about. The ones it may
-    cause to be re-decided are added with `include`, once they are known and
-    before anything re-decides them (they are only recorded if they changed).
+    `transaction_ids` are the payments the answer is about, and the payments
+    they are paired with in a transfer (an answer can take a pair apart). The
+    ones it may cause to be re-decided are added with `include`, once they are
+    known and before anything re-decides them (they are only recorded if they
+    changed).
     The answer's calibration counters go through `feedback`.
     """
 
     def __init__(self, conn: sqlite3.Connection, transaction_ids: list[str]):
-        self._ids = list(dict.fromkeys(transaction_ids))
+        self._ids = _with_partners(conn, transaction_ids)
         self._before = _snapshot(conn, self._ids)
         # (source, category) -> what this answer added, and the row as it was
         self._counters: dict[tuple[str, str], dict] = {}
 
     def include(self, conn: sqlite3.Connection, transaction_ids: list[str]) -> None:
         """Also watch these payments: snapshot them now, as they are before any change."""
-        new = [t for t in dict.fromkeys(transaction_ids) if t not in self._before]
+        new = [t for t in _with_partners(conn, transaction_ids) if t not in self._before]
         self._ids.extend(new)
         self._before.update(_snapshot(conn, new))
 

@@ -6,6 +6,7 @@ import hashlib
 import logging
 import re
 import sqlite3
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -380,20 +381,35 @@ def _refuse_duplicate(conn: sqlite3.Connection, file_sha256: str) -> None:
         )
 
 
+_PAIRING_RETRY_SECONDS = 1.0
+
+
 def _pair_transfers(conn: sqlite3.Connection, statement: Statement) -> int:
     """Pair transfers between the user's accounts now that this statement's payments
     are in, and say how many pairs involve it. It runs before the sorting job is
     queued, so sorting skips what is paired. A failure here must not fail an upload
-    that already landed: the statement is there and the next upload pairs it."""
-    try:
-        made = pair_transfers(conn)
-        if not made:
+    that already landed: the statement is there and the next upload pairs it. On a
+    busy database (another request holds the write lock longer than the busy
+    timeout) it tries once more before it logs and gives up."""
+    for attempt in (1, 2):
+        try:
+            made = pair_transfers(conn)
+            if not made:
+                return 0
+            ids = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE statement_id = ?", (statement.id,))}
+            return sum(1 for debit, credit in made if debit in ids or credit in ids)
+        except sqlite3.OperationalError as e:
+            busy = "locked" in str(e).lower() or "busy" in str(e).lower()
+            if busy and attempt == 1:
+                logger.warning("database busy pairing transfers after statement %s, retrying once", statement.id)
+                time.sleep(_PAIRING_RETRY_SECONDS)
+                continue
+            logger.exception("could not pair transfers after statement %s", statement.id)
             return 0
-        ids = {r[0] for r in conn.execute("SELECT id FROM transactions WHERE statement_id = ?", (statement.id,))}
-        return sum(1 for debit, credit in made if debit in ids or credit in ids)
-    except Exception:
-        logger.exception("could not pair transfers after statement %s", statement.id)
-        return 0
+        except Exception:
+            logger.exception("could not pair transfers after statement %s", statement.id)
+            return 0
+    return 0
 
 
 def ingest_pdf(

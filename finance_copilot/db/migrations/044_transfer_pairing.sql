@@ -46,3 +46,7 @@ CREATE TABLE transfer_unpaired (
     PRIMARY KEY (txn_a, txn_b),
     CHECK (txn_a < txn_b)
 );
+
+-- Pairing and the Teach Me queue ask "is there a payment of this amount nearby?"
+-- for every payment, so the amount is indexed.
+CREATE INDEX IF NOT EXISTS idx_txn_amount ON transactions(amount);

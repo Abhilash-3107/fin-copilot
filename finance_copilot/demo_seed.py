@@ -53,6 +53,7 @@ from finance_copilot.db.queries.accounts import (
 )
 from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
+from finance_copilot.db.queries.transfers import release_transfers
 from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
 from finance_copilot.pipeline.pairing import pair_transfers_locked
@@ -493,6 +494,9 @@ def wipe(conn) -> int:
     touched_groups = [r[0] for r in conn.execute(
         f"SELECT DISTINCT group_id FROM transaction_group_members "
         f"WHERE transaction_id IN ({DEMO_TRANSACTIONS}) AND group_id NOT GLOB 'demo_grp*'")]
+    # A real payment paired with a sample one must not keep a pair label with nobody on
+    # the other end: free it (and drop the recorded unpairings) before the links go.
+    release_transfers(conn, [r[0] for r in conn.execute(DEMO_TRANSACTIONS)], drop_decisions=True)
     conn.execute(
         f"DELETE FROM transaction_links WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
         f"OR txn_b IN ({DEMO_TRANSACTIONS})")

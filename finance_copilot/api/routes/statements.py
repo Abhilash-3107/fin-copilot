@@ -415,6 +415,8 @@ def delete_statement(
 
         conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
         delete_empty_accounts(conn)
+        # With these payments gone a pair that was ambiguous can be unambiguous.
+        pair_transfers_locked(conn)
         # Its sort that was still waiting has nothing left to sort.
         conn.execute(
             "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",

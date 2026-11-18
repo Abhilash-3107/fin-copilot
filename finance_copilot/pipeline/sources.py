@@ -28,9 +28,12 @@ TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imp
 VERIFIED_SOURCES: frozenset[str] = frozenset({"manual", "imported"})
 
 # Labels that are the user's own work: typed, imported from their file, or from
-# a rule they wrote. A payment that is merged into another keeps these over any
-# machine label (rule, a deterministic bank-text match, is not the user's).
-USER_LABEL_SOURCES: frozenset[str] = frozenset({"manual", "imported", "user_rule"})
+# a rule they wrote (a rule, a deterministic bank-text match, is not the user's).
+# A payment merged into another keeps these over any machine label; pairing never
+# overrides one in a category other than Self Transfers, and a payment carrying
+# one is never pulled into Teach Me because of a transfer candidate: it is the
+# user's intent.
+USER_LABEL_SOURCES: frozenset[str] = VERIFIED_SOURCES | {"user_rule"}
 
 # Machine-produced labels that "apply to similar" may overwrite.
 # A review policy is the user's rule of thumb, not a fact about the payee, so

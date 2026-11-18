@@ -44,31 +44,46 @@ def pair(body: PairBody, conn: sqlite3.Connection = Depends(get_db)):
     ids = [body.transaction_id, body.with_transaction_id]
     if not all(_exists(conn, t) for t in ids):
         raise HTTPException(status_code=404, detail="That payment is gone. Reload the list.")
-    capture = UndoCapture(conn, ids)
     with write_transaction(conn):
+        # The check and the snapshot happen under the write lock, so a payment sorted or
+        # paired by another request cannot slip between them and the write.
         fit = check_can_pair(conn, *ids)
         if fit is None:
             raise HTTPException(
                 status_code=409,
                 detail="These two payments can't be paired any more. One may have been paired or sorted since.",
             )
+        capture = UndoCapture(conn, ids)
         link_pair(conn, *fit)
-    token = capture.finish(conn)
+        token = capture.finish(conn)
     transfer = with_transfer(conn, [{"id": body.transaction_id}])[0]["transfer"]
     return {"transaction_ids": ids, "transfer": transfer, "undo_token": token}
 
 
 @router.post("/unpair")
 def unpair_payment(body: UnpairBody, conn: sqlite3.Connection = Depends(get_db)):
-    """Take this payment's pair apart. Both payments go back to To sort, and the
-    pair is remembered so it is not made again."""
+    """Take this payment's pair apart. Both payments go back to To sort (one the user
+    labelled themselves keeps its label), and the pair is remembered so it is not made
+    again. `unpaired` is the two payments, `to_sort` the ones that went back to To sort,
+    and `account_labels` says which account each of the two is in (for the toast)."""
     if not _exists(conn, body.transaction_id):
         raise HTTPException(status_code=404, detail="That payment is gone. Reload the list.")
-    link = transfer_link(conn, body.transaction_id)
-    if link is None:
-        raise HTTPException(status_code=409, detail="That payment is not paired.")
-    ids = [link["txn_a"], link["txn_b"]]
-    capture = UndoCapture(conn, ids)
     with write_transaction(conn):
+        link = transfer_link(conn, body.transaction_id)
+        if link is None:
+            raise HTTPException(status_code=409, detail="That payment is not paired.")
+        ids = [link["txn_a"], link["txn_b"]]
+        # Each side's link names the other's account, so the other's row says this one's.
+        sides = with_transfer(conn, [{"id": t} for t in ids])
+        account_labels = {sides[1]["id"]: sides[0]["transfer"]["account_label"], sides[0]["id"]: sides[1]["transfer"]["account_label"]}
+        capture = UndoCapture(conn, ids)
         unpair(conn, body.transaction_id, remember=True)
-    return {"unpaired": ids, "undo_token": capture.finish(conn)}
+        marks = ",".join("?" * len(ids))
+        labelled = {r[0] for r in conn.execute(f"SELECT transaction_id FROM annotations WHERE transaction_id IN ({marks})", ids)}
+        token = capture.finish(conn)
+    return {
+        "unpaired": ids,
+        "to_sort": [t for t in ids if t not in labelled],
+        "account_labels": account_labels,
+        "undo_token": token,
+    }

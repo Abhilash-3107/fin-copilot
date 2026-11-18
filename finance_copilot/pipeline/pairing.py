@@ -8,17 +8,22 @@ A debit in one account and a credit in another are a pair when
     later, a weekend adds one),
   - neither payment is already in a transfer link, and the user has not taken this
     pair apart before,
-  - neither carries a label the user wrote or imported in a category other than
-    Self Transfers (one they sorted as Self Transfers by hand may pair).
+  - neither carries a label the user made or wrote a rule for (manual, imported,
+    user_rule) in a category other than Self Transfers (one they sorted as Self
+    Transfers may pair).
 
-Those are the candidates. A pair is made by itself only when it is unambiguous
+Those are the candidates, defined once, in SQL, by db/queries/transfers.fits_sql:
+the finder below and "needs you" in db/queries/common.unsorted_sql both read it, so
+a payment Teach Me is asked about because of a candidate always has one here. A pair is made by itself only when it is unambiguous
 (the debit has exactly one candidate credit and that credit exactly one candidate
 debit) AND there is a sign it is the user's own money, because amount and date
 alone also match a friend paid and a stranger paying the same sum in:
-  - the other account's number appears in the line,
+  - the other account's number appears in the line (its full stored digits, or its
+    last four right after a mask character or an account word: not a bare run),
   - a side is already sorted Self Transfers, by anyone,
   - a side's payee is a person marked "self" in People,
-  - the line has a self-transfer word (SELF_TRANSFER_WORDS).
+  - the line has a self-transfer word (SELF_TRANSFER_WORDS), outside a UPI handle,
+    and not SELF on a cash withdrawal (that is cash taken out, not a transfer).
 Anything else is left exactly as it is, and Teach Me offers the candidates
 (transfer_candidates) for the user to pair or not.
 
@@ -39,28 +44,44 @@ from finance_copilot.db.connection import write_transaction
 from finance_copilot.db.queries.accounts import account_labels, label_for_statement
 from finance_copilot.db.queries.people import SELF_RELATIONSHIP, _txn_vpa, person_token_matches
 from finance_copilot.db.queries.transfers import (
-    LINK_TYPE,
     SELF_CATEGORY,
+    candidate_pairs,
     link_pair,
 )
-from finance_copilot.pipeline.sources import VERIFIED_SOURCES
-
-WINDOW_DAYS = 3
 
 # Words that say a line moves money between the user's own accounts, matched
 # case-insensitively and only as whole tokens ("OWN" in "TO OWN SBI SAVINGS" but
-# not in "DOWNTOWN" or "GROWN"). The phrases are the plain ways banks and people
-# write it; a bare OWN or SELF already covers them, they are listed so the list
-# reads as what it means. Keep it short: a word here lets a pair be made without
-# asking, so it must be one that hardly ever appears on a payment to someone else.
+# not in "DOWNTOWN" or "GROWN"; an underscore is part of a word, so OWN_SHOP is not
+# OWN). The phrases are the plain ways banks and people write it; a bare OWN or
+# SELF already covers them, they are listed so the list reads as what it means.
+# Keep it short: a word here lets a pair be made without asking, so it must be one
+# that hardly ever appears on a payment to someone else.
 SELF_TRANSFER_WORDS = ("own", "self", "own account", "to self", "from self")
 
-_SELF_WORD_RE = re.compile(
-    r"(?<![a-z0-9])(?:" + "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in SELF_TRANSFER_WORDS) + r")(?![a-z0-9])",
-    re.IGNORECASE,
-)
+# "CASH WDL CHQ 000123 SELF" is a cheque to self, cash taken out: the word SELF on
+# a line with one of these tokens is not a transfer.
+_CASH_WORDS = ("cash", "atm", "wdl")
+# A UPI handle (OWN_SHOP@ybl): nothing inside it is a word. Handles use letters,
+# digits, dots, hyphens and underscores; a slash ends one.
+_UPI_HANDLE_RE = re.compile(r"[\w.-]*@[\w.-]+")
+
+
+def _words_re(words: tuple[str, ...]) -> re.Pattern:
+    body = "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in words)
+    return re.compile(rf"(?<![a-z0-9_])(?:{body})(?![a-z0-9_])", re.IGNORECASE)
+
+
+_ANY_WORD_RE = _words_re(SELF_TRANSFER_WORDS)
+_OWN_WORD_RE = _words_re(tuple(w for w in SELF_TRANSFER_WORDS if "self" not in w))
+_CASH_RE = _words_re(_CASH_WORDS)
 _DIGIT_RUN = re.compile(r"\d{4,}")
-_MIN_NUMBER_DIGITS = 4
+_MIN_NUMBER_DIGITS = 6
+_LAST_DIGITS = 4
+# The last four digits of an account count only right after a mask character or
+# an account word: "XX2222", "A/C 2222", "AC-2222", "ACCOUNT: 2222".
+_MASKED_LAST4_RE = re.compile(
+    r"(?:(?<![a-wyz])[x*]+[\s-]?|(?<![a-z0-9])a/?c(?:count)?[\s.:/#-]*)(\d{4})(?!\d)", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -79,11 +100,6 @@ class Payment:
     source: str | None      # of its annotation, None when it has none
     category: str | None
 
-    @property
-    def pairable(self) -> bool:
-        """False when the user wrote or imported a label that is not Self Transfers."""
-        return self.source not in VERIFIED_SOURCES or self.category == SELF_CATEGORY
-
 
 @dataclass(frozen=True)
 class Candidate:
@@ -101,86 +117,62 @@ def _cents(amount: float) -> int:
     return round(amount * 100)
 
 
-def _load(
-    conn: sqlite3.Connection, *, cents: set[int] | None = None, ids: list[str] | None = None
-) -> list[Payment]:
-    """Payments in an account that are in no transfer link. `cents` limits the load
-    to those amounts and `ids` to those payments (Teach Me asks about a page of
-    payments, not the ledger)."""
-    where, params = "", []
-    if cents is not None:
-        where += f" AND CAST(ROUND(t.amount * 100) AS INTEGER) IN ({','.join('?' * len(cents))})"
-        params += sorted(cents)
-    if ids is not None:
-        where += f" AND t.id IN ({','.join('?' * len(ids))})"
-        params += ids
-    rows = conn.execute(
-        f"""
-        SELECT t.id, t.txn_date, t.amount, t.debit_credit, s.account_id, t.raw_description,
-               t.counterparty_key, t.upi_meta, a.source, a.category
-        FROM transactions t
-        JOIN statements s ON s.id = t.statement_id
-        LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE s.account_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM transaction_links l
-                          WHERE l.link_type = '{LINK_TYPE}' AND (l.txn_a = t.id OR l.txn_b = t.id)){where}
-        """,
-        params,
-    ).fetchall()
-    return [
-        Payment(
-            id=r["id"], day=date.fromisoformat(r["txn_date"]), amount=r["amount"], cents=_cents(r["amount"]),
-            is_debit=r["debit_credit"] == "debit", account_id=r["account_id"],
-            description=r["raw_description"] or "", counterparty_key=r["counterparty_key"],
-            upi_meta=r["upi_meta"], source=r["source"], category=r["category"],
-        )
-        for r in rows
-    ]
+def _load(conn: sqlite3.Connection, ids: list[str]) -> dict[str, Payment]:
+    """These payments as pairing sees them."""
+    out: dict[str, Payment] = {}
+    for start in range(0, len(ids), 400):
+        chunk = ids[start:start + 400]
+        for r in conn.execute(
+            f"""
+            SELECT t.id, t.txn_date, t.amount, t.debit_credit, s.account_id, t.raw_description,
+                   t.counterparty_key, t.upi_meta, a.source, a.category
+            FROM transactions t
+            JOIN statements s ON s.id = t.statement_id
+            LEFT JOIN annotations a ON a.transaction_id = t.id
+            WHERE t.id IN ({','.join('?' * len(chunk))})
+            """,
+            chunk,
+        ):
+            out[r["id"]] = Payment(
+                id=r["id"], day=date.fromisoformat(r["txn_date"][:10]), amount=r["amount"],
+                cents=_cents(r["amount"]), is_debit=r["debit_credit"] == "debit", account_id=r["account_id"],
+                description=r["raw_description"] or "", counterparty_key=r["counterparty_key"],
+                upi_meta=r["upi_meta"], source=r["source"], category=r["category"],
+            )
+    return out
 
 
-def _fits(debit: Payment, credit: Payment) -> bool:
-    """Different accounts, the same amount to the paisa, dates within the window."""
-    return (
-        credit.account_id != debit.account_id
-        and credit.cents == debit.cents
-        and abs((debit.day - credit.day).days) <= WINDOW_DAYS
-    )
-
-
-def _candidates(conn: sqlite3.Connection, payments: list[Payment]) -> list[Candidate]:
-    """Every debit and credit that fit the rule, found by amount first."""
-    unpaired = {
-        (r["txn_a"], r["txn_b"]) for r in conn.execute("SELECT txn_a, txn_b FROM transfer_unpaired")
-    }
-    credits_by_cents: dict[int, list[Payment]] = {}
-    for p in payments:
-        if not p.is_debit and p.pairable:
-            credits_by_cents.setdefault(p.cents, []).append(p)
-    found = []
-    for debit in payments:
-        if not debit.is_debit or not debit.pairable:
-            continue
-        for credit in credits_by_cents.get(debit.cents, ()):
-            if _fits(debit, credit) and (min(debit.id, credit.id), max(debit.id, credit.id)) not in unpaired:
-                found.append(Candidate(debit, credit))
-    return found
+def _candidates(
+    conn: sqlite3.Connection, *, ids: list[str] | None = None, between: tuple[str, str] | None = None,
+    respect_unpaired: bool = True,
+) -> list[Candidate]:
+    """Every debit and credit that fit the rule (transfers.fits_sql), closest first."""
+    pairs = candidate_pairs(conn, ids=ids, between=between, respect_unpaired=respect_unpaired)
+    payments = _load(conn, sorted({i for d, c, _ in pairs for i in (d, c)}))
+    return [Candidate(payments[d], payments[c]) for d, c, _ in pairs]
 
 
 def _has_self_word(description: str) -> bool:
-    return _SELF_WORD_RE.search(description) is not None
+    """A self-transfer word in the line, outside any UPI handle. On a cash withdrawal
+    line (CASH, ATM or WDL as a token) the word SELF does not count, only the OWN
+    words."""
+    text = _UPI_HANDLE_RE.sub(" ", description)
+    pattern = _OWN_WORD_RE if _CASH_RE.search(text) else _ANY_WORD_RE
+    return pattern.search(text) is not None
 
 
 def _names_account(description: str, account_ref: str | None) -> bool:
-    """Whether the line shows this account's number: its last digits, or more, as
-    the line prints them (masked characters and spaces ignored). Only a digit run
-    that is the end of the number counts, so a long UPI reference that happens to
-    finish in the same four digits does not."""
+    """Whether the line shows this account's number: all of its stored digits (six or
+    more), or its last four right after a mask character (X, x, *) or an account word
+    (A/C, AC, ACCOUNT, with optional punctuation or space). A bare four-digit run is
+    not enough ("CHQ NO 3521"), and a longer run that merely ends in the same digits
+    (a UPI reference) is not the number."""
     digits = re.sub(r"\D", "", account_ref or "")
-    if len(digits) < _MIN_NUMBER_DIGITS:
+    if len(digits) < _LAST_DIGITS:
         return False
-    return any(
-        len(run) <= len(digits) and digits.endswith(run) for run in _DIGIT_RUN.findall(description)
-    )
+    if len(digits) >= _MIN_NUMBER_DIGITS and any(run == digits for run in _DIGIT_RUN.findall(description)):
+        return True
+    return any(m.group(1) == digits[-_LAST_DIGITS:] for m in _MASKED_LAST4_RE.finditer(description))
 
 
 class _Signs:
@@ -220,7 +212,7 @@ def pair_transfers_locked(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     (debit id, credit id) pairs made. The caller commits."""
     if not _has_two_accounts(conn):
         return []
-    candidates = _candidates(conn, _load(conn))
+    candidates = _candidates(conn)
     by_debit: dict[str, list[Candidate]] = {}
     by_credit: dict[str, list[Candidate]] = {}
     for c in candidates:
@@ -251,13 +243,8 @@ def check_can_pair(conn: sqlite3.Connection, transaction_id: str, other_id: str)
     the decision (so a pair they once took apart can be made again)."""
     if transaction_id == other_id:
         return None
-    payments = _load(conn, ids=[transaction_id, other_id])
-    credits = [p for p in payments if not p.is_debit and p.pairable]
-    for debit in (p for p in payments if p.is_debit and p.pairable):
-        for credit in credits:
-            if _fits(debit, credit):
-                return debit.id, credit.id
-    return None
+    found = _candidates(conn, between=(transaction_id, other_id), respect_unpaired=False)
+    return (found[0].debit.id, found[0].credit.id) if found else None
 
 
 def transfer_candidates(conn: sqlite3.Connection, transaction_ids: list[str]) -> dict[str, list[dict]]:
@@ -269,14 +256,6 @@ def transfer_candidates(conn: sqlite3.Connection, transaction_ids: list[str]) ->
     ids = list(dict.fromkeys(transaction_ids))
     if not ids or not _has_two_accounts(conn):
         return {}
-    cents = {
-        _cents(r["amount"])
-        for start in range(0, len(ids), 400)
-        for r in conn.execute(
-            f"SELECT amount FROM transactions WHERE id IN ({','.join('?' * len(ids[start:start + 400]))})",
-            ids[start:start + 400],
-        )
-    }
     wanted = set(ids)
     labels = account_labels(conn)
     account_names = {
@@ -284,7 +263,7 @@ def transfer_candidates(conn: sqlite3.Connection, transaction_ids: list[str]) ->
         for r in conn.execute("SELECT id, bank_name, account_ref FROM accounts")
     }
     out: dict[str, list[dict]] = {}
-    for c in _candidates(conn, _load(conn, cents=cents)):
+    for c in _candidates(conn, ids=ids):
         for me, other, direction in ((c.debit, c.credit, "to"), (c.credit, c.debit, "from")):
             if me.id in wanted:
                 out.setdefault(me.id, []).append({

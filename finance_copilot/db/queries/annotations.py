@@ -5,7 +5,7 @@ import sqlite3
 
 from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
-from finance_copilot.db.queries.transfers import PAIR_SOURCE, SELF_CATEGORY, unpair
+from finance_copilot.db.queries.transfers import unpair_if_relabelled
 from finance_copilot.models.annotation import Annotation
 from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES, VERIFIED_SOURCES
 
@@ -151,10 +151,6 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
         # with a category it does not belong to.
         patch = {**patch, "subcategory": None, "subcategory_id": None}
 
-    was_pair = conn.execute(
-        "SELECT transaction_id FROM annotations WHERE id = ? AND source = ?", (annotation_id, PAIR_SOURCE)
-    ).fetchone()
-
     set_clauses = [f"{col} = ?" for col in patch]
     values = list(patch.values())
     set_clauses += [
@@ -167,11 +163,12 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
         f"UPDATE annotations SET {', '.join(set_clauses)} WHERE id = ?",
         [*values, annotation_id],
     )
-    if was_pair and patch.get("category") not in (None, SELF_CATEGORY):
-        # The user says this payment is not a transfer between their accounts, so
-        # the pair no longer holds: the other side goes back to To sort and the
-        # pair is remembered as taken apart. (This side is theirs now, source manual.)
-        unpair(conn, was_pair["transaction_id"], remember=True)
+    # A category other than Self Transfers on a payment that is in a transfer says it
+    # is not one: the pair goes, whoever labelled this side before (this side is the
+    # user's now, source manual).
+    target = conn.execute("SELECT transaction_id FROM annotations WHERE id = ?", (annotation_id,)).fetchone()
+    if target is not None:
+        unpair_if_relabelled(conn, target["transaction_id"], patch.get("category"))
     # A correction is engagement; drop any lingering snooze so the flag never
     # outlives the reason it was set.
     conn.execute(

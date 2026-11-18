@@ -20,12 +20,101 @@ import ulid
 
 from finance_copilot.db.queries.accounts import account_labels, label_for_statement
 from finance_copilot.db.queries.categories import resolve_category_ids
-from finance_copilot.pipeline.sources import VERIFIED_SOURCES
+from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
 PAIR_SOURCE = "pair"
 LINK_TYPE = "transfer"
 SELF_CATEGORY = "Self Transfers"
 SELF_SUBCATEGORY = "Self Transfer"
+
+# NEFT and IMPS can land a day or two later, a weekend adds one.
+WINDOW_DAYS = 3
+
+_INTENT = ",".join(f"'{s}'" for s in sorted(USER_LABEL_SOURCES))
+
+
+def _account_of(t: str) -> str:
+    return f"(SELECT s.account_id FROM statements s WHERE s.id = {t}.statement_id)"
+
+
+def _free(t: str) -> str:
+    """SQL: payment `t` is in no transfer link and carries no label the user made or
+    wrote (manual, imported, user_rule) in a category other than Self Transfers."""
+    return (
+        f"(NOT EXISTS (SELECT 1 FROM transaction_links l WHERE l.link_type = '{LINK_TYPE}' "
+        f"AND (l.txn_a = {t}.id OR l.txn_b = {t}.id)) "
+        f"AND NOT EXISTS (SELECT 1 FROM annotations pa WHERE pa.transaction_id = {t}.id "
+        f"AND pa.source IN ({_INTENT}) AND pa.category IS NOT '{SELF_CATEGORY}'))"
+    )
+
+
+def fits_sql(x: str, y: str, *, respect_unpaired: bool = True) -> str:
+    """The one definition of "these two payments could be the two sides of a transfer
+    between the user's own accounts", as a SQL condition over transactions aliased `x`
+    and `y` (direction aside: the caller says which is the debit):
+
+      - in different accounts,
+      - the same amount to the paisa,
+      - at most WINDOW_DAYS apart,
+      - neither in a transfer link,
+      - neither labelled by the user (manual, imported, user_rule) as anything but Self Transfers,
+      - and, unless `respect_unpaired` is False (the user choosing the pair is a new
+        decision), not a pair the user took apart before.
+
+    pipeline/pairing.py finds its candidates with this, and `has_open_candidate_sql`
+    (so "needs you" in common.unsorted_sql) is built from it: the two cannot disagree.
+    The amount test is written as a range first so the index on amount serves it.
+    """
+    unpaired = (
+        f" AND NOT EXISTS (SELECT 1 FROM transfer_unpaired u WHERE u.txn_a = MIN({x}.id, {y}.id) "
+        f"AND u.txn_b = MAX({x}.id, {y}.id))"
+        if respect_unpaired else ""
+    )
+    return (
+        f"{_account_of(x)} IS NOT NULL AND {_account_of(y)} IS NOT NULL "
+        f"AND {_account_of(x)} != {_account_of(y)} "
+        f"AND {y}.amount BETWEEN {x}.amount - 0.005 AND {x}.amount + 0.005 "
+        f"AND CAST(ROUND({x}.amount * 100) AS INTEGER) = CAST(ROUND({y}.amount * 100) AS INTEGER) "
+        f"AND ABS(julianday(date({x}.txn_date)) - julianday(date({y}.txn_date))) <= {WINDOW_DAYS} "
+        f"AND {_free(x)} AND {_free(y)}{unpaired}"
+    )
+
+
+def has_open_candidate_sql(t: str = "t") -> str:
+    """SQL: payment `t` has at least one payment it could be paired with (fits_sql).
+    Pairing leaves it alone when it is not sure, so the payment waits for the user."""
+    return (
+        f"EXISTS (SELECT 1 FROM transactions o WHERE o.debit_credit != {t}.debit_credit "
+        f"AND {fits_sql(t, 'o')})"
+    )
+
+
+def candidate_pairs(
+    conn: sqlite3.Connection, *, ids: list[str] | None = None, between: tuple[str, str] | None = None,
+    respect_unpaired: bool = True,
+) -> list[tuple[str, str, int]]:
+    """Every (debit id, credit id, days apart) that fits_sql, closest first. `ids` keeps
+    the pairs that involve one of those payments, `between` the pairs of exactly those two."""
+    where, params = "", []
+    if ids is not None:
+        marks = ",".join("?" * len(ids))
+        where += f" AND (d.id IN ({marks}) OR c.id IN ({marks}))"
+        params += [*ids, *ids]
+    if between is not None:
+        where += " AND ((d.id = ? AND c.id = ?) OR (d.id = ? AND c.id = ?))"
+        params += [between[0], between[1], between[1], between[0]]
+    rows = conn.execute(
+        f"""
+        SELECT d.id AS debit_id, c.id AS credit_id,
+               CAST(ABS(julianday(date(d.txn_date)) - julianday(date(c.txn_date))) AS INTEGER) AS gap
+        FROM transactions d JOIN transactions c ON c.debit_credit = 'credit'
+          AND {fits_sql('d', 'c', respect_unpaired=respect_unpaired)}
+        WHERE d.debit_credit = 'debit'{where}
+        ORDER BY gap, d.id, c.id
+        """,
+        params,
+    ).fetchall()
+    return [(r["debit_id"], r["credit_id"], r["gap"]) for r in rows]
 
 _CHUNK = 400
 
@@ -49,8 +138,8 @@ def transfer_link(conn: sqlite3.Connection, transaction_id: str) -> sqlite3.Row 
 
 
 def _write_pair_annotation(conn: sqlite3.Connection, transaction_id: str) -> None:
-    """Sort one side as Self Transfers with source 'pair'. A label the user wrote
-    or imported as Self Transfers stays as it is (their word on it); any other
+    """Sort one side as Self Transfers with source 'pair'. A label the user wrote,
+    imported or made a rule for as Self Transfers stays as it is (their word on it); any other
     label is replaced, whoever made it. Pairing never reaches a hand label of
     another category: the rule filters those rows out before it gets here."""
     existing = conn.execute(
@@ -64,7 +153,7 @@ def _write_pair_annotation(conn: sqlite3.Connection, transaction_id: str) -> Non
             (str(ulid.ULID()), transaction_id, SELF_CATEGORY,
              SELF_SUBCATEGORY, PAIR_SOURCE, category_id, subcategory_id),
         )
-    elif existing["source"] in VERIFIED_SOURCES and existing["category"] == SELF_CATEGORY:
+    elif existing["source"] in USER_LABEL_SOURCES and existing["category"] == SELF_CATEGORY:
         return
     else:
         conn.execute(
@@ -101,11 +190,24 @@ def _drop_pair_annotations(conn: sqlite3.Connection, transaction_ids: list[str])
         )
 
 
+def unpair_if_relabelled(conn: sqlite3.Connection, transaction_id: str, category: str | None) -> list[str]:
+    """The one rule for a payment that is in a transfer and is given a category: if it
+    is anything but Self Transfers the user is saying it is not a transfer between
+    their accounts, so the pair goes (the partner returns to To sort) and is remembered.
+    Whatever the label's source was: a hand label on a paired side is no exception.
+    Every write that sets a category on an existing label calls this
+    (annotations.update_annotation). Returns the two payment ids, [] when nothing
+    was taken apart. The caller commits."""
+    if category in (None, SELF_CATEGORY):
+        return []
+    return unpair(conn, transaction_id, remember=True)
+
+
 def unpair(conn: sqlite3.Connection, transaction_id: str, *, remember: bool = True) -> list[str]:
     """Take this payment's pair apart: the link goes, both 'pair' annotations go (the
     two payments return to To sort), and with `remember` the pair is recorded so
     pairing does not make it again. Returns the two payment ids, [] when it was
-    not paired. The caller commits."""
+    not paired. A side the user labelled keeps its label. The caller commits."""
     link = transfer_link(conn, transaction_id)
     if link is None:
         return []
