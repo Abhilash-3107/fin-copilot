@@ -150,6 +150,41 @@ def month_name(statement_month: str) -> str:
         return statement_month
 
 
+def statement_span(statement, *, exact_days: bool = False) -> str:
+    """What a statement covers, in the words the statement list uses (ui/src/lib/dates.js,
+    statementSpan): 'Oct 2026' for a whole calendar month, or for payments that all
+    fall in one month with no printed period to say more; otherwise the range,
+    '1 Oct to 15 Nov' (with years when it crosses one). Takes a statements row or a
+    dict with statement_month, period_start, period_end, printed_start, printed_end.
+
+    A message that tells two statements apart passes exact_days: a month name is then
+    kept only for a whole calendar month, so two statements of one month are not
+    both 'May 2026'."""
+    start = statement["printed_start"] or statement["period_start"]
+    end = statement["printed_end"] or statement["period_end"]
+    if not start or not end:
+        return _short_month(statement["statement_month"])
+    first, last = date.fromisoformat(str(start)), date.fromisoformat(str(end))
+    printed = bool(statement["printed_start"])
+    whole_month = first.day == 1 and last.day == calendar.monthrange(last.year, last.month)[1]
+    if (first.year, first.month) == (last.year, last.month) and (whole_month or not (printed or exact_days)):
+        return f"{calendar.month_abbr[first.month]} {first.year}"
+
+    def show(day: date) -> str:
+        text = f"{day.day} {calendar.month_abbr[day.month]}"
+        return f"{text} {day.year}" if first.year != last.year else text
+
+    return f"{show(first)} to {show(last)}"
+
+
+def _short_month(statement_month: str) -> str:
+    try:
+        year, month = statement_month.split("-")
+        return f"{calendar.month_abbr[int(month)]} {int(year)}"
+    except (ValueError, IndexError):
+        return statement_month
+
+
 def _rupees(amount: float) -> str:
     """A rupee figure with the sign in front of the rupee sign, like the UI writes it."""
     return f"{'-' if amount < 0 else ''}₹{abs(amount):,.2f}"
@@ -183,7 +218,8 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
         ).fetchone() is not None
 
     prev = None if _covered(statement.period_start) else conn.execute(
-        "SELECT statement_month, closing_balance FROM statements "
+        "SELECT statement_month, period_start, period_end, printed_start, printed_end, closing_balance "
+        "FROM statements "
         "WHERE period_end < ? AND id != ? AND account_id = ? "
         "ORDER BY period_end DESC LIMIT 1",
         (statement.period_start.isoformat(), statement.id, statement.account_id),
@@ -191,12 +227,13 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
             f"Opening balance {_rupees(statement.opening_balance)} doesn't match the "
-            f"{month_name(prev['statement_month'])} closing balance {_rupees(prev['closing_balance'])} - "
+            f"{statement_span(prev, exact_days=True)} statement's closing balance {_rupees(prev['closing_balance'])} - "
             "a statement in between may be missing."
         )
 
     nxt = None if _covered(statement.period_end) else conn.execute(
-        "SELECT statement_month, opening_balance FROM statements "
+        "SELECT statement_month, period_start, period_end, printed_start, printed_end, opening_balance "
+        "FROM statements "
         "WHERE period_start > ? AND id != ? AND account_id = ? "
         "ORDER BY period_start ASC LIMIT 1",
         (statement.period_end.isoformat(), statement.id, statement.account_id),
@@ -204,7 +241,7 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
             f"Closing balance {_rupees(statement.closing_balance)} doesn't match the "
-            f"{month_name(nxt['statement_month'])} opening balance {_rupees(nxt['opening_balance'])} - "
+            f"{statement_span(nxt, exact_days=True)} statement's opening balance {_rupees(nxt['opening_balance'])} - "
             "a statement in between may be missing."
         )
 
