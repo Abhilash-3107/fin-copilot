@@ -2100,17 +2100,24 @@ class TestJobRunner:
             assert r.status_code == 200
             ids.append(r.json()["sorting_job_id"])
 
-        # The first requests may start the server's reusable worker threads; what
-        # must not happen is a thread per queued statement. So, after a warm-up,
-        # no new thread may appear while 40 more queue up. Compare thread
-        # identities, not counts: a leftover thread from earlier work may exit
-        # meanwhile, which is fine and must not hide (or fake) a new one.
+        # What must not happen is a thread per queued statement. The server's
+        # request pool (AnyIO worker threads) may retire an idle thread and start
+        # a fresh one at any time, so its threads are judged by how many are
+        # alive, never by identity; every other thread must already exist
+        # after a warm-up. Threads that exit meanwhile are fine.
+        def pool(threads):
+            return {t for t in threads if type(t).__name__ == "WorkerThread"}
+
         for i in range(5):
             upload(i)
         before = set(threading.enumerate())
         for i in range(5, 45):
             upload(i)
-        assert set(threading.enumerate()) - before == set()
+        after = set(threading.enumerate())
+        assert (after - pool(after)) - before == set()
+        # One spare for a replacement starting while the old one winds down;
+        # a thread per queued statement would add 40.
+        assert len(pool(after)) <= len(pool(before)) + 1
         queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
         assert queued == ids
 
