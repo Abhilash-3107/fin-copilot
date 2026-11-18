@@ -246,6 +246,69 @@ def release_transfers(conn: sqlite3.Connection, transaction_ids: list[str], *, d
     return list(dict.fromkeys(partners))
 
 
+def move_pair_to_survivor(
+    conn: sqlite3.Connection, duplicate_id: str, survivor_id: str, *, survivor_label_is_users: bool
+) -> None:
+    """A payment that is about to be deleted as a duplicate (a statement moved into an
+    account that holds its rows) is paired: the pair moves to the payment the account
+    already had, with its `pair` label, or is released, never half-moved.
+
+    It moves when the survivor is in no transfer link (a payment keeps at most one),
+    has no link of any kind to the partner (two links between the same payments would
+    take them off a category twice) and carries no label of the user's of its own:
+    that label wins, as it does for every other kind of work. Otherwise the link goes
+    and the partner's `pair` label goes with it, so the partner returns to To sort.
+    A release is not the user's decision, so nothing is remembered; pairing runs
+    again after the move and may well make the pair again.
+    `survivor_label_is_users` is whether the survivor had a user label before the
+    duplicate's own work was carried over. The caller commits."""
+    link = transfer_link(conn, duplicate_id)
+    if link is None:
+        return
+    partner = link["txn_b"] if link["txn_a"] == duplicate_id else link["txn_a"]
+    low, high = _ordered(survivor_id, partner)
+    label = conn.execute(
+        "SELECT source, category FROM annotations WHERE transaction_id = ?", (survivor_id,)
+    ).fetchone()
+    # A label of the user's other than Self Transfers (carried from the duplicate or
+    # the survivor's own) is the user saying it is not a transfer.
+    users_other = label is not None and label["source"] in USER_LABEL_SOURCES and label["category"] != SELF_CATEGORY
+    if (
+        partner == survivor_id
+        or survivor_label_is_users
+        or users_other
+        or transfer_link(conn, survivor_id) is not None
+        or conn.execute(
+            "SELECT 1 FROM transaction_links WHERE txn_a = ? AND txn_b = ? AND id != ?", (low, high, link["id"])
+        ).fetchone()
+    ):
+        conn.execute("DELETE FROM transaction_links WHERE id = ?", (link["id"],))
+        _drop_pair_annotations(conn, [duplicate_id, partner])
+        return
+    conn.execute("UPDATE transaction_links SET txn_a = ?, txn_b = ? WHERE id = ?", (low, high, link["id"]))
+    _write_pair_annotation(conn, survivor_id)
+
+
+def repoint_unpairings(conn: sqlite3.Connection, duplicate_id: str, survivor_id: str) -> int:
+    """The user's recorded unpairings that name a payment about to be deleted as a
+    duplicate now name the payment the account already had, so pairing does not put
+    the pair back. A pair of a payment with itself, and one already recorded, are
+    dropped. Returns how many unpairings moved. The caller commits."""
+    moved = 0
+    for row in conn.execute(
+        "SELECT txn_a, txn_b FROM transfer_unpaired WHERE txn_a = ? OR txn_b = ?", (duplicate_id, duplicate_id)
+    ).fetchall():
+        other = row["txn_b"] if row["txn_a"] == duplicate_id else row["txn_a"]
+        conn.execute("DELETE FROM transfer_unpaired WHERE txn_a = ? AND txn_b = ?", (row["txn_a"], row["txn_b"]))
+        if other == survivor_id:
+            continue
+        low, high = _ordered(survivor_id, other)
+        moved += conn.execute(
+            "INSERT OR IGNORE INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high)
+        ).rowcount
+    return moved
+
+
 def unpair_same_account(conn: sqlite3.Connection) -> list[str]:
     """Take apart every transfer whose two payments now sit in one account (the
     user moved a statement): money does not transfer within an account. Not

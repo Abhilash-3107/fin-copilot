@@ -6,7 +6,11 @@ from collections.abc import Iterable, Sequence
 
 from finance_copilot.db.queries.common import UNCATEGORIZED, effective_category_sql, unsorted_sql
 from finance_copilot.db.queries.embeddings import delete_embeddings
-from finance_copilot.db.queries.transfers import release_transfers
+from finance_copilot.db.queries.transfers import (
+    move_pair_to_survivor,
+    release_transfers,
+    repoint_unpairings,
+)
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
 from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
@@ -152,13 +156,18 @@ def merge_duplicate_payments(
     - a Teach Me skip, where the survivor was not skipped;
     - links to other payments, unless that would join a payment to itself or the
       survivor already has a link to that payment, of any type (two links to one
-      payment would take it off a category twice).
+      payment would take it off a category twice);
+    - a transfer pair (one link and a `pair` label on each side): see
+      `move_pair_to_survivor`; a payment keeps at most one transfer link;
+    - the user's recorded unpairings, re-pointed at the survivor.
     Call it inside the caller's write transaction, before the duplicates are deleted."""
     carried = 0
     not_carried = 0
     for dup, survivor in duplicates:
         moved = 0
         dropped = 0
+        survivor_label = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
+        survivor_label_is_users = survivor_label is not None and survivor_label["source"] in USER_LABEL_SOURCES
 
         for column in ("user_note", "display_name"):
             theirs_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (dup,)).fetchone()[0]
@@ -180,6 +189,13 @@ def merge_duplicate_payments(
                 moved += 1
             elif tuple(own)[:4] != tuple(theirs)[:4]:
                 dropped += 1
+
+        # A pair moves with its `pair` label or not at all (after the user's own label
+        # is carried, so a hand-made Self Transfers label on the duplicate goes with
+        # its link). Pairing runs again after the move, so a released pair can return.
+        move_pair_to_survivor(conn, dup, survivor, survivor_label_is_users=survivor_label_is_users)
+        # What the user took apart stays apart on the survivor.
+        moved += repoint_unpairings(conn, dup, survivor)
 
         # Set aside in Teach Me stays set aside; the survivor's own time wins.
         moved += conn.execute(

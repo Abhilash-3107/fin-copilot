@@ -18,6 +18,7 @@ import ulid
 from fastapi.testclient import TestClient
 
 from finance_copilot.db.connection import init_db
+from finance_copilot.db.queries.transfers import link_pair
 from finance_copilot.models.transaction import Transaction
 from finance_copilot.parsers.base import StatementParser
 from finance_copilot.pipeline.dedup import Payment, match_payments
@@ -1026,6 +1027,181 @@ class TestMoveCarriesTheUsersWorkOver:
         assert got["2026-05-03"] == "2026-11-02 10:00:00"
         assert body["work_carried_over"] == 1
         assert body["work_not_carried"] == 0
+
+
+class TestMoveCarriesPairs:
+    """A pair is one transfer link and a `pair` label on each side. When the duplicate
+    of a payment is paired, the pair moves to the survivor with its label or not at
+    all; a payment is in at most one transfer link; the user's unpairings follow."""
+
+    def _setup(self, conn):
+        """Account A holds the survivors (5 May, 100), account B their duplicates plus
+        a later payment, and account Y a credit of 100 that the duplicate is paired with."""
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
+        y = _ingest(conn, _FakeParser([_t(2, 100.0, "credit", text="NEFT/IN/2")], ref="3333"), "y")
+
+        def at(stmt, day):
+            return conn.execute(
+                "SELECT id FROM transactions WHERE statement_id = ? AND txn_date = ?", (stmt.id, f"2026-05-0{day}")
+            ).fetchone()[0]
+
+        partner = at(y, 2)
+        return a, b, at, partner
+
+    def _pair(self, conn, debit, credit):
+        link_pair(conn, debit, credit)
+        conn.commit()
+
+    def _move(self, client, a, b):
+        r = client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def _links(self, conn):
+        return [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transaction_links WHERE link_type = 'transfer'")]
+
+    def _label(self, conn, txn_id):
+        row = conn.execute("SELECT category, source FROM annotations WHERE transaction_id = ?", (txn_id,)).fetchone()
+        return None if row is None else tuple(row)
+
+    def _own_label(self, conn, txn_id, source, category="Shopping"):
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, merchant, category, confidence, source) "
+            "VALUES (?, ?, 'M', ?, 1.0, ?)", (f"own_{txn_id}", txn_id, category, source),
+        )
+        conn.commit()
+
+    def test_a_pair_moves_to_the_survivor_with_its_label(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        dup = at(b, 2)
+        self._pair(conn, dup, partner)
+        survivor = at(a, 2)
+        self._move(client, a, b)
+        assert self._links(conn) == [tuple(sorted((survivor, partner)))]
+        assert self._label(conn, survivor) == ("Self Transfers", "pair")
+        assert self._label(conn, partner) == ("Self Transfers", "pair")
+        assert conn.execute("SELECT COUNT(*) FROM transactions WHERE id = ?", (dup,)).fetchone()[0] == 0
+
+    def test_a_machine_label_on_the_survivor_gives_way_to_the_pair(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, merchant, category, subcategory, tags, confidence, source) "
+            "VALUES ('m1', ?, 'Shop', 'Shopping', 'Online', '[]', 0.8, 'llm')", (at(a, 2),),
+        )
+        self._pair(conn, at(b, 2), partner)
+        self._move(client, a, b)
+        assert self._label(conn, at(a, 2)) == ("Self Transfers", "pair")
+        assert len(self._links(conn)) == 1
+
+    @pytest.mark.parametrize("source", ["manual", "imported", "user_rule"])
+    def test_a_label_of_the_users_on_the_survivor_wins_and_the_partner_is_released(self, api, source):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        self._own_label(conn, at(a, 2), source)
+        self._pair(conn, at(b, 2), partner)
+        self._move(client, a, b)
+        assert self._links(conn) == []
+        assert self._label(conn, at(a, 2)) == ("Shopping", source)
+        # The partner is back in To sort, not Self Transfers with nobody on the other end.
+        assert self._label(conn, partner) is None
+        assert conn.execute("SELECT COUNT(*) FROM annotations WHERE source = 'pair'").fetchone()[0] == 0
+
+    def test_the_users_own_self_transfer_label_on_the_duplicate_goes_with_its_link(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, category, subcategory, confidence, source) "
+            "VALUES ('m', ?, 'Self Transfers', 'Self Transfer', 1.0, 'manual')", (at(b, 2),),
+        )
+        self._pair(conn, at(b, 2), partner)
+        self._move(client, a, b)
+        assert self._links(conn) == [tuple(sorted((at(a, 2), partner)))]
+        assert self._label(conn, at(a, 2)) == ("Self Transfers", "manual")
+        assert self._label(conn, partner) == ("Self Transfers", "pair")
+
+    def test_a_payment_keeps_at_most_one_link_so_the_survivors_own_wins(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        z = _ingest(conn, _FakeParser([_t(3, 100.0, "credit", text="NEFT/IN/3")], ref="4444"), "z")
+        other = at(z, 3)
+        self._pair(conn, at(a, 2), other)  # the survivor is already paired with Z's credit
+        self._pair(conn, at(b, 2), partner)  # its duplicate with Y's
+        self._move(client, a, b)
+        assert self._links(conn) == [tuple(sorted((at(a, 2), other)))]
+        assert self._label(conn, at(a, 2)) == ("Self Transfers", "pair")
+        assert self._label(conn, other) == ("Self Transfers", "pair")
+        # Y's credit lost its partner, so it goes back to To sort.
+        assert self._label(conn, partner) is None
+
+    def test_a_dropped_pair_is_not_remembered_as_the_users_unpairing(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        self._own_label(conn, at(a, 2), "manual")
+        self._pair(conn, at(b, 2), partner)
+        self._move(client, a, b)
+        assert conn.execute("SELECT COUNT(*) FROM transfer_unpaired").fetchone()[0] == 0
+
+    def test_the_users_unpairing_follows_the_survivor_in_order(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        low, high = sorted((at(b, 2), partner))
+        conn.execute("INSERT INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high))
+        conn.commit()
+        body = self._move(client, a, b)
+        low, high = sorted((at(a, 2), partner))
+        assert [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transfer_unpaired")] == [(low, high)]
+        assert body["work_carried_over"] == 1
+
+    def test_an_unpairing_that_would_repeat_or_join_a_payment_to_itself_is_dropped(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        # The duplicate of the 2nd was unpaired from Y's credit, and so was its survivor: a repeat.
+        for txn in (at(b, 2), at(a, 2)):
+            low, high = sorted((txn, partner))
+            conn.execute("INSERT INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high))
+        # The two copies of the 3rd were unpaired from each other: after the move, a payment from itself.
+        low, high = sorted((at(b, 3), at(a, 3)))
+        conn.execute("INSERT INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high))
+        conn.commit()
+        self._move(client, a, b)
+        low, high = sorted((at(a, 2), partner))
+        rows = [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transfer_unpaired")]
+        assert rows == [(low, high)]
+        assert all(x < y for x, y in rows)
+
+    def test_pairing_runs_once_after_the_move_so_a_pair_that_was_ambiguous_is_made(self, api):
+        client, conn = api
+        a = _ingest(conn, _FakeParser([_t(2, 5000.0, balance=5000.0)], ref="1111"), "a")
+        b = _ingest(
+            conn, _FakeParser([_t(2, 5000.0, balance=5000.0), _t(4, 100.0, balance=4900.0)], ref="2222"), "b"
+        )
+        y = _ingest(conn, _FakeParser([_t(3, 5000.0, "credit", text="NEFT/FROM OWN ACCOUNT")], ref="3333"), "y")
+        # Two debits could be the money that arrived in Y: nothing is paired.
+        assert self._links(conn) == []
+        self._move(client, a, b)
+        credit = conn.execute("SELECT id FROM transactions WHERE statement_id = ?", (y.id,)).fetchone()[0]
+        debit = conn.execute(
+            "SELECT id FROM transactions WHERE statement_id = ? AND amount = 5000", (a.id,)
+        ).fetchone()[0]
+        assert self._links(conn) == [tuple(sorted((debit, credit)))]
+        assert self._label(conn, debit) == ("Self Transfers", "pair")
+
+    def test_an_answer_that_was_about_the_deleted_duplicate_can_no_longer_be_undone(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        self._pair(conn, at(b, 2), partner)
+        token = client.post("/api/transfers/unpair", json={"transaction_id": at(b, 2)}).json()["undo_token"]
+        self._move(client, a, b)
+        before = [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transfer_unpaired")]
+        r = client.post("/api/annotations/review-queue/undo", json={"token": token})
+        assert r.status_code == 409
+        assert "can't be undone" in r.json()["detail"]
+        # Refused cleanly: nothing was written for the payment that is gone.
+        assert self._links(conn) == []
+        assert [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transfer_unpaired")] == before
+        assert conn.execute("SELECT COUNT(*) FROM annotations WHERE source = 'pair'").fetchone()[0] == 0
 
 
 class TestMoveSaysWhatStaysBehind:
