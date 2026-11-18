@@ -66,9 +66,9 @@ function renderPage(initialEntries = ['/transactions']) {
   )
 }
 
-// The page loads its list once before the statements arrive and again scoped to the
-// newest one, and every fresh result set clears the selection. Waits for that second
-// load to land so a row picked afterwards is not cleared under the test.
+// The page asks for its list once the statements arrive, scoped to the newest one, and
+// every fresh result set clears the selection. Waits for that load to land so a row
+// picked afterwards is not cleared under the test.
 async function rowsSettled() {
   await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/statement_id=s2/))
   await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
@@ -444,5 +444,93 @@ describe('Transactions with a statement that runs across months', () => {
       expect(last).toMatch(/month=2026-09/)
       expect(last).not.toMatch(/statement_id=/)
     })
+  })
+})
+
+describe('Transactions with an overlap statement whose own payments are in one month', () => {
+  const OCT = { id: 'oct', bank_name: 'kotak', account_label: 'Kotak savings', statement_month: '2026-10', period_start: '2026-10-01', period_end: '2026-10-08', first_payment: '2026-10-01', last_payment: '2026-10-08', payment_months: ['2026-10'], uploaded_at: '2026-11-01' }
+  const NOV = { id: 'nov', bank_name: 'kotak', account_label: 'Kotak savings', statement_month: '2026-11', period_start: '2026-11-01', period_end: '2026-11-08', first_payment: '2026-11-01', last_payment: '2026-11-08', payment_months: ['2026-11'], uploaded_at: '2026-11-02' }
+  // 5 Oct to 15 Nov in the file, but it added only payments of 9 to 15 Nov.
+  const OVERLAP = { id: 'ovl', bank_name: 'kotak', account_label: 'Kotak savings', statement_month: '2026-10', period_start: '2026-10-05', period_end: '2026-11-15', first_payment: '2026-11-09', last_payment: '2026-11-15', payment_months: ['2026-11'], uploaded_at: '2026-11-03' }
+
+  beforeEach(() => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (path === '/statements' ? Promise.resolve([OVERLAP, NOV, OCT]) : base(path)))
+  })
+
+  // Lets the list that follows a pick land, so no update arrives after the test.
+  const settled = () => waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+  // Waits for the first list, then picks in the same step as the assertions begin: an
+  // await between the pick and the first waitFor lets the new list land outside act.
+  async function picker() {
+    const [statementSelect] = await screen.findAllByRole('combobox')
+    await waitFor(() => expect(statementSelect.options.length).toBeGreaterThan(1))
+    await screen.findAllByLabelText('Select payment')
+    await settled()
+    return name => {
+      const option = [...statementSelect.options].find(o => o.textContent === name)
+      fireEvent.change(statementSelect, { target: { value: option.value } })
+    }
+  }
+
+  it('opens the month that has its payments when picked from All time', async () => {
+    localStorage.setItem('fc_period_month', 'all')
+    renderPage()
+    const pick = await picker()
+    pick('Kotak savings - 5 Oct to 15 Nov')
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/statement_id=ovl/)
+      expect(last).toMatch(/month=2026-11/)
+    })
+    await settled()
+  })
+
+  it('moves from October to the month that has its payments, never to an empty October', async () => {
+    localStorage.setItem('fc_period_month', '2026-10')
+    renderPage()
+    const pick = await picker()
+    pick('Kotak savings - 5 Oct to 15 Nov')
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/statement_id=ovl/)
+      expect(last).toMatch(/month=2026-11/)
+    })
+    expect(callsTo('/transactions?').some(p => /statement_id=ovl/.test(p) && /month=2026-10/.test(p))).toBe(false)
+    await settled()
+  })
+})
+
+describe('Transactions on open', () => {
+  it('asks for the list once, with the scope it will show', async () => {
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    // Not once with a remembered scope and again when the statements and months arrive.
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/month=2026-11/)
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+  })
+
+  it('asks once with a remembered month too', async () => {
+    localStorage.setItem('fc_period_month', '2026-10')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/month=2026-10/)
+  })
+
+  it('shows loading, never "Add a statement to get started", while it waits for the statements', async () => {
+    let release
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (path === '/statements' ? new Promise(r => { release = () => r(STATEMENTS) }) : base(path)))
+    renderPage()
+    expect(await screen.findByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByText('Add a statement to get started.')).not.toBeInTheDocument()
+    expect(callsTo('/transactions?')).toHaveLength(0)
+    release()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
   })
 })

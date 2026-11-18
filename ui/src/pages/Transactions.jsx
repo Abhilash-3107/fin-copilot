@@ -10,7 +10,7 @@ import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import TransactionCards from '../components/TransactionCards.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
-import { statementCoversMonth, statementSpan } from '../lib/dates.js'
+import { statementCoversMonth, statementLatestMonth, statementSpan } from '../lib/dates.js'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -118,12 +118,21 @@ function buildAnnotationMap(txns) {
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
-  const { month: periodMonth, setMonth } = usePeriod()
+  const { month: periodMonth, setMonth, ready: periodReady } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const selectedStmt = activeStatement?.id ?? ''
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
+  // The statement counts only while it agrees with the period: All time, or a
+  // month it has no payments in, shows everything of the period instead. Worked
+  // out here, not left to the effects below that tidy the shared state, so the
+  // first list the page asks for is already the one it will show.
+  const selectedStmt = activeStatement && periodMonth !== ALL_TIME && (!month || statementCoversMonth(activeStatement, month))
+    ? activeStatement.id
+    : ''
+  // Nothing is asked until the statements and the period are known: asking early
+  // and again when they arrive would replace the first answer, an error included.
+  const ready = periodReady && !statementsLoading
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
@@ -147,6 +156,9 @@ export default function Transactions() {
   const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
   const [loading, setLoading] = useState(false)
+  // Loading includes the wait for the statements and period, so the page never
+  // reads "No payments" before it has asked.
+  const busy = loading || !ready
   // Each fetch that can fail keeps its error, so the block says so (with Retry)
   // instead of reading as "no transactions".
   const [loadError, setLoadError] = useState(null)
@@ -240,7 +252,7 @@ export default function Transactions() {
     }
   }
 
-  useEffect(() => { loadTransactions() }, [loadTransactions])
+  useEffect(() => { if (ready) loadTransactions() }, [ready, loadTransactions])
 
   function toggleSort(col) {
     if (sort === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'))
@@ -305,7 +317,7 @@ export default function Transactions() {
     }
   }, [selectedStmt, month])
 
-  useEffect(() => { loadFacets() }, [loadFacets])
+  useEffect(() => { if (ready) loadFacets() }, [ready, loadFacets])
 
   // Full taxonomy for the bulk set-category picker (facets only list categories
   // already present in data; here the user can assign any of them).
@@ -614,7 +626,7 @@ export default function Transactions() {
             // empty the list (or clear it entirely for "All statements"). A
             // statement can run across months: stay on the month already chosen
             // when the statement reaches into it.
-            setMonth(!stmt ? ALL_TIME : month && statementCoversMonth(stmt, month) ? month : stmt.statement_month)
+            setMonth(!stmt ? ALL_TIME : month && statementCoversMonth(stmt, month) ? month : statementLatestMonth(stmt))
           }}
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
         >
@@ -701,7 +713,7 @@ export default function Transactions() {
         )}
 
         <span className="text-xs text-[#94a3b8] ml-auto">
-          {loading ? 'Loading…' : loadError ? null : summary ? (
+          {busy ? 'Loading…' : loadError ? null : summary ? (
             <>
               {count(summary.count, 'payment')}
               {' · '}<Amount value={summary.money_out} decimals={0} /> out
@@ -714,11 +726,11 @@ export default function Transactions() {
 
         <button
           onClick={loadTransactions}
-          disabled={loading}
+          disabled={busy}
           className="text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-50"
           title="Refresh"
         >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={15} className={busy ? 'animate-spin' : ''} />
         </button>
 
         <Tooltip content="Sort this statement again, for example after connecting a model">
@@ -790,7 +802,7 @@ export default function Transactions() {
         )}
         {loadError ? (
           <InlineError what="your payments" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
-        ) : !loading && transactions.length === 0 ? (
+        ) : !busy && transactions.length === 0 ? (
           <EmptyState
             title="No payments"
             description={filtersActive ? 'No payments match the current filters.' : 'Add a statement to get started.'}

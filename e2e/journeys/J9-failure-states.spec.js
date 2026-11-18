@@ -57,18 +57,28 @@ test.describe('J9 failure states', () => {
 
   test('Transactions says the list could not load, never "No payments", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/transactions(\?|$)/)
+    // The page waits for the statements and months before it asks for its list, so
+    // it asks once. Hold the statements back: a page that asked early would have
+    // asked, and failed, before they came, and would ask again after them.
+    await page.route(/\/api\/statements$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      await route.fallback()
+    })
+    const lists = []
+    page.on('request', (request) => {
+      if (/\/api\/transactions\?/.test(request.url())) lists.push(request.url())
+    })
     await page.goto('/#/transactions')
     await expect(alertWith(page, "Couldn't load your payments.")).toBeVisible()
     await expect(page.getByText('No payments')).toHaveCount(0)
+    // One failed ask, not one before the statements arrived and another after.
+    expect(lists).toHaveLength(1)
 
-    // The page asks again once the statements and months arrive. Let those requests
-    // fail too before the API heals, or one of them succeeds and the alert goes
-    // before Retry is clicked.
-    await page.waitForLoadState('networkidle')
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(page.getByRole('row').nth(1)).toBeVisible()
     await expect(failures(page)).toHaveCount(0)
+    expect(lists).toHaveLength(2)
   })
 
   test('Teach Me says the list could not load, never "all done", and recovers', async ({ page, tolerate }) => {
