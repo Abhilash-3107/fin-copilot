@@ -755,14 +755,14 @@
       "reason": "The running-balance check of a statement's whole file is now stored with it, so a statement whose overlapping rows were skipped never looks unbalanced. For every statement you already had it is the check the list showed before: the journey checks the stored figures equal that check and that nothing that was balanced is flagged now."
     },
     {
-      "id": "stored-statements-shared-with-later",
+      "id": "stored-statements-shared-with-others",
       "scope": "stored",
-      "path": "statements[*].shared_with_later",
+      "path": "statements[*].shared_with_others",
       "kinds": [
         "added"
       ],
       "to": 0,
-      "reason": "The statement list says how many of a statement's payments a later statement also had, so deleting it can say they will not come back. No statement you already had overlapped a later one, so every statement starts at 0."
+      "reason": "The statement list says how many of a statement's payments another statement of the account also had and did not add again, so deleting it can say they are removed from the ledger for good. No statement you already had skipped payments, so every statement starts at 0."
     },
     {
       "id": "stored-column-statement-row-counts",

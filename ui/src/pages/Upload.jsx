@@ -71,13 +71,14 @@ function balanceLine(check) {
     : `Balance check: ${check.consistent} of ${check.checked} steps reconcile`
 }
 
-// What deleting a statement says. Payments that a later statement also covered
-// were skipped when that one was added, so they go for good: one plain sentence.
+// What deleting a statement says. Payments that another statement also covered
+// were skipped when that one was added (or moved in), so they go for good: one
+// plain sentence.
 function deleteDescription(statement) {
   if (!statement) return ''
-  const shared = statement.shared_with_later ?? 0
+  const shared = statement.shared_with_others ?? 0
   const sentence = shared > 0
-    ? ` ${count(shared, 'payment')} in it ${shared === 1 ? 'is' : 'are'} also in a later statement, which skipped ${shared === 1 ? 'it' : 'them'} when it was added, so ${shared === 1 ? 'it' : 'they'} will not come back from that one.`
+    ? ` ${shared} of its payments ${shared === 1 ? 'is' : 'are'} also in another statement, which did not add ${shared === 1 ? 'it' : 'them'} again, so deleting this removes ${shared === 1 ? 'it' : 'them'} from your ledger.`
     : ''
   return `This will permanently remove "${statement.account_label} - ${statementSpan(statement)}" and all its payments.${sentence} This can't be undone.`
 }

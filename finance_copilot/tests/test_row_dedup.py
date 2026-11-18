@@ -949,25 +949,39 @@ class TestSharedRows:
         # October's and November's rows 5th-8th Oct and all of Nov were in the later file too.
         october = next(s for s in client.get("/api/statements").json() if s["period_start"] == "2026-10-01")
         november = next(s for s in client.get("/api/statements").json() if s["period_start"] == "2026-11-01")
-        assert october["shared_with_later"] == 4
-        assert november["shared_with_later"] == 8
+        assert october["shared_with_others"] == 4
+        assert november["shared_with_others"] == 8
         # The later file's own rows are in no file that came after it.
-        assert by_added[3]["shared_with_later"] == 0
+        assert by_added[3]["shared_with_others"] == 0
 
     def test_a_statement_nothing_overlaps_has_none(self, api):
         client, _ = api
         _upload(client, "sample_statement.pdf")
         _upload(client, "sample_statement_nov.pdf")
-        assert [s["shared_with_later"] for s in client.get("/api/statements").json()] == [0, 0]
+        assert [s["shared_with_others"] for s in client.get("/api/statements").json()] == [0, 0]
 
-    def test_an_earlier_file_does_not_count_for_a_later_one(self, api):
-        """Only a file that came after skipped rows this statement brought first."""
+    def test_a_statement_moved_in_after_the_fact_counts_for_the_one_that_was_there(self, api):
+        """The first file landed in the wrong account, the right account's file came
+        second; moving the first in drops the days both had. Deleting the second
+        takes them for good, though it was added after the first."""
+        client, conn = api
+        wrong = _ingest(conn, _FakeParser(_days(1, 2, 3, 4, 5), ref="2222"), "wrong")
+        right = _ingest(conn, _FakeParser(_days(4, 5, 6, 7, 8), ref="1111"), "right")
+        assert client.patch(f"/api/statements/{wrong.id}", json={"account_id": right.account_id}).status_code == 200
+        by_id = {s["id"]: s for s in client.get("/api/statements").json()}
+        # The moved statement skipped the 4th and 5th, which the second file holds.
+        assert (by_id[wrong.id]["rows_in_file"], by_id[wrong.id]["rows_added"]) == (5, 3)
+        assert by_id[right.id]["shared_with_others"] == 2
+        assert by_id[wrong.id]["shared_with_others"] == 0
+
+    def test_an_earlier_file_that_skipped_nothing_does_not_count(self, api):
+        """Only a file that skipped payments left another statement as their holder."""
         client, _ = api
         _upload(client, "sample_statement_overlap.pdf")
         _upload(client, "sample_statement.pdf")
         by_start = {s["period_start"]: s for s in client.get("/api/statements").json()}
-        assert by_start["2026-10-05"]["shared_with_later"] == 4  # the 5th to the 8th, which October also has
-        assert by_start["2026-10-01"]["shared_with_later"] == 0
+        assert by_start["2026-10-05"]["shared_with_others"] == 4  # the 5th to the 8th, which October also has
+        assert by_start["2026-10-01"]["shared_with_others"] == 0
 
     def test_deleting_the_first_does_not_bring_back_what_the_later_file_skipped(self, api):
         client, conn = api

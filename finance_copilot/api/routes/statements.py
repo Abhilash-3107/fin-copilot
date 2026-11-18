@@ -180,7 +180,7 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     # trust indicator (4.20). One extra windowed query, merged in by id.
     checks = statement_balance_checks(conn)
     sorted_counts = sorted_counts_by_statement(conn, get_confidence_threshold(conn))
-    shared = _shared_with_later(conn)
+    shared = _shared_with_others(conn)
     labels = account_labels(conn)
     result = []
     for row in rows:
@@ -189,17 +189,18 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         d = _public(d)
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
-        d["shared_with_later"] = shared.get(d["id"], 0)
+        d["shared_with_others"] = shared.get(d["id"], 0)
         result.append(d)
     return result
 
 
-def _shared_with_later(conn: sqlite3.Connection) -> dict[str, int]:
-    """{statement id: how many of its payments a later statement of the account
-    also had}. A later file that skipped payments (rows_added below rows_in_file)
-    left the earlier statement as their only holder, so deleting the earlier one
-    takes them for good. The later file's rows are not stored, so its dates stand
-    for them: the bank prints every payment of the days it covers."""
+def _shared_with_others(conn: sqlite3.Connection) -> dict[str, int]:
+    """{statement id: how many of its payments another statement of the account
+    also had}. A statement that skipped payments (rows_added below rows_in_file),
+    when it was added or when it was moved into the account, left the other
+    statement as their only holder, so deleting that one takes them for good.
+    The skipped payments are not stored, so the dates the skipping statement
+    covers stand for them: the bank prints every payment of the days it covers."""
     return {
         r["id"]: r["n"]
         for r in conn.execute(
@@ -207,11 +208,9 @@ def _shared_with_later(conn: sqlite3.Connection) -> dict[str, int]:
             SELECT s.id AS id, COUNT(DISTINCT t.id) AS n
             FROM statements s
             JOIN transactions t ON t.statement_id = s.id
-            JOIN statements l ON l.account_id = s.account_id AND l.id != s.id
-                AND (l.uploaded_at > s.uploaded_at
-                     OR (l.uploaded_at = s.uploaded_at AND l.rowid > s.rowid))
-                AND l.rows_in_file > l.rows_added
-                AND t.txn_date BETWEEN l.period_start AND l.period_end
+            JOIN statements o ON o.account_id = s.account_id AND o.id != s.id
+                AND o.rows_in_file > o.rows_added
+                AND t.txn_date BETWEEN o.period_start AND o.period_end
             GROUP BY s.id
             """
         )

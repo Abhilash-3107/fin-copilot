@@ -518,22 +518,32 @@ describe('Upload', () => {
       expect(within(rows[2]).getByText('Sep 2026')).toBeInTheDocument()
     })
 
-    it('says in the delete confirmation that later payments will not come back, only when it applies', async () => {
-      ledger.statements = [{ ...stmt, shared_with_later: 3 }]
+    it('says in the delete confirmation that payments another statement skipped go for good, only when it applies', async () => {
+      ledger.statements = [{ ...stmt, shared_with_others: 3 }]
       renderUpload()
       fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
       expect(screen.getByRole('dialog')).toHaveTextContent(
-        '3 payments in it are also in a later statement, which skipped them when it was added, so they will not come back from that one.',
+        '3 of its payments are also in another statement, which did not add them again, so deleting this removes them from your ledger.',
       )
     })
 
-    it('has no such sentence when no later statement shares its payments', async () => {
-      ledger.statements = [{ ...stmt, shared_with_later: 0 }]
+    it('says it in the singular for one payment', async () => {
+      ledger.statements = [{ ...stmt, shared_with_others: 1 }]
       renderUpload()
       fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
-      expect(screen.getByRole('dialog')).not.toHaveTextContent('later statement')
+      expect(screen.getByRole('dialog')).toHaveTextContent(
+        '1 of its payments is also in another statement, which did not add it again, so deleting this removes it from your ledger.',
+      )
+    })
+
+    it('has no such sentence when no other statement shares its payments', async () => {
+      ledger.statements = [{ ...stmt, shared_with_others: 0 }]
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+      expect(screen.getByRole('dialog')).not.toHaveTextContent('another statement')
     })
 
     it('says in the move message how many payments the account already had', async () => {
