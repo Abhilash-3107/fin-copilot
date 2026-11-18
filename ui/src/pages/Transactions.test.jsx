@@ -592,9 +592,11 @@ describe('Transactions unpairing a transfer', () => {
       : { annotation_id: null, transfer: null }),
   })
   let paired
+  let unpairBody
 
   beforeEach(() => {
     paired = true
+    unpairBody = { unpaired: ['p1', 'p2'], to_sort: ['p1', 'p2'], account_labels: { p1: 'Kotak savings', p2: 'SBI savings' }, undo_token: 'tok' }
     const base = mockApi.get.getMockImplementation()
     mockApi.get.mockImplementation(path => {
       if (path === '/transactions/p1') return Promise.resolve(out(paired))
@@ -603,7 +605,7 @@ describe('Transactions unpairing a transfer', () => {
       return base(path)
     })
     mockApi.post.mockImplementation(async path => {
-      if (path === '/transfers/unpair') { paired = false; return { unpaired: ['p1', 'p2'], undo_token: 'tok' } }
+      if (path === '/transfers/unpair') { paired = false; return unpairBody }
       if (path === '/annotations/review-queue/undo') { paired = true; return { restored: ['p1', 'p2'] } }
       return {}
     })
@@ -624,6 +626,17 @@ describe('Transactions unpairing a transfer', () => {
     expect(message).toBe('Unpaired. Both payments are waiting in Teach Me.')
     expect(type).toBe('success')
     expect(options.action.label).toBe('Undo')
+  })
+
+  it.each([
+    ['one side the user had labelled keeps its label', ['p2'], 'Unpaired. The SBI savings payment is waiting in Teach Me.'],
+    ['the clicked side is the one waiting', ['p1'], 'Unpaired. The Kotak savings payment is waiting in Teach Me.'],
+    ['neither is waiting', [], 'Unpaired.'],
+  ])('the toast says what is waiting in Teach Me when %s', async (_name, toSort, expected) => {
+    unpairBody = { ...unpairBody, to_sort: toSort }
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(toastSpy.mock.calls.at(-1)[0]).toBe(expected))
   })
 
   it('Undo from the toast pairs them again and the row says so again', async () => {

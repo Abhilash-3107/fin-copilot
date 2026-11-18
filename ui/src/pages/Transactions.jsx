@@ -121,6 +121,14 @@ function buildAnnotationMap(txns) {
 const DEEP_LINK_KEYS = ['category', 'source', 'merchant', 'payee_key', 'person', 'q', 'month', 'txn']
 const isDeepLink = params => DEEP_LINK_KEYS.some(key => params.has(key))
 
+// What an unpair did, in words: `to_sort` are the payments that went back to Teach Me.
+function unpairMessage({ to_sort: waiting = [], account_labels: labels = {} }) {
+  if (waiting.length === 0) return 'Unpaired.'
+  if (waiting.length > 1) return 'Unpaired. Both payments are waiting in Teach Me.'
+  const account = labels[waiting[0]]
+  return `Unpaired. ${account ? `The ${account} payment is` : 'One payment is'} waiting in Teach Me.`
+}
+
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
@@ -611,13 +619,14 @@ export default function Transactions() {
     loadFacets()
   }
 
-  // Take this payment's transfer pair apart. Both payments go back to Teach Me;
-  // the toast can bring the pair back.
+  // Take this payment's transfer pair apart; the toast says what is waiting in
+  // Teach Me now (a side the user had labelled keeps its label and is not) and
+  // can bring the pair back.
   async function unpairPayment(txn) {
     try {
       const res = await api.post('/transfers/unpair', { transaction_id: txn.id })
       await refreshPayments(res.unpaired)
-      toast('Unpaired. Both payments are waiting in Teach Me.', 'success', {
+      toast(unpairMessage(res), 'success', {
         action: { label: 'Undo', onClick: () => undoUnpair(res) },
       })
     } catch (e) {

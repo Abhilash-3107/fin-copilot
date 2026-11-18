@@ -1528,6 +1528,18 @@ describe('Teach Me offers a transfer between your own accounts', () => {
     expect(options.action.label).toBe('Undo')
   })
 
+  it('the session tally counts a pair as paired, not corrected', async () => {
+    mockApi.post.mockResolvedValue({
+      transaction_ids: [200, 300], transfer: { text: 'Moved to SBI savings' }, undo_token: 'tok-pair',
+    })
+    stubGet([rameshOut()])
+    await renderQueue('RAMESH')
+    key('1')
+    key('Enter')
+    await screen.findByText("You're all done!")
+    expect(screen.getByText(/0 confirmed · 0 corrected · 1 paired · 0 skipped/)).toBeInTheDocument()
+  })
+
   it('the partner leaves the list too when it was waiting in it', async () => {
     mockApi.post.mockResolvedValue({ transaction_ids: [200, 300], transfer: { text: 'Moved to SBI savings' }, undo_token: 't' })
     const partner = makeCard({

@@ -113,6 +113,7 @@ function statsLine(stats) {
   return [
     `${stats.confirmed} confirmed`,
     `${stats.edited} corrected`,
+    stats.paired > 0 && `${stats.paired} paired`,
     stats.sorted > 0 && `${stats.sorted} sorted by hand`,
     `${stats.skipped} skipped`,
   ].filter(Boolean).join(' · ')
@@ -362,13 +363,14 @@ export default function ReviewQueue() {
   // One tally per resolved card: a card re-decided after an undo moves between
   // buckets instead of being counted twice.
   const stats = useMemo(() => {
-    const s = { confirmed: 0, edited: 0, sorted: 0, skipped: 0 }
+    const s = { confirmed: 0, edited: 0, paired: 0, sorted: 0, skipped: 0 }
     for (const outcome of Object.values(outcomes)) s[outcome] += 1
     return s
   }, [outcomes])
   const handled = Object.keys(outcomes).length
 
-  // 'edited' corrected a guess; 'sorted' answered a payment that had no real guess.
+  // 'edited' corrected a guess; 'sorted' answered a payment that had no real guess;
+  // 'paired' is a transfer between the user's own accounts (pairAnswer).
   function answeredAs(item) {
     return isRealCategory(item.category) ? 'edited' : 'sorted'
   }
@@ -572,7 +574,7 @@ export default function ReviewQueue() {
       const res = await api.post('/transfers/pair', {
         transaction_id: current.transaction_id, with_transaction_id: partnerId,
       })
-      record([current], answeredAs)
+      record([current], () => 'paired')
       if (res.undo_token) pushUndo({ tokens: [res.undo_token], ids: [current.transaction_id, partnerId] })
       settle([current, { transaction_id: partnerId }], [])
       announce(`${res.transfer.text}. Paired, so neither counts as spending or income.`, res)
