@@ -68,9 +68,13 @@ function ledgerBefore() {
     accounts: null,
     transactions,
     groups: [{ id: 'g1', members: [member(transactions[0]), member(transactions[5]), member(transactions[6])] }],
-    annotationCategoryIds: transactions
+    annotationRows: transactions
       .filter((t) => t.annotation_id)
-      .map((t) => ({ transaction_id: t.id, category_id: null, subcategory_id: null })),
+      .map((t) => ({
+        id: t.annotation_id, transaction_id: t.id, merchant: t.merchant, category: t.category, subcategory: t.subcategory,
+        tags: JSON.stringify(t.tags), confidence: t.confidence, source: t.source, original_source: t.original_source,
+        category_id: null, subcategory_id: null, reasoning: '{"stage":"x"}', annotated_at: '2026-08-02 10:00:00',
+      })),
     categories: [
       { id: 'cat_food', name: 'Food & Dining', parent_id: null },
       { id: 'cat_shop', name: 'Shopping', parent_id: null },
@@ -124,10 +128,11 @@ function upgrade(before) {
   byId.R3.counterparty_key = 'ZEPTO/ORDER'
   byId.R3.raw_description = 'UPI/ZEPTO/ORDER/400112235/UPI'
   byId.R4.merchant = null
+  facts.annotationRows.find((r) => r.transaction_id === 'R4').merchant = null
   for (const t of facts.transactions) t.review_snoozed_at = t.id === 'R1' ? '2026-11-01 10:00:00' : null
   const ids = { Restaurants: 'cat_food_restaurants', 'General Retail': 'cat_shop_general', Salary: 'cat_inc_salary' }
   const top = { 'Food & Dining': 'cat_food', Shopping: 'cat_shop', Income: 'cat_inc' }
-  for (const row of facts.annotationCategoryIds) {
+  for (const row of facts.annotationRows) {
     const t = byId[row.transaction_id]
     row.category_id = top[t.category]
     row.subcategory_id = ids[t.subcategory]
@@ -227,11 +232,11 @@ function addStatement(after, before, id, fields = {}) {
 /** Each regression: what is damaged, and what the comparison must say about it. */
 const regressions = {
   'backfilled ids name the wrong category': [
-    (a) => a.facts.annotationCategoryIds.forEach((r) => (r.category_id = 'cat_shop')),
+    (a) => a.facts.annotationRows.forEach((r) => (r.category_id = 'cat_shop')),
     /category id cat_shop names "Shopping"/,
   ],
   'backfilled subcategory ids name the wrong subcategory': [
-    (a) => a.facts.annotationCategoryIds.forEach((r) => (r.subcategory_id = 'cat_inc_salary')),
+    (a) => a.facts.annotationRows.forEach((r) => (r.subcategory_id = 'cat_inc_salary')),
     /subcategory id cat_inc_salary/,
   ],
   'a real payment loses its reference': [
@@ -607,13 +612,36 @@ const regressions = {
   'the rebuild drops a label': [
     (a) => {
       Object.assign(a.facts.transactions.find((t) => t.id === 'R6'), { annotation_id: null, category: null, subcategory: null, merchant: null, tags: [], confidence: null, source: null, original_source: null })
-      a.facts.annotationCategoryIds = a.facts.annotationCategoryIds.filter((r) => r.transaction_id !== 'R6')
+      a.facts.annotationRows = a.facts.annotationRows.filter((r) => r.transaction_id !== 'R6')
     },
     /(payment R6's label changed in the upgrade: annotation_id|\d+ labels after the upgrade, \d+ before)/,
   ],
   'the rebuild loses a label but keeps the payment labelled': [
-    (a) => a.facts.annotationCategoryIds.pop(),
+    (a) => a.facts.annotationRows.pop(),
     /\d+ labels after the upgrade, \d+ before/,
+  ],
+  'the rebuild loses a typed merchant name in the label table': [
+    (a) => (a.facts.annotationRows.find((r) => r.transaction_id === 'R5').merchant = null),
+    /label of payment R5 changed in the upgrade: column merchant was /,
+  ],
+  'the rebuild stamps a new time on a label': [
+    (a) => (a.facts.annotationRows.find((r) => r.transaction_id === 'R6').annotated_at = '2026-11-18 09:00:00'),
+    /label of payment R6 changed in the upgrade: column annotated_at was "2026-08-02 10:00:00"/,
+  ],
+  'the rebuild drops the reasoning of a label': [
+    (a) => (a.facts.annotationRows.find((r) => r.transaction_id === 'R4').reasoning = null),
+    /label of payment R4 changed in the upgrade: column reasoning/,
+  ],
+  'the rebuild changes a label id': [
+    (a) => (a.facts.annotationRows.find((r) => r.transaction_id === 'R6').id = 'a_other'),
+    /label of payment R6 changed in the upgrade: column id was "a_R6"/,
+  ],
+  'the rebuild moves a category id that was filled': [
+    (a, b) => {
+      b.facts.annotationRows.find((r) => r.transaction_id === 'R6').category_id = 'cat_shop'
+      a.facts.annotationRows.find((r) => r.transaction_id === 'R6').category_id = 'cat_food'
+    },
+    /label of payment R6 changed in the upgrade: column category_id was "cat_shop", is "cat_food"/,
   ],
   'the rebuild changes a confidence': [
     (a) => (a.facts.transactions.find((t) => t.id === 'R6').confidence = 0.5),

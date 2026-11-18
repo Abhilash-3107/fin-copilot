@@ -19,7 +19,7 @@ function categoryIdsNameTheirLabel(before, after) {
   const problems = []
   const categories = new Map(after.facts.categories.map((c) => [c.id, c]))
   const payments = new Map(after.facts.transactions.map((t) => [t.id, t]))
-  for (const row of after.facts.annotationCategoryIds) {
+  for (const row of after.facts.annotationRows) {
     const payment = payments.get(row.transaction_id)
     if (!payment) {
       problems.push(`an annotation belongs to payment ${row.transaction_id}, which is not in the ledger`)
@@ -466,6 +466,34 @@ function statementsSayWhereTheirPaymentsAre(before, after) {
 }
 
 /**
+ * Every column the table stores, read from the file (db.js), not only the ones the
+ * API shows: id, merchant, annotated_at, reasoning and the category ids as well.
+ * Migration 036 may fill a category id that was empty, and migration 030 may clear a
+ * merchant a machine copied from the bank line (both are declared in
+ * expected-changes.json and checked by their own invariants); nothing else about a
+ * label may differ after the rebuild.
+ */
+function everyColumnOfEveryLabelSurvives(before, after) {
+  const problems = []
+  const now = new Map(after.facts.annotationRows.map((r) => [r.transaction_id, r]))
+  const byHand = new Set(['manual', 'imported', 'user_rule'])
+  for (const was of before.facts.annotationRows) {
+    const kept = now.get(was.transaction_id)
+    if (!kept) continue // the count check says a label is missing
+    for (const [column, value] of Object.entries(was)) {
+      if ((column === 'category_id' || column === 'subcategory_id') && value === null) continue
+      if (column === 'merchant' && !byHand.has(was.source)) continue
+      if (JSON.stringify(kept[column]) !== JSON.stringify(value)) {
+        problems.push(
+          `the label of payment ${was.transaction_id} changed in the upgrade: column ${column} was ${JSON.stringify(value)}, is ${JSON.stringify(kept[column])}`,
+        )
+      }
+    }
+  }
+  return problems
+}
+
+/**
  * Migration 044 rebuilds the table that holds every label, and pairing runs when a
  * statement is added, never on an upgrade. So each label the ledger had is whole
  * after it (same id, category, source, confidence, tags), no label counts fewer,
@@ -483,11 +511,12 @@ function labelsSurviveTheRebuildAndNothingIsPaired(before, after) {
       }
     }
   }
-  if (after.facts.annotationCategoryIds.length !== before.facts.annotationCategoryIds.length) {
+  if (after.facts.annotationRows.length !== before.facts.annotationRows.length) {
     problems.push(
-      `${after.facts.annotationCategoryIds.length} labels after the upgrade, ${before.facts.annotationCategoryIds.length} before`,
+      `${after.facts.annotationRows.length} labels after the upgrade, ${before.facts.annotationRows.length} before`,
     )
   }
+  problems.push(...everyColumnOfEveryLabelSurvives(before, after))
   for (const t of after.facts.transactions) {
     if (t.transfer) problems.push(`payment ${t.id} is paired as a transfer after the upgrade; pairing never runs on upgrade`)
     if (t.source === 'pair') problems.push(`payment ${t.id} carries a pair label after the upgrade; pairing never runs on upgrade`)

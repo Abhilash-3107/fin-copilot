@@ -108,7 +108,7 @@
     {
       "id": "stored-category-ids-backfilled",
       "scope": "stored",
-      "path": "annotationCategoryIds[*].category_id",
+      "path": "annotationRows[*].category_id",
       "kinds": [
         "changed"
       ],
@@ -118,12 +118,22 @@
     {
       "id": "stored-subcategory-ids-backfilled",
       "scope": "stored",
-      "path": "annotationCategoryIds[*].subcategory_id",
+      "path": "annotationRows[*].subcategory_id",
       "kinds": [
         "changed"
       ],
       "from": null,
       "reason": "Migration 036, for the subcategory id."
+    },
+    {
+      "id": "stored-bank-line-merchant-cleared-on-label",
+      "scope": "stored",
+      "path": "annotationRows[*].merchant",
+      "kinds": [
+        "changed"
+      ],
+      "to": null,
+      "reason": "Migration 030, as stored: the label's own merchant column, where a machine copied the bank line. The invariant on every label column holds the labels you made by hand to no change at all."
     },
     {
       "id": "stored-policies-readable",
