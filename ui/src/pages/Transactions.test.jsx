@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 
@@ -519,6 +520,53 @@ describe('Transactions on open', () => {
     await screen.findAllByLabelText('Select payment')
     expect(callsTo('/transactions?')).toHaveLength(1)
     expect(callsTo('/transactions?')[0]).toMatch(/month=2026-10/)
+  })
+
+  it('asks once for a cold deep link, with the filter already applied', async () => {
+    // A returning user: the period is remembered, so it is decided as soon as the statements arrive.
+    localStorage.setItem('fc_period_month', '2026-11')
+    localStorage.setItem('fc_active_statement_id', 's2')
+    renderPage(['/transactions?category=Uncategorized'])
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/category=Uncategorized/)
+    // The statement scope the link clears is not in the one ask either.
+    expect(callsTo('/transactions?')[0]).not.toMatch(/statement_id=/)
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+  })
+
+  it('asks once for a jump from another page to a search link', async () => {
+    let go
+    function Jump() {
+      go = useNavigate()
+      return null
+    }
+    render(
+      <MemoryRouter initialEntries={['/elsewhere']}>
+        <PrivacyProvider>
+          <StatementProvider>
+            <PeriodProvider>
+              <AnnotationJobProvider>
+                <Jump />
+                <Routes>
+                  <Route path="/elsewhere" element={<p>Elsewhere</p>} />
+                  <Route path="/transactions" element={<Transactions />} />
+                </Routes>
+              </AnnotationJobProvider>
+            </PeriodProvider>
+          </StatementProvider>
+        </PrivacyProvider>
+      </MemoryRouter>
+    )
+    await screen.findByText('Elsewhere')
+    // The statements and months are in and a statement is active, as after a visit to another page.
+    await waitFor(() => expect(callsTo('/transactions/months').length).toBeGreaterThan(0))
+    await act(async () => { go('/transactions?q=UPI') })
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/q=UPI/)
   })
 
   it('shows loading, never "Add a statement to get started", while it waits for the statements', async () => {

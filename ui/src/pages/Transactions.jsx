@@ -115,6 +115,10 @@ function buildAnnotationMap(txns) {
   return map
 }
 
+// Whether a link names a slice of the ledger: the filters, a month or one payment.
+const DEEP_LINK_KEYS = ['category', 'source', 'merchant', 'payee_key', 'person', 'q', 'month', 'txn']
+const isDeepLink = params => DEEP_LINK_KEYS.some(key => params.has(key))
+
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
@@ -130,9 +134,14 @@ export default function Transactions() {
   const selectedStmt = activeStatement && periodMonth !== ALL_TIME && (!month || statementCoversMonth(activeStatement, month))
     ? activeStatement.id
     : ''
-  // Nothing is asked until the statements and the period are known: asking early
-  // and again when they arrive would replace the first answer, an error included.
-  const ready = periodReady && !statementsLoading
+  // A deep link means "this slice of everything": the statement that was active is
+  // dropped once, and the link's filters are applied, before the first ask.
+  const [deepLinkClearPending, setDeepLinkClearPending] = useState(() => isDeepLink(searchParams))
+  const [filtersSeeded, setFiltersSeeded] = useState(false)
+  // Nothing is asked until the statements, the period and the link are settled:
+  // asking early and again when they arrive would replace the first answer, an
+  // error included, and would show the list twice.
+  const ready = periodReady && !statementsLoading && filtersSeeded && !(deepLinkClearPending && activeStatement)
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
@@ -369,7 +378,8 @@ export default function Transactions() {
     // A payment link (the palette) names one payment: the effect below opens it once it can.
     const linked = searchParams.get('txn')
     if (linked) pendingPayment.current = linked
-    if (category || source || merchant || payeeKeys.length || person || q || m || linked) clearStatementForDeepLink.current = true
+    if (isDeepLink(searchParams)) setDeepLinkClearPending(true)
+    setFiltersSeeded(true)
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -407,14 +417,13 @@ export default function Transactions() {
   // later (hard load: StatementContext defaults to the latest statement once
   // /statements resolves), so the clear has to chase it. One-shot: a manual
   // statement pick after the deep link sticks.
-  const clearStatementForDeepLink = useRef(false)
   useEffect(() => {
-    if (clearStatementForDeepLink.current && activeStatement) {
+    if (deepLinkClearPending && activeStatement) {
       setActiveStatement(null)
-      clearStatementForDeepLink.current = false
+      setDeepLinkClearPending(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeStatement, searchParams])
+  }, [activeStatement, deepLinkClearPending])
 
   // PeriodPicker is shared across pages, so the period may already be set to
   // a month (eg. carried over from Dashboard) before this page's statement
