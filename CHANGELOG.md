@@ -181,6 +181,7 @@ What moves is how some of them are added up, compared and named, so the same led
   `LLM_REASONING_EFFORT` (for example `none` or `low`) is sent as `reasoning_effort` when set; a model that does not take it gets the request without it.
 - Plurals read correctly, and no visible text contains an em dash.
 - Transactions keeps All time, or the month you chose, when the statement list finishes loading after the page; it no longer flashes the newest statement or fetches its payments first.
+- Dashboard, Money Map and Transactions wait for the month to settle and ask the server once, so a slow statement list can no longer swap their figures or an error you are reading.
 
 ### Removed
 
