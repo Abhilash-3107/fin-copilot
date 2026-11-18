@@ -442,6 +442,29 @@ function statementsKeepTheirPaymentsAndBalance(before, after) {
   return problems
 }
 
+/**
+ * The list says where each statement's own payments are: the first and last day and
+ * the months they fall in. They are worked out again here from the payments, so a
+ * statement never offers a month it has nothing in, or hides one it has.
+ */
+function statementsSayWhereTheirPaymentsAre(before, after) {
+  const problems = []
+  for (const s of after.facts.statements) {
+    if (s.first_payment === undefined) continue
+    const days = after.facts.transactions.filter((t) => t.statement_id === s.id).map((t) => t.txn_date).sort()
+    const months = [...new Set(days.map((d) => d.slice(0, 7)))]
+    const first = days[0] ?? null
+    const last = days.at(-1) ?? null
+    if (s.first_payment !== first || s.last_payment !== last) {
+      problems.push(`statement ${s.id} says its payments run ${s.first_payment} to ${s.last_payment}, they run ${first} to ${last}`)
+    }
+    if (JSON.stringify(s.payment_months) !== JSON.stringify(months)) {
+      problems.push(`statement ${s.id} says its payments are in ${JSON.stringify(s.payment_months)}, they are in ${JSON.stringify(months)}`)
+    }
+  }
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
@@ -451,6 +474,7 @@ export function checkInvariants(before, after) {
     ...accountBalancesAreTheirLatestStatements(before, after),
     ...accountNumbersAreOnlyTheirLastFour(before, after),
     ...statementsKeepTheirPaymentsAndBalance(before, after),
+    ...statementsSayWhereTheirPaymentsAre(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),

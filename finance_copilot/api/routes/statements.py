@@ -158,7 +158,8 @@ def upload_statement(
 
 @router.get("")
 def list_statements(conn: sqlite3.Connection = Depends(get_db)):
-    """List statements, each enriched with payment and sorted counts.
+    """List statements, each enriched with payment and sorted counts and the days and
+    months its own payments fall in.
 
     Counts are computed in grouped queries (no N+1) so the UI can show sorting
     progress per statement. sorted_count means what Teach Me
@@ -169,7 +170,10 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         """
         SELECT
             s.*,
-            COUNT(DISTINCT t.id) AS txn_count
+            COUNT(DISTINCT t.id) AS txn_count,
+            MIN(t.txn_date) AS first_payment,
+            MAX(t.txn_date) AS last_payment,
+            GROUP_CONCAT(DISTINCT strftime('%Y-%m', t.txn_date)) AS payment_months
         FROM statements s
         LEFT JOIN transactions t ON t.statement_id = s.id
         GROUP BY s.id
@@ -187,6 +191,9 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         d = dict(row)
         d["account_label"] = label_for_statement(labels, d)
         d = _public(d)
+        # Where this statement's own payments are (it may run across months its
+        # payments do not): the first and last day and the months they fall in.
+        d["payment_months"] = sorted((d["payment_months"] or "").split(",")) if d["payment_months"] else []
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
         d["shared_with_others"] = shared.get(d["id"], 0)

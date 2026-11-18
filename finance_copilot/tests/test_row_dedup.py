@@ -939,6 +939,32 @@ class TestMoveCarriesTheUsersWorkOver:
 # --- what deleting a statement takes with it ----------------------------------
 
 
+class TestStatementsSayWhereTheirOwnPaymentsAre:
+    """A statement can run across months, but its own payments may sit in only some
+    of them: the list says which, so a page never opens a month that is empty for it."""
+
+    def test_first_last_and_months_of_its_own_payments(self, api):
+        client, _ = api
+        _upload(client, "sample_statement.pdf")
+        _upload(client, "sample_statement_nov.pdf")
+        _upload(client, "sample_statement_overlap.pdf")
+        by_start = {s["period_start"]: s for s in client.get("/api/statements").json()}
+        oct_, nov, overlap = by_start["2026-10-01"], by_start["2026-11-01"], by_start["2026-10-05"]
+        assert (oct_["first_payment"], oct_["last_payment"], oct_["payment_months"]) == ("2026-10-01", "2026-10-08", ["2026-10"])
+        assert nov["payment_months"] == ["2026-11"]
+        # The overlap file runs 5 Oct to 15 Nov, but its own three payments are all in November.
+        assert overlap["payment_months"] == ["2026-11"]
+        assert overlap["first_payment"] >= "2026-11-01"
+        assert overlap["last_payment"] == "2026-11-15"
+
+    def test_a_statement_with_no_payments_has_none(self, api):
+        client, conn = api
+        conn.execute("INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s', 'kotak', '1', '2026-05')")
+        conn.commit()
+        s = client.get("/api/statements").json()[0]
+        assert (s["first_payment"], s["last_payment"], s["payment_months"]) == (None, None, [])
+
+
 class TestSharedRows:
     def test_the_list_counts_rows_a_later_file_also_had(self, api):
         client, _ = api

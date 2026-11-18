@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDate, formatMonth, formatDateRange, statementSpan, statementCoversMonth } from './dates.js'
+import { formatDate, formatMonth, formatDateRange, statementSpan, statementCoversMonth, statementLatestMonth } from './dates.js'
 
 describe('formatMonth', () => {
   it('renders a YYYY-MM bucket as "MMM YYYY"', () => {
@@ -78,9 +78,31 @@ describe('statementCoversMonth', () => {
     expect(statementCoversMonth(spanning, '2026-12')).toBe(false)
   })
 
+  it('goes by the months its own payments are in, not the days its file covered', () => {
+    // 5 Oct to 15 Nov, but every payment it added is in November.
+    const overlap = { ...spanning, payment_months: ['2026-11'] }
+    expect(statementCoversMonth(overlap, '2026-11')).toBe(true)
+    expect(statementCoversMonth(overlap, '2026-10')).toBe(false)
+  })
+
+  it('covers no month when it has no payments', () => {
+    expect(statementCoversMonth({ ...spanning, payment_months: [] }, '2026-10')).toBe(false)
+  })
+
   it('knows a statement with no dates by its month', () => {
     const bare = { statement_month: '2026-10', period_start: null, period_end: null }
     expect(statementCoversMonth(bare, '2026-10')).toBe(true)
     expect(statementCoversMonth(bare, '2026-11')).toBe(false)
+  })
+})
+
+describe('statementLatestMonth', () => {
+  it('is the latest month that has the statement\'s own payments', () => {
+    expect(statementLatestMonth({ statement_month: '2026-10', payment_months: ['2026-10', '2026-11'] })).toBe('2026-11')
+    expect(statementLatestMonth({ statement_month: '2026-10', payment_months: ['2026-11'] })).toBe('2026-11')
+  })
+  it('falls back to its month when the list does not say', () => {
+    expect(statementLatestMonth({ statement_month: '2026-10' })).toBe('2026-10')
+    expect(statementLatestMonth({ statement_month: '2026-10', payment_months: [] })).toBe('2026-10')
   })
 })

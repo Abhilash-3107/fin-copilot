@@ -157,6 +157,8 @@ function upgrade(before) {
     id, bank_name, statement_month, uploaded_at, closing_balance, period_end, txn_count, sorted_count: id === 's' ? sortedPayments(facts.transactions) : 0,
     // Release 3: what the file held and added (every payment, for a statement that was already here) and its stored balance check.
     balance_check, rows_in_file: txn_count, rows_added: txn_count, balance_checked: balance_check.checked, balance_consistent: balance_check.consistent, shared_with_others: 0,
+    // Where the statement's own payments are, as the payments say.
+    first_payment: id === 's' ? '2026-08-02' : null, last_payment: id === 's' ? '2026-08-02' : null, payment_months: id === 's' ? ['2026-08'] : [],
     account_id: owner[id].id, account_label: owner[id].label, account_ref_last4: owner[id].last4, printed_start: null, printed_end: null,
   }))
   facts.accounts = [
@@ -216,6 +218,7 @@ function addStatement(after, before, id, fields = {}) {
     ...shown, closing_balance: null, period_end: null, txn_count: 0, sorted_count: 0, account_id: `acc_${id}`, account_label: 'Bank ··0000',
     account_ref_last4: ref ? ref.slice(-4) : null, printed_start: null, printed_end: null,
     balance_check: noChain, rows_in_file: 0, rows_added: 0, balance_checked: 0, balance_consistent: 0, shared_with_others: 0,
+    first_payment: null, last_payment: null, payment_months: [],
   })
   after.facts.accounts.push({ ...after.facts.accounts[0], id: `acc_${id}`, statement_count: 1 })
   after.facts.schema.tableRows.accounts = after.facts.accounts.length
@@ -569,6 +572,14 @@ const regressions = {
   'a statement shares payments with another on an upgrade': [
     (a) => (a.facts.statements[0].shared_with_others = 2),
     /statements\[s\]\.shared_with_others/,
+  ],
+  'a statement offers a month its payments are not in': [
+    (a) => (a.facts.statements[0].payment_months = ['2026-08', '2026-09']),
+    /statement s says its payments are in \["2026-08","2026-09"\], they are in \["2026-08"\]/,
+  ],
+  'a statement gets the wrong last day for its payments': [
+    (a) => (a.facts.statements[0].last_payment = '2026-08-30'),
+    /statement s says its payments run 2026-08-02 to 2026-08-30, they run 2026-08-02 to 2026-08-02/,
   ],
   'a migration does not run': [
     (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('040'))),

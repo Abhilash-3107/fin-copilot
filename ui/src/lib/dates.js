@@ -59,9 +59,18 @@ export function statementSpan(statement) {
   return `${show(start)} to ${show(end)}`
 }
 
-// Whether any of a statement's payments can fall in the month ("2026-10"): by
-// its payment dates, so a statement that runs into the next month covers both.
+// Whether the statement has payments of its own in the month ("2026-10"). A
+// statement can cover days in a month it brought no payment for (a file that
+// overlapped what the account had), so the list says which months its own
+// payments are in. A statement without that list (older data) goes by its dates.
 export function statementCoversMonth(statement, month) {
+  if (Array.isArray(statement.payment_months)) return statement.payment_months.includes(month)
   if (!statement.period_start || !statement.period_end) return statement.statement_month === month
   return statement.period_start.slice(0, 7) <= month && month <= statement.period_end.slice(0, 7)
+}
+
+// The month to open when a statement is picked: the latest one that has its
+// payments, or its own month when the list says none.
+export function statementLatestMonth(statement) {
+  return statement.payment_months?.at(-1) ?? statement.statement_month
 }

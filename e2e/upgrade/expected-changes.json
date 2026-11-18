@@ -755,6 +755,19 @@
       "reason": "The running-balance check of a statement's whole file is now stored with it, so a statement whose overlapping rows were skipped never looks unbalanced. For every statement you already had it is the check the list showed before: the journey checks the stored figures equal that check and that nothing that was balanced is flagged now."
     },
     {
+      "id": "stored-statements-payment-span",
+      "scope": "stored",
+      "path": [
+        "statements[*].first_payment",
+        "statements[*].last_payment",
+        "statements[*].payment_months"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The statement list says on which days and in which months a statement's own payments fall, because a statement can cover days in a month it brought no payment for. They are worked out from the payments, which the journey checks."
+    },
+    {
       "id": "stored-statements-shared-with-others",
       "scope": "stored",
       "path": "statements[*].shared_with_others",
