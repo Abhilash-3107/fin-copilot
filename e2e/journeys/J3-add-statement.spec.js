@@ -318,6 +318,7 @@ test.describe('J3 accounts', () => {
     await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
     await expect(page.getByRole('menu')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'More for Joint account - 1 Nov to 8 Nov' })).toBeFocused()
+    await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Moved to Joint account')
     await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
     const accounts = await app.api.get('/accounts')
     expect(accounts.map((a) => [a.account_label, a.statement_count]).sort()).toEqual([['Bank ··0000', 1], ['Joint account', 1]])
@@ -446,7 +447,11 @@ test.describe('J3 overlapping statements', () => {
     await dialog.getByRole('button', { name: 'Bank ··0000' }).first().click()
     await expect(dialog).toHaveCount(0)
     // The page says what the move left out.
-    await expect(page.getByText('Moved 5 Oct to 15 Nov to Bank ··0000. 4 payments already there, so left out.')).toBeVisible()
+    // The 8 payments of November that the file skipped stay in Second, where they were.
+    await expect(page.getByText('Moved 5 Oct to 15 Nov to Bank ··0000. 4 payments already there, so left out. 8 payments in its dates stay in Second, where they were already.')).toBeVisible()
+    // The file's row says where the statement is now, not where it landed.
+    await expect(fileRow(page, 'sample_statement_overlap.pdf')).toContainText('Moved to Bank ··0000')
+    await expect(fileRow(page, 'sample_statement_overlap.pdf')).not.toContainText('Added to')
 
     const moved = (await app.api.get('/statements')).find((s) => s.period_end === '2026-11-15')
     expect(moved.txn_count).toBe(3)
