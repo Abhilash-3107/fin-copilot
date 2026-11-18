@@ -258,6 +258,24 @@ def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: s
         )
 
 
+def _payments_left_in_old_account(conn: sqlite3.Connection, statement: sqlite3.Row) -> int:
+    """How many payments the statement skipped at ingest (they were in its account
+    already) are still in that account, in its dates. A statement that skipped
+    payments whose owner was deleted since claims none of them: deleting a
+    statement does not restore what a later file skipped."""
+    skipped = (statement["rows_in_file"] or 0) - (statement["rows_added"] or 0)
+    start = statement["printed_start"] or statement["period_start"]
+    end = statement["printed_end"] or statement["period_end"]
+    if skipped <= 0 or not start or not end:
+        return 0
+    still_there = conn.execute(
+        "SELECT COUNT(*) FROM transactions t JOIN statements s ON s.id = t.statement_id "
+        "WHERE s.account_id = ? AND s.id != ? AND t.txn_date BETWEEN ? AND ?",
+        (statement["account_id"], statement["id"], start, end),
+    ).fetchone()[0]
+    return min(skipped, still_there)
+
+
 class StatementPatch(BaseModel):
     """Where a statement goes: another existing account, or `new_account` to start
     one for it (bank and number taken from the statement), which needs a name."""
@@ -313,8 +331,12 @@ def patch_statement(
                 _refuse_while_sorting(conn, statement_id, "Move it")
         already_there = 0
         carried_over = 0
+        not_carried = 0
+        left_behind = 0
+        old_account = statement["account_id"]
         deleted = False
         if statement["account_id"] != target:
+            left_behind = _payments_left_in_old_account(conn, statement)
             # The target may hold some of these payments already (the file first
             # landed in the wrong account): the account's own copies stay, the
             # duplicates go (after their work moves over), and a statement left
@@ -324,7 +346,7 @@ def patch_statement(
             if duplicates:
                 # What the user did to the duplicates goes onto the account's own
                 # copies first; the same step then deletes them.
-                carried_over = merge_duplicate_payments(conn, duplicates)
+                carried_over, not_carried = merge_duplicate_payments(conn, duplicates)
                 delete_payments(conn, [dup for dup, _ in duplicates])
                 conn.execute(
                     "UPDATE statements SET rows_added = MAX(COALESCE(rows_added, 0) - ?, 0) WHERE id = ?",
@@ -342,14 +364,22 @@ def patch_statement(
             else:
                 conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
             delete_empty_accounts(conn)
+    labels = account_labels(conn)
     return {
         "id": statement_id,
         "account_id": target,
-        "account_label": account_labels(conn)[target],
+        "account_label": labels[target],
         "rows_already_there": already_there,
-        # How many of those had work of the user's (a label, note, name, group or
-        # link) that now sits on the payment the account already had.
+        # How many of those had work of the user's (a label, note, name, group,
+        # skip or link) that now sits on the payment the account already had.
         "work_carried_over": carried_over,
+        # How many had a label, note, name or group role of the user's that
+        # differed from the account's own copy, which was kept instead.
+        "work_not_carried": not_carried,
+        # Payments in the moved statement's dates that the statement skipped at
+        # ingest (they were in its old account then) and that stay there.
+        "payments_left_behind": 0 if deleted else left_behind,
+        "left_behind_account_label": labels.get(old_account),
         "statement_deleted": deleted,
     }
 

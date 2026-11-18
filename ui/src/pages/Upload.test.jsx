@@ -591,6 +591,64 @@ describe('Upload', () => {
       ))
     })
 
+    it('says when the account kept its own label or note instead, in the singular and the plural', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 3, work_carried_over: 0, work_not_carried: 1, statement_deleted: false })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        "Moved Jul 2026 to HDFC ··5678. 3 payments already there, so left out. 1 payment had a different label or note in this account, and the account's own was kept.", 'info',
+      ))
+    })
+
+    it('says the same beside a removed statement, and has no such sentence at zero', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 8, work_not_carried: 2, statement_deleted: true })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        "Jul 2026 was not moved: all 8 payments in it were already in HDFC ··5678, so it was removed. 2 payments had a different label or note in this account, and the account's own was kept.", 'info',
+      ))
+    })
+
+    it('says which payments stay in the account the statement left', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({
+        account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 0, work_not_carried: 0,
+        payments_left_behind: 5, left_behind_account_label: 'Kotak savings', statement_deleted: false,
+      })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Moved Jul 2026 to HDFC ··5678. 5 payments in its dates stay in Kotak savings, where they were already.', 'info',
+      ))
+    })
+
+    it('says it in the singular for one payment', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({
+        account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 0,
+        payments_left_behind: 1, left_behind_account_label: 'Kotak savings', statement_deleted: false,
+      })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Moved Jul 2026 to HDFC ··5678. 1 payment in its dates stays in Kotak savings, where it was already.', 'info',
+      ))
+    })
+
     it('says the one payment in a removed statement in the singular, and what was kept', async () => {
       ledger.statements = [stmt]
       ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
@@ -631,6 +689,34 @@ describe('Upload', () => {
       const row = await drop()
       expect(await within(row).findByText('Added to Kotak savings')).toBeInTheDocument()
       expect(within(row).queryByRole('button', { name: 'Name it' })).not.toBeInTheDocument()
+    })
+
+    it('says where the statement is now once it has been moved, not where it landed', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_label: 'Kotak savings', account_is_new: false }))
+      ledger.statements = [{ ...stmt, id: 's1' }]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 0, statement_deleted: false })
+      const row = await drop()
+      expect(await within(row).findByText('Added to Kotak savings')).toBeInTheDocument()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      expect(await within(row).findByText('Moved to HDFC ··5678')).toBeInTheDocument()
+      expect(within(row).queryByText(/Added to Kotak savings/)).not.toBeInTheDocument()
+    })
+
+    it('drops the account part when the move removed the statement', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_label: 'Kotak savings', account_is_new: false }))
+      ledger.statements = [{ ...stmt, id: 's1' }]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 8, statement_deleted: true })
+      const row = await drop()
+      expect(await within(row).findByText('Added to Kotak savings')).toBeInTheDocument()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(within(row).queryByText(/Added to Kotak savings/)).not.toBeInTheDocument())
+      expect(within(row).queryByText(/Moved to/)).not.toBeInTheDocument()
     })
 
     it('says a new account was made, and lets you name it right there with Enter', async () => {

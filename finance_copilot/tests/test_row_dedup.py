@@ -782,7 +782,7 @@ class TestMoveCarriesTheUsersWorkOver:
         body = self._move(client, a, b)
         assert self._annotation(conn, survivor) == ("Food & Dining", "manual", None)
         assert conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0] == 1
-        assert body["work_carried_over"] == 0
+        assert (body["work_carried_over"], body["work_not_carried"]) == (0, 1)
 
     def test_a_manual_label_goes_onto_a_survivor_that_has_none(self, api):
         client, conn = api
@@ -858,7 +858,7 @@ class TestMoveCarriesTheUsersWorkOver:
         assert [tuple(r) for r in link] == [tuple(sorted([survivor, other]))]
         assert body["work_carried_over"] == 1
 
-    def test_a_link_that_would_join_a_payment_to_itself_or_repeat_one_is_dropped(self, api):
+    def test_a_link_that_would_join_a_payment_to_itself_or_repeat_one_of_any_kind_is_dropped(self, api):
         client, conn = api
         a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
         rows = {
@@ -879,12 +879,13 @@ class TestMoveCarriesTheUsersWorkOver:
         # The duplicate of the 3rd and the survivor of the 2nd are linked, and so are both 3rds with it: a repeat.
         link("a", rows["2026-05-03"], survivors["2026-05-02"])
         link("b", survivors["2026-05-03"], survivors["2026-05-02"])
-        # A link of another kind between the same two payments is not a repeat.
+        # A link of another kind between the same two payments is a repeat too: the
+        # pair would be netted twice (a refund counted once for each).
         link("c", rows["2026-05-03"], survivors["2026-05-02"], kind="refund")
         conn.commit()
         self._move(client, a, b)
         left = sorted((r["id"], r["link_type"]) for r in conn.execute("SELECT id, link_type FROM transaction_links"))
-        assert left == [("b", "transfer"), ("c", "refund")]
+        assert left == [("b", "transfer")]
         for r in conn.execute("SELECT txn_a, txn_b FROM transaction_links"):
             assert r["txn_a"] < r["txn_b"]
 
@@ -933,6 +934,148 @@ class TestMoveCarriesTheUsersWorkOver:
         assert body["statement_deleted"] is True
         assert conn.execute("SELECT user_note FROM transactions WHERE id = ?", (survivor,)).fetchone()[0] == "kept"
         assert body["work_carried_over"] == 1
+
+    def test_a_pair_linked_two_ways_is_netted_once_after_the_move(self, api):
+        """Survivor: refund to a credit. Duplicate: reimbursement to the same credit.
+        Two links to one payment would take the credit off the category twice."""
+        client, conn = api
+        a, b, dup, other, survivor = self._setup(conn)
+        lo, hi = sorted([survivor, other])
+        conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('l1', ?, ?, 'refund')", (lo, hi))
+        lo, hi = sorted([dup, other])
+        conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('l2', ?, ?, 'reimbursement')", (lo, hi))
+        conn.commit()
+        body = self._move(client, a, b)
+        assert [r["id"] for r in conn.execute("SELECT id FROM transaction_links")] == ["l1"]
+        assert body["work_carried_over"] == 0
+
+    def _three(self, conn):
+        """The account has days 1 to 4, the wrong one days 2 to 6: 2, 3 and 4 are duplicates."""
+        a, b = _accounts_pair(conn, _days(1, 2, 3, 4), _days(2, 3, 4, 5, 6))
+
+        def at(stmt, day):
+            return conn.execute(
+                "SELECT id FROM transactions WHERE statement_id = ? AND txn_date = ?", (stmt.id, f"2026-05-0{day}")
+            ).fetchone()[0]
+
+        return a, b, at
+
+    def test_duplicates_whose_own_work_was_kept_are_counted_apart_from_those_carried(self, api):
+        client, conn = api
+        a, b, at = self._three(conn)
+        # The 2nd: two different manual labels. The 3rd: different roles in one group.
+        # The 4th: skipped in Teach Me on the duplicate only, so it is carried.
+        for stmt, category in ((a, "Food & Dining"), (b, "Health")):
+            conn.execute(
+                "INSERT INTO annotations (id, transaction_id, merchant, category, confidence, source) VALUES (?, ?, 'M', ?, 1.0, 'manual')",
+                (f"ann_{category}", at(stmt, 2), category),
+            )
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g1', 'Trip')")
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role) VALUES ('g1', ?, 'paid')", (at(a, 3),))
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role, people) VALUES ('g1', ?, 'partial', 'Rahul')", (at(b, 3),))
+        conn.execute("UPDATE transactions SET review_snoozed_at = datetime('now') WHERE id = ?", (at(b, 4),))
+        conn.commit()
+        body = self._move(client, a, b)
+        assert body["rows_already_there"] == 3
+        assert body["work_not_carried"] == 2
+        assert body["work_carried_over"] == 1
+        assert conn.execute("SELECT category FROM annotations WHERE transaction_id = ?", (at(a, 2),)).fetchone()[0] == "Food & Dining"
+        assert tuple(conn.execute("SELECT role, people FROM transaction_group_members WHERE transaction_id = ?", (at(a, 3),)).fetchone()) == ("paid", None)
+
+    def test_a_different_note_or_name_is_a_conflict_and_the_same_one_is_not(self, api):
+        client, conn = api
+        a, b, at = self._three(conn)
+        conn.execute("UPDATE transactions SET user_note = 'mine', display_name = 'Mine' WHERE id = ?", (at(a, 2),))
+        conn.execute("UPDATE transactions SET user_note = 'theirs' WHERE id = ?", (at(b, 2),))
+        conn.execute("UPDATE transactions SET display_name = 'Same' WHERE id IN (?, ?)", (at(a, 3), at(b, 3)))
+        conn.commit()
+        body = self._move(client, a, b)
+        assert (body["work_not_carried"], body["work_carried_over"]) == (1, 0)
+
+    def test_the_same_label_on_both_is_not_a_conflict(self, api):
+        client, conn = api
+        a, b, at = self._three(conn)
+        for stmt in (a, b):
+            conn.execute(
+                "INSERT INTO annotations (id, transaction_id, merchant, category, confidence, source) VALUES (?, ?, 'M', 'Health', 1.0, 'manual')",
+                (f"ann{stmt.id}", at(stmt, 2)),
+            )
+        conn.commit()
+        body = self._move(client, a, b)
+        assert (body["work_not_carried"], body["work_carried_over"]) == (0, 0)
+
+    def test_nothing_conflicting_means_nothing_to_say(self, api):
+        client, conn = api
+        a, b, at = self._three(conn)
+        body = self._move(client, a, b)
+        assert (body["work_not_carried"], body["work_carried_over"]) == (0, 0)
+
+    def test_a_payment_set_aside_in_teach_me_stays_set_aside_after_the_move(self, api):
+        client, conn = api
+        a, b, at = self._three(conn)
+        conn.execute("UPDATE transactions SET review_snoozed_at = '2026-11-01 10:00:00' WHERE id = ?", (at(b, 2),))
+        # The survivor's own snooze wins.
+        conn.execute("UPDATE transactions SET review_snoozed_at = '2026-11-02 10:00:00' WHERE id = ?", (at(a, 3),))
+        conn.execute("UPDATE transactions SET review_snoozed_at = '2026-11-03 10:00:00' WHERE id = ?", (at(b, 3),))
+        conn.commit()
+        body = self._move(client, a, b)
+        got = {r["txn_date"]: r["review_snoozed_at"] for r in conn.execute("SELECT txn_date, review_snoozed_at FROM transactions WHERE statement_id = ?", (a.id,))}
+        assert got["2026-05-02"] == "2026-11-01 10:00:00"
+        assert got["2026-05-03"] == "2026-11-02 10:00:00"
+        assert body["work_carried_over"] == 1
+        assert body["work_not_carried"] == 0
+
+
+class TestMoveSaysWhatStaysBehind:
+    """A statement that skipped payments (they were in its account already) leaves
+    them behind when it moves, so its dates now claim days the new account lacks."""
+
+    def _skipped(self, conn):
+        # Account 1111 holds days 1 to 4. Statement 'late' (same account) is days 3 to 6
+        # and skipped 3 and 4. Another account exists to move 'late' to.
+        a = _ingest(conn, _FakeParser(_days(1, 2, 3, 4), ref="1111"), "a")
+        late = _ingest(conn, _FakeParser(_days(3, 4, 5, 6), ref="1111"), "late")
+        other = _ingest(conn, _FakeParser(_chain(50000, [10, 11]), ref="2222"), "other")
+        assert (late.rows_in_file, late.rows_added) == (4, 2)
+        return a, late, other
+
+    def test_the_response_counts_the_payments_left_in_the_old_account(self, api):
+        client, conn = api
+        a, late, other = self._skipped(conn)
+        body = client.patch(f"/api/statements/{late.id}", json={"account_id": other.account_id}).json()
+        assert body["payments_left_behind"] == 2
+        assert body["left_behind_account_label"] == "Kotak ··1111"
+
+    def test_moving_to_a_new_account_says_it_too(self, api):
+        client, conn = api
+        a, late, other = self._skipped(conn)
+        body = client.patch(f"/api/statements/{late.id}", json={"new_account": True, "name": "Joint"}).json()
+        assert body["payments_left_behind"] == 2
+
+    def test_a_statement_that_skipped_nothing_leaves_nothing_behind(self, api):
+        client, conn = api
+        a, late, other = self._skipped(conn)
+        body = client.patch(f"/api/statements/{other.id}", json={"account_id": a.account_id}).json()
+        assert body["payments_left_behind"] == 0
+
+    def test_payments_that_are_no_longer_in_the_old_account_are_not_claimed(self, api):
+        client, conn = api
+        a, late, other = self._skipped(conn)
+        # The statement that held days 3 and 4 is deleted: they are gone, and a
+        # delete does not restore them to 'late'.
+        assert client.delete(f"/api/statements/{a.id}").status_code == 200
+        body = client.patch(f"/api/statements/{late.id}", json={"account_id": other.account_id}).json()
+        assert body["payments_left_behind"] == 0
+
+    def test_a_move_that_drops_duplicates_does_not_count_them_as_left_behind(self, api):
+        client, conn = api
+        a, late, other = self._skipped(conn)
+        # 'late' goes to an account that already holds its day 5.
+        extra = _ingest(conn, _FakeParser(_days(5), ref="2222"), "extra")
+        assert extra.account_id == other.account_id
+        body = client.patch(f"/api/statements/{late.id}", json={"account_id": other.account_id}).json()
+        assert body["rows_already_there"] == 1
+        assert body["payments_left_behind"] == 2
 
 
 

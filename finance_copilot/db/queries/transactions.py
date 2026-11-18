@@ -128,22 +128,31 @@ def delete_payments(conn: sqlite3.Connection, txn_ids: list[str]) -> None:
     conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
 
 
-def merge_duplicate_payments(conn: sqlite3.Connection, duplicates: Sequence[tuple[str, str]]) -> int:
+def merge_duplicate_payments(
+    conn: sqlite3.Connection, duplicates: Sequence[tuple[str, str]]
+) -> tuple[int, int]:
     """Carry what the user did to each duplicate payment onto the payment the
     account already had (its survivor), so deleting the duplicate loses none of it.
-    Returns how many duplicates had work that now sits on a survivor.
+    Returns (carried, not_carried): how many duplicates had work that now sits on
+    a survivor, and how many had a label, note, name or group role of the user's
+    that differed from the survivor's own and was dropped in its favour (one
+    duplicate can be both).
 
     The survivor's own work wins; the duplicate's fills what it lacks:
     - a note and a name, where the survivor has none;
     - a label the user made (manual, imported, user rule), in place of a machine
       label or none, kept exactly as it was (source and original source too);
     - group memberships, unless the survivor is in the group already;
-    - links to other payments, unless that would join a payment to itself or
-      repeat a link the survivor has.
+    - a Teach Me skip, where the survivor was not skipped;
+    - links to other payments, unless that would join a payment to itself or the
+      survivor already has a link to that payment, of any type (two links to one
+      payment would take it off a category twice).
     Call it inside the caller's write transaction, before the duplicates are deleted."""
     carried = 0
+    not_carried = 0
     for dup, survivor in duplicates:
         moved = 0
+        dropped = 0
 
         for column in ("user_note", "display_name"):
             theirs_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (dup,)).fetchone()[0]
@@ -151,31 +160,58 @@ def merge_duplicate_payments(conn: sqlite3.Connection, duplicates: Sequence[tupl
             if theirs_text and not own_text:
                 conn.execute(f"UPDATE transactions SET {column} = ? WHERE id = ?", (theirs_text, survivor))
                 moved += 1
+            elif theirs_text and own_text and theirs_text != own_text:
+                dropped += 1
 
-        theirs = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (dup,)).fetchone()
+        label_columns = "merchant, category, subcategory, tags, source"
+        theirs = conn.execute(f"SELECT {label_columns} FROM annotations WHERE transaction_id = ?", (dup,)).fetchone()
         if theirs is not None and theirs["source"] in USER_LABEL_SOURCES:
-            own = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
+            own = conn.execute(f"SELECT {label_columns} FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
             if own is None or own["source"] not in USER_LABEL_SOURCES:
                 conn.execute("DELETE FROM annotations WHERE transaction_id = ?", (survivor,))
                 # The row itself moves, so the label is exactly as the user left it.
                 conn.execute("UPDATE annotations SET transaction_id = ? WHERE transaction_id = ?", (survivor, dup))
                 moved += 1
+            elif tuple(own)[:4] != tuple(theirs)[:4]:
+                dropped += 1
 
+        # Set aside in Teach Me stays set aside; the survivor's own time wins.
         moved += conn.execute(
-            "UPDATE OR IGNORE transaction_group_members SET transaction_id = ? WHERE transaction_id = ?",
-            (survivor, dup),
+            "UPDATE transactions SET review_snoozed_at = "
+            "(SELECT review_snoozed_at FROM transactions WHERE id = ?) "
+            "WHERE id = ? AND review_snoozed_at IS NULL "
+            "AND (SELECT review_snoozed_at FROM transactions WHERE id = ?) IS NOT NULL",
+            (dup, survivor, dup),
         ).rowcount
+
+        for member in conn.execute(
+            "SELECT group_id, role, people, labels, txn_type FROM transaction_group_members WHERE transaction_id = ?",
+            (dup,),
+        ).fetchall():
+            own_member = conn.execute(
+                "SELECT role, people, labels, txn_type FROM transaction_group_members "
+                "WHERE group_id = ? AND transaction_id = ?",
+                (member["group_id"], survivor),
+            ).fetchone()
+            if own_member is None:
+                conn.execute(
+                    "UPDATE transaction_group_members SET transaction_id = ? WHERE group_id = ? AND transaction_id = ?",
+                    (survivor, member["group_id"], dup),
+                )
+                moved += 1
+            elif tuple(own_member) != tuple(member)[1:]:
+                dropped += 1
         # What could not move (the survivor is in that group already) is not doubled.
         conn.execute("DELETE FROM transaction_group_members WHERE transaction_id = ?", (dup,))
 
         for link in conn.execute(
-            "SELECT id, txn_a, txn_b, link_type FROM transaction_links WHERE txn_a = ? OR txn_b = ?", (dup, dup)
+            "SELECT id, txn_a, txn_b FROM transaction_links WHERE txn_a = ? OR txn_b = ?", (dup, dup)
         ).fetchall():
             other = link["txn_b"] if link["txn_a"] == dup else link["txn_a"]
             low, high = sorted((survivor, other))
             if other == survivor or conn.execute(
-                "SELECT 1 FROM transaction_links WHERE txn_a = ? AND txn_b = ? AND link_type = ? AND id != ?",
-                (low, high, link["link_type"], link["id"]),
+                "SELECT 1 FROM transaction_links WHERE txn_a = ? AND txn_b = ? AND id != ?",
+                (low, high, link["id"]),
             ).fetchone():
                 conn.execute("DELETE FROM transaction_links WHERE id = ?", (link["id"],))
             else:
@@ -183,7 +219,8 @@ def merge_duplicate_payments(conn: sqlite3.Connection, duplicates: Sequence[tupl
                 moved += 1
 
         carried += 1 if moved else 0
-    return carried
+        not_carried += 1 if dropped else 0
+    return carried, not_carried
 
 
 def payment_months(conn: sqlite3.Connection) -> list[str]:

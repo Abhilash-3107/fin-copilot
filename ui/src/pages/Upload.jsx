@@ -194,6 +194,8 @@ function AccountLine({ statement, label, onName }) {
     returnTo.current = null
   }, [naming])
 
+  // Moved since it was added: the line says where it is now.
+  if (statement.account_moved) return <p className="text-xs text-[#94a3b8] mt-0.5">Moved to {label}</p>
   if (!statement.account_is_new) return <p className="text-xs text-[#94a3b8] mt-0.5">Added to {label}</p>
   if (naming) {
     return (
@@ -503,6 +505,15 @@ export default function Upload() {
         target.id ? { account_id: target.id } : { new_account: true, name: target.name },
       )
       toast(moveMessage(s, made, target), 'info')
+      // The file row of this statement says where it is now, not where it landed.
+      setEntries(list => list.map(e => (e.statement?.id === s.id
+        ? {
+            ...e,
+            statement: made.statement_deleted
+              ? { ...e.statement, account_id: null }
+              : { ...e.statement, account_id: made.account_id, account_label: made.account_label, account_moved: true },
+          }
+        : e)))
       refresh()
     } catch (e) {
       toast(couldnt('move this statement', e), 'error')
@@ -511,22 +522,32 @@ export default function Upload() {
 
   // Where it went, and what of it the account had already (those payments were
   // dropped, after the user's labels, notes and links on them moved to the
-  // account's own copies).
+  // account's own copies). Then what could not come along: work the account's own
+  // copy kept instead of the moved one's, and payments the statement had skipped
+  // when it was added, which stay in the account it left.
   function moveMessage(s, made, target) {
     const where = target.id ? target.account_label : made?.account_label ?? 'a new account'
     const already = made?.rows_already_there ?? 0
     const carried = made?.work_carried_over ?? 0
+    const notCarried = made?.work_not_carried ?? 0
+    const leftBehind = made?.payments_left_behind ?? 0
     let kept = ''
     if (carried > 0) {
       const of = carried === already ? (already === 1 ? 'it' : 'them') : `${carried} of them`
       kept = `; your labels and notes on ${of} were kept`
     }
+    const differed = notCarried > 0
+      ? ` ${count(notCarried, 'payment')} had a different label or note in this account, and the account's own was kept.`
+      : ''
     if (made?.statement_deleted) {
       const was = already === 1 ? 'the one payment in it was' : `all ${count(already, 'payment')} in it were`
-      return `${statementSpan(s)} was not moved: ${was} already in ${where}, so it was removed${kept}.`
+      return `${statementSpan(s)} was not moved: ${was} already in ${where}, so it was removed${kept}.${differed}`
     }
     const dropped = already > 0 ? ` ${count(already, 'payment')} already there, so left out${kept}.` : ''
-    return `Moved ${statementSpan(s)} to ${where}.${dropped}`
+    const stayed = leftBehind > 0
+      ? ` ${count(leftBehind, 'payment')} in its dates ${leftBehind === 1 ? 'stays' : 'stay'} in ${made.left_behind_account_label ?? s.account_label}, where ${leftBehind === 1 ? 'it was' : 'they were'} already.`
+      : ''
+    return `Moved ${statementSpan(s)} to ${where}.${dropped}${differed}${stayed}`
   }
 
   const accountLabels = new Map(accounts.map(a => [a.id, a.account_label]))
