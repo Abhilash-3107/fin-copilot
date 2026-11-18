@@ -878,14 +878,16 @@ class TestMoveCarriesTheUsersWorkOver:
         link("self", rows["2026-05-02"], survivors["2026-05-02"])
         # The duplicate of the 3rd and the survivor of the 2nd are linked, and so are both 3rds with it: a repeat.
         link("a", rows["2026-05-03"], survivors["2026-05-02"])
-        link("b", survivors["2026-05-03"], survivors["2026-05-02"])
+        # (Not a transfer: two payments of one account are never paired, so a move
+        # would unpair a transfer link between them.)
+        link("b", survivors["2026-05-03"], survivors["2026-05-02"], kind="reimbursement")
         # A link of another kind between the same two payments is a repeat too: the
         # pair would be netted twice (a refund counted once for each).
         link("c", rows["2026-05-03"], survivors["2026-05-02"], kind="refund")
         conn.commit()
         self._move(client, a, b)
         left = sorted((r["id"], r["link_type"]) for r in conn.execute("SELECT id, link_type FROM transaction_links"))
-        assert left == [("b", "transfer")]
+        assert left == [("b", "reimbursement")]
         for r in conn.execute("SELECT txn_a, txn_b FROM transaction_links"):
             assert r["txn_a"] < r["txn_b"]
 
