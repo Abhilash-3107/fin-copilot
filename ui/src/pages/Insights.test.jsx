@@ -370,3 +370,21 @@ describe('Insights when the API fails', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
+
+describe('Insights asks once for the default period', () => {
+  it('waits for the statement list, then asks for the month it will keep, so a failed answer is never replaced', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/statements') {
+        return new Promise(resolve => setTimeout(() => resolve([
+          { id: 's1', statement_month: '2026-02', uploaded_at: '2026-03-01T00:00:00' },
+        ]), 20))
+      }
+      return Promise.resolve([])
+    })
+    renderInsights()
+    expect(await screen.findByText('Kept')).toBeInTheDocument()
+    const asked = mockApi.get.mock.calls.map(([path]) => path).filter(path => path.startsWith('/insights'))
+    expect(asked).toEqual(['/insights?month=2026-02'])
+  })
+})

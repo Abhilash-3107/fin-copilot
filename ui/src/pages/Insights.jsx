@@ -405,7 +405,7 @@ function MerchantsPanel({ merchants, heading, month }) {
 }
 
 export default function Insights() {
-  const { month: periodMonth } = usePeriod()
+  const { month: periodMonth, ready: periodReady } = usePeriod()
 
   // The page is month-anchored: every number answers "how was this month".
   // "All time" falls back to the latest month with data (the server's default),
@@ -413,7 +413,7 @@ export default function Insights() {
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const { data, loading, error, reload } = useLoad(useCallback(
     () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
-  ))
+  ), { enabled: periodReady })
 
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)

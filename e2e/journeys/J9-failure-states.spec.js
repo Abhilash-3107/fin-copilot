@@ -91,6 +91,38 @@ test.describe('J9 failure states', () => {
     await expect(failures(page)).toHaveCount(0)
   })
 
+  // The pages that ask for "the period" used to ask once with no month and again when the
+  // statement list arrived and chose one. The second answer replaced the first, so a
+  // person (or a test) holding the error saw its Retry vanish.
+  for (const [name, route, text, pattern] of [
+    ['Money Map', '/#/insights', "Couldn't load your Money Map.", /\/api\/insights/],
+    ['Dashboard', '/#/dashboard', "Couldn't load your dashboard.", /\/api\/insights/],
+    ['Transactions', '/#/transactions', "Couldn't load your payments.", /\/api\/transactions(\?|$)/],
+  ]) {
+    test(`${name} asks once, so a slow statement list never replaces its error`, async ({ page, tolerate }) => {
+      const asked = []
+      page.on('request', (request) => { if (pattern.test(request.url())) asked.push(request.url()) })
+      const api = await breakApi(page, tolerate, pattern)
+      await page.route(/\/api\/statements(\?|$)/, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        await route.fallback()
+      })
+      const statementList = page.waitForResponse(/\/api\/statements(\?|$)/)
+      await page.goto(route)
+      await expect(alertWith(page, text)).toBeVisible()
+      api.heal()
+      // The statement list arrives and the app settles; nothing may ask again on its own.
+      await statementList
+      await page.waitForLoadState('networkidle')
+      expect(asked).toHaveLength(1)
+      await expect(alertWith(page, text)).toBeVisible()
+      await alertWith(page, text).getByRole('button', { name: 'Retry' }).click()
+      await expect(alertWith(page, text)).toHaveCount(0)
+      expect(asked).toHaveLength(2)
+      expect(asked[1]).toContain('month=')
+    })
+  }
+
   test('People says the list could not load, never "No people yet", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/people/)
     await page.goto('/#/people')

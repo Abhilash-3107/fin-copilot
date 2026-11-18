@@ -147,10 +147,12 @@ describe('Transactions', () => {
       const release = holdStatements()
       renderPage()
       const [statementSelect, periodSelect] = await screen.findAllByRole('combobox')
-      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
       expect(periodSelect).toHaveValue('all')
+      // The list waits for the statements, so its first request already has its final scope.
+      expect(callsTo('/transactions?')).toEqual([])
 
       await act(async () => { release() })
+      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
       await waitFor(() => expect(within(statementSelect).getAllByRole('option')).toHaveLength(1 + STATEMENTS.length))
       await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
 
@@ -163,10 +165,12 @@ describe('Transactions', () => {
       localStorage.setItem('fc_period_month', '2026-10')
       const release = holdStatements()
       renderPage()
-      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
+      await screen.findAllByRole('combobox')
+      expect(callsTo('/transactions?')).toEqual([])
 
       await act(async () => { release() })
       await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/month=2026-10/))
+      expect(callsTo('/transactions?')).toHaveLength(1)
       await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
 
       expect(screen.getAllByRole('combobox')[1]).toHaveValue('2026-10')

@@ -461,7 +461,7 @@ function AccuracyCard({ rows, error, onRetry }) {
 export default function Dashboard() {
   const toast = useToast()
   const { refresh: refreshDemoData } = useDemoData()
-  const { month: periodMonth } = usePeriod()
+  const { month: periodMonth, ready: periodReady } = usePeriod()
   // Each block loads on its own, so one that fails says so in its own place
   // (with Retry) and never reads as "you have no data".
   // Month-anchored like Money Map: "All time" falls back to the latest month
@@ -470,7 +470,7 @@ export default function Dashboard() {
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const summaryLoad = useLoad(useCallback(
     () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
-  ))
+  ), { enabled: periodReady })
   // Counts only: the queue itself can be thousands of rows long. Low-confidence
   // guesses waiting in Teach Me span every month, not just this one.
   const countsLoad = useLoad(useCallback(() => api.get('/annotations/review-queue/counts'), []))
