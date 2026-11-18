@@ -74,3 +74,19 @@ export function statementCoversMonth(statement, month) {
 export function statementLatestMonth(statement) {
   return statement.payment_months?.at(-1) ?? statement.statement_month
 }
+
+// A time the ledger stored (SQLite's datetime('now'): "2026-11-15 10:00:00", in
+// UTC, with no zone written). Read bare, a browser takes it for local time and
+// shows it hours early or late, so it is read as UTC and shown in local time.
+export function parseStoredTime(value) {
+  if (!value) return null
+  const text = String(value)
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(text)
+  return new Date(hasZone ? text : `${text.replace(' ', 'T')}Z`)
+}
+
+// A stored time as the page writes it: "15 Nov 2026 15:30" in local time.
+export function formatStoredTime(value) {
+  const d = parseStoredTime(value)
+  return d && !Number.isNaN(d.getTime()) ? dayjs(d).format('DD MMM YYYY HH:mm') : ''
+}

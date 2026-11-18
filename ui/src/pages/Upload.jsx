@@ -13,7 +13,7 @@ import { useStatement } from '../contexts/StatementContext.jsx'
 import Amount from '../components/Amount.jsx'
 import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
-import { statementSpan } from '../lib/dates.js'
+import { formatStoredTime, statementSpan } from '../lib/dates.js'
 import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
 import { couldnt, errorReason } from '../lib/errors.js'
@@ -801,7 +801,7 @@ export default function Upload() {
                       <CoverageBadge done={s.sorted_count} total={s.txn_count} />
                     </Tooltip>
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{dayjs(s.uploaded_at).format('DD MMM YYYY HH:mm')}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{formatStoredTime(s.uploaded_at)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2">
                       <Tooltip content="Sort this statement again, for example after connecting a model">

@@ -445,6 +445,8 @@ test.describe('J3 overlapping statements', () => {
     const dialog = page.getByRole('dialog', { name: 'Move to account' })
     await dialog.getByRole('button', { name: 'Bank ··0000' }).first().click()
     await expect(dialog).toHaveCount(0)
+    // The page says what the move left out.
+    await expect(page.getByText('Moved 5 Oct to 15 Nov to Bank ··0000. 4 payments already there, so left out.')).toBeVisible()
 
     const moved = (await app.api.get('/statements')).find((s) => s.period_end === '2026-11-15')
     expect(moved.txn_count).toBe(3)

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 import { readStored, writeStored } from '../lib/storage.js'
+import { parseStoredTime } from '../lib/dates.js'
 
 const StatementContext = createContext(null)
 
@@ -29,7 +30,7 @@ export function StatementProvider({ children }) {
         const sorted = [...data].sort((a, b) => {
           if (b.statement_month !== a.statement_month)
             return b.statement_month.localeCompare(a.statement_month)
-          return new Date(b.uploaded_at) - new Date(a.uploaded_at)
+          return parseStoredTime(b.uploaded_at) - parseStoredTime(a.uploaded_at)
         })
         setStatements(sorted)
 

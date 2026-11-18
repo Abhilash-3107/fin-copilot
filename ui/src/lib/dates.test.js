@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatDate, formatMonth, formatDateRange, statementSpan, statementCoversMonth, statementLatestMonth } from './dates.js'
+import { formatDate, formatMonth, formatDateRange, statementSpan, statementCoversMonth, statementLatestMonth, parseStoredTime, formatStoredTime } from './dates.js'
 
 describe('formatMonth', () => {
   it('renders a YYYY-MM bucket as "MMM YYYY"', () => {
@@ -104,5 +104,25 @@ describe('statementLatestMonth', () => {
   it('falls back to its month when the list does not say', () => {
     expect(statementLatestMonth({ statement_month: '2026-10' })).toBe('2026-10')
     expect(statementLatestMonth({ statement_month: '2026-10', payment_months: [] })).toBe('2026-10')
+  })
+})
+
+describe('stored times', () => {
+  it('reads a time with no zone as UTC, which is what the ledger writes', () => {
+    expect(parseStoredTime('2026-11-15 10:00:00').toISOString()).toBe('2026-11-15T10:00:00.000Z')
+    expect(parseStoredTime('2026-11-15T10:00:00').toISOString()).toBe('2026-11-15T10:00:00.000Z')
+  })
+  it('leaves a time that names its zone alone', () => {
+    expect(parseStoredTime('2026-11-15T10:00:00Z').toISOString()).toBe('2026-11-15T10:00:00.000Z')
+    expect(parseStoredTime('2026-11-15T15:30:00+05:30').toISOString()).toBe('2026-11-15T10:00:00.000Z')
+  })
+  it('shows it in local time', () => {
+    const local = new Date(Date.UTC(2026, 10, 15, 10, 0, 0))
+    const pad = n => String(n).padStart(2, '0')
+    expect(formatStoredTime('2026-11-15 10:00:00')).toBe(`15 Nov 2026 ${pad(local.getHours())}:${pad(local.getMinutes())}`)
+  })
+  it('is empty for nothing', () => {
+    expect(formatStoredTime(null)).toBe('')
+    expect(formatStoredTime('not a time')).toBe('')
   })
 })

@@ -518,6 +518,14 @@ describe('Upload', () => {
       expect(within(rows[2]).getByText('Sep 2026')).toBeInTheDocument()
     })
 
+    it('shows when a statement was added in local time, though the ledger stores UTC', async () => {
+      ledger.statements = [{ ...stmt, uploaded_at: '2026-07-01 10:00:00' }]
+      renderUpload()
+      const local = new Date(Date.UTC(2026, 6, 1, 10, 0, 0))
+      const pad = n => String(n).padStart(2, '0')
+      expect(await screen.findByText(`01 Jul 2026 ${pad(local.getHours())}:${pad(local.getMinutes())}`)).toBeInTheDocument()
+    })
+
     it('says in the delete confirmation that payments another statement skipped go for good, only when it applies', async () => {
       ledger.statements = [{ ...stmt, shared_with_others: 3 }]
       renderUpload()
