@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Sequence
 
-from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.common import UNCATEGORIZED, effective_category_sql, unsorted_sql
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transfers import release_transfers
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
@@ -336,11 +336,13 @@ def _filter_conditions(
 
     if categories:
         # Uncategorized is "not sorted" (common.unsorted_sql), which includes
-        # rows with no annotation at all, so it matches what Insights counts.
+        # rows with no annotation at all, so it matches what Insights counts. A named
+        # category matches on the effective category too, so a payment waiting on a
+        # pair is in Uncategorized and in no other, the way Insights files it.
         named = [c for c in categories if c != UNCATEGORIZED]
         clauses = []
         if named:
-            clauses.append(f"a.category IN ({','.join('?' * len(named))})")
+            clauses.append(f"{effective_category_sql('a')} IN ({','.join('?' * len(named))})")
             params += named
         if len(named) != len(categories):
             clauses.append(unsorted_sql("a"))

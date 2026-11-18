@@ -187,3 +187,21 @@ export async function accessibleMoneyLeaks(page) {
   const tree = await page.locator('body').ariaSnapshot()
   return LEAK_PATTERNS.flatMap((re) => tree.match(re) ?? [])
 }
+
+/**
+ * Teach Me: press Skip until the card for a payment whose accessible name matches `pattern`
+ * is showing, and return it. The other cards are not the journey's business.
+ */
+export async function skipToPayment(page, pattern) {
+  const wanted = page.getByRole('group', { name: pattern })
+  const anyCard = page.getByRole('group', { name: /^Payment to / })
+  await expect(anyCard).toBeVisible()
+  for (let i = 0; i < 12; i++) {
+    const label = await anyCard.getAttribute('aria-label')
+    if (pattern.test(label)) break
+    await page.keyboard.press('s')
+    await expect(anyCard).not.toHaveAttribute('aria-label', label)
+  }
+  await expect(wanted).toBeVisible()
+  return wanted
+}

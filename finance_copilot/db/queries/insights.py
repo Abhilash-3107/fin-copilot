@@ -17,9 +17,14 @@ small summary payload instead of the whole transaction table. Definitions:
   Because Out is gross and the rows are net, the payload also carries the
   reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other debits), so
   rows + extras always sum to Out exactly (breakdown.total == verdict.money_out).
-- "Not sorted" has one definition (common.unsorted_sql): a debit with no
-  annotation or whose category is NULL or Uncategorized. The unexplained
-  figure, the Uncategorized breakdown row and the Transactions filter all use it.
+- "Not sorted" has one definition (common.unsorted_sql): a payment with no
+  annotation, whose category is NULL or Uncategorized, or that could be one side
+  of a transfer between the user's own accounts which pairing was not sure
+  enough to make. Every figure here that groups by category reads the effective
+  category (common.effective_category_sql: Uncategorized when not sorted, else
+  the label), so the unexplained figure, the Uncategorized breakdown row and the
+  Transactions filter are the same rows, and In, Out, Invested and Kept still
+  add up with them.
 - Net spend is gross debits minus offsets. Offsets come from, in order:
   credits linked to a debit via transaction_links, credit members of expense
   groups typed split/reimbursement/refund (allocated across the group's spend
@@ -51,7 +56,13 @@ from datetime import date
 from statistics import median
 
 from finance_copilot.db.queries.accounts import account_label
-from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.common import (
+    UNCATEGORIZED,
+    effective_category_sql,
+    effective_subcategory_sql,
+    unsorted_sql,
+    waiting_on_pair_sql,
+)
 from finance_copilot.db.queries.payee import payee_labels
 from finance_copilot.db.queries.transactions import payment_months
 
@@ -260,12 +271,12 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
 
     # 1. Explicit links: a refund/reimbursement/split credit against a debit.
     link_rows = conn.execute(
-        """
+        f"""
         SELECT l.link_type,
                ta.id AS a_id, ta.debit_credit AS a_dc, ta.amount AS a_amount,
-               date(ta.txn_date) AS a_date, aa.category AS a_category,
+               date(ta.txn_date) AS a_date, {effective_category_sql("aa", "ta")} AS a_category,
                tb.id AS b_id, tb.debit_credit AS b_dc, tb.amount AS b_amount,
-               date(tb.txn_date) AS b_date, ab.category AS b_category
+               date(tb.txn_date) AS b_date, {effective_category_sql("ab", "tb")} AS b_category
         FROM transaction_links l
         JOIN transactions ta ON ta.id = l.txn_a
         JOIN transactions tb ON tb.id = l.txn_b
@@ -294,9 +305,9 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     # 2. Group credits: shares friends paid back inside an expense group,
     #    allocated pro rata across the group's spend debits.
     member_rows = conn.execute(
-        """
+        f"""
         SELECT gm.group_id, gm.txn_type, t.id, t.amount, t.debit_credit,
-               date(t.txn_date) AS credit_date, a.category
+               date(t.txn_date) AS credit_date, {effective_category_sql("a")} AS category
         FROM transaction_group_members gm
         JOIN transactions t ON t.id = gm.transaction_id
         LEFT JOIN annotations a ON a.transaction_id = t.id
@@ -370,8 +381,8 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             continue
         if row["counterparty_key"]:
             match = conn.execute(
-                """
-                SELECT a.category
+                f"""
+                SELECT {effective_category_sql("a")} AS category
                 FROM transactions t
                 JOIN annotations a ON a.transaction_id = t.id
                 WHERE t.debit_credit = 'debit' AND t.counterparty_key = ?
@@ -385,12 +396,12 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                 continue
         amount_match = conn.execute(
             f"""
-            SELECT t.id, t.amount, a.category
+            SELECT t.id, t.amount, {effective_category_sql("a")} AS category
             FROM transactions t
             LEFT JOIN annotations a ON a.transaction_id = t.id
             WHERE t.debit_credit = 'debit' AND t.amount = ?
               AND t.txn_date <= ? AND t.txn_date >= date(?, '-60 days')
-              AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
+              AND {effective_category_sql("a")} NOT IN ({placeholders})
             ORDER BY t.txn_date DESC LIMIT 1
             """,
             (row["amount"], row["txn_date"], row["txn_date"], *NON_SPEND_CATEGORIES),
@@ -430,21 +441,25 @@ def _verdict(conn: sqlite3.Connection, start: str, end: str) -> dict:
         f"""
         SELECT
           COALESCE(SUM(CASE WHEN t.debit_credit = 'credit'
-              AND COALESCE(a.category, '') != 'Self Transfers'
-              AND NOT (COALESCE(a.category, '') = 'Income'
-                       AND COALESCE(a.subcategory, '') = 'Opening Balance')
+              AND cat != 'Self Transfers'
+              AND NOT (cat = 'Income' AND COALESCE(sub, '') = 'Opening Balance')
               THEN t.amount END), 0) AS money_in,
-          COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' AND a.category = 'Income'
-              AND COALESCE(a.subcategory, '') NOT IN ('Refund', 'Opening Balance')
+          COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' AND cat = 'Income'
+              AND COALESCE(sub, '') NOT IN ('Refund', 'Opening Balance')
               THEN t.amount END), 0) AS earned,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'
-              AND COALESCE(a.category, '') NOT IN ({excluded})
+              AND cat NOT IN ({excluded})
               THEN t.amount END), 0) AS money_out,
-          COALESCE(SUM(CASE WHEN t.debit_credit = 'debit' AND a.category = 'Investments'
+          COALESCE(SUM(CASE WHEN t.debit_credit = 'debit' AND cat = 'Investments'
               THEN t.amount END), 0) AS invested
-        FROM transactions t
-        LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE date(t.txn_date) BETWEEN ? AND ?
+        FROM (
+          SELECT t.debit_credit, t.amount,
+                 {effective_category_sql("a")} AS cat,
+                 {effective_subcategory_sql("a")} AS sub
+          FROM transactions t
+          LEFT JOIN annotations a ON a.transaction_id = t.id
+          WHERE date(t.txn_date) BETWEEN ? AND ?
+        ) t
         """,
         (*OUT_EXCLUDED_CATEGORIES, start, end),
     ).fetchone()
@@ -467,12 +482,15 @@ def _categories_for_range(conn: sqlite3.Connection, start: str, end: str, cat_of
     placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
     rows = conn.execute(
         f"""
-        SELECT COALESCE(a.category, 'Uncategorized') AS category,
-               a.subcategory, COUNT(*) AS n, SUM(t.amount) AS total
-        FROM transactions t
-        LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
-          AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
+        SELECT category, subcategory, COUNT(*) AS n, SUM(amount) AS total
+        FROM (
+          SELECT {effective_category_sql("a")} AS category,
+                 {effective_subcategory_sql("a")} AS subcategory, t.amount
+          FROM transactions t
+          LEFT JOIN annotations a ON a.transaction_id = t.id
+          WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
+        )
+        WHERE category NOT IN ({placeholders})
         GROUP BY 1, 2
         """,
         (start, end, *NON_SPEND_CATEGORIES),
@@ -535,9 +553,9 @@ def _out_breakdown(
             f"""
             SELECT COUNT(*) AS n, COALESCE(SUM(t.amount), 0) AS total
             FROM transactions t
-            JOIN annotations a ON a.transaction_id = t.id
+            LEFT JOIN annotations a ON a.transaction_id = t.id
             WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
-              AND a.category IN ({marks})
+              AND {effective_category_sql("a")} IN ({marks})
             """,
             (start, end, *names),
         ).fetchone()
@@ -567,15 +585,18 @@ def _recurring(conn: sqlite3.Connection, latest_date: str) -> list[dict]:
     fixed price point (canteens, metro fares), not commitments, and are dropped.
     """
     rows = conn.execute(
-        """
-        SELECT t.counterparty_key AS key, CAST(ROUND(t.amount) AS INTEGER) AS amount,
-               t.txn_date, strftime('%Y-%m', t.txn_date) AS month,
-               a.category
-        FROM transactions t
-        LEFT JOIN annotations a ON a.transaction_id = t.id
-        WHERE t.debit_credit = 'debit' AND t.counterparty_key IS NOT NULL
-          AND COALESCE(a.category, '') NOT IN ('Transfers', 'Self Transfers')
-        ORDER BY t.txn_date
+        f"""
+        SELECT key, amount, txn_date, month, category
+        FROM (
+          SELECT t.counterparty_key AS key, CAST(ROUND(t.amount) AS INTEGER) AS amount,
+                 t.txn_date, strftime('%Y-%m', t.txn_date) AS month,
+                 CASE WHEN {waiting_on_pair_sql("a")} THEN '{UNCATEGORIZED}' ELSE a.category END AS category
+          FROM transactions t
+          LEFT JOIN annotations a ON a.transaction_id = t.id
+          WHERE t.debit_credit = 'debit' AND t.counterparty_key IS NOT NULL
+        )
+        WHERE COALESCE(category, '') NOT IN ('Transfers', 'Self Transfers')
+        ORDER BY txn_date
         """
     ).fetchall()
     units: dict[tuple[str, int], list[sqlite3.Row]] = defaultdict(list)
@@ -653,14 +674,14 @@ def _people_ledger(conn: sqlite3.Connection, settled_ids: set[str], start: str, 
     """
     people = conn.execute("SELECT id, name, upi, relationship FROM people").fetchall()
     rows = conn.execute(
-        """
+        f"""
         SELECT t.id, t.amount, t.debit_credit, t.txn_date,
                LOWER(COALESCE(t.counterparty_key, '')) AS cpk,
                LOWER(COALESCE(a.merchant, '')) AS merchant
         FROM transactions t
         JOIN annotations a ON a.transaction_id = t.id
-        WHERE a.category = 'Transfers'
-          AND COALESCE(a.subcategory, '') != 'ATM Withdrawal'
+        WHERE {effective_category_sql("a")} = 'Transfers'
+          AND COALESCE({effective_subcategory_sql("a")}, '') != 'ATM Withdrawal'
           AND date(t.txn_date) BETWEEN ? AND ?
         """,
         (start, end),
@@ -724,7 +745,7 @@ def _merchants(conn: sqlite3.Connection, start: str, end: str) -> list[dict]:
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?
-          AND COALESCE(a.category, 'Uncategorized') NOT IN ({placeholders})
+          AND {effective_category_sql("a")} NOT IN ({placeholders})
           AND COALESCE(t.counterparty_key, a.merchant) IS NOT NULL
         """,
         (start, end, *NON_SPEND_CATEGORIES),

@@ -2,7 +2,7 @@
 // see sorting start by itself, and follow the way on to Teach Me.
 import { readFileSync } from 'node:fs'
 import { test, expect } from '../fixtures.js'
-import { open } from '../lib/ui.js'
+import { open, skipToPayment } from '../lib/ui.js'
 import {
   FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK, FIXTURE_PDF_OVERLAP, FIXTURE_PDF_TRANSFER_IN, FIXTURE_PDF_TRANSFER_OUT,
 } from '../lib/statement.js'
@@ -545,16 +545,7 @@ test.describe('J3 a transfer between your own accounts', () => {
 
     await open(page, '/review')
     // Skip to the 7,000 payment to Quartz Infra; the other cards are not this journey's business.
-    const quartz = page.getByRole('group', { name: /^Payment to .*quartz infra/i })
-    const anyCard = page.getByRole('group', { name: /^Payment to / })
-    await expect(anyCard).toBeVisible()
-    for (let i = 0; i < 12; i++) {
-      const label = await anyCard.getAttribute('aria-label')
-      if (/quartz infra/i.test(label)) break
-      await page.keyboard.press('s')
-      await expect(anyCard).not.toHaveAttribute('aria-label', label)
-    }
-    await expect(quartz).toBeVisible()
+    const quartz = await skipToPayment(page, /^Payment to .*quartz infra/i)
 
     const candidate = page.getByRole('button', { name: /Moved to Axis ··1234, 21 Oct/ })
     await expect(candidate).toBeVisible()

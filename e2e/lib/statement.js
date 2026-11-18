@@ -51,3 +51,14 @@ export async function sortedByServer(api, statementId) {
   }
   throw new Error('Sorting did not finish in 30s')
 }
+
+/**
+ * Add the two transfer statements the way the Add Statement page does and wait until the server has
+ * finished sorting both. Their 12,000 pair pairs by itself; their 7,000 pair has no sign, so it waits.
+ */
+export async function uploadTransferFixtures(api) {
+  const out = await api.upload('/statements/upload', 'sample_statement_transfer_out.pdf', readFileSync(FIXTURE_PDF_TRANSFER_OUT), 'application/pdf')
+  await sortedByServer(api, out.id)
+  const inn = await api.upload('/statements/upload', 'sample_statement_transfer_in.pdf', readFileSync(FIXTURE_PDF_TRANSFER_IN), 'application/pdf')
+  await sortedByServer(api, inn.id)
+}

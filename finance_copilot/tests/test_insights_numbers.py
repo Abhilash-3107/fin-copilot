@@ -15,6 +15,7 @@ from test_insights import seed_txn
 
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.insights import summarize_insights
+from finance_copilot.db.queries.transactions import list_transactions, summarize_transactions
 
 
 @pytest.fixture
@@ -125,10 +126,48 @@ def random_ledger(conn, seed, offsets=True):
         group(conn, members)
 
 
+AMOUNT_POOL = [250.0, 999.0, 1200.0, 2500.0, 4000.0, 5000.0]
+SOURCES = ["manual", "rule", "llm", "learned_rule", "imported", "user_rule", "pair"]
+
+
+def candidate_ledger(conn, seed):
+    """random_ledger plus two accounts whose payments repeat a handful of amounts a day or
+    two apart, labelled by every source, so many are open own-account candidates (and some
+    sit in a transfer link). Links and groups reach the unsorted ones too."""
+    random_ledger(conn, seed)
+    rng = random.Random(f"candidates-{seed}")
+    for acct, stmt in (("acc_a", "sa"), ("acc_b", "sb")):
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, ?, ?)", (acct, stmt, f"XXXX{stmt}"))
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES (?, ?, '1', '2026-01', ?)", (stmt, stmt, acct))
+    ids = {"debit": [], "credit": []}
+    for _ in range(40):
+        dc = rng.choice(["debit", "credit"])
+        txn_id = str(ulid.ULID())
+        month, day = rng.randint(1, 3), rng.randint(1, 26)
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+            "VALUES (?, ?, ?, ?, ?, 'X', ?)",
+            (txn_id, rng.choice(["sa", "sb"]), f"2026-{month:02d}-{day:02d}", rng.choice(AMOUNT_POOL), dc,
+             rng.choice([None, "ALPHA", "BETA"])))
+        category = rng.choice(CATEGORIES)
+        if category:
+            conn.execute(
+                "INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, ?, 0.9, ?)",
+                (str(ulid.ULID()), txn_id, category, rng.choice(SOURCES)))
+        ids[dc].append(txn_id)
+    for credit, debit in zip(rng.sample(ids["credit"], 3), rng.sample(ids["debit"], 3), strict=True):
+        link(conn, credit, debit, rng.choice(["refund", "split", "transfer"]))
+    group(conn, [(i, "split") for i in rng.sample(ids["debit"], 2)] + [(i, "split") for i in rng.sample(ids["credit"], 2)])
+
+
 def ledgers():
     yield "rich", rich_ledger
     for seed in range(25):
         yield f"random-{seed}", lambda c, s=seed: random_ledger(c, s)
+    for seed in range(25):
+        yield f"candidates-{seed}", lambda c, s=seed: candidate_ledger(c, s)
 
 
 LEDGER_PARAMS = [pytest.param(build, id=name) for name, build in ledgers()]
@@ -180,6 +219,23 @@ class TestIdentities:
                 assert s["unexplained"] == {"count": 0, "total": 0}
             else:
                 assert s["unexplained"] == {"count": row["count"], "total": row["gross"]}
+
+    def test_the_dashboard_figure_the_money_map_row_and_the_drill_through_are_the_same_rows(self, conn, build):
+        for s in self._all_months(conn, build):
+            row = next((c for c in s["categories"] if c["category"] == "Uncategorized"), None)
+            drill = summarize_transactions(conn, month=s["month"], categories=["Uncategorized"])
+            assert drill["money_out"] == s["unexplained"]["total"] == (row["gross"] if row else 0), s["month"]
+            listed = list_transactions(conn, month=s["month"], categories=["Uncategorized"])
+            assert sum(1 for t in listed if t["debit_credit"] == "debit") == s["unexplained"]["count"]
+
+    def test_every_payment_is_in_exactly_one_category_filter(self, conn, build):
+        build(conn)
+        names = {r[0] for r in conn.execute("SELECT DISTINCT category FROM annotations WHERE category IS NOT NULL")}
+        names |= {"Uncategorized"}
+        total = summarize_transactions(conn)
+        parts = [summarize_transactions(conn, categories=[n]) for n in sorted(names)]
+        assert sum(p["count"] for p in parts) == total["count"]
+        assert round(sum(p["money_out"] for p in parts), 2) == total["money_out"]
 
     def test_recurring_header_equals_its_rows(self, conn, build):
         for s in self._all_months(conn, build):

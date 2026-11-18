@@ -2,8 +2,9 @@
 // total must equal its parts, and a drill-through must total what was clicked.
 // Expected values come from the screen or the API, never from fixed rupees.
 import { test, expect } from '../fixtures.js'
+import { uploadTransferFixtures } from '../lib/statement.js'
 import {
-  PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, visibleSpend, waitForRows,
+  PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, skipToPayment, visibleSpend, waitForRows,
 } from '../lib/ui.js'
 
 // A figure that stands alone on its line, as an amount does in a list row.
@@ -336,5 +337,62 @@ test.describe('J2 renaming', () => {
     await expect(panel).toContainText(upiNote)
     expect((await app.api.get(`/transactions/${swiggy.id}`)).note).toBe(upiNote)
     expect(await app.api.get('/transactions?q=zebra')).toEqual([])
+  })
+})
+
+// Two accounts with a same-amount pair that nothing says is the user's own money: it waits for an
+// answer in Teach Me, and until then it is not sorted, in every figure and every list.
+test.describe('J2 numbers agree while a transfer waits for an answer', () => {
+  test.use({ modelMode: 'none' })
+
+  /** The unsorted money as the Dashboard, the Money Map row and the Transactions list behind it state it. */
+  async function unsortedEverywhere(page) {
+    await open(page, '/dashboard')
+    // The figures arrive after the heading: wait for the headline before judging a link absent.
+    await expect(page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in/).first()).toBeVisible()
+    const link = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
+    const dashboard = (await link.count()) > 0 ? firstRupees(await link.innerText()) : 0
+
+    await open(page, '/insights')
+    const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
+    let moneyMap = 0
+    let behind = 0
+    if (row) {
+      moneyMap = row.amount
+      await row.item.getByRole('button').click()
+      await row.item.getByRole('link', { name: /View payments/ }).click()
+      await expect(page).toHaveURL(/#\/transactions/)
+      await waitForRows(page)
+      const summary = page.getByText(/payments? · ₹[\d,]+ out/)
+      await expect(summary).toBeVisible()
+      behind = rupeeFigures(await summary.first().innerText())[0]
+    }
+    return { dashboard, moneyMap, behind }
+  }
+
+  test('the Dashboard, Money Map and the payments behind it agree before and after the pair is made', async ({ page, app }) => {
+    await uploadTransferFixtures(app.api)
+    const lone = (await app.api.get('/transactions?include=annotation&limit=1000')).find((t) => t.debit_credit === 'debit' && t.amount === 7000)
+    expect(lone.transfer, 'nothing pairs without a sign').toBeNull()
+
+    const before = await unsortedEverywhere(page)
+    expect(before.dashboard, 'the 7,000 waits for an answer, so it is unsorted').toBeGreaterThanOrEqual(7000)
+    expect(before).toEqual({ dashboard: before.dashboard, moneyMap: before.dashboard, behind: before.dashboard })
+    const { verdict: held } = await app.api.get('/insights?month=2026-10')
+
+    await open(page, '/review')
+    await skipToPayment(page, /^Payment to .*quartz infra/i)
+    await page.keyboard.press('1')
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('status').filter({ hasText: 'Paired, so neither counts as spending or income.' })).toBeVisible()
+
+    const after = await unsortedEverywhere(page)
+    expect(after).toEqual({ dashboard: after.dashboard, moneyMap: after.dashboard, behind: after.dashboard })
+    expect(after.dashboard, 'the pair takes its 7,000 out of the unsorted figure').toBe(before.dashboard - 7000)
+    // And out of In and Out, which add up to what they did before around it.
+    const { verdict } = await app.api.get('/insights?month=2026-10')
+    expect(verdict.money_out).toBeCloseTo(held.money_out - 7000, 2)
+    expect(verdict.money_in).toBeCloseTo(held.money_in - 7000, 2)
+    expect(verdict.kept).toBeCloseTo(held.kept, 2)
   })
 })
