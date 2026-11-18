@@ -29,6 +29,15 @@ export const FIXTURE_PDF_OVERLAP = path.resolve(here, '../../finance_copilot/tes
 export const FIXTURE_PDF_TRANSFER_OUT = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_out.pdf')
 export const FIXTURE_PDF_TRANSFER_IN = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_in.pdf')
 
+/**
+ * Two more accounts of one person (October 2026, SBI and Kotak). Rs 25,000 leaves the first on the
+ * 12th as "NEFT/N123456789/ABHI B/SBIN0001234" and lands in the second the same day as
+ * "NEFT/N123456789/ABHI B/KKBK0000123". The merchant catalog labels a NEFT line Transfers / Peer
+ * Transfer, so both sides carry a label, nothing says the money is their own and nothing pairs.
+ */
+export const FIXTURE_PDF_NEFT_OUT = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_neft_out.pdf')
+export const FIXTURE_PDF_NEFT_IN = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_neft_in.pdf')
+
 export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }
@@ -60,5 +69,17 @@ export async function uploadTransferFixtures(api) {
   const out = await api.upload('/statements/upload', 'sample_statement_transfer_out.pdf', readFileSync(FIXTURE_PDF_TRANSFER_OUT), 'application/pdf')
   await sortedByServer(api, out.id)
   const inn = await api.upload('/statements/upload', 'sample_statement_transfer_in.pdf', readFileSync(FIXTURE_PDF_TRANSFER_IN), 'application/pdf')
+  await sortedByServer(api, inn.id)
+}
+
+/**
+ * Add the two NEFT statements the way the Add Statement page does and wait until the server has
+ * finished sorting both. Their 25,000 pair has no sign and the merchant catalog has labelled both
+ * sides Transfers / Peer Transfer, so it waits for an answer.
+ */
+export async function uploadNeftFixtures(api) {
+  const out = await api.upload('/statements/upload', 'sample_statement_neft_out.pdf', readFileSync(FIXTURE_PDF_NEFT_OUT), 'application/pdf')
+  await sortedByServer(api, out.id)
+  const inn = await api.upload('/statements/upload', 'sample_statement_neft_in.pdf', readFileSync(FIXTURE_PDF_NEFT_IN), 'application/pdf')
   await sortedByServer(api, inn.id)
 }

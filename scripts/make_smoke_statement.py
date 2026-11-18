@@ -18,6 +18,14 @@ XX1234") and arrives in the second on the 15th: a transfer that pairs by itself.
 Rs 7,000 leaves the first on the 20th and Rs 7,000 arrives in the second on the
 21st with nothing in either line that says they are the same person's money, so
 nothing pairs and Teach Me offers the candidate.
+sample_statement_neft_out.pdf (SBI, account ending 5566) and
+sample_statement_neft_in.pdf (Kotak, account ending 9900) are two more accounts of
+one person with a NEFT transfer that carries no sign of being their own: Rs 25,000
+leaves the first on the 12th as "NEFT/N123456789/ABHI B/SBIN0001234" and arrives in
+the second the same day as "NEFT/N123456789/ABHI B/KKBK0000123". The merchant
+catalog labels any NEFT line Transfers / Peer Transfer, so both sides carry a rule
+label and nothing pairs: the pair waits in Teach Me, and every figure has to count
+it as not sorted yet.
 
 A small, entirely fictional bank statement that the generic parser accepts:
 a ruled table (pdfplumber's default lines strategy) with date / narration /
@@ -110,6 +118,22 @@ TRANSFER_IN_ROWS = [
     ("27/10/2026", "POS/EXAMPLE PHARMACY BANGALORE", 245.50, None),
 ]
 
+# A NEFT transfer between two accounts of one person that the lines do not say is
+# their own (the reference and the name are the same on both sides; the numbers
+# are not in the text). The merchant catalog labels both lines Transfers / Peer
+# Transfer, so the pair is an open candidate that already carries a rule label.
+NEFT_OUT_ROWS = [
+    ("04/10/2026", "UPI/SWIGGY/ORDER/900112233/UPI", 520.00, None),
+    ("12/10/2026", "NEFT/N123456789/ABHI B/SBIN0001234", 25000.00, None),
+    ("19/10/2026", "POS/EXAMPLE BOOKSTORE BANGALORE", 780.00, None),
+]
+
+NEFT_IN_ROWS = [
+    ("03/10/2026", "NEFT/SALARY/ACME LABS PVT LTD", None, 60000.00),
+    ("12/10/2026", "NEFT/N123456789/ABHI B/KKBK0000123", None, 25000.00),
+    ("21/10/2026", "POS/EXAMPLE PHARMACY BANGALORE", 310.00, None),
+]
+
 
 def build(
     out: Path, opening: float, rows: list, period: str,
@@ -172,6 +196,19 @@ def main() -> None:
     )
     build_overlap(FIXTURES / "sample_statement_overlap.pdf")
     build_transfer_pair()
+    build_neft_pair()
+
+
+def build_neft_pair() -> None:
+    """Two more accounts of one person: an unsigned NEFT transfer the catalog labels."""
+    build(
+        FIXTURES / "sample_statement_neft_out.pdf", 80000.00, NEFT_OUT_ROWS,
+        "01/10/2026 - 31/10/2026", account="XXXX5566", ifsc="SBIN0001234",
+    )
+    build(
+        FIXTURES / "sample_statement_neft_in.pdf", 10000.00, NEFT_IN_ROWS,
+        "01/10/2026 - 31/10/2026", account="XXXX9900", ifsc="KKBK0000123",
+    )
 
 
 def build_transfer_pair() -> None:

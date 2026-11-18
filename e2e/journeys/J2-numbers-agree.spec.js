@@ -2,7 +2,7 @@
 // total must equal its parts, and a drill-through must total what was clicked.
 // Expected values come from the screen or the API, never from fixed rupees.
 import { test, expect } from '../fixtures.js'
-import { uploadTransferFixtures } from '../lib/statement.js'
+import { uploadNeftFixtures, uploadTransferFixtures } from '../lib/statement.js'
 import {
   PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, skipToPayment, visibleSpend, waitForRows,
 } from '../lib/ui.js'
@@ -393,6 +393,36 @@ test.describe('J2 numbers agree while a transfer waits for an answer', () => {
     const { verdict } = await app.api.get('/insights?month=2026-10')
     expect(verdict.money_out).toBeCloseTo(held.money_out - 7000, 2)
     expect(verdict.money_in).toBeCloseTo(held.money_in - 7000, 2)
+    expect(verdict.kept).toBeCloseTo(held.kept, 2)
+  })
+
+  // The catalog's own label is what the reviewer found disagreeing: a NEFT line is Transfers / Peer
+  // Transfer by rule, and an open own-account candidate must still count as not sorted yet.
+  test('a NEFT pair the merchant catalog has labelled counts as not sorted until it is answered', async ({ page, app }) => {
+    await uploadNeftFixtures(app.api)
+    const all = await app.api.get('/transactions?include=annotation&limit=1000')
+    const lone = all.find((t) => t.debit_credit === 'debit' && t.amount === 25000)
+    const arrived = all.find((t) => t.debit_credit === 'credit' && t.amount === 25000)
+    expect([lone.category, lone.subcategory, arrived.category, arrived.subcategory]).toEqual(['Transfers', 'Peer Transfer', 'Transfers', 'Peer Transfer'])
+    expect([lone.transfer, arrived.transfer], 'nothing pairs without a sign').toEqual([null, null])
+
+    const before = await unsortedEverywhere(page)
+    expect(before.dashboard, 'the 25,000 waits for an answer, so it is unsorted').toBeGreaterThanOrEqual(25000)
+    expect(before).toEqual({ dashboard: before.dashboard, moneyMap: before.dashboard, behind: before.dashboard })
+    const { verdict: held } = await app.api.get('/insights?month=2026-10')
+
+    await open(page, '/review')
+    await skipToPayment(page, /^Payment to .*abhi b/i)
+    await page.keyboard.press('1')
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('status').filter({ hasText: 'Paired, so neither counts as spending or income.' })).toBeVisible()
+
+    const after = await unsortedEverywhere(page)
+    expect(after).toEqual({ dashboard: after.dashboard, moneyMap: after.dashboard, behind: after.dashboard })
+    expect(after.dashboard, 'the pair takes its 25,000 out of the unsorted figure').toBe(before.dashboard - 25000)
+    const { verdict } = await app.api.get('/insights?month=2026-10')
+    expect(verdict.money_out).toBeCloseTo(held.money_out - 25000, 2)
+    expect(verdict.money_in).toBeCloseTo(held.money_in - 25000, 2)
     expect(verdict.kept).toBeCloseTo(held.kept, 2)
   })
 })
