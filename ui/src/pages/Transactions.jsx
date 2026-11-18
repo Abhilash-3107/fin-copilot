@@ -118,7 +118,7 @@ function buildAnnotationMap(txns) {
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
-  const { month: periodMonth, setMonth, months } = usePeriod()
+  const { month: periodMonth, setMonth, months, ready: periodReady } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   // The shared period drives the month filter; ALL_TIME means "no month filter".
@@ -156,7 +156,9 @@ export default function Transactions() {
   // pages), so a drill-through visibly adds up to the figure that was clicked.
   const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
-  const [loading, setLoading] = useState(false)
+  // True until the first list arrives: the list waits for the statements and the
+  // period (below), and that wait must not read as "No payments".
+  const [loading, setLoading] = useState(true)
   // Each fetch that can fail keeps its error, so the block says so (with Retry)
   // instead of reading as "no transactions".
   const [loadError, setLoadError] = useState(null)
@@ -251,7 +253,11 @@ export default function Transactions() {
     }
   }
 
-  useEffect(() => { loadTransactions() }, [loadTransactions])
+  // Ask once, for the scope the page will keep: the statement list and the default
+  // month decide it, and asking before they arrive would be answered again, in
+  // place of (and sometimes after) the first answer.
+  const scopeKnown = periodReady && !statementsLoading
+  useEffect(() => { if (scopeKnown) loadTransactions() }, [scopeKnown, loadTransactions])
 
   function toggleSort(col) {
     if (sort === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'))
@@ -319,7 +325,7 @@ export default function Transactions() {
     }
   }, [selectedStmt, month])
 
-  useEffect(() => { loadFacets() }, [loadFacets])
+  useEffect(() => { if (scopeKnown) loadFacets() }, [scopeKnown, loadFacets])
 
   // Full taxonomy for the bulk set-category picker (facets only list categories
   // already present in data; here the user can assign any of them).

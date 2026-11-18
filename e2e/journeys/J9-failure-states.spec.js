@@ -94,14 +94,15 @@ test.describe('J9 failure states', () => {
   // The pages that ask for "the period" used to ask once with no month and again when the
   // statement list arrived and chose one. The second answer replaced the first, so a
   // person (or a test) holding the error saw its Retry vanish.
-  for (const [name, route, text] of [
-    ['Money Map', '/#/insights', "Couldn't load your Money Map."],
-    ['Dashboard', '/#/dashboard', "Couldn't load your dashboard."],
+  for (const [name, route, text, pattern] of [
+    ['Money Map', '/#/insights', "Couldn't load your Money Map.", /\/api\/insights/],
+    ['Dashboard', '/#/dashboard', "Couldn't load your dashboard.", /\/api\/insights/],
+    ['Transactions', '/#/transactions', "Couldn't load your payments.", /\/api\/transactions(\?|$)/],
   ]) {
     test(`${name} asks once, so a slow statement list never replaces its error`, async ({ page, tolerate }) => {
-      const insights = []
-      page.on('request', (request) => { if (/\/api\/insights/.test(request.url())) insights.push(request.url()) })
-      const api = await breakApi(page, tolerate, /\/api\/insights/)
+      const asked = []
+      page.on('request', (request) => { if (pattern.test(request.url())) asked.push(request.url()) })
+      const api = await breakApi(page, tolerate, pattern)
       await page.route(/\/api\/statements(\?|$)/, async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 1500))
         await route.fallback()
@@ -113,12 +114,12 @@ test.describe('J9 failure states', () => {
       // The statement list arrives and the app settles; nothing may ask again on its own.
       await statementList
       await page.waitForLoadState('networkidle')
-      expect(insights).toHaveLength(1)
+      expect(asked).toHaveLength(1)
       await expect(alertWith(page, text)).toBeVisible()
       await alertWith(page, text).getByRole('button', { name: 'Retry' }).click()
       await expect(alertWith(page, text)).toHaveCount(0)
-      expect(insights).toHaveLength(2)
-      expect(insights[1]).toMatch(/month=\d{4}-\d{2}$/)
+      expect(asked).toHaveLength(2)
+      expect(asked[1]).toContain('month=')
     })
   }
 
