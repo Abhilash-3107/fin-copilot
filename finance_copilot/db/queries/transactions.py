@@ -51,7 +51,11 @@ def balance_chain_check(
     chain. Returns (checked, consistent). A statement with no chain has
     checked == 0: nothing to contradict.
 
-    Migration 043 backfilled stored statements with the same rule in SQL.
+    Migration 043 backfilled stored statements with the same rule in SQL, and the
+    balanced result of every stored statement depends on it, so a payment with no
+    balance is skipped here. pipeline/ingest.py's `_chain_consistency`, which only
+    picks the direction of a same-day statement, restarts at such a payment
+    instead; that is deliberate and the two are not merged.
     """
     checked = consistent = 0
     prev: float | None = None

@@ -63,7 +63,15 @@ def _implied_opening(txn: Transaction) -> float | None:
 
 
 def _chain_consistency(transactions: list[Transaction]) -> int:
-    """Count consecutive running-balance pairs consistent with the amount between them."""
+    """Count consecutive running-balance pairs consistent with the amount between them.
+
+    Used only to tell which way a same-day statement runs. A payment with no
+    balance restarts the chain here, on purpose: the amount of that payment sits
+    between the two balances around it, so comparing them would call a true chain
+    broken in one direction. `balance_chain_check` (db/queries/transactions.py), the
+    check a statement is shown and stored with, skips such a payment instead,
+    because that is the rule every stored ledger was backfilled with; the two
+    answer different questions and must not be merged."""
     ok = 0
     prev: float | None = None
     for txn in transactions:
