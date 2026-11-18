@@ -29,10 +29,11 @@ from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transactions import (
     delete_payments,
     list_transactions,
+    merge_duplicate_payments,
     statement_balance_checks,
 )
 from finance_copilot.demo_seed import has_demo_data
-from finance_copilot.pipeline.dedup import merge_duplicates, payments_account_already_has
+from finance_copilot.pipeline.dedup import payments_account_already_has
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
     NothingNewError,
@@ -317,7 +318,7 @@ def patch_statement(
             if duplicates:
                 # What the user did to the duplicates goes onto the account's own
                 # copies first; the same step then deletes them.
-                carried_over = merge_duplicates(conn, duplicates)
+                carried_over = merge_duplicate_payments(conn, duplicates)
                 delete_payments(conn, [dup for dup, _ in duplicates])
                 conn.execute(
                     "UPDATE statements SET rows_added = MAX(COALESCE(rows_added, 0) - ?, 0) WHERE id = ?",

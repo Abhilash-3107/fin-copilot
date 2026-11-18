@@ -209,7 +209,8 @@ class TestContinuityCheck:
         ], b"%PDF may after gap")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-03" in warnings[0]
+        assert "March 2026 closing balance" in warnings[0]
+        assert "2026-03" not in warnings[0]
         assert "missing" in warnings[0]
         conn.close()
 
@@ -236,7 +237,8 @@ class TestContinuityCheck:
         ], b"%PDF march late")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-05" in warnings[0]
+        assert "May 2026 opening balance" in warnings[0]
+        assert "2026-05" not in warnings[0]
         conn.close()
 
     def test_other_bank_statements_are_not_neighbours(self):
@@ -270,7 +272,7 @@ class TestContinuityCheck:
         ], b"%PDF same account gap", bank="fake", account_ref="1111222233")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-04" in warnings[0]
+        assert "April 2026 closing balance" in warnings[0]
         conn.close()
 
     def test_unknown_balances_stay_silent(self):
@@ -346,7 +348,7 @@ class TestUploadRouteWarnings:
             body = resp.json()
             assert body["opening_balance"] == pytest.approx(90349.69)
             assert len(body["warnings"]) == 1
-            assert "2026-04" in body["warnings"][0]
+            assert "April 2026 closing balance" in body["warnings"][0]
         finally:
             app.dependency_overrides.pop(api_get_db, None)
             conn.close()

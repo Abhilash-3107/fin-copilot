@@ -254,8 +254,9 @@ class TestOverlappingFixtures:
     def test_the_same_file_twice_is_still_refused_by_its_hash(self):
         conn = _make_conn()
         self._fixture(conn, "sample_statement.pdf")
-        with pytest.raises(DuplicateStatementError):
+        with pytest.raises(DuplicateStatementError) as refused:
             self._fixture(conn, "sample_statement.pdf")
+        assert str(refused.value) == "This statement was already added (Bank ··0000, October 2026)"
 
     def test_a_full_month_after_its_mid_month_part_adds_the_rest(self):
         """A mid-month download first, then the month's statement."""
@@ -320,8 +321,10 @@ class TestNothingNew:
         """The account lookup and the refusal are one step: an adopted number is rolled back."""
         conn = _make_conn()
         _ingest(conn, _FakeParser(_days(1, 2), ref=None), "a")
-        with pytest.raises(NothingNewError):
+        with pytest.raises(NothingNewError) as nothing:
             _ingest(conn, _FakeParser(_days(1, 2), ref="5551111"), "b")
+        # The account is named as it stands now, not by the number the file would have given it.
+        assert str(nothing.value) == "Nothing new: all 2 payments in this file are already in Kotak."
         assert conn.execute("SELECT account_ref FROM accounts").fetchone()[0] is None
         assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
 
@@ -417,6 +420,62 @@ class TestContinuityBesideOverlaps:
         _ingest(conn, _FakeParser(_days(1, 2, 3)), "a")
         c = _ingest(conn, _FakeParser(_chain(50000, [10, 11])), "c")
         assert len(check_continuity(conn, c)) == 1
+
+    def _ledger(self, dates):
+        """One account's payments as one running chain, a 100 rupee debit on each date."""
+        balance, out = 100000.0, []
+        for month, day in dates:
+            balance -= 100
+            out.append(_t(day, balance=balance, month=month))
+        return out
+
+    def test_a_file_that_starts_inside_a_neighbour_is_not_missing_the_statement_before_it(self):
+        """1 to 10, 11 to 20, then 15 to 25: the third continues the second, whatever
+        the first closed at."""
+        from finance_copilot.pipeline.ingest import check_continuity
+
+        conn = _make_conn()
+        rows = self._ledger([(5, d) for d in range(1, 26)])
+        _ingest(conn, _FakeParser(rows[0:10]), "a")
+        _ingest(conn, _FakeParser(rows[10:20]), "b")
+        c = _ingest(conn, _FakeParser(rows[14:25]), "c")
+        assert c.rows_added == 5
+        assert check_continuity(conn, c) == []
+
+    def test_a_file_that_ends_inside_a_neighbour_is_not_missing_the_statement_after_it(self):
+        from finance_copilot.pipeline.ingest import check_continuity
+
+        conn = _make_conn()
+        rows = self._ledger([(5, d) for d in range(1, 26)])
+        _ingest(conn, _FakeParser(rows[9:20]), "x")  # 10 to 20
+        _ingest(conn, _FakeParser(rows[20:25]), "y")  # 21 to 25
+        early = _ingest(conn, _FakeParser(rows[0:15]), "early")  # 1 to 15: ends inside x
+        assert early.rows_added == 9
+        assert check_continuity(conn, early) == []
+
+    def test_september_october_then_the_middle_of_october_to_the_middle_of_november(self):
+        from finance_copilot.pipeline.ingest import check_continuity
+
+        conn = _make_conn()
+        dates = (
+            [(9, d) for d in (3, 10, 20, 28)]
+            + [(10, d) for d in (2, 9, 16, 23, 30)]
+            + [(11, d) for d in (1, 8, 15)]
+        )
+        rows = self._ledger(dates)
+        _ingest(conn, _FakeParser(rows[0:4]), "sep")
+        _ingest(conn, _FakeParser(rows[4:9]), "oct")
+        long = _ingest(conn, _FakeParser(rows[7:]), "mid")  # 23 Oct to 15 Nov: starts inside October
+        assert check_continuity(conn, long) == []
+
+    def test_a_real_gap_still_warns_when_the_file_starts_outside_every_neighbour(self):
+        from finance_copilot.pipeline.ingest import check_continuity
+
+        conn = _make_conn()
+        rows = self._ledger([(5, d) for d in range(1, 26)])
+        _ingest(conn, _FakeParser(rows[0:5]), "a")
+        gap = _ingest(conn, _FakeParser(rows[10:20]), "gap")
+        assert len(check_continuity(conn, gap)) == 1
 
 
 # --- routes -------------------------------------------------------------------

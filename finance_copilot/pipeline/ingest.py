@@ -1,6 +1,7 @@
 """PDF → parsed transactions: invoke parser, persist statements and transactions."""
 from __future__ import annotations
 
+import calendar
 import hashlib
 import logging
 import re
@@ -132,6 +133,15 @@ def _split_balance_artifacts(
     return transactions, opening, closing
 
 
+def month_name(statement_month: str) -> str:
+    """'2026-10' as 'October 2026', the way every screen writes a month."""
+    try:
+        year, month = statement_month.split("-")
+        return f"{calendar.month_name[int(month)]} {int(year)}"
+    except (ValueError, IndexError):
+        return statement_month
+
+
 def _rupees(amount: float) -> str:
     """A rupee figure with the sign in front of the rupee sign, like the UI writes it."""
     return f"{'-' if amount < 0 else ''}₹{abs(amount):,.2f}"
@@ -155,7 +165,16 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     def _mismatch(a: float | None, b: float | None) -> bool:
         return a is not None and b is not None and abs(a - b) > _BALANCE_TOLERANCE
 
-    prev = conn.execute(
+    def _covered(day: date) -> bool:
+        """Another statement of the account runs over this day: the file overlaps it
+        there, so it continues that statement, not whichever one ends before it."""
+        return conn.execute(
+            "SELECT 1 FROM statements WHERE account_id = ? AND id != ? "
+            "AND period_start <= ? AND period_end >= ? LIMIT 1",
+            (statement.account_id, statement.id, day.isoformat(), day.isoformat()),
+        ).fetchone() is not None
+
+    prev = None if _covered(statement.period_start) else conn.execute(
         "SELECT statement_month, closing_balance FROM statements "
         "WHERE period_end < ? AND id != ? AND account_id = ? "
         "ORDER BY period_end DESC LIMIT 1",
@@ -164,11 +183,11 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
             f"Opening balance {_rupees(statement.opening_balance)} doesn't match the "
-            f"{prev['statement_month']} closing balance {_rupees(prev['closing_balance'])} - "
+            f"{month_name(prev['statement_month'])} closing balance {_rupees(prev['closing_balance'])} - "
             "a statement in between may be missing."
         )
 
-    nxt = conn.execute(
+    nxt = None if _covered(statement.period_end) else conn.execute(
         "SELECT statement_month, opening_balance FROM statements "
         "WHERE period_start > ? AND id != ? AND account_id = ? "
         "ORDER BY period_start ASC LIMIT 1",
@@ -177,7 +196,7 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
             f"Closing balance {_rupees(statement.closing_balance)} doesn't match the "
-            f"{nxt['statement_month']} opening balance {_rupees(nxt['opening_balance'])} - "
+            f"{month_name(nxt['statement_month'])} opening balance {_rupees(nxt['opening_balance'])} - "
             "a statement in between may be missing."
         )
 
@@ -217,7 +236,7 @@ class DuplicateStatementError(ValueError):
     def __init__(self, existing: dict, account_label: str):
         super().__init__(
             f"This statement was already added ({account_label}, "
-            f"{existing['statement_month']})"
+            f"{month_name(existing['statement_month'])})"
         )
         self.existing = existing
 
@@ -232,6 +251,16 @@ class NothingNewError(ValueError):
             else f"all {count} payments in this file are"
         )
         super().__init__(f"Nothing new: {what} already in {account_label}.")
+
+
+class _AllAlreadyIn(Exception):
+    """Inside the write step: every payment of the file is in the account. It rolls
+    the step back; ingest_pdf then names the account as it stands after that."""
+
+    def __init__(self, count: int, account_id: str):
+        super().__init__()
+        self.count = count
+        self.account_id = account_id
 
 
 class PasswordRequiredError(ValueError):
@@ -367,30 +396,36 @@ def ingest_pdf(
         # Choosing the account and writing the statement are one step under the
         # write lock: two statements arriving together for a new account must
         # not each start one.
-        with write_transaction(_conn):
-            # Looked again under the lock: the same file arriving twice at once
-            # passed the look above in both requests, and the loser would
-            # otherwise write against the winner's account.
-            _refuse_duplicate(_conn, file_sha256)
-            statement.account_id, statement.account_is_new = resolve_account(
-                _conn, statement.bank_name, statement.account_ref
-            )
-            split = split_new_rows(_conn, statement.account_id, transactions)
-            if not split.new:
-                raise NothingNewError(
-                    len(transactions), account_labels(_conn)[statement.account_id]
+        try:
+            with write_transaction(_conn):
+                # Looked again under the lock: the same file arriving twice at once
+                # passed the look above in both requests, and the loser would
+                # otherwise write against the winner's account.
+                _refuse_duplicate(_conn, file_sha256)
+                statement.account_id, statement.account_is_new = resolve_account(
+                    _conn, statement.bank_name, statement.account_ref
                 )
-            statement.rows_added = len(split.new)
-            if split.overlaps_without_match:
-                statement.notices.append(
-                    f"This file covers dates already in {account_labels(_conn)[statement.account_id]}, "
-                    "but none of its payments match. If it is another account, "
-                    "move it with Move to account."
-                )
-            insert_statement(_conn, statement)
-            for txn in split.new:
-                txn.statement_id = statement.id
-                insert_transaction(_conn, txn)
+                split = split_new_rows(_conn, statement.account_id, transactions)
+                if not split.new:
+                    raise _AllAlreadyIn(len(transactions), statement.account_id)
+                statement.rows_added = len(split.new)
+                if split.overlaps_without_match:
+                    statement.notices.append(
+                        f"This file covers dates already in {account_labels(_conn)[statement.account_id]}, "
+                        "but none of its payments match. If it is another account, "
+                        "move it with Move to account."
+                    )
+                insert_statement(_conn, statement)
+                for txn in split.new:
+                    txn.statement_id = statement.id
+                    insert_transaction(_conn, txn)
+        except _AllAlreadyIn as nothing:
+            # The refusal rolled back anything the account lookup did (a number
+            # it took on), so the account is named as it is, not as this file
+            # would have left it.
+            raise NothingNewError(
+                nothing.count, account_labels(_conn)[nothing.account_id]
+            ) from None
     finally:
         if conn is None:
             _conn.close()

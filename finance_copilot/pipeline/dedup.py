@@ -24,7 +24,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from finance_copilot.models.transaction import Transaction
-from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
 
 def _paisa(value: float) -> int:
@@ -185,61 +184,3 @@ def payments_account_already_has(
     stored, stored_ids = _stored_in_account(conn, account_id, min(days), max(days))
     matches = match_payments(stored, [_payment_of_row(r) for r in mine])
     return [(r["id"], stored_ids[m]) for r, m in zip(mine, matches, strict=True) if m is not None]
-
-
-def merge_duplicates(conn: sqlite3.Connection, duplicates: Sequence[tuple[str, str]]) -> int:
-    """Carry what the user did to each duplicate payment onto the payment the
-    account already had (its survivor), so deleting the duplicate loses none of it.
-    Returns how many duplicates had work that now sits on a survivor.
-
-    The survivor's own work wins; the duplicate's fills what it lacks:
-    - a note and a name, where the survivor has none;
-    - a label the user made (manual, imported, user rule), in place of a machine
-      label or none, kept exactly as it was (source and original source too);
-    - group memberships, unless the survivor is in the group already;
-    - links to other payments, unless that would join a payment to itself or
-      repeat a link the survivor has.
-    Call it inside the caller's write transaction, before the duplicates are deleted."""
-    carried = 0
-    for dup, survivor in duplicates:
-        moved = 0
-
-        for column in ("user_note", "display_name"):
-            theirs_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (dup,)).fetchone()[0]
-            own_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (survivor,)).fetchone()[0]
-            if theirs_text and not own_text:
-                conn.execute(f"UPDATE transactions SET {column} = ? WHERE id = ?", (theirs_text, survivor))
-                moved += 1
-
-        theirs = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (dup,)).fetchone()
-        if theirs is not None and theirs["source"] in USER_LABEL_SOURCES:
-            own = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
-            if own is None or own["source"] not in USER_LABEL_SOURCES:
-                conn.execute("DELETE FROM annotations WHERE transaction_id = ?", (survivor,))
-                # The row itself moves, so the label is exactly as the user left it.
-                conn.execute("UPDATE annotations SET transaction_id = ? WHERE transaction_id = ?", (survivor, dup))
-                moved += 1
-
-        moved += conn.execute(
-            "UPDATE OR IGNORE transaction_group_members SET transaction_id = ? WHERE transaction_id = ?",
-            (survivor, dup),
-        ).rowcount
-        # What could not move (the survivor is in that group already) is not doubled.
-        conn.execute("DELETE FROM transaction_group_members WHERE transaction_id = ?", (dup,))
-
-        for link in conn.execute(
-            "SELECT id, txn_a, txn_b, link_type FROM transaction_links WHERE txn_a = ? OR txn_b = ?", (dup, dup)
-        ).fetchall():
-            other = link["txn_b"] if link["txn_a"] == dup else link["txn_a"]
-            low, high = sorted((survivor, other))
-            if other == survivor or conn.execute(
-                "SELECT 1 FROM transaction_links WHERE txn_a = ? AND txn_b = ? AND link_type = ? AND id != ?",
-                (low, high, link["link_type"], link["id"]),
-            ).fetchone():
-                conn.execute("DELETE FROM transaction_links WHERE id = ?", (link["id"],))
-            else:
-                conn.execute("UPDATE transaction_links SET txn_a = ?, txn_b = ? WHERE id = ?", (low, high, link["id"]))
-                moved += 1
-
-        carried += 1 if moved else 0
-    return carried
