@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ToastProvider } from './contexts/ToastContext.jsx'
-import { StatementProvider } from './contexts/StatementContext.jsx'
+import { LedgerProvider } from './contexts/LedgerContext.jsx'
 import { PrivacyProvider } from './contexts/PrivacyContext.jsx'
 import { PeriodProvider } from './contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from './contexts/AnnotationJobContext.jsx'
@@ -32,7 +32,7 @@ export default function App() {
     <TokenGate>
     <PrivacyProvider>
     <ToastProvider>
-      <StatementProvider>
+      <LedgerProvider>
       <PeriodProvider>
       <AnnotationJobProvider>
       <DemoDataProvider>
@@ -55,7 +55,7 @@ export default function App() {
       </DemoDataProvider>
       </AnnotationJobProvider>
       </PeriodProvider>
-      </StatementProvider>
+      </LedgerProvider>
     </ToastProvider>
     </PrivacyProvider>
     </TokenGate>

@@ -7,13 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
-from finance_copilot.db.queries.books import books
 from finance_copilot.db.queries.accounts import (
     NAME_MAX_LENGTH,
     get_account,
     list_accounts,
     set_account_name,
 )
+from finance_copilot.db.queries.books import books
 
 router = APIRouter()
 

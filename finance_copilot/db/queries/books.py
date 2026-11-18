@@ -99,6 +99,12 @@ def books(conn: sqlite3.Connection) -> dict:
     return {"months": months, "accounts": accounts, "transfers": _transfers(conn, months)}
 
 
+def _label(labels: dict[str, str], row: sqlite3.Row, side: str) -> str:
+    return label_for_statement(labels, {
+        "account_id": row[f"acc_{side}"], "bank_name": row[f"bank_{side}"], "account_ref": row[f"ref_{side}"],
+    })
+
+
 def _transfers(conn: sqlite3.Connection, months: list[str]) -> list[dict]:
     """The moves between the user's own accounts in the months shown, newest first: each
     one a pair (a debit and a credit linked as a transfer), which no figure counts."""
@@ -122,18 +128,13 @@ def _transfers(conn: sqlite3.Connection, months: list[str]) -> list[dict]:
         date = r[f"date_{debit}"]
         if _month_of(date) not in months:
             continue
-        def label(side: str) -> str:
-            return label_for_statement(labels, {
-                "account_id": r[f"acc_{side}"], "bank_name": r[f"bank_{side}"], "account_ref": r[f"ref_{side}"],
-            })
-
         out.append({
             "transaction_id": r[f"txn_{debit}"],
             "txn_date": date,
             "arrived": r[f"date_{credit}"],
             "amount": r["amount"],
-            "from_label": label(debit),
-            "to_label": label(credit),
+            "from_label": _label(labels, r, debit),
+            "to_label": _label(labels, r, credit),
         })
     out.sort(key=lambda t: t["txn_date"], reverse=True)
     return out

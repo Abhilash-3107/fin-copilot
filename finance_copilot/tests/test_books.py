@@ -8,11 +8,31 @@ from finance_copilot.db.queries.books import books
 from finance_copilot.tests.test_insights_accounts import (
     add_account,
     add_statement,
-    api,  # noqa: F401  (fixture)
-    conn,  # noqa: F401  (fixture)
     link,
+    make_conn,
     seed,
 )
+
+
+@pytest.fixture
+def conn():
+    conn = make_conn()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def api():
+    from fastapi.testclient import TestClient
+
+    from finance_copilot.api.deps import get_db
+    from finance_copilot.main import app
+
+    conn = make_conn()
+    app.dependency_overrides[get_db] = lambda: conn
+    yield TestClient(app), conn
+    app.dependency_overrides.pop(get_db, None)
+    conn.close()
 
 
 def _statement(conn, statement_id, account, start, end, printed=True, checked=None, consistent=None, month=None):
@@ -155,7 +175,7 @@ def test_a_refund_link_is_not_a_transfer(conn, two):
     assert _grid(conn)["transfers"] == []
 
 
-def test_the_route_answers_the_same(api):  # noqa: F811
+def test_the_route_answers_the_same(api):
     client, route_conn = api
     # The route's connection is its own in-memory database: build the same ledger there.
     a = add_account(route_conn, "a", name="Kotak savings")

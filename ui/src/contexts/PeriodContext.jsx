@@ -1,5 +1,5 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useState } from 'react'
-import { useStatement } from './StatementContext.jsx'
+import { useLedger } from './LedgerContext.jsx'
 import { readStored, writeStored } from '../lib/storage.js'
 
 const PeriodContext = createContext(null)
@@ -10,7 +10,7 @@ const STORAGE_KEY = 'fc_period_month'
 export const ALL_TIME = 'all'
 
 export function PeriodProvider({ children }) {
-  const { months: ledgerMonths, loading: statementsLoading } = useStatement()
+  const { months: ledgerMonths, loading: ledgerLoading } = useLedger()
   const [month, setMonthRaw] = useState(() => readStored(STORAGE_KEY) || null)
 
   // The months that have payments, newest first.
@@ -22,10 +22,10 @@ export function PeriodProvider({ children }) {
     if (month == null && months.length > 0) setMonthRaw(months[0])
   }, [month, months])
 
-  // Whether the period is decided: the statements and months have arrived and a
+  // Whether the period is decided: the accounts and months have arrived and a
   // month is chosen (remembered, or the latest). A page that asks the server about
   // the period waits for this, so it asks once and not again when it settles.
-  const ready = !statementsLoading && (month != null || months.length === 0)
+  const ready = !ledgerLoading && (month != null || months.length === 0)
 
   const setMonth = useCallback(next => {
     setMonthRaw(next)

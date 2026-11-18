@@ -344,7 +344,7 @@ class TestEveryFigureFollowsTheFilter:
         assert theirs["people"]["unmatched"]["count"] == 0
 
     def test_the_balance_line_is_the_selected_accounts_and_all_shows_the_busiest(self, conn):
-        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        _, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         for day in (1, 2, 3):
             conn.execute(
                 "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, running_balance) "
@@ -358,12 +358,12 @@ class TestEveryFigureFollowsTheFilter:
         assert theirs == {"account": "SBI savings", "series": [{"date": "2026-10-02", "balance": 50}]}
 
     def test_an_account_with_no_balances_says_which_account_has_none(self, conn):
-        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        _, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         seed(conn, "st_a", "2026-10-02", 10, "debit", category="Food & Dining")
         assert summarize_insights(conn, "2026-10", account_id=b)["balance"] == {"account": "SBI savings", "series": []}
 
     def test_months_stay_the_ledgers_so_the_period_never_loses_a_month(self, conn):
-        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        _, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
         seed(conn, "st_a", "2026-09-05", 10, "debit", category="Food & Dining")
         seed(conn, "st_b", "2026-10-05", 10, "debit", category="Food & Dining")
         s = summarize_insights(conn, "2026-09", account_id=b)
@@ -475,7 +475,7 @@ class TestPartialMonthsAcrossAccounts:
         assert s["period"]["partial"] is False and s["period"]["short"] == []
 
     def test_a_missing_month_between_two_statements_is_not_covered_by_the_one_before(self, conn):
-        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        a, _ = add_account(conn, "a"), add_account(conn, "b", "sbi")
         conn.execute("DELETE FROM statements")
         add_statement(conn, "jan", a, "2026-01-02", "2026-01-28")
         add_statement(conn, "apr", a, "2026-04-02", "2026-04-28")
@@ -538,7 +538,7 @@ class TestTheFilterOnPayments:
         assert list_transaction_facets(conn)["categories"] == ["Income", "Shopping"]
 
     def test_the_account_filter_and_a_statement_filter_both_apply(self, conn):
-        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        _, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
         seed(conn, "st_a", "2026-10-05", 300, "debit", category="Shopping")
         assert list_transactions(conn, statement_id="st_a", account_id=b) == []
 
@@ -558,7 +558,7 @@ def api():
 class TestTheRoutes:
     def test_insights_takes_an_account_and_names_it(self, api):
         client, conn = api
-        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        a, _ = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         seed(conn, "st_a", "2026-10-05", 300, "debit", category="Shopping")
         seed(conn, "st_b", "2026-10-06", 200, "debit", category="Shopping")
         conn.commit()

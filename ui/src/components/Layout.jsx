@@ -9,11 +9,11 @@ import ErrorBoundary from './ErrorBoundary.jsx'
 import DemoBanner from './DemoBanner.jsx'
 import InlineError from './InlineError.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
-import { useStatement } from '../contexts/StatementContext.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 
 export default function Layout() {
   const { job } = useAnnotationJob()
-  const { error: statementsError, reload: reloadStatements } = useStatement()
+  const { error: ledgerError, reload: reloadLedger } = useLedger()
   const { pathname } = useLocation()
   // Off-canvas sidebar state, only meaningful below md; a route change closes it.
   const [navOpen, setNavOpen] = useState(false)
@@ -27,8 +27,8 @@ export default function Layout() {
         <main className="flex-1 overflow-y-auto">
           {/* Keyed on the route so navigating to another page clears a caught error. */}
           {/* Add Statement shows its own list, with its own Retry. */}
-          {statementsError && pathname !== '/upload' && (
-            <InlineError what="your statements" error={statementsError} onRetry={reloadStatements} compact className="px-6 pt-3" />
+          {ledgerError && pathname !== '/upload' && (
+            <InlineError what="your accounts" error={ledgerError} onRetry={reloadLedger} compact className="px-6 pt-3" />
           )}
           <ErrorBoundary resetKey={pathname}>
             <Outlet />
