@@ -2101,14 +2101,16 @@ class TestJobRunner:
             ids.append(r.json()["sorting_job_id"])
 
         # The first requests may start the server's reusable worker threads; what
-        # must not happen is a thread per queued statement. So measure after a
-        # warm-up and require the count to stay flat while 40 more queue up.
+        # must not happen is a thread per queued statement. So, after a warm-up,
+        # no new thread may appear while 40 more queue up. Compare thread
+        # identities, not counts: a leftover thread from earlier work may exit
+        # meanwhile, which is fine and must not hide (or fake) a new one.
         for i in range(5):
             upload(i)
-        before = threading.active_count()
+        before = set(threading.enumerate())
         for i in range(5, 45):
             upload(i)
-        assert threading.active_count() == before
+        assert set(threading.enumerate()) - before == set()
         queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
         assert queued == ids
 
