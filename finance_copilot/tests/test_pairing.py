@@ -10,9 +10,9 @@ import sqlite3
 import pytest
 
 from finance_copilot.db.connection import init_db
+from finance_copilot.db.queries.transfers import WINDOW_DAYS
 from finance_copilot.pipeline.pairing import (
     SELF_TRANSFER_WORDS,
-    WINDOW_DAYS,
     pair_transfers,
     transfer_candidates,
 )
@@ -258,7 +258,7 @@ class TestTheSignsOfASelfTransfer:
 
     @pytest.mark.parametrize("line", [
         "IMPS/TO OWN ACCOUNT XX2222/SAVINGS",   # masked
-        "NEFT/ACCT 2222/SBI",                    # last four
+        "NEFT/A/C 2222/SBI",                     # last four after an account word
         "NEFT/XXXXXXXX2222",                     # as stored
         "NEFT/TO A/C XXXX XXXX 2222",            # with spaces, the last run counts
     ])
