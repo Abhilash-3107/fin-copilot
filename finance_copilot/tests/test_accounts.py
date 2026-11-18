@@ -804,18 +804,21 @@ class TestTheSameFileAtOnce:
         def upload():
             conn = get_connection(db)
             try:
-                with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
-                    results.append(ingest_pdf(str(pdf), conn=conn))
+                results.append(ingest_pdf(str(pdf), conn=conn))
             except Exception as exc:  # noqa: BLE001
                 results.append(exc)
             finally:
                 conn.close()
 
-        threads = [threading.Thread(target=upload) for _ in range(2)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
+        # Patched once, around both threads: two threads each patching the same name can
+        # restore each other's patch out of order and leave the fake parser in place for
+        # every later test.
+        with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
+            threads = [threading.Thread(target=upload) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
 
         errors = [r for r in results if isinstance(r, Exception)]
         assert len(results) == 2
