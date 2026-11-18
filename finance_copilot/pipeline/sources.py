@@ -24,6 +24,11 @@ TRUSTED_SOURCES: frozenset[str] = frozenset({"manual", "rule", "user_rule", "imp
 # learned rule or count as the user's own history for a payee.
 VERIFIED_SOURCES: frozenset[str] = frozenset({"manual", "imported"})
 
+# Labels that are the user's own work: typed, imported from their file, or from
+# a rule they wrote. A payment that is merged into another keeps these over any
+# machine label (rule, a deterministic bank-text match, is not the user's).
+USER_LABEL_SOURCES: frozenset[str] = frozenset({"manual", "imported", "user_rule"})
+
 # Machine-produced labels that "apply to similar" may overwrite.
 # A review policy is the user's rule of thumb, not a fact about the payee, so
 # its labels are machine labels: re-decided when policies change, never trusted.

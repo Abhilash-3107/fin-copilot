@@ -32,7 +32,7 @@ from finance_copilot.db.queries.transactions import (
     statement_balance_checks,
 )
 from finance_copilot.demo_seed import has_demo_data
-from finance_copilot.pipeline.dedup import payments_account_already_has
+from finance_copilot.pipeline.dedup import merge_duplicates, payments_account_already_has
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
     NothingNewError,
@@ -305,15 +305,20 @@ def patch_statement(
             if statement["account_id"] != target:
                 _refuse_while_sorting(conn, statement_id, "Move it")
         already_there = 0
+        carried_over = 0
         deleted = False
         if statement["account_id"] != target:
             # The target may hold some of these payments already (the file first
             # landed in the wrong account): the account's own copies stay, the
-            # duplicates go, and a statement left with no payments goes too.
+            # duplicates go (after their work moves over), and a statement left
+            # with no payments goes too.
             duplicates = payments_account_already_has(conn, statement_id, target)
             already_there = len(duplicates)
             if duplicates:
-                delete_payments(conn, duplicates)
+                # What the user did to the duplicates goes onto the account's own
+                # copies first; the same step then deletes them.
+                carried_over = merge_duplicates(conn, duplicates)
+                delete_payments(conn, [dup for dup, _ in duplicates])
                 conn.execute(
                     "UPDATE statements SET rows_added = MAX(COALESCE(rows_added, 0) - ?, 0) WHERE id = ?",
                     (already_there, statement_id),
@@ -335,6 +340,9 @@ def patch_statement(
         "account_id": target,
         "account_label": account_labels(conn)[target],
         "rows_already_there": already_there,
+        # How many of those had work of the user's (a label, note, name, group or
+        # link) that now sits on the payment the account already had.
+        "work_carried_over": carried_over,
         "statement_deleted": deleted,
     }
 

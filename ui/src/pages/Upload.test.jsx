@@ -547,6 +547,45 @@ describe('Upload', () => {
       await waitFor(() => expect(toast).toHaveBeenCalledWith('Moved Jul 2026 to HDFC ··5678. 4 payments already there, so left out.', 'info'))
     })
 
+    it('says the work kept on the payments left out, when there was some', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 2, work_carried_over: 2, statement_deleted: false })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Moved Jul 2026 to HDFC ··5678. 2 payments already there, so left out; your labels and notes on them were kept.', 'info',
+      ))
+    })
+
+    it('counts the payments the work was on when it was on only some of them', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 3, work_carried_over: 1, statement_deleted: false })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Moved Jul 2026 to HDFC ··5678. 3 payments already there, so left out; your labels and notes on 1 of them were kept.', 'info',
+      ))
+    })
+
+    it('says the one payment in a removed statement in the singular, and what was kept', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 1, work_carried_over: 1, statement_deleted: true })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Jul 2026 was not moved: the one payment in it was already in HDFC ··5678, so it was removed; your labels and notes on it were kept.', 'info',
+      ))
+    })
+
     it('says the statement was removed when everything in it was already there', async () => {
       ledger.statements = [stmt]
       ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]

@@ -594,20 +594,24 @@ class TestMoveIntoAnAccountThatHasItsRows:
         # The account that held its first rows keeps them.
         assert _count(conn, a.id) == 3
 
-    def test_the_dropped_rows_take_their_annotations_embeddings_and_links_with_them(self, api):
+    def test_the_dropped_rows_take_their_machine_labels_and_embeddings_with_them(self, api):
         client, conn = api
         a, b = _accounts_pair(conn, _days(1, 2), _days(2, 3))
         dup = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-02'", (b.id,)).fetchone()[0]
         kept = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-03'", (b.id,)).fetchone()[0]
+        survivor = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-02'", (a.id,)).fetchone()[0]
         self._annotate(conn, dup)
         self._annotate(conn, kept)
-        conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('l1', ?, ?, 'transfer')", (dup, kept))
+        conn.execute("INSERT INTO embedding_meta (id, transaction_id, model_version) VALUES ('e1', ?, 'm')", (dup,))
         conn.commit()
-        assert client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id}).status_code == 200
+        body = client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id}).json()
         assert conn.execute("SELECT COUNT(*) FROM transactions WHERE id = ?", (dup,)).fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM annotations WHERE transaction_id = ?", (dup,)).fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM transaction_links").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM annotations WHERE transaction_id IN (?, ?)", (dup, survivor)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM embedding_meta WHERE transaction_id = ?", (dup,)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM annotations WHERE transaction_id = ?", (kept,)).fetchone()[0] == 1
+        # A machine label is not the user's work: nothing was carried over.
+        assert body["rows_already_there"] == 1
+        assert body["work_carried_over"] == 0
 
     def test_a_statement_with_nothing_left_is_deleted_with_its_emptied_account(self, api):
         client, conn = api
@@ -657,6 +661,220 @@ class TestMoveIntoAnAccountThatHasItsRows:
         conn.commit()
         assert client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id}).status_code == 409
         assert _count(conn, b.id) == 3
+
+
+class TestMoveCarriesTheUsersWorkOver:
+    """A duplicate is dropped, but what the user did to it is theirs: it goes onto
+    the payment the account already had, in the same step."""
+
+    def _setup(self, conn):
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4, 5))
+        dup = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-02'", (b.id,)).fetchone()[0]
+        other = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-05'", (b.id,)).fetchone()[0]
+        survivor = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-02'", (a.id,)).fetchone()[0]
+        return a, b, dup, other, survivor
+
+    def _label(self, conn, txn_id, source, category="Health", merchant="Dentist", original_source=None):
+        conn.execute(
+            "INSERT INTO annotations (id, transaction_id, merchant, category, confidence, source, original_source) "
+            "VALUES (?, ?, ?, ?, 1.0, ?, ?)", (f"ann_{txn_id}", txn_id, merchant, category, source, original_source),
+        )
+
+    def _move(self, client, a, b):
+        r = client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def _annotation(self, conn, txn_id):
+        row = conn.execute("SELECT category, source, original_source FROM annotations WHERE transaction_id = ?", (txn_id,)).fetchone()
+        return None if row is None else tuple(row)
+
+    def test_a_manual_label_replaces_a_machine_label_and_keeps_its_source(self, api):
+        client, conn = api
+        a, b, dup, _, survivor = self._setup(conn)
+        self._label(conn, survivor, "llm", category="Shopping", merchant="Shop")
+        self._label(conn, dup, "manual", original_source="rag_direct")
+        conn.commit()
+        body = self._move(client, a, b)
+        assert self._annotation(conn, survivor) == ("Health", "manual", "rag_direct")
+        assert body["work_carried_over"] == 1
+
+    def test_an_imported_or_user_rule_label_is_carried_too(self, api):
+        client, conn = api
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
+        for day, source in ((2, "imported"), (3, "user_rule")):
+            t = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = ?", (b.id, f"2026-05-0{day}")).fetchone()[0]
+            self._label(conn, t, source)
+        conn.commit()
+        body = self._move(client, a, b)
+        sources = {
+            r["txn_date"]: r["source"]
+            for r in conn.execute("SELECT t.txn_date, a.source FROM annotations a JOIN transactions t ON t.id = a.transaction_id")
+        }
+        assert sources == {"2026-05-02": "imported", "2026-05-03": "user_rule"}
+        assert body["work_carried_over"] == 2
+
+    def test_the_survivors_own_manual_label_wins(self, api):
+        client, conn = api
+        a, b, dup, _, survivor = self._setup(conn)
+        self._label(conn, survivor, "manual", category="Food & Dining", merchant="Cafe")
+        self._label(conn, dup, "manual", category="Health")
+        conn.commit()
+        body = self._move(client, a, b)
+        assert self._annotation(conn, survivor) == ("Food & Dining", "manual", None)
+        assert conn.execute("SELECT COUNT(*) FROM annotations").fetchone()[0] == 1
+        assert body["work_carried_over"] == 0
+
+    def test_a_manual_label_goes_onto_a_survivor_that_has_none(self, api):
+        client, conn = api
+        a, b, dup, _, survivor = self._setup(conn)
+        self._label(conn, dup, "manual")
+        conn.commit()
+        self._move(client, a, b)
+        assert self._annotation(conn, survivor) == ("Health", "manual", None)
+
+    def test_a_machine_label_on_the_duplicate_does_not_replace_anything(self, api):
+        client, conn = api
+        a, b, dup, _, survivor = self._setup(conn)
+        self._label(conn, survivor, "llm", category="Shopping")
+        conn.execute("DELETE FROM annotations WHERE transaction_id = ?", (dup,))
+        self._label(conn, dup, "rag_direct", category="Health")
+        conn.commit()
+        self._move(client, a, b)
+        assert self._annotation(conn, survivor) == ("Shopping", "llm", None)
+
+    def test_a_note_and_a_name_go_onto_a_survivor_that_has_none_and_the_survivors_own_win(self, api):
+        client, conn = api
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
+        rows = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (b.id,))
+        }
+        survivors = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (a.id,))
+        }
+        conn.execute("UPDATE transactions SET user_note = 'Root canal', display_name = 'Dr Rao' WHERE id = ?", (rows["2026-05-02"],))
+        conn.execute("UPDATE transactions SET user_note = 'from the move', display_name = 'moved' WHERE id = ?", (rows["2026-05-03"],))
+        conn.execute("UPDATE transactions SET user_note = 'mine', display_name = 'Mine' WHERE id = ?", (survivors["2026-05-03"],))
+        conn.commit()
+        body = self._move(client, a, b)
+        got = {
+            r["id"]: (r["user_note"], r["display_name"])
+            for r in conn.execute("SELECT id, user_note, display_name FROM transactions")
+        }
+        assert got[survivors["2026-05-02"]] == ("Root canal", "Dr Rao")
+        assert got[survivors["2026-05-03"]] == ("mine", "Mine")
+        assert body["work_carried_over"] == 1
+
+    def test_group_memberships_follow_and_a_survivor_already_in_the_group_is_not_doubled(self, api):
+        client, conn = api
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
+        rows = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (b.id,))
+        }
+        survivors = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (a.id,))
+        }
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g1', 'Trip')")
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role) VALUES ('g1', ?, 'paid')", (rows["2026-05-02"],))
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role) VALUES ('g1', ?, 'paid')", (rows["2026-05-03"],))
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role) VALUES ('g1', ?, 'paid')", (survivors["2026-05-03"],))
+        conn.commit()
+        body = self._move(client, a, b)
+        members = sorted(r[0] for r in conn.execute("SELECT transaction_id FROM transaction_group_members WHERE group_id = 'g1'"))
+        assert members == sorted([survivors["2026-05-02"], survivors["2026-05-03"]])
+        assert body["work_carried_over"] == 1
+
+    def test_a_link_follows_to_the_survivor_in_order(self, api):
+        client, conn = api
+        a, b, dup, other, survivor = self._setup(conn)
+        lo, hi = sorted([dup, other])
+        conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('l1', ?, ?, 'reimbursement')", (lo, hi))
+        conn.commit()
+        body = self._move(client, a, b)
+        link = conn.execute("SELECT txn_a, txn_b FROM transaction_links").fetchall()
+        assert [tuple(r) for r in link] == [tuple(sorted([survivor, other]))]
+        assert body["work_carried_over"] == 1
+
+    def test_a_link_that_would_join_a_payment_to_itself_or_repeat_one_is_dropped(self, api):
+        client, conn = api
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3, 4))
+        rows = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (b.id,))
+        }
+        survivors = {
+            r["txn_date"]: r["id"]
+            for r in conn.execute("SELECT id, txn_date FROM transactions WHERE statement_id = ?", (a.id,))
+        }
+
+        def link(link_id, x, y, kind="transfer"):
+            lo, hi = sorted([x, y])
+            conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES (?, ?, ?, ?)", (link_id, lo, hi, kind))
+
+        # The two copies of the 2nd were linked to each other: after the move that is a payment to itself.
+        link("self", rows["2026-05-02"], survivors["2026-05-02"])
+        # The duplicate of the 3rd and the survivor of the 2nd are linked, and so are both 3rds with it: a repeat.
+        link("a", rows["2026-05-03"], survivors["2026-05-02"])
+        link("b", survivors["2026-05-03"], survivors["2026-05-02"])
+        # A link of another kind between the same two payments is not a repeat.
+        link("c", rows["2026-05-03"], survivors["2026-05-02"], kind="refund")
+        conn.commit()
+        self._move(client, a, b)
+        left = sorted((r["id"], r["link_type"]) for r in conn.execute("SELECT id, link_type FROM transaction_links"))
+        assert left == [("b", "transfer"), ("c", "refund")]
+        for r in conn.execute("SELECT txn_a, txn_b FROM transaction_links"):
+            assert r["txn_a"] < r["txn_b"]
+
+    def test_the_reviewers_setup_loses_nothing(self, api):
+        """A manual label, a note, a name, a group and a reimbursement link on a
+        duplicate (the probe from the review of this part)."""
+        client, conn = api
+        a, b, dup, other, survivor = self._setup(conn)
+        self._label(conn, survivor, "llm", category="Shopping", merchant="Shop")
+        self._label(conn, dup, "manual")
+        conn.execute("UPDATE transactions SET user_note = 'Root canal, claim from insurer', display_name = 'Dr Rao' WHERE id = ?", (dup,))
+        conn.execute("INSERT INTO transaction_groups (id, name) VALUES ('g1', 'Insurance claim')")
+        conn.execute("INSERT INTO transaction_group_members (group_id, transaction_id, role) VALUES ('g1', ?, 'paid')", (dup,))
+        lo, hi = sorted([dup, other])
+        conn.execute("INSERT INTO transaction_links (id, txn_a, txn_b, link_type) VALUES ('l1', ?, ?, 'reimbursement')", (lo, hi))
+        conn.commit()
+        body = self._move(client, a, b)
+        assert conn.execute("SELECT COUNT(*) FROM transactions WHERE id = ?", (dup,)).fetchone()[0] == 0
+        assert self._annotation(conn, survivor) == ("Health", "manual", None)
+        assert tuple(conn.execute("SELECT user_note, display_name FROM transactions WHERE id = ?", (survivor,)).fetchone()) == (
+            "Root canal, claim from insurer", "Dr Rao",
+        )
+        assert [r[0] for r in conn.execute("SELECT transaction_id FROM transaction_group_members WHERE group_id = 'g1'")] == [survivor]
+        assert [tuple(r) for r in conn.execute("SELECT txn_a, txn_b FROM transaction_links")] == [tuple(sorted([survivor, other]))]
+        assert (body["rows_already_there"], body["work_carried_over"]) == (2, 1)
+
+    def test_a_failed_move_carries_nothing_over(self, api):
+        """The carry and the delete are one step: a statement being sorted is refused before either."""
+        client, conn = api
+        a, b, dup, _, survivor = self._setup(conn)
+        conn.execute("UPDATE transactions SET user_note = 'keep me' WHERE id = ?", (dup,))
+        conn.execute("INSERT INTO annotation_jobs (id, status, statement_id, kind) VALUES ('j1', 'running', ?, 'annotate')", (b.id,))
+        conn.commit()
+        assert client.patch(f"/api/statements/{b.id}", json={"account_id": a.account_id}).status_code == 409
+        assert conn.execute("SELECT user_note FROM transactions WHERE id = ?", (survivor,)).fetchone()[0] is None
+        assert conn.execute("SELECT user_note FROM transactions WHERE id = ?", (dup,)).fetchone()[0] == "keep me"
+
+    def test_a_statement_with_nothing_left_still_carries_the_work_to_the_account(self, api):
+        client, conn = api
+        a, b = _accounts_pair(conn, _days(1, 2, 3), _days(2, 3))
+        dup = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-03'", (b.id,)).fetchone()[0]
+        survivor = conn.execute("SELECT id FROM transactions WHERE statement_id = ? AND txn_date = '2026-05-03'", (a.id,)).fetchone()[0]
+        conn.execute("UPDATE transactions SET user_note = 'kept' WHERE id = ?", (dup,))
+        conn.commit()
+        body = self._move(client, a, b)
+        assert body["statement_deleted"] is True
+        assert conn.execute("SELECT user_note FROM transactions WHERE id = ?", (survivor,)).fetchone()[0] == "kept"
+        assert body["work_carried_over"] == 1
+
 
 
 # --- what deleting a statement takes with it ----------------------------------

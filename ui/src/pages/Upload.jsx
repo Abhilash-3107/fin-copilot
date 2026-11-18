@@ -508,14 +508,23 @@ export default function Upload() {
     }
   }
 
-  // Where it went, and what of it the account had already (those payments were dropped).
+  // Where it went, and what of it the account had already (those payments were
+  // dropped, after the user's labels, notes and links on them moved to the
+  // account's own copies).
   function moveMessage(s, made, target) {
     const where = target.id ? target.account_label : made?.account_label ?? 'a new account'
     const already = made?.rows_already_there ?? 0
-    if (made?.statement_deleted) {
-      return `${statementSpan(s)} was not moved: all ${count(already, 'payment')} in it were already in ${where}, so it was removed.`
+    const carried = made?.work_carried_over ?? 0
+    let kept = ''
+    if (carried > 0) {
+      const of = carried === already ? (already === 1 ? 'it' : 'them') : `${carried} of them`
+      kept = `; your labels and notes on ${of} were kept`
     }
-    const dropped = already > 0 ? ` ${count(already, 'payment')} already there, so left out.` : ''
+    if (made?.statement_deleted) {
+      const was = already === 1 ? 'the one payment in it was' : `all ${count(already, 'payment')} in it were`
+      return `${statementSpan(s)} was not moved: ${was} already in ${where}, so it was removed${kept}.`
+    }
+    const dropped = already > 0 ? ` ${count(already, 'payment')} already there, so left out${kept}.` : ''
     return `Moved ${statementSpan(s)} to ${where}.${dropped}`
   }
 
