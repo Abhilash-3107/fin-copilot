@@ -638,7 +638,7 @@ class TestMoveIntoAnAccountThatHasItsRows:
         client, conn = api
         a = _ingest(conn, _FakeParser(_days(1, 2, 3)), "a")
         b = _ingest(conn, _FakeParser(_days(5, 6, 7)), "b")
-        body = client.patch(f"/api/statements/{b.id}", json={"new_account": True}).json()
+        body = client.patch(f"/api/statements/{b.id}", json={"new_account": True, "name": "Joint"}).json()
         assert (body["rows_already_there"], body["statement_deleted"]) == (0, False)
         assert _count(conn, b.id) == 3
         assert a.account_id != body["account_id"]
