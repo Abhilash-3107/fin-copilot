@@ -85,6 +85,7 @@ beforeEach(() => {
     if (path.startsWith('/transactions/summary')) {
       return Promise.resolve({ count: 2, money_out: 300, money_in: 250 })
     }
+    if (path === '/transactions/months') return Promise.resolve({ months: ['2026-10', '2026-11'] })
     if (path.startsWith('/transactions/facets')) return Promise.resolve({ categories: ['Uncategorized'], sources: [] })
     if (/^\/transactions\/t\d/.test(path)) return Promise.resolve(TXNS.find(t => path.endsWith(t.id)))
     if (path.startsWith('/transactions')) return Promise.resolve(TXNS)
@@ -408,5 +409,40 @@ describe('Transactions panel keys', () => {
     expect(tags).toHaveValue('trip')
     await user.keyboard('{Escape}')
     expect(screen.queryByText('As printed on the statement')).not.toBeInTheDocument()
+  })
+})
+
+describe('Transactions with a statement that runs across months', () => {
+  const SPANNING = { id: 's1', bank_name: 'generic', account_label: 'Kotak savings', statement_month: '2026-10', period_start: '2026-10-05', period_end: '2026-11-15', printed_start: '2026-10-05', printed_end: '2026-11-15', uploaded_at: '2026-11-16' }
+
+  beforeEach(() => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (path === '/statements' ? Promise.resolve([SPANNING]) : base(path)))
+  })
+
+  it('names the statement by the days it covers', async () => {
+    renderPage()
+    expect(await screen.findByRole('option', { name: 'Kotak savings - 5 Oct to 15 Nov' })).toBeInTheDocument()
+  })
+
+  it('keeps the statement and a month it runs into, instead of dropping the statement', async () => {
+    localStorage.setItem('fc_period_month', '2026-11')
+    renderPage()
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/statement_id=s1/)
+      expect(last).toMatch(/month=2026-11/)
+    })
+    expect(screen.getByRole('option', { name: 'Nov 2026' })).toBeInTheDocument()
+  })
+
+  it('drops the statement when the month is one it does not reach', async () => {
+    localStorage.setItem('fc_period_month', '2026-09')
+    renderPage()
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/month=2026-09/)
+      expect(last).not.toMatch(/statement_id=/)
+    })
   })
 })

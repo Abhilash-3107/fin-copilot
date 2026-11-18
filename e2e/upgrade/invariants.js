@@ -414,6 +414,34 @@ function accountNumbersAreOnlyTheirLastFour(before, after) {
   return problems
 }
 
+/**
+ * Migration 043 records, for each statement the ledger already held, what its file
+ * held and what it added: every payment, both times, since an older statement brought
+ * all of its file. The balance check it stores is the check the list showed before
+ * (checked and consistent steps), and the balanced result of a statement never moves.
+ */
+function statementsKeepTheirPaymentsAndBalance(before, after) {
+  const problems = []
+  const was = new Map(before.facts.statements.map((s) => [s.id, s]))
+  for (const s of after.facts.statements) {
+    if (!was.has(s.id)) continue
+    if (s.rows_in_file !== s.txn_count) problems.push(`statement ${s.id} says its file held ${s.rows_in_file} payments, it has ${s.txn_count}`)
+    if (s.rows_added !== s.txn_count) problems.push(`statement ${s.id} says it added ${s.rows_added} payments, it has ${s.txn_count}`)
+    const shown = s.balance_check
+    if (s.balance_checked !== shown.checked || s.balance_consistent !== shown.consistent) {
+      problems.push(
+        `statement ${s.id} stores a balance check of ${s.balance_consistent} of ${s.balance_checked}, the list shows ${shown.consistent} of ${shown.checked}`,
+      )
+    }
+    const old = was.get(s.id).balance_check
+    if (old && (old.checked !== shown.checked || old.consistent !== shown.consistent || old.balanced !== shown.balanced)) {
+      problems.push(`statement ${s.id} was ${old.consistent} of ${old.checked} (balanced ${old.balanced}) and is now ${shown.consistent} of ${shown.checked} (balanced ${shown.balanced})`)
+    }
+    if (shown.balanced !== (shown.consistent === shown.checked)) problems.push(`statement ${s.id} is called balanced ${shown.balanced} at ${shown.consistent} of ${shown.checked}`)
+  }
+  return problems
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
@@ -422,6 +450,7 @@ export function checkInvariants(before, after) {
     ...accountsTableMatchesTheList(before, after),
     ...accountBalancesAreTheirLatestStatements(before, after),
     ...accountNumbersAreOnlyTheirLastFour(before, after),
+    ...statementsKeepTheirPaymentsAndBalance(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),

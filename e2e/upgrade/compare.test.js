@@ -21,7 +21,7 @@ const MIGRATIONS = [
   '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
   '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
   '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
-  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes',
+  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes', '043_statement_row_counts',
 ]
 const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
 
@@ -61,9 +61,9 @@ function ledgerBefore() {
   ]
   const facts = {
     statements: [
-      { id: 's', bank_name: 'generic', account_ref: 'XXXX0000', statement_month: '2026-08', uploaded_at: '2026-08-03 10:00:00', closing_balance: 0, period_end: '2026-08-02', txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 },
+      { id: 's', bank_name: 'generic', account_ref: 'XXXX0000', statement_month: '2026-08', uploaded_at: '2026-08-03 10:00:00', closing_balance: 0, period_end: '2026-08-02', balance_check: { checked: 12, consistent: 12, balanced: true }, txn_count: transactions.length, annotated_count: transactions.filter((t) => t.annotation_id !== null).length, embedded_count: 0 },
       // A sample statement: a bank, and no account number.
-      { id: 'demo_s', bank_name: 'kotak', account_ref: null, statement_month: '2026-08', uploaded_at: '2026-08-04 10:00:00', closing_balance: null, period_end: null, txn_count: 0, annotated_count: 0, embedded_count: 0 },
+      { id: 'demo_s', bank_name: 'kotak', account_ref: null, statement_month: '2026-08', uploaded_at: '2026-08-04 10:00:00', closing_balance: null, period_end: null, balance_check: { checked: 0, consistent: 0, balanced: true }, txn_count: 0, annotated_count: 0, embedded_count: 0 },
     ],
     accounts: null,
     transactions,
@@ -153,8 +153,10 @@ function upgrade(before) {
     for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note', 'user_note', 'note_is_yours']) m[field] = t[field]
   }
   const owner = { s: { id: 'acc_s', label: 'Bank ··0000', last4: '0000' }, demo_s: { id: 'acc_demo_s', label: 'Kotak', last4: null } }
-  facts.statements = facts.statements.map(({ id, txn_count, bank_name, statement_month, uploaded_at, closing_balance, period_end }) => ({
+  facts.statements = facts.statements.map(({ id, txn_count, bank_name, statement_month, uploaded_at, closing_balance, period_end, balance_check }) => ({
     id, bank_name, statement_month, uploaded_at, closing_balance, period_end, txn_count, sorted_count: id === 's' ? sortedPayments(facts.transactions) : 0,
+    // Release 3: what the file held and added (every payment, for a statement that was already here) and its stored balance check.
+    balance_check, rows_in_file: txn_count, rows_added: txn_count, balance_checked: balance_check.checked, balance_consistent: balance_check.consistent, shared_with_later: 0,
     account_id: owner[id].id, account_label: owner[id].label, account_ref_last4: owner[id].last4, printed_start: null, printed_end: null,
   }))
   facts.accounts = [
@@ -174,6 +176,7 @@ function upgrade(before) {
     addedColumns: [
       'transactions.display_name', 'transactions.user_note', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
       'statements.account_id', 'statements.printed_start', 'statements.printed_end',
+      'statements.rows_in_file', 'statements.rows_added', 'statements.balance_checked', 'statements.balance_consistent',
     ],
     jobAttempts: [{ id: 'job1', attempts: 0 }],
   }
@@ -206,11 +209,13 @@ test('the ledger before and the ledger after 0.2.0 agree on every figure the rel
 /** A second statement of the ledger, on both sides of the upgrade, in its own account unless the case says otherwise. */
 function addStatement(after, before, id, fields = {}) {
   const base = { id, bank_name: 'generic', account_ref: 'XXXX0000', statement_month: '2026-09', uploaded_at: '2026-09-03 10:00:00', ...fields }
-  before.facts.statements.push({ ...base, closing_balance: null, period_end: null, txn_count: 0, annotated_count: 0, embedded_count: 0 })
+  const noChain = { checked: 0, consistent: 0, balanced: true }
+  before.facts.statements.push({ ...base, closing_balance: null, period_end: null, balance_check: noChain, txn_count: 0, annotated_count: 0, embedded_count: 0 })
   const { account_ref: ref, ...shown } = base
   after.facts.statements.push({
     ...shown, closing_balance: null, period_end: null, txn_count: 0, sorted_count: 0, account_id: `acc_${id}`, account_label: 'Bank ··0000',
     account_ref_last4: ref ? ref.slice(-4) : null, printed_start: null, printed_end: null,
+    balance_check: noChain, rows_in_file: 0, rows_added: 0, balance_checked: 0, balance_consistent: 0, shared_with_later: 0,
   })
   after.facts.accounts.push({ ...after.facts.accounts[0], id: `acc_${id}`, statement_count: 1 })
   after.facts.schema.tableRows.accounts = after.facts.accounts.length
@@ -529,6 +534,41 @@ const regressions = {
   'the account sits at another bank': [
     (a) => (a.facts.accounts[0].bank_name = 'hdfc'),
     /account acc_s is at bank "hdfc", its statements say "generic"/,
+  ],
+  'a statement says its file held more payments than it has': [
+    (a) => (a.facts.statements[0].rows_in_file = 20),
+    /statement s says its file held 20 payments, it has 13/,
+  ],
+  'a statement says it added fewer payments than it has': [
+    (a) => (a.facts.statements[0].rows_added = 5),
+    /statement s says it added 5 payments, it has 13/,
+  ],
+  'a stored count is never filled in': [
+    (a) => (a.facts.statements[1].rows_in_file = null),
+    /statement demo_s says its file held null payments, it has 0/,
+  ],
+  'the stored balance check disagrees with the one shown': [
+    (a) => (a.facts.statements[0].balance_checked = 3),
+    /statement s stores a balance check of 12 of 3, the list shows 12 of 12/,
+  ],
+  'a balanced statement is flagged after the upgrade': [
+    (a) => {
+      a.facts.statements[0].balance_check = { checked: 12, consistent: 11, balanced: false }
+      a.facts.statements[0].balance_consistent = 11
+    },
+    /statement s was 12 of 12 \(balanced true\) and is now 11 of 12 \(balanced false\)/,
+  ],
+  'a statement that was not balanced is called balanced after the upgrade': [
+    (a, b) => {
+      b.facts.statements[0].balance_check = { checked: 12, consistent: 10, balanced: false }
+      a.facts.statements[0].balance_consistent = 10
+      a.facts.statements[0].balance_check = { checked: 12, consistent: 10, balanced: true }
+    },
+    /statement s is called balanced true at 10 of 12/,
+  ],
+  'a statement shares payments with a later one on an upgrade': [
+    (a) => (a.facts.statements[0].shared_with_later = 2),
+    /statements\[s\]\.shared_with_later/,
   ],
   'a migration does not run': [
     (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('040'))),

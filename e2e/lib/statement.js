@@ -13,6 +13,13 @@ export const FIXTURE_PDF_NOV = path.resolve(here, '../../finance_copilot/tests/f
 /** A second account at another bank: October 2026, six payments, balanced; its header prints the whole month. */
 export const FIXTURE_PDF_OTHER_BANK = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_other_bank.pdf')
 
+/**
+ * The same account for 5 October to 15 November: the last four October payments and all of
+ * November with the balances the two months carry, then three payments after November's last.
+ * Added after both months it brings three; added first, the months bring what it lacks.
+ */
+export const FIXTURE_PDF_OVERLAP = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_overlap.pdf')
+
 export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }

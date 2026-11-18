@@ -7,10 +7,10 @@ const { mockApi } = vi.hoisted(() => ({
 }))
 const { pollJob } = vi.hoisted(() => ({ pollJob: vi.fn() }))
 vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class extends Error {}, pollAnnotationJob: pollJob }))
-const noopToast = () => {}
+const { toast } = vi.hoisted(() => ({ toast: vi.fn() }))
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
-  useToast: () => noopToast,
+  useToast: () => toast,
 }))
 const { jobCtx } = vi.hoisted(() => ({ jobCtx: { job: null, startAnnotation: null, watchJobs: null } }))
 vi.mock('../contexts/AnnotationJobContext.jsx', () => ({
@@ -467,6 +467,100 @@ describe('Upload', () => {
     })
   })
 
+  describe('overlapping statements', () => {
+    const drop = async () => {
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [pdf()] } })
+      fireEvent.click(screen.getByRole('button', { name: ADD_BUTTON }))
+      return (await screen.findByText('statement.pdf')).closest('li')
+    }
+
+    it('says how many payments were new and how many the ledger already had', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', {
+        statement_month: '2026-10', period_start: '2026-10-05', period_end: '2026-11-15',
+        printed_start: '2026-10-05', printed_end: '2026-11-15',
+        rows_in_file: 42, rows_added: 18, rows_already_in: 24, transaction_count: 18,
+      }))
+      const row = await drop()
+      await waitFor(() => expect(row).toHaveTextContent('5 Oct to 15 Nov - 18 new payments, 24 already in your ledger - Balance checks out'))
+    })
+
+    it('uses the singular for one new payment', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { rows_in_file: 9, rows_added: 1, rows_already_in: 8, transaction_count: 1 }))
+      const row = await drop()
+      await waitFor(() => expect(row).toHaveTextContent('1 new payment, 8 already in your ledger'))
+    })
+
+    it('says only what was added when nothing was already in', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { rows_in_file: 8, rows_added: 8, rows_already_in: 0 }))
+      const row = await drop()
+      await waitFor(() => expect(row).toHaveTextContent('8 payments added'))
+      expect(row).not.toHaveTextContent('already in your ledger')
+    })
+
+    it('shows the refusal of a file with nothing new as the server words it', async () => {
+      mockApi.upload.mockRejectedValue(Object.assign(
+        new Error('Nothing new: all 42 payments in this file are already in Kotak savings.'), { status: 409 },
+      ))
+      const row = await drop()
+      await waitFor(() => expect(row).toHaveTextContent('Nothing new: all 42 payments in this file are already in Kotak savings.'))
+      expect(row).not.toHaveTextContent("Couldn't read this file")
+    })
+
+    it('lists a statement by the days it covers when that is not one calendar month', async () => {
+      ledger.statements = [
+        { ...stmt, id: 's1', statement_month: '2026-10', period_start: '2026-10-05', period_end: '2026-11-15', printed_start: '2026-10-05', printed_end: '2026-11-15' },
+        { ...stmt, id: 's2', statement_month: '2026-09', period_start: '2026-09-02', period_end: '2026-09-28', printed_start: '2026-09-01', printed_end: '2026-09-30' },
+      ]
+      renderUpload()
+      const rows = await screen.findAllByRole('row')
+      expect(within(rows[1]).getByText('5 Oct to 15 Nov')).toBeInTheDocument()
+      expect(within(rows[2]).getByText('Sep 2026')).toBeInTheDocument()
+    })
+
+    it('says in the delete confirmation that later payments will not come back, only when it applies', async () => {
+      ledger.statements = [{ ...stmt, shared_with_later: 3 }]
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+      expect(screen.getByRole('dialog')).toHaveTextContent(
+        '3 payments in it are also in a later statement, which skipped them when it was added, so they will not come back from that one.',
+      )
+    })
+
+    it('has no such sentence when no later statement shares its payments', async () => {
+      ledger.statements = [{ ...stmt, shared_with_later: 0 }]
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+      expect(screen.getByRole('dialog')).not.toHaveTextContent('later statement')
+    })
+
+    it('says in the move message how many payments the account already had', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 4, statement_deleted: false })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith('Moved Jul 2026 to HDFC ··5678. 4 payments already there, so left out.', 'info'))
+    })
+
+    it('says the statement was removed when everything in it was already there', async () => {
+      ledger.statements = [stmt]
+      ledger.accounts = [{ id: 'a1', account_label: 'Kotak savings', statement_count: 1 }, { id: 'a2', account_label: 'HDFC ··5678', statement_count: 1 }]
+      mockApi.patch.mockResolvedValue({ account_id: 'a2', account_label: 'HDFC ··5678', rows_already_there: 8, statement_deleted: true })
+      renderUpload()
+      fireEvent.click(await screen.findByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
+      await waitFor(() => expect(toast).toHaveBeenCalledWith(
+        'Jul 2026 was not moved: all 8 payments in it were already in HDFC ··5678, so it was removed.', 'info',
+      ))
+    })
+  })
+
   describe('where an added statement went', () => {
     const drop = async () => {
       const { container } = renderUpload()
@@ -564,7 +658,7 @@ describe('Upload', () => {
     expect(screen.getByRole('button', { name: /sort again/i })).toBeInTheDocument()
     expect(screen.queryByText(/memory|build|rebuild/i)).not.toBeInTheDocument()
     expect(screen.getAllByRole('columnheader').map(h => h.textContent.trim()))
-      .toEqual(['Account', 'Month', 'Balanced', 'Sorted', 'Added', 'Actions'])
+      .toEqual(['Account', 'Period', 'Balanced', 'Sorted', 'Added', 'Actions'])
     fireEvent.click(screen.getByRole('button', { name: 'More for Kotak savings - Jul 2026' }))
     expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Name this account', 'Start over', 'Delete'])
   })

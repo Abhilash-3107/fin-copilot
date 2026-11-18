@@ -10,7 +10,7 @@ import PeriodPicker from '../components/PeriodPicker.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import TransactionCards from '../components/TransactionCards.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
-import { formatMonth } from '../lib/dates.js'
+import { statementCoversMonth, statementSpan } from '../lib/dates.js'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -118,7 +118,7 @@ function buildAnnotationMap(txns) {
 export default function Transactions() {
   const toast = useToast()
   const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
-  const { month: periodMonth, setMonth, months } = usePeriod()
+  const { month: periodMonth, setMonth } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   const selectedStmt = activeStatement?.id ?? ''
@@ -411,7 +411,7 @@ export default function Transactions() {
   // way, a stale statement_id + month combo would AND into an empty result
   // with no explanation, so drop the stale scope whenever they disagree.
   useEffect(() => {
-    if (activeStatement && month && activeStatement.statement_month !== month) {
+    if (activeStatement && month && !statementCoversMonth(activeStatement, month)) {
       setActiveStatement(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -476,14 +476,14 @@ export default function Transactions() {
   }
 
   // A link to one payment (the palette): show the month it is in, drop a statement
-  // scope that would hide it, and open it. Waits for the statements so the month
-  // can be matched against the ones the period picker knows.
+  // scope that would hide it, and open it.
   function openLinkedPayment(id) {
     setLinkError(null)
     return api.get(`/transactions/${id}`)
       .then(full => {
         const m = String(full.txn_date).slice(0, 7)
-        setMonth(months.includes(m) ? m : ALL_TIME)
+        // The payment's own month: a month with a payment in it is always one the ledger has.
+        setMonth(m)
         setActiveStatement(null)
         scrollTarget.current = full.id
         setDetailError(null)
@@ -611,14 +611,16 @@ export default function Transactions() {
             setActiveStatement(stmt)
             // Picking a statement is picking a month; keep the shared period in
             // sync so it doesn't silently AND against a different month and
-            // empty the list (or clear it entirely for "All statements").
-            setMonth(stmt ? stmt.statement_month : ALL_TIME)
+            // empty the list (or clear it entirely for "All statements"). A
+            // statement can run across months: stay on the month already chosen
+            // when the statement reaches into it.
+            setMonth(!stmt ? ALL_TIME : month && statementCoversMonth(stmt, month) ? month : stmt.statement_month)
           }}
           className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
         >
           <option value="">All statements</option>
           {statements.map(s => (
-            <option key={s.id} value={s.id}>{s.account_label} - {formatMonth(s.statement_month)}</option>
+            <option key={s.id} value={s.id}>{s.account_label} - {statementSpan(s)}</option>
           ))}
         </select>
 

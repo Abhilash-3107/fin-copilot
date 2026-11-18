@@ -44,6 +44,10 @@ added = [
         ("statements", "account_id"),
         ("statements", "printed_start"),
         ("statements", "printed_end"),
+        ("statements", "rows_in_file"),
+        ("statements", "rows_added"),
+        ("statements", "balance_checked"),
+        ("statements", "balance_consistent"),
     )
     if column in columns(table)
 ]

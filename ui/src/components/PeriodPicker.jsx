@@ -12,8 +12,8 @@ import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 // ascending) so the options and the value come from the data itself, not from
 // statement metadata that can disagree with it.
 export default function PeriodPicker({ className = '', allowAll = true, shown, months: dataMonths }) {
-  const { month, setMonth, months: statementMonths } = usePeriod()
-  const months = dataMonths ? [...dataMonths].reverse() : statementMonths
+  const { month, setMonth, months: ledgerMonths } = usePeriod()
+  const months = dataMonths ? [...dataMonths].reverse() : ledgerMonths
   const chosen = month && month !== ALL_TIME ? month : null
   let value
   if (allowAll) value = month ?? ALL_TIME

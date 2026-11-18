@@ -13,7 +13,7 @@ import { useStatement } from '../contexts/StatementContext.jsx'
 import Amount from '../components/Amount.jsx'
 import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
-import { formatMonth } from '../lib/dates.js'
+import { statementSpan } from '../lib/dates.js'
 import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
 import { couldnt, errorReason } from '../lib/errors.js'
@@ -56,6 +56,9 @@ function CoverageBadge({ done, total }) {
   )
 }
 
+// A dialog's text is built while it is closed, when there is no statement yet.
+const spanOf = s => (s ? statementSpan(s) : '')
+
 const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
 
 // One line per file in a drop: what went in, then how sorting is going. The
@@ -66,6 +69,24 @@ function balanceLine(check) {
   return check.balanced
     ? 'Balance checks out'
     : `Balance check: ${check.consistent} of ${check.checked} steps reconcile`
+}
+
+// What deleting a statement says. Payments that a later statement also covered
+// were skipped when that one was added, so they go for good: one plain sentence.
+function deleteDescription(statement) {
+  if (!statement) return ''
+  const shared = statement.shared_with_later ?? 0
+  const sentence = shared > 0
+    ? ` ${count(shared, 'payment')} in it ${shared === 1 ? 'is' : 'are'} also in a later statement, which skipped ${shared === 1 ? 'it' : 'them'} when it was added, so ${shared === 1 ? 'it' : 'they'} will not come back from that one.`
+    : ''
+  return `This will permanently remove "${statement.account_label} - ${statementSpan(statement)}" and all its payments.${sentence} This can't be undone.`
+}
+
+// What the file brought: all of it, or only what the account did not have yet.
+function addedLine(statement) {
+  const already = statement.rows_already_in ?? 0
+  if (already === 0) return `${count(statement.rows_added ?? statement.transaction_count, 'payment')} added`
+  return `${count(statement.rows_added, 'new payment')}, ${already} already in your ledger`
 }
 
 function sortLine(entry) {
@@ -211,8 +232,8 @@ function FileRow({ entry, onRemove, accountLabel, onNameAccount }) {
   const { file, status, statement } = entry
   const added = statement && (
     <>
-      {formatMonth(statement.statement_month)}
-      {' - '}{count(statement.transaction_count, 'payment')} added
+      {statementSpan(statement)}
+      {' - '}{addedLine(statement)}
       {' - '}{balanceLine(statement.balance_check)}
     </>
   )
@@ -384,7 +405,8 @@ export default function Upload() {
         }
         refresh()
       } catch (e) {
-        patchEntry(entry.id, { status: 'failed', message: couldnt('read this file', e) })
+        // A refusal with a reason of its own ("Nothing new: ...", "already added") reads as it is.
+        patchEntry(entry.id, { status: 'failed', message: e?.status === 409 ? e.message : couldnt('read this file', e) })
       }
     }
     setUploading(false)
@@ -394,7 +416,7 @@ export default function Upload() {
     if (!deleteTarget) return
     try {
       await api.delete(`/statements/${deleteTarget.id}`)
-      toast(`Deleted ${deleteTarget.account_label} - ${formatMonth(deleteTarget.statement_month)}`, 'info')
+      toast(`Deleted ${deleteTarget.account_label} - ${statementSpan(deleteTarget)}`, 'info')
       setDeleteTarget(null)
       refresh()
       refreshDemoData()
@@ -407,7 +429,7 @@ export default function Upload() {
     if (!resetTarget) return
     try {
       await api.delete(`/statements/${resetTarget.id}/data`)
-      toast(`Started over with ${resetTarget.account_label} - ${formatMonth(resetTarget.statement_month)}`, 'info')
+      toast(`Started over with ${resetTarget.account_label} - ${statementSpan(resetTarget)}`, 'info')
       setResetTarget(null)
       loadStatements()
       refreshDemoData()
@@ -479,11 +501,22 @@ export default function Upload() {
         `/statements/${s.id}`,
         target.id ? { account_id: target.id } : { new_account: true, name: target.name },
       )
-      toast(`Moved ${formatMonth(s.statement_month)} to ${target.id ? target.account_label : made?.account_label ?? 'a new account'}`, 'info')
+      toast(moveMessage(s, made, target), 'info')
       refresh()
     } catch (e) {
       toast(couldnt('move this statement', e), 'error')
     }
+  }
+
+  // Where it went, and what of it the account had already (those payments were dropped).
+  function moveMessage(s, made, target) {
+    const where = target.id ? target.account_label : made?.account_label ?? 'a new account'
+    const already = made?.rows_already_there ?? 0
+    if (made?.statement_deleted) {
+      return `${statementSpan(s)} was not moved: all ${count(already, 'payment')} in it were already in ${where}, so it was removed.`
+    }
+    const dropped = already > 0 ? ` ${count(already, 'payment')} already there, so left out.` : ''
+    return `Moved ${statementSpan(s)} to ${where}.${dropped}`
   }
 
   const accountLabels = new Map(accounts.map(a => [a.id, a.account_label]))
@@ -558,6 +591,10 @@ export default function Upload() {
           <li>
             Works with Kotak statements, and with other banks when the statement has a
             running-balance column.
+          </li>
+          <li>
+            Any date range works, a mid-month download included. Payments you already have are
+            skipped, so statements can overlap.
           </li>
           <li>Password-protected PDFs work: enter the password after you choose the file.</li>
           <li>
@@ -722,7 +759,7 @@ export default function Upload() {
           <table className="w-full text-sm">
             <thead>
               <tr>
-                {['Account', 'Month', 'Balanced', 'Sorted', 'Added'].map(h => (
+                {['Account', 'Period', 'Balanced', 'Sorted', 'Added'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235]">{h}</th>
                 ))}
                 <th className="px-4 py-2.5 border-b border-[#1e2235]"><span className="sr-only">Actions</span></th>
@@ -745,7 +782,7 @@ export default function Upload() {
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{formatMonth(s.statement_month)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap text-[#94a3b8]">{statementSpan(s)}</td>
                   <td className="px-4 py-3">
                     <BalancedBadge check={s.balance_check} />
                   </td>
@@ -768,7 +805,7 @@ export default function Upload() {
                         </button>
                       </Tooltip>
                       <ActionMenu
-                        label={`More for ${s.account_label} - ${formatMonth(s.statement_month)}`}
+                        label={`More for ${s.account_label} - ${statementSpan(s)}`}
                         triggerRef={node => { moreButtons.current[s.id] = node }}
                         items={[
                           { label: 'Name this account', onSelect: () => setEditingId(s.id) },
@@ -791,7 +828,7 @@ export default function Upload() {
 
       <Modal open={!!moveTarget} title="Move to account" onClose={() => setMoveTarget(null)}>
         <p className="text-sm text-[#94a3b8] mb-4">
-          {moveTarget && `${formatMonth(moveTarget.statement_month)} is in ${moveTarget.account_label}. Move it to:`}
+          {moveTarget && `${statementSpan(moveTarget)} is in ${moveTarget.account_label}. Move it to:`}
         </p>
         <ul className="space-y-2">
           {moveTarget && accounts.filter(a => a.id !== moveTarget.account_id).map(a => (
@@ -814,7 +851,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!resetTarget}
         title="Start over with this statement?"
-        description={`This removes every category and tag on "${resetTarget?.account_label} - ${formatMonth(resetTarget?.statement_month)}". Your payments stay, and you can sort them again any time. This can't be undone.`}
+        description={`This removes every category and tag on "${resetTarget?.account_label} - ${spanOf(resetTarget)}". Your payments stay, and you can sort them again any time. This can't be undone.`}
         confirmLabel="Start over"
         onConfirm={resetStatementData}
         onCancel={() => setResetTarget(null)}
@@ -824,7 +861,7 @@ export default function Upload() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="Delete this statement?"
-        description={`This will permanently remove "${deleteTarget?.account_label} - ${formatMonth(deleteTarget?.statement_month)}" and all its payments. This can't be undone.`}
+        description={deleteDescription(deleteTarget)}
         confirmLabel="Delete"
         onConfirm={deleteStatement}
         onCancel={() => setDeleteTarget(null)}

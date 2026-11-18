@@ -729,6 +729,63 @@
         "added"
       ],
       "reason": "Migration 041 adds accounts. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-statements-row-counts",
+      "scope": "stored",
+      "path": [
+        "statements[*].rows_in_file",
+        "statements[*].rows_added"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "A statement now records how many payments its file held and how many of them were new, because a statement that overlaps an earlier one adds only the new ones. Every statement you already had brought all the payments of its file, so both are its payment count, which the journey checks."
+    },
+    {
+      "id": "stored-statements-balance-stored",
+      "scope": "stored",
+      "path": [
+        "statements[*].balance_checked",
+        "statements[*].balance_consistent"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The running-balance check of a statement's whole file is now stored with it, so a statement whose overlapping rows were skipped never looks unbalanced. For every statement you already had it is the check the list showed before: the journey checks the stored figures equal that check and that nothing that was balanced is flagged now."
+    },
+    {
+      "id": "stored-statements-shared-with-later",
+      "scope": "stored",
+      "path": "statements[*].shared_with_later",
+      "kinds": [
+        "added"
+      ],
+      "to": 0,
+      "reason": "The statement list says how many of a statement's payments a later statement also had, so deleting it can say they will not come back. No statement you already had overlapped a later one, so every statement starts at 0."
+    },
+    {
+      "id": "stored-column-statement-row-counts",
+      "scope": "stored",
+      "path": [
+        "schema.addedColumns[statements_rows_in_file]",
+        "schema.addedColumns[statements_rows_added]",
+        "schema.addedColumns[statements_balance_checked]",
+        "schema.addedColumns[statements_balance_consistent]"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 043 gives each statement what its file held, what of it was new, and the balance check of the file."
+    },
+    {
+      "id": "stored-migration-043",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[043_statement_row_counts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 043 records what each statement's file held and whether its balance checked out. It runs once, on the first start of the new release."
     }
   ]
 }

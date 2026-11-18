@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { test, expect } from '../fixtures.js'
 import { open } from '../lib/ui.js'
-import { FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK } from '../lib/statement.js'
+import { FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK, FIXTURE_PDF_OVERLAP } from '../lib/statement.js'
 
 async function drop(page, files) {
   await open(page, '/upload')
@@ -248,7 +248,7 @@ test.describe('J3 accounts', () => {
     // Move on inside the app, without a reload: the picker already has the new name.
     await page.getByRole('link', { name: 'Transactions' }).first().click()
     await expect(page.getByRole('button', { name: 'Sort again' })).toBeVisible()
-    await expect(picker(page).locator('option')).toHaveText(['All statements', 'Salary account - Oct 2026'])
+    await expect(picker(page).locator('option')).toHaveText(['All statements', 'Salary account - 1 Oct to 8 Oct'])
   })
 
   test('naming is cancelled with Escape and saves nothing', async ({ page, app }) => {
@@ -285,7 +285,7 @@ test.describe('J3 accounts', () => {
     await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Added to Bank ··0000')
     expect(await app.api.get('/accounts')).toHaveLength(1)
 
-    await page.getByRole('button', { name: 'More for Bank ··0000 - Nov 2026' }).click()
+    await page.getByRole('button', { name: 'More for Bank ··0000 - 1 Nov to 8 Nov' }).click()
     await page.getByRole('menuitem', { name: 'Move to account…' }).click()
     const dialog = page.getByRole('dialog', { name: 'Move to account' })
     await expect(dialog.getByText('A new account', { exact: true })).toBeVisible()
@@ -366,5 +366,91 @@ test.describe('J3 accounts', () => {
     await expect(accountRows(page).filter({ hasText: 'HDFC ··4321' })).toHaveCount(0)
     await expect(accountRows(page).filter({ hasText: 'Bank ··0000' })).toHaveCount(2)
     expect((await app.api.get('/accounts')).map((a) => a.account_label)).toEqual(['Bank ··0000'])
+  })
+})
+
+test.describe('J3 overlapping statements', () => {
+  const accountRows = (page) => page.getByRole('row').filter({ has: page.getByRole('button', { name: /^More for / }) })
+  const asPayments = (rows) => rows.map((t) => `${t.txn_date} ${t.amount} ${t.debit_credit} ${t.raw_description}`)
+
+  test('a file that overlaps both months adds only what is new, and October shows no duplicate', async ({ page, app }) => {
+    await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
+    await expect(summaryOf(page)).toContainText('Finished:')
+    await drop(page, FIXTURE_PDF_OVERLAP)
+    const row = fileRow(page, 'sample_statement_overlap.pdf')
+    await expect(row).toContainText('5 Oct to 15 Nov - 3 new payments, 12 already in your ledger - Balance checks out')
+    await expect(summaryOf(page)).toContainText('Finished:')
+
+    const october = await app.api.get('/transactions?month=2026-10')
+    const november = await app.api.get('/transactions?month=2026-11')
+    expect(october).toHaveLength(8)
+    expect(november).toHaveLength(8 + 3)
+    const everything = asPayments(await app.api.get('/transactions'))
+    expect(new Set(everything).size, 'a payment is in the ledger twice').toBe(everything.length)
+
+    // The statement list says what each file covers, and what it brought.
+    await expect(accountRows(page)).toHaveCount(3)
+    await expect(accountRows(page).filter({ hasText: '5 Oct to 15 Nov' })).toHaveCount(1)
+    const statements = await app.api.get('/statements')
+    const overlap = statements.find((s) => s.period_end === '2026-11-15')
+    expect([overlap.rows_in_file, overlap.rows_added, overlap.txn_count]).toEqual([15, 3, 3])
+    // The balance of the whole file, though only three of its payments are here.
+    expect(overlap.balance_check).toEqual({ checked: 14, consistent: 14, balanced: true })
+  })
+
+  test('the months after a file that holds them add what it lacks, and a file with nothing new is refused', async ({ page, app, tolerate }) => {
+    await tolerate(/\/api\/statements\/upload/, 409)
+    await drop(page, FIXTURE_PDF_OVERLAP)
+    await expect(summaryOf(page)).toContainText('Finished:')
+    await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
+    await expect(fileRow(page, 'sample_statement.pdf')).toContainText('1 Oct to 8 Oct - 4 new payments, 4 already in your ledger')
+    const refused = fileRow(page, 'sample_statement_nov.pdf')
+    await expect(refused).toContainText('Nothing new: all 8 payments in this file are already in Bank ··0000.')
+    await expect(refused).not.toContainText("Couldn't read this file")
+
+    // No statement was made for the refused file, and nothing is doubled.
+    expect(await app.api.get('/statements')).toHaveLength(2)
+    expect(await app.api.get('/accounts')).toHaveLength(1)
+    const everything = asPayments(await app.api.get('/transactions'))
+    expect(everything).toHaveLength(15 + 4)
+    expect(new Set(everything).size).toBe(everything.length)
+  })
+
+  test('every month a statement runs into is on offer, and the statement can be picked in it', async ({ page }) => {
+    await drop(page, FIXTURE_PDF_OVERLAP)
+    await expect(summaryOf(page)).toContainText('Finished:')
+    await page.getByRole('link', { name: 'Transactions' }).first().click()
+    await expect(page.getByRole('button', { name: 'Sort again' })).toBeVisible()
+    const period = page.getByRole('combobox', { name: 'Period' })
+    await expect(period.locator('option')).toHaveText(['All time', 'Nov 2026', 'Oct 2026'])
+    await period.selectOption('2026-11')
+    await expect(page.getByRole('combobox').first().locator('option')).toHaveText(['All statements', 'Bank ··0000 - 5 Oct to 15 Nov'])
+    // The statement stays picked in November, which it runs into: the list is its November payments.
+    await expect(page.getByRole('combobox').first()).toHaveValue(/\S/)
+    await expect(page.getByText(/^11 payments/)).toBeVisible()
+  })
+
+  test('moving a statement into an account that holds some of its payments drops those, and says so', async ({ page, app }) => {
+    await drop(page, [FIXTURE_PDF, FIXTURE_PDF_NOV])
+    await expect(summaryOf(page)).toContainText('Finished:')
+    // November goes to an account of its own; the overlap file then follows it there.
+    const [first] = await app.api.get('/accounts')
+    const nov = (await app.api.get('/statements')).find((s) => s.period_start === '2026-11-01')
+    await app.api.patch(`/statements/${nov.id}`, { new_account: true })
+    await drop(page, FIXTURE_PDF_OVERLAP)
+    await expect(fileRow(page, 'sample_statement_overlap.pdf')).toContainText('7 new payments, 8 already in your ledger')
+
+    await accountRows(page).filter({ hasText: '5 Oct to 15 Nov' }).getByRole('button', { name: /^More for / }).click()
+    await page.getByRole('menuitem', { name: 'Move to account…' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Move to account' })
+    await dialog.getByRole('button', { name: 'Bank ··0000' }).first().click()
+    await expect(dialog).toHaveCount(0)
+
+    const moved = (await app.api.get('/statements')).find((s) => s.period_end === '2026-11-15')
+    expect(moved.txn_count).toBe(3)
+    expect(moved.rows_added).toBe(3)
+    expect(moved.account_id).toBe(first.id)
+    const everything = asPayments(await app.api.get('/transactions'))
+    expect(new Set(everything).size).toBe(everything.length)
   })
 })

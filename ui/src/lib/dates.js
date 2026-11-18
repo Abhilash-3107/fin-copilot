@@ -33,3 +33,35 @@ export function formatDateRange(start, end) {
   if (!a.isSame(b, 'month')) return `${a.format('DD MMM')} - ${b.format('DD MMM YYYY')}`
   return `${a.format('DD')} - ${b.format('DD MMM YYYY')}`
 }
+
+// The days a statement covers: the period its header prints when it was read,
+// else the dates of its first and last payment. Null for a statement with
+// neither (the sample data), which is known only by its month.
+function statementDays(statement) {
+  const start = statement.printed_start ?? statement.period_start
+  const end = statement.printed_end ?? statement.period_end
+  return start && end ? { start: dayjs(start), end: dayjs(end), printed: Boolean(statement.printed_start) } : null
+}
+
+// What a statement covers, in words: "Oct 2026" for a whole calendar month (or
+// for payments that all fall in one month with no printed period to say more),
+// otherwise the range, "1 Oct to 15 Nov".
+export function statementSpan(statement) {
+  const days = statementDays(statement)
+  if (!days) return formatMonth(statement.statement_month)
+  const { start, end, printed } = days
+  const sameMonth = start.isSame(end, 'month')
+  if (sameMonth && (!printed || (start.date() === 1 && end.isSame(end.endOf('month'), 'day')))) {
+    return formatMonth(start)
+  }
+  const crossesYears = !start.isSame(end, 'year')
+  const show = d => d.format(crossesYears ? 'D MMM YYYY' : 'D MMM')
+  return `${show(start)} to ${show(end)}`
+}
+
+// Whether any of a statement's payments can fall in the month ("2026-10"): by
+// its payment dates, so a statement that runs into the next month covers both.
+export function statementCoversMonth(statement, month) {
+  if (!statement.period_start || !statement.period_end) return statement.statement_month === month
+  return statement.period_start.slice(0, 7) <= month && month <= statement.period_end.slice(0, 7)
+}

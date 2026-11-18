@@ -61,6 +61,10 @@ test.describe('J9 failure states', () => {
     await expect(alertWith(page, "Couldn't load your payments.")).toBeVisible()
     await expect(page.getByText('No payments')).toHaveCount(0)
 
+    // The page asks again once the statements and months arrive. Let those requests
+    // fail too before the API heals, or one of them succeeds and the alert goes
+    // before Retry is clicked.
+    await page.waitForLoadState('networkidle')
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(page.getByRole('row').nth(1)).toBeVisible()

@@ -10,14 +10,11 @@ const STORAGE_KEY = 'fc_period_month'
 export const ALL_TIME = 'all'
 
 export function PeriodProvider({ children }) {
-  const { statements } = useStatement()
+  const { months: ledgerMonths } = useStatement()
   const [month, setMonthRaw] = useState(() => readStored(STORAGE_KEY) || null)
 
-  // The months the user actually has data for, newest first.
-  const months = useMemo(() => {
-    const set = new Set(statements.map(s => s.statement_month).filter(Boolean))
-    return [...set].sort((a, b) => b.localeCompare(a))
-  }, [statements])
+  // The months that have payments, newest first.
+  const months = useMemo(() => [...ledgerMonths].sort((a, b) => b.localeCompare(a)), [ledgerMonths])
 
   // Once statements load, default the shared period to the latest month unless
   // the user (or a previous session) already chose one.
