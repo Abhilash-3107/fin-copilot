@@ -317,7 +317,7 @@ test.describe('J3 accounts', () => {
     await expect(dialog).toHaveCount(0)
     await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
     await expect(page.getByRole('menu')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'More for Joint account - Nov 2026' })).toBeFocused()
+    await expect(page.getByRole('button', { name: 'More for Joint account - 1 Nov to 8 Nov' })).toBeFocused()
     await expect(accountRows(page).filter({ hasText: 'Joint account' })).toHaveCount(1)
     const accounts = await app.api.get('/accounts')
     expect(accounts.map((a) => [a.account_label, a.statement_count]).sort()).toEqual([['Bank ··0000', 1], ['Joint account', 1]])
@@ -436,7 +436,7 @@ test.describe('J3 overlapping statements', () => {
     // November goes to an account of its own; the overlap file then follows it there.
     const [first] = await app.api.get('/accounts')
     const nov = (await app.api.get('/statements')).find((s) => s.period_start === '2026-11-01')
-    await app.api.patch(`/statements/${nov.id}`, { new_account: true })
+    await app.api.patch(`/statements/${nov.id}`, { new_account: true, name: 'Second' })
     await drop(page, FIXTURE_PDF_OVERLAP)
     await expect(fileRow(page, 'sample_statement_overlap.pdf')).toContainText('7 new payments, 8 already in your ledger')
 
