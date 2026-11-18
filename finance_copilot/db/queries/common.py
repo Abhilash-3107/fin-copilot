@@ -96,3 +96,19 @@ def effective_subcategory_sql(alias: str = "a", txn: str = "t") -> str:
     """SQL expression: the subcategory that goes with effective_category_sql (none when
     the payment counts as Uncategorized only because it is waiting on a pair)."""
     return f"(CASE WHEN {waiting_on_pair_sql(alias, txn)} THEN NULL ELSE {alias}.subcategory END)"
+
+
+def account_condition_sql(account_id: str | None, txn: str = "t") -> tuple[str | None, tuple]:
+    """The condition, and its parameters, that limits payments `txn` to one account's, or
+    (None, ()) for all accounts. Every figure and list that follows the account filter
+    builds it here, so "this account" means one thing: a payment belongs to the account
+    of its statement (statements.account_id)."""
+    if not account_id:
+        return None, ()
+    return f"{txn}.statement_id IN (SELECT id FROM statements WHERE account_id = ?)", (account_id,)
+
+
+def account_scope_sql(account_id: str | None, txn: str = "t") -> tuple[str, tuple]:
+    """account_condition_sql as " AND ..." (or nothing), for appending to a WHERE clause."""
+    condition, params = account_condition_sql(account_id, txn)
+    return (f" AND {condition}", params) if condition else ("", ())

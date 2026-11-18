@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.queries.accounts import with_account
 from finance_copilot.db.queries.app_settings import get_dev_mode
 from finance_copilot.db.queries.common import UNCATEGORIZED, parse_string_list, waiting_on_pair_sql
 from finance_copilot.db.queries.payee import (
@@ -39,8 +40,17 @@ def _split_csv(value: str | None) -> list[str] | None:
     return parts or None
 
 
+def _known_account(conn: sqlite3.Connection, account_id: str | None) -> str | None:
+    """The account to limit to, or 404 when there is none by that id: a stale filter
+    must say so, not show an empty ledger."""
+    if account_id and not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (account_id,)).fetchone():
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account_id or None
+
+
 def _filters(
     statement_id: str | None = None,
+    account_id: str | None = Query(None, description="limit to one account's payments"),
     month: str | None = None,
     unannotated: bool = False,
     q: str | None = Query(None, description="substring match on description, merchant, UPI note, and the names and notes the user wrote"),
@@ -51,10 +61,12 @@ def _filters(
     person: str | None = Query(None, description="match-token of a person; filters to their matched transactions"),
     min_amount: float | None = Query(None, description="minimum transaction amount"),
     max_amount: float | None = Query(None, description="maximum transaction amount"),
+    conn: sqlite3.Connection = Depends(get_db),
 ) -> dict:
     """The filter set shared by the list and its summary."""
     return {
         "statement_id": statement_id,
+        "account_id": _known_account(conn, account_id),
         "month": month,
         "unannotated": unannotated,
         "q": q,
@@ -90,7 +102,7 @@ def get_transactions(
     if include == "annotation":
         for row in rows:
             row["tags"] = parse_string_list(row.get("tags")) if row.get("annotation_id") else []
-    return with_transfer(conn, with_payee(conn, rows))
+    return with_transfer(conn, with_payee(conn, with_account(conn, rows)))
 
 
 @router.get("/summary")
@@ -114,11 +126,14 @@ def get_payment_months(conn: sqlite3.Connection = Depends(get_db)):
 @router.get("/facets")
 def get_transaction_facets(
     statement_id: str | None = None,
+    account_id: str | None = None,
     month: str | None = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Distinct annotation categories/sources in scope, for filter dropdowns."""
-    return list_transaction_facets(conn, statement_id=statement_id, month=month)
+    return list_transaction_facets(
+        conn, statement_id=statement_id, month=month, account_id=_known_account(conn, account_id)
+    )
 
 
 _EXPORT_COLUMNS = [
@@ -213,7 +228,7 @@ def get_transaction(
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Payment not found")
-    result = with_transfer(conn, with_payee(conn, [dict(row)]))[0]
+    result = with_transfer(conn, with_payee(conn, with_account(conn, [dict(row)])))[0]
     result["waiting_on_pair"] = bool(result["waiting_on_pair"])
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])

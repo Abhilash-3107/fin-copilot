@@ -227,3 +227,27 @@ def set_account_name(conn: sqlite3.Connection, account_id: str, name: str | None
     """Name an account. Blank clears it, back to the derived label."""
     cleaned = (name or "").strip() or None
     conn.execute("UPDATE accounts SET name = ? WHERE id = ?", (cleaned, account_id))
+
+
+def with_account(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    """Add the account a payment sits in (`account_id`, `account_label`) to payment rows,
+    through their statements, so a list that shows several accounts can say which. The
+    words are the server's, like every account label."""
+    ids = sorted({row["statement_id"] for row in rows if row.get("statement_id")})
+    if not ids:
+        return rows
+    by_statement: dict[str, str | None] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        by_statement.update({
+            r["id"]: r["account_id"]
+            for r in conn.execute(
+                f"SELECT id, account_id FROM statements WHERE id IN ({','.join('?' * len(chunk))})", chunk
+            )
+        })
+    labels = account_labels(conn)
+    for row in rows:
+        account_id = by_statement.get(row.get("statement_id"))
+        row["account_id"] = account_id
+        row["account_label"] = labels.get(account_id)
+    return rows

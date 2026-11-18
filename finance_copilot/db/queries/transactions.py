@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 
 from finance_copilot.db.queries.common import (
     UNCATEGORIZED,
+    account_condition_sql,
     effective_category_sql,
     unsorted_sql,
     waiting_on_pair_sql,
@@ -321,6 +322,7 @@ def _filter_conditions(
     person_token: str | None,
     min_amount: float | None,
     max_amount: float | None,
+    account_id: str | None = None,
 ) -> tuple[list[str], list]:
     """WHERE conditions and params shared by the list and its summary, over
     transactions `t` LEFT JOINed to annotations `a`, so the summary can never
@@ -405,6 +407,11 @@ def _filter_conditions(
         conditions.append("t.statement_id = ?")
         params.append(statement_id)
 
+    account_condition, account_params = account_condition_sql(account_id)
+    if account_condition:
+        conditions.append(account_condition)
+        params += account_params
+
     if month:
         conditions.append("strftime('%Y-%m', t.txn_date) = ?")
         params.append(month)
@@ -433,6 +440,7 @@ def list_transactions(
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
+    account_id: str | None = None,
     sort: str = "date",
     order: str = "desc",
     after: str | None = None,
@@ -468,6 +476,7 @@ def list_transactions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
         payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        account_id=account_id,
     )
     needs_annotation_join = unannotated or q or categories or sources or merchant or payee_keys
     if needs_annotation_join and not include_annotation:
@@ -517,6 +526,7 @@ def summarize_transactions(
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
+    account_id: str | None = None,
 ) -> dict:
     """Count and debit/credit totals of exactly the rows list_transactions
     would return for the same filters (all pages, not just the first)."""
@@ -524,6 +534,7 @@ def summarize_transactions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
         payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        account_id=account_id,
     )
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     row = conn.execute(
@@ -547,8 +558,9 @@ def list_transaction_facets(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
     month: str | None = None,
+    account_id: str | None = None,
 ) -> dict[str, list[str]]:
-    """Distinct categories and annotation sources within the statement/month
+    """Distinct annotation categories and sources within the statement/month/account
     scope, for populating filter options. Deliberately ignores the annotation
     filters themselves so an active filter never hides its sibling options.
     Categories are the effective ones (common.effective_category_sql), the same the
@@ -559,6 +571,10 @@ def list_transaction_facets(
     if statement_id:
         conditions.append("t.statement_id = ?")
         params.append(statement_id)
+    account_condition, account_params = account_condition_sql(account_id)
+    if account_condition:
+        conditions.append(account_condition)
+        params += account_params
     if month:
         conditions.append("strftime('%Y-%m', t.txn_date) = ?")
         params.append(month)

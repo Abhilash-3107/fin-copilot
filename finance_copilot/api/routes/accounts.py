@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
+from finance_copilot.db.queries.books import books
 from finance_copilot.db.queries.accounts import (
     NAME_MAX_LENGTH,
     get_account,
@@ -22,6 +23,14 @@ def get_accounts(conn: sqlite3.Connection = Depends(get_db)):
     """Every account that holds a statement, with its label, how many statements it
     has, the dates its payments span and its latest known balance."""
     return list_accounts(conn)
+
+
+@router.get("/books")
+def get_books(conn: sqlite3.Connection = Depends(get_db)):
+    """The books: every account by every month that holds a statement (the last twelve,
+    and any month between them that has none), with each cell's payments, statements,
+    coverage and balance check, and the moves between the user's own accounts."""
+    return books(conn)
 
 
 class AccountPatch(BaseModel):
