@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 
 const { mockApi, toastSpy } = vi.hoisted(() => ({
-  mockApi: { get: vi.fn(), put: vi.fn(), post: vi.fn() },
+  mockApi: { get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn() },
   toastSpy: vi.fn(),
 }))
 vi.mock('../lib/api.js', () => ({
@@ -18,6 +18,17 @@ vi.mock('../lib/api.js', () => ({
 vi.mock('../contexts/ToastContext.jsx', () => ({
   ToastProvider: ({ children }) => children,
   useToast: () => toastSpy,
+}))
+
+// The real picker caches the taxonomy for the whole module, so a test cannot choose what it holds.
+vi.mock('../components/CategoryPicker.jsx', () => ({
+  default: ({ category, onChange }) => (
+    <select aria-label="Category" value={category} onChange={e => onChange({ category: e.target.value, subcategory: '' })}>
+      <option value="">Select a category</option>
+      <option value="Self Transfers">Self Transfers</option>
+      <option value="Food & Dining">Food & Dining</option>
+    </select>
+  ),
 }))
 
 // A full page is 500 rows, and drawing all of them is what made the "next page
@@ -637,6 +648,20 @@ describe('Transactions unpairing a transfer', () => {
     renderPage(['/transactions?txn=p1'])
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
     await waitFor(() => expect(toastSpy.mock.calls.at(-1)[0]).toBe(expected))
+  })
+
+  it('calling the payment something else re-reads the payment it was paired with', async () => {
+    mockApi.patch.mockImplementation(async () => {
+      paired = false
+      return { id: 'a1', category: 'Food & Dining', subcategory: null, merchant: null, tags: [], confidence: 1, source: 'manual' }
+    })
+    const user = userEvent.setup()
+    renderPage(['/transactions?txn=p1'])
+    await screen.findByText(/Paired with the payment on 3 Nov/)
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Category' }), 'Food & Dining')
+    mockApi.get.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Update' }))
+    await waitFor(() => expect(callsTo('/transactions/p2')).toHaveLength(1))
   })
 
   it('Undo from the toast pairs them again and the row says so again', async () => {

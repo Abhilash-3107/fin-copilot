@@ -594,6 +594,11 @@ export default function Transactions() {
     setTransactions(prev => prev.map(t =>
       t.id === txnId ? { ...t, ...ann, id: t.id, annotation_id: saved.id } : t
     ))
+    // Calling a paired payment something other than Self Transfers takes the pair
+    // apart on the server: the payment on the other side is To sort again, so its
+    // row must say so (and stop saying it moved).
+    const partner = transactions.find(t => t.id === txnId)?.transfer?.transaction_id
+    if (partner && saved.category !== 'Self Transfers') refreshPayments([partner])
     loadFacets() // a manual save can introduce a category new to this scope
     refreshName(txnId) // and a new merchant can change what the row is called
   }
