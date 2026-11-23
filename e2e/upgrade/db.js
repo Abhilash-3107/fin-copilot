@@ -38,7 +38,7 @@ snoozed = [{"transaction_id": row[0], "review_snoozed_at": row[1]} for row in co
 # (a column the release does not have yet is simply not listed), and how many times
 # each sorting job has been started (migration 040; None before it exists).
 tables = {}
-for name in ("payee_names", "review_undo", "accounts", "transfer_unpaired"):
+for name in ("payee_names", "review_undo", "accounts", "transfer_unpaired", "import_layouts"):
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
     tables[name] = conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0] if exists else None
 added = [

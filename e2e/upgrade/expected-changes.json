@@ -891,6 +891,26 @@
         "added"
       ],
       "reason": "Migration 044 lets a label come from a pair of statements and adds the table of unpaired transfers. It rebuilds the table that holds labels with every label, source, confidence and note as it was, and it runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-import-layouts-table",
+      "scope": "stored",
+      "path": "schema.tableRows.import_layouts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 045 adds the table that remembers how a spreadsheet's columns were read and which account it went to, so the next file with the same header asks nothing. It starts empty: a layout is learned from a spreadsheet you add."
+    },
+    {
+      "id": "stored-migration-045",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[045_import_layouts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 045 adds the table of remembered spreadsheet layouts. It only adds a table, and it runs once, on the first start of the new release."
     }
   ]
 }

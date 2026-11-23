@@ -123,12 +123,12 @@ describe('ImportMapping', () => {
     expect(screen.getByLabelText('Name for the new account')).toBeInTheDocument()
   })
 
-  it('Escape leaves the file out, but not while a list is open', () => {
+  it('Escape leaves the file out, from any control', () => {
     const { onCancel } = setup()
     fireEvent.keyDown(roleOf('When'), { key: 'Escape' })
-    expect(onCancel).not.toHaveBeenCalled()
-    fireEvent.keyDown(screen.getByRole('group'), { key: 'Escape' })
     expect(onCancel).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(screen.getByLabelText('Account'), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(2)
   })
 
   it('Cancel leaves the file out', () => {

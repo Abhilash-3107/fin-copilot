@@ -181,10 +181,9 @@ function MappingForm({ ask, file, onSubmit, onCancel, busy, error }) {
       role="group"
       aria-labelledby={`${id}-title`}
       className="mt-2 rounded-lg border border-[#2d3148] bg-[#0f1117] p-3 space-y-3"
-      onKeyDown={e => {
-        // Escape on an open list closes the list; only Escape elsewhere leaves the form.
-        if (e.key === 'Escape' && e.target.tagName !== 'SELECT') { e.stopPropagation(); onCancel() }
-      }}
+      // A browser's open list takes its own Escape (it closes the list and the
+      // page never sees the key), so an Escape that arrives here is the form's.
+      onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
     >
       <p id={`${id}-title`} className="text-sm text-[#e2e8f0]">
         {asksMapping ? 'Check what each column is' : 'Which account is this file from?'}

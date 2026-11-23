@@ -22,7 +22,7 @@ const MIGRATIONS = [
   '027_strip_balance_label_from_descriptions', '028_embedding_text_hash', '029_suppressions_per_direction', '030_clear_bank_line_merchants',
   '031_review_policies', '032_annotation_source_policy', '033_drop_unused_duplicate_subcategories', '034_taxonomy_dismissals',
   '035_review_snooze_on_transactions', '036_backfill_annotation_category_ids', '037_payee_names', '038_review_undo',
-  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes', '043_statement_row_counts', '044_transfer_pairing',
+  '039_annotation_job_scope', '040_annotation_job_attempts', '041_accounts', '042_payment_notes', '043_statement_row_counts', '044_transfer_pairing', '045_import_layouts',
 ]
 const CHAI = { name: 'Chai Wala Corner', category: null, amount: 30, cadence: 'monthly', active: true }
 
@@ -93,7 +93,7 @@ function ledgerBefore() {
     settings: { config: { dev_mode: false, confidence_threshold: 0.85 }, llm: {} },
     schema: {
       appliedMigrations: ['026_user_rules'],
-      tableRows: { payee_names: null, review_undo: null, accounts: null, transfer_unpaired: null },
+      tableRows: { payee_names: null, review_undo: null, accounts: null, transfer_unpaired: null, import_layouts: null },
       addedColumns: [],
       jobAttempts: [{ id: 'job1', attempts: null }],
     },
@@ -181,7 +181,7 @@ function upgrade(before) {
   facts.learnedRules[0].payee = 'RAHUL'
   facts.schema = {
     appliedMigrations: [...facts.schema.appliedMigrations, ...MIGRATIONS],
-    tableRows: { payee_names: 0, review_undo: 0, accounts: 2, transfer_unpaired: 0 },
+    tableRows: { payee_names: 0, review_undo: 0, accounts: 2, transfer_unpaired: 0, import_layouts: 0 },
     addedColumns: [
       'transactions.display_name', 'transactions.user_note', 'annotation_jobs.transaction_ids', 'annotation_jobs.attempts',
       'statements.account_id', 'statements.printed_start', 'statements.printed_end',
@@ -758,6 +758,18 @@ const regressions = {
   'the unpaired table is not there': [
     (a) => (a.facts.schema.tableRows.transfer_unpaired = null),
     /"stored-transfer-unpaired-table" \(stored\) did not happen/,
+  ],
+  'the layouts table starts with a remembered layout': [
+    (a) => (a.facts.schema.tableRows.import_layouts = 1),
+    /1 remembered spreadsheet layouts after the upgrade|schema\.tableRows\.import_layouts/,
+  ],
+  'the layouts table is not there': [
+    (a) => (a.facts.schema.tableRows.import_layouts = null),
+    /"stored-import-layouts-table" \(stored\) did not happen/,
+  ],
+  'the layouts migration does not run': [
+    (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('045'))),
+    /"stored-migration-045" \(stored\) did not happen/,
   ],
   'the pairing migration does not run': [
     (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('044'))),

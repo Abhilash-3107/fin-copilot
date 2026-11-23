@@ -38,6 +38,22 @@ export const FIXTURE_PDF_TRANSFER_IN = path.resolve(here, '../../finance_copilot
 export const FIXTURE_PDF_NEFT_OUT = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_neft_out.pdf')
 export const FIXTURE_PDF_NEFT_IN = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_neft_in.pdf')
 
+/**
+ * The same fictional accounts as spreadsheets (made by scripts/make_spreadsheet_fixtures.py). The
+ * October and November CSVs name the account number the PDFs print, so they land beside the PDFs.
+ * The overlap CSV is 5 October to 15 November with the narrations cut to 18 characters and the
+ * balances kept. The export CSVs are another account whose header no keyword names ("When",
+ * "What", "Moved", "Left"), with nothing above the table: the first asks what the columns are.
+ */
+const fixture = (name) => path.resolve(here, `../../finance_copilot/tests/fixtures/${name}`)
+export const FIXTURE_CSV = fixture('sample_statement.csv')
+export const FIXTURE_CSV_NOV = fixture('sample_statement_nov.csv')
+export const FIXTURE_CSV_OVERLAP = fixture('sample_statement_overlap.csv')
+export const FIXTURE_CSV_EXPORT_OCT = fixture('sample_export_oct.csv')
+export const FIXTURE_CSV_EXPORT_NOV = fixture('sample_export_nov.csv')
+export const FIXTURE_XLSX = fixture('sample_statement.xlsx')
+export const FIXTURE_XLS = fixture('sample_statement.xls')
+
 export function uploadFixture(api) {
   return api.upload('/statements/upload', 'sample_statement.pdf', readFileSync(FIXTURE_PDF), 'application/pdf')
 }

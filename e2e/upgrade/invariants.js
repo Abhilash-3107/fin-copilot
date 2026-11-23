@@ -579,6 +579,15 @@ function labelsSurviveTheRebuildAndNothingIsPaired(before, after) {
   return problems
 }
 
+/**
+ * Migration 045 adds the table of remembered spreadsheet layouts. A layout is only ever
+ * learned from a file the user adds, so an upgrade starts with none.
+ */
+function noSpreadsheetLayoutIsRememberedOnUpgrade(before, after) {
+  const layouts = after.facts.schema?.tableRows?.import_layouts
+  return layouts ? [`${layouts} remembered spreadsheet layouts after the upgrade, the user added no spreadsheet`] : []
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
@@ -586,6 +595,7 @@ export function checkInvariants(before, after) {
     ...paymentsAreInTheirStatementsAccount(before, after),
     ...accountsFollowTheOldStatements(before, after),
     ...accountsTableMatchesTheList(before, after),
+    ...noSpreadsheetLayoutIsRememberedOnUpgrade(before, after),
     ...accountBalancesAreTheirLatestStatements(before, after),
     ...accountNumbersAreOnlyTheirLastFour(before, after),
     ...statementsKeepTheirPaymentsAndBalance(before, after),
