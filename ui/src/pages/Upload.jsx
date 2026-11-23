@@ -219,7 +219,7 @@ function FileRow({ entry, onRemove, accountLabel, accountNamed, onNameAccount, o
     <li
       ref={rowRef}
       tabIndex={-1}
-      className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 outline-none"
+      className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#818cf8]"
     >
       <FileText size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">

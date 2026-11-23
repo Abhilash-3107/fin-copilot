@@ -1307,6 +1307,18 @@ describe('Upload with spreadsheets', () => {
       await waitFor(() => expect(screen.getByText('two.csv').closest('li')).toHaveFocus())
     })
 
+    it('the row that takes focus shows a focus ring for a keyboard user', async () => {
+      mockApi.upload.mockRejectedValue(refusal(asked()))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv('one.csv'), csv('two.csv')] } })
+      fireEvent.click(screen.getByRole('button', { name: SEND }))
+      const forms = await screen.findAllByRole('group', { name: 'Check what each column is' })
+      fireEvent.click(within(forms[0]).getByRole('button', { name: 'Cancel' }))
+      const row = screen.getByText('two.csv').closest('li')
+      await waitFor(() => expect(row).toHaveFocus())
+      expect(row.className).toContain('focus-visible:ring-2')
+    })
+
     it('Remove on a ready file moves focus to the drop zone when it was the last', async () => {
       const { container } = renderUpload()
       fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
