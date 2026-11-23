@@ -52,8 +52,6 @@ What moves is what counts as spending and how months are compared, so the same l
 - Money Map's refund netting was stale in every earlier release: it could stay wrong after a change until the app was restarted.
   It now follows your changes at once.
 - The Sorted column counts a payment waiting on a pair as not sorted.
-- Where a recurring charge or a top payee is listed under a name, the name is the one every screen uses.
-  No amount, count or category moves.
 
 ### Accounts
 
