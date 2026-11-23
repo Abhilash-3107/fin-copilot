@@ -2099,9 +2099,9 @@ class TestJobRunner:
         client, conn = db
         conn.execute("INSERT INTO annotation_jobs (id, status, kind) VALUES ('busy','running','reembed')")
         conn.commit()
-        before = threading.active_count()
         ids = []
-        for i in range(45):
+
+        def upload(i):
             # Each statement has its own payment: one that repeats an earlier file's is not added.
             parser = TestUploadStartsSorting._parser([(5, f"zqx vendor {i}")])
             with patch("finance_copilot.pipeline.ingest.detect_parser", return_value=parser):
@@ -2111,7 +2111,25 @@ class TestJobRunner:
                 )
             assert r.status_code == 200
             ids.append(r.json()["sorting_job_id"])
-        assert threading.active_count() == before
+
+        # What must not happen is a thread per queued statement. The server's
+        # request pool (AnyIO worker threads) may retire an idle thread and start
+        # a fresh one at any time, so its threads are judged by how many are
+        # alive, never by identity; every other thread must already exist
+        # after a warm-up. Threads that exit meanwhile are fine.
+        def pool(threads):
+            return {t for t in threads if type(t).__name__ == "WorkerThread"}
+
+        for i in range(5):
+            upload(i)
+        before = set(threading.enumerate())
+        for i in range(5, 45):
+            upload(i)
+        after = set(threading.enumerate())
+        assert (after - pool(after)) - before == set()
+        # One spare for a replacement starting while the old one winds down;
+        # a thread per queued statement would add 40.
+        assert len(pool(after)) <= len(pool(before)) + 1
         queued = [j["id"] for j in client.get("/api/annotations/jobs?active=1").json() if j["status"] == "queued"]
         assert queued == ids
 

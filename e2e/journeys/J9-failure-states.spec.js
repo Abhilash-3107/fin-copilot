@@ -57,10 +57,10 @@ test.describe('J9 failure states', () => {
 
   test('Transactions says the list could not load, never "No payments", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/transactions(\?|$)/)
-    // The page waits for the statements and months before it asks for its list, so
-    // it asks once. Hold the statements back: a page that asked early would have
+    // The page waits for the accounts and months before it asks for its list, so
+    // it asks once. Hold the accounts back: a page that asked early would have
     // asked, and failed, before they came, and would ask again after them.
-    await page.route(/\/api\/statements$/, async (route) => {
+    await page.route(/\/api\/accounts$/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 600))
       await route.fallback()
     })
@@ -71,7 +71,7 @@ test.describe('J9 failure states', () => {
     await page.goto('/#/transactions')
     await expect(alertWith(page, "Couldn't load your payments.")).toBeVisible()
     await expect(page.getByText('No payments')).toHaveCount(0)
-    // One failed ask, not one before the statements arrived and another after.
+    // One failed ask, not one before the accounts arrived and another after.
     expect(lists).toHaveLength(1)
 
     api.heal()
@@ -104,6 +104,38 @@ test.describe('J9 failure states', () => {
     await expect(page.getByText(/Where it went/)).toBeVisible()
     await expect(failures(page)).toHaveCount(0)
   })
+
+  // The pages that ask for "the period" used to ask once with no month and again when the
+  // ledger (accounts and months) arrived and chose one. The second answer replaced the first, so a
+  // person (or a test) holding the error saw its Retry vanish.
+  for (const [name, route, text, pattern] of [
+    ['Money Map', '/#/insights', "Couldn't load your Money Map.", /\/api\/insights/],
+    ['Dashboard', '/#/dashboard', "Couldn't load your dashboard.", /\/api\/insights/],
+    ['Transactions', '/#/transactions', "Couldn't load your payments.", /\/api\/transactions(\?|$)/],
+  ]) {
+    test(`${name} asks once, so a slow account list never replaces its error`, async ({ page, tolerate }) => {
+      const asked = []
+      page.on('request', (request) => { if (pattern.test(request.url())) asked.push(request.url()) })
+      const api = await breakApi(page, tolerate, pattern)
+      await page.route(/\/api\/accounts(\?|$)/, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        await route.fallback()
+      })
+      const accountList = page.waitForResponse(/\/api\/accounts(\?|$)/)
+      await page.goto(route)
+      await expect(alertWith(page, text)).toBeVisible()
+      api.heal()
+      // The account list arrives and the app settles; nothing may ask again on its own.
+      await accountList
+      await page.waitForLoadState('networkidle')
+      expect(asked).toHaveLength(1)
+      await expect(alertWith(page, text)).toBeVisible()
+      await alertWith(page, text).getByRole('button', { name: 'Retry' }).click()
+      await expect(alertWith(page, text)).toHaveCount(0)
+      expect(asked).toHaveLength(2)
+      expect(asked[1]).toContain('month=')
+    })
+  }
 
   test('People says the list could not load, never "No people yet", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/people/)

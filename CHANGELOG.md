@@ -176,7 +176,12 @@ What moves is how some of them are added up, compared and named, so the same led
 - Subcategory names the machine writes outside your taxonomy are snapped to the one they plainly mean, and Settings > Categories has a Tidy up panel for look-alike and orphaned subcategories.
 - Sorting no longer fails with "database is locked" while a run is going, a stopped AI provider ends a run in seconds with a clear message, a hung one after two timed-out payments, and one bad answer fails one payment, not the run.
   `LLM_TIMEOUT_S` sets the per-call timeout.
+- OpenAI reasoning models (for example gpt-6-luna) work through the OpenAI-compatible provider.
+  They refuse `max_tokens` and a temperature of 0; the app now sends the request again in the form the model accepts, remembers that for the model, and keeps every resend inside the same time limit.
+  `LLM_REASONING_EFFORT` (for example `none` or `low`) is sent as `reasoning_effort` when set; a model that does not take it gets the request without it.
 - Plurals read correctly, and no visible text contains an em dash.
+- Transactions keeps All time, or the month you chose, when the statement list finishes loading after the page; it no longer flashes the newest statement or fetches its payments first.
+- Dashboard, Money Map and Transactions wait for the month to settle and ask the server once, so a slow statement list can no longer swap their figures or an error you are reading.
 
 ### Removed
 
@@ -189,6 +194,8 @@ What moves is how some of them are added up, compared and named, so the same led
 ### For contributors
 
 - `FC_TODAY=YYYY-MM-DD` pins the date the app believes it is, for tests and demos.
+- `scripts/eval.py` records the provider and model that answered, and skips golden rows whose payment has left the ledger (with a count) instead of stopping.
+- CI runs the test suite against the installed wheel on every pull request, as the Release workflow does.
 - `e2e/` holds Playwright journeys that drive the built wheel, and CI runs them on every push.
   The Release workflow also runs the upgrade journey, which opens a ledger made by the previous release in the new one and fails on any change not listed in `e2e/upgrade/expected-changes.json`.
 

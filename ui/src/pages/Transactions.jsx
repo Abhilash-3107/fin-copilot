@@ -197,6 +197,7 @@ export default function Transactions() {
   accountIdRef.current = accountId
   activeIdRef.current = activeTxn?.id ?? null
   const loadRef = useRef(0)
+  const facetsRef = useRef(0)
 
   // Stable serializations of the Set filters, for effect deps and API params.
   const sourceCsv = [...sourceFilter].sort().join(',')
@@ -327,15 +328,18 @@ export default function Transactions() {
   // loaded page, so options that first appear beyond the current page (or that
   // an active filter would hide) are still offered.
   const loadFacets = useCallback(async () => {
+    const id = ++facetsRef.current
     const params = new URLSearchParams()
     if (accountId) params.set('account_id', accountId)
     if (month) params.set('month', month)
     try {
-      setFacets(await api.get(`/transactions/facets?${params}`))
+      const next = await api.get(`/transactions/facets?${params}`)
+      if (id !== facetsRef.current) return // a newer scope was asked for meanwhile
+      setFacets(next)
       setFacetsError(null)
     } catch (e) {
       // The dropdowns keep their previous options; the bar says so, with Retry.
-      setFacetsError(e)
+      if (id === facetsRef.current) setFacetsError(e)
     }
   }, [accountId, month])
 

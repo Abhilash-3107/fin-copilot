@@ -425,3 +425,19 @@ describe('Money Map with two accounts', () => {
     for (const h of hrefs) expect(h).toContain('account=acc_k')
   })
 })
+
+describe('Insights asks once for the default period', () => {
+  it('waits for the ledger, then asks for the month it will keep, so a failed answer is never replaced', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/transactions/months') {
+        return new Promise(resolve => setTimeout(() => resolve({ months: ['2026-01', '2026-02'] }), 20))
+      }
+      return Promise.resolve([])
+    })
+    renderInsights()
+    expect(await screen.findByText('Kept')).toBeInTheDocument()
+    const asked = mockApi.get.mock.calls.map(([path]) => path).filter(path => path.startsWith('/insights'))
+    expect(asked).toEqual(['/insights?month=2026-02'])
+  })
+})

@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     llm_base_url: str = ""  # e.g. https://api.openai.com/v1 (openai provider only)
     llm_api_key: str = ""
     llm_model: str = ""  # openai-provider model name; ollama uses ollama_model
+    # openai provider only: sent as `reasoning_effort` when set (e.g. "none",
+    # "low") for reasoning models. Empty sends nothing. A model that refuses it
+    # gets the request again without it (pipeline/llm.py _REFUSED_SETTINGS).
+    llm_reasoning_effort: str = ""
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3.5:4b"
     confidence_threshold: float = 0.85

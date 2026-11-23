@@ -137,6 +137,54 @@ describe('Transactions', () => {
     expect(screen.queryByRole('button', { name: /Sort again/ })).not.toBeInTheDocument()
   })
 
+  // The accounts and months arrive after the page is up. Whatever period the user already
+  // holds (All time, or a month) is theirs: the default month the ledger would pick must not
+  // scope a list or a summary, even for a moment, and the list is asked for once.
+  // (Main's version of this check held /statements for the statement picker; R3 removed the
+  // picker, so the same promise is held on /accounts, which the ledger waits for.)
+  describe('accounts that arrive after the period is chosen', () => {
+    function holdAccounts() {
+      let release
+      const gate = new Promise(resolve => { release = () => resolve(ONE_ACCOUNT) })
+      const fallback = mockApi.get.getMockImplementation()
+      mockApi.get.mockImplementation(path => (path === '/accounts' ? gate : fallback(path)))
+      return release
+    }
+
+    it('All time chosen before they load is never overridden by the newest month', async () => {
+      localStorage.setItem('fc_period_month', 'all')
+      const release = holdAccounts()
+      renderPage()
+      const periodSelect = await screen.findByRole('combobox')
+      expect(periodSelect).toHaveValue('all')
+      // The list waits for the ledger, so its first request already has its final scope.
+      expect(callsTo('/transactions?')).toEqual([])
+
+      await act(async () => { release() })
+      await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
+      await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+      expect(periodSelect).toHaveValue('all')
+      expect(callsTo('/transactions?')).toHaveLength(1)
+      expect(callsTo('/transactions?')[0]).not.toMatch(/month=/)
+    })
+
+    it('a month chosen before they load keeps its month and asks once', async () => {
+      localStorage.setItem('fc_period_month', '2026-10')
+      const release = holdAccounts()
+      renderPage()
+      await screen.findByRole('combobox')
+      expect(callsTo('/transactions?')).toEqual([])
+
+      await act(async () => { release() })
+      await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/month=2026-10/))
+      await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+      expect(callsTo('/transactions?')).toHaveLength(1)
+      expect(screen.getByRole('combobox')).toHaveValue('2026-10')
+    })
+  })
+
   it('offers every account and All accounts when there are two, named as the server words them', async () => {
     accountsServed = TWO_ACCOUNTS
     renderPage()

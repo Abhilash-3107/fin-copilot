@@ -139,6 +139,13 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
     # Golden rows are stored transactions: carry their resolved counterparty key,
     # exactly as the live pipeline reads it from the row.
     stored_keys = dict(conn.execute("SELECT id, counterparty_key FROM transactions").fetchall())
+    # A golden row whose transaction has since left the database (re-import,
+    # dedupe) can't be replayed; score the rest and say how many were dropped.
+    missing = [g["id"] for g in golden if g["id"] not in stored_keys]
+    if missing:
+        print(f"WARNING: skipping {len(missing)} golden rows not in this database: {', '.join(missing[:5])}",
+              flush=True)
+        golden = [g for g in golden if g["id"] in stored_keys]
     for g in golden:
         g["counterparty_key"] = stored_keys[g["id"]]
 
@@ -173,8 +180,16 @@ def run_eval(name: str, golden_path: str, db_path: str | None, limit: int | None
     summary = {
         "name": name,
         "n": n,
+        "skipped_missing": len(missing),
         "settings": {
-            "ollama_model": settings.ollama_model,
+            "llm_provider": settings.llm_provider,
+            # The model that answered, whichever provider served it.
+            "llm_model": {
+                "openai": settings.llm_model,
+                "local": settings.local_llm_model,
+                "ollama": settings.ollama_model,
+            }.get(settings.llm_provider),
+            "llm_reasoning_effort": settings.llm_reasoning_effort or None,
             "ollama_num_ctx": settings.ollama_num_ctx,
             "llm_logprob_confidence": settings.llm_logprob_confidence,
         },
