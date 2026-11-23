@@ -22,8 +22,8 @@ export function coverageText(cell, month) {
   return [...parts, ...several].join(', ')
 }
 
-// The stored balance check of the cell's statements, in words. A statement's check is of its
-// whole file, so for a file that spans several months (`whole`, its first and last month) the
+// The stored balance check of one statement, in words. A statement's check is of its whole
+// file, so for a file that spans several months (`whole`, its first and last month) the
 // words are the statement's: "Aug to Oct statement: 150 of 150 balances check out".
 export function checkText({ checked, consistent }, whole = null) {
   if (!checked) return 'No balances to check'
@@ -33,6 +33,19 @@ export function checkText({ checked, consistent }, whole = null) {
   const [first, last] = whole.map(m => dayjs(m))
   const format = first.year() === last.year() ? 'MMM' : 'MMM YYYY'
   return `${first.format(format)} to ${last.format(format)} statement: ${words}`
+}
+
+// The check of everything a cell holds: each statement whose file spans several months in
+// its own words, and the one-month statements added up.
+export function cellCheckText(cell) {
+  const checks = cell.statement_checks
+  if (!checks) return checkText(cell.balance_check)
+  const wholeFiles = checks.filter(c => c.months)
+  const own = checks.filter(c => !c.months)
+  const sum = (key) => own.reduce((total, c) => total + c[key], 0)
+  const parts = wholeFiles.map(c => checkText(c, c.months))
+  if (own.length > 0 || parts.length === 0) parts.push(checkText({ checked: sum('checked'), consistent: sum('consistent') }))
+  return parts.join('; ')
 }
 
 // What a cell says in its small print: how much of the month is covered in a word or two, and
@@ -49,8 +62,12 @@ export function coverageShort(cell, month) {
   return `${dayjs(start).format('D')}-${day(end)}`
 }
 
-export function checkShort({ checked, consistent }) {
-  return checked ? `${consistent}/${checked} balanced` : 'No balances'
+// The balances in a few characters. A cell that holds a statement spanning several months says
+// only "Balanced" or "Not balanced": the count is of the whole file, not of this month.
+export function checkShort({ checked, consistent }, statementChecks = null) {
+  if (!checked) return 'No balances'
+  if (statementChecks?.some(c => c.months)) return consistent === checked ? 'Balanced' : 'Not balanced'
+  return `${consistent}/${checked} balanced`
 }
 
 // The whole sentence of a cell, for its accessible name and title.
@@ -59,7 +76,7 @@ function cellWords(label, month, cell) {
   if (cell.gap) return `${label}, ${when}, no statement`
   return [
     label, when, count(cell.payments, 'payment'), coverageText(cell, month),
-    checkText(cell.balance_check, cell.whole_statement),
+    cellCheckText(cell),
   ].join(', ')
 }
 
@@ -95,7 +112,7 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
         >
           <span className="block font-medium text-[#e2e8f0]">{count(cell.payments, 'payment')}</span>
           <span className={`block ${cell.full ? 'text-[#94a3b8]' : 'text-[#fbbf24]'}`}>{coverageShort(cell, month)}</span>
-          <span className={`block text-[10px] ${off ? 'text-[#fdba74]' : 'text-[#94a3b8]'}`}>{checkShort(cell.balance_check)}</span>
+          <span className={`block text-[10px] ${off ? 'text-[#fdba74]' : 'text-[#94a3b8]'}`}>{checkShort(cell.balance_check, cell.statement_checks)}</span>
         </Link>
         <button
           type="button"

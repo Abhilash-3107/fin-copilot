@@ -52,7 +52,6 @@ const SUMMARY = {
   verdict: {
     money_in: 89403, money_out: 50738, invested: 30000, kept: 8665,
     kept_rate: 0.0969, earned: 89403, other_in: 0,
-    compared: { money_in: 89403, money_out: 50738, invested: 30000, kept: 8665 },
     prev: {
       money_in: 57583, money_out: 26006, invested: 30000, kept: 1577,
       kept_rate: 0.0274, earned: 57583, other_in: 0,
@@ -198,6 +197,18 @@ describe('Dashboard', () => {
     })
     renderDashboard()
     expect(await screen.findByText('Only one balance reading for Kotak in May 2026')).toBeInTheDocument()
+  })
+
+  it('says the statements have no running balance rather than that nothing is imported', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: null, series: [], no_balances: true } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('These statements have no running balance to chart.')).toBeInTheDocument()
+    expect(screen.queryByText(/appears once statements/)).not.toBeInTheDocument()
   })
 
   it('keeps the import message for a ledger with no balance history at all', async () => {
@@ -530,6 +541,28 @@ describe('Dashboard', () => {
       expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
     })
 
+    it('says why there is no comparison, naming each account', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            comparison_note: [
+              { account_label: 'SBI savings', reason: 'has no statement for 1-20 Oct' },
+              { account_label: 'HDFC', reason: 'was added in November' },
+            ],
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await screen.findByText('No comparison with October: SBI savings has no statement for 1-20 Oct; HDFC was added in November.')).toBeInTheDocument()
+      expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
+      // No comparison, no spike alert either.
+      expect(screen.queryByText(/ran .* above/)).not.toBeInTheDocument()
+    })
+
     it('names a complete month by its month', async () => {
       renderDashboard()
       await screen.findByText('Kept')
@@ -860,6 +893,21 @@ describe('Dashboard with two accounts', () => {
     renderDashboard()
     await screen.findByText('Kept')
     expect(screen.queryByText(/Not every account is covered/)).not.toBeInTheDocument()
+  })
+
+  it('names an account that starts late in the month and one whose statement has ended', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
+        short: [
+          { account_id: 'acc_k', account_label: 'Kotak savings', covered_from: '2026-05-10', covered_through: '2026-05-31', closed: false },
+          { account_id: 'acc_s', account_label: 'SBI savings', covered_from: null, covered_through: '2026-05-15', closed: true },
+        ],
+      },
+    })
+    renderDashboard()
+    expect(await screen.findByText(/Kotak savings from 10 May, SBI savings \(the statement ends 15 May\)/)).toBeInTheDocument()
   })
 
   it('does not name the account behind when one account is selected', async () => {

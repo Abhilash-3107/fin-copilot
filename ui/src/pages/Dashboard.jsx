@@ -21,7 +21,7 @@ import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
-import { coverageLabel, isInProgress, comparisonLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
+import { coverageLabel, isInProgress, comparisonLabel, comparisonNoteLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
@@ -281,9 +281,11 @@ function BalanceCard({ balance, month }) {
           <Line data={data} options={options} />
         ) : (
           <div className="flex h-full min-h-52 items-center justify-center px-4 text-center text-sm text-[#94a3b8]">
-            {balance.account
-              ? `${points.length === 1 ? 'Only one balance reading for' : 'No balance for'} ${balance.account} in ${dayjs(month).format('MMMM YYYY')}`
-              : 'Balance history appears once statements are imported'}
+            {balance.no_balances
+              ? 'These statements have no running balance to chart.'
+              : balance.account
+                ? `${points.length === 1 ? 'Only one balance reading for' : 'No balance for'} ${balance.account} in ${dayjs(month).format('MMMM YYYY')}`
+                : 'Balance history appears once statements are imported'}
           </div>
         )}
       </div>
@@ -536,6 +538,7 @@ export default function Dashboard() {
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
   const behind = shortAccountsLabel(data?.period, { oneAccount: Boolean(accountId) })
+  const noComparison = comparisonNoteLabel(data?.comparison_note, data?.prev_month)
   const attention = []
   if (data?.month) {
     // One figure per fact, over one set: this month's unsorted payments and
@@ -621,6 +624,7 @@ export default function Dashboard() {
       {behind && (
         <p className="-mt-2 text-xs text-[#fbbf24]">Not every account is covered to the end of the month: {behind}.</p>
       )}
+      {noComparison && <p className="-mt-2 text-xs text-[#94a3b8]">{noComparison}</p>}
 
       {loading ? (
         <p className="text-sm text-[#94a3b8]">Pulling it together…</p>

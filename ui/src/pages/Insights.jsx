@@ -21,7 +21,7 @@ import Delta, { tileDelta } from '../components/Delta.jsx'
 import PersonNet from '../components/PersonNet.jsx'
 import { count } from '../lib/plural.js'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { coverageLabel, comparisonLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
+import { coverageLabel, comparisonLabel, comparisonNoteLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
@@ -148,7 +148,9 @@ function BalanceChart({ balance }) {
           <Line data={data} options={options} />
         ) : (
           <div className="flex items-center justify-center h-full text-sm text-[#94a3b8]">
-            Balance history appears once statements are imported
+            {balance.no_balances
+              ? 'These statements have no running balance to chart.'
+              : 'Balance history appears once statements are imported'}
           </div>
         )}
       </div>
@@ -430,6 +432,7 @@ export default function Insights() {
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
   const behind = shortAccountsLabel(data?.period, { oneAccount: Boolean(accountId) })
+  const noComparison = comparisonNoteLabel(data?.comparison_note, data?.prev_month)
   const heading = data?.month ? dayjs(data.month).format('MMMM YYYY') : ''
 
   return (
@@ -452,6 +455,7 @@ export default function Insights() {
         </div>
       </div>
       {behind && <p className="-mt-2 text-xs text-[#fbbf24]">Not every account is covered to the end of the month: {behind}.</p>}
+      {noComparison && <p className="-mt-2 text-xs text-[#94a3b8]">{noComparison}</p>}
       {multiple && accountId && data?.month && data.annotation?.total === 0 && (
         <p className="text-sm text-[#94a3b8]">{data.account?.label ?? 'This account'} has no payments in {dayjs(data.month).format('MMMM YYYY')}.</p>
       )}

@@ -139,11 +139,27 @@ def test_a_statement_spanning_several_months_says_so_in_every_month_it_checks(co
     _statement(conn, "k11", a, "2026-11-01", "2026-11-30", checked=20, consistent=20)
     seed(conn, "k11", "2026-11-05", 10, "debit", category="Shopping")
     cells = _grid(conn)["accounts"][0]["cells"]
-    # The check is of the whole file, so each month it covers names the file's months; a one-month statement names nothing.
+    # The check is of the whole file, so each month it covers carries the statement's own check and
+    # the months it spans; a one-month statement names no months.
     for month in ("2026-08", "2026-09", "2026-10"):
         assert cells[month]["balance_check"] == {"checked": 150, "consistent": 150}
-        assert cells[month]["whole_statement"] == ["2026-08", "2026-10"], month
-    assert cells["2026-11"]["whole_statement"] is None
+        assert cells[month]["statement_checks"] == [{"checked": 150, "consistent": 150, "months": ["2026-08", "2026-10"]}], month
+    assert cells["2026-11"]["statement_checks"] == [{"checked": 20, "consistent": 20, "months": None}]
+
+
+def test_a_cell_holding_several_statements_lists_each_ones_check(conn):
+    a = add_account(conn, "a", name="Kotak savings")
+    conn.execute("DELETE FROM statements")
+    _statement(conn, "q", a, "2026-06-01", "2026-07-31", checked=150, consistent=148)
+    _statement(conn, "j", a, "2026-07-01", "2026-07-31", checked=10, consistent=10)
+    seed(conn, "q", "2026-06-05", 10, "debit", category="Shopping")
+    seed(conn, "j", "2026-07-05", 10, "debit", category="Shopping")
+    july = _grid(conn)["accounts"][0]["cells"]["2026-07"]
+    assert sorted(july["statement_checks"], key=lambda c: c["checked"]) == [
+        {"checked": 10, "consistent": 10, "months": None},
+        {"checked": 150, "consistent": 148, "months": ["2026-06", "2026-07"]},
+    ]
+    assert july["balance_check"] == {"checked": 160, "consistent": 158}
 
 
 def test_a_statement_without_balances_checks_nothing(conn, two):

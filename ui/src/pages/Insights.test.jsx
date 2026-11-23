@@ -43,7 +43,6 @@ const SUMMARY = {
   verdict: {
     money_in: 100646, money_out: 77763, invested: 30000, kept: -7117,
     kept_rate: -0.0707, earned: 57508, other_in: 43138,
-    compared: { money_in: 100646, money_out: 77763, invested: 30000, kept: -7117 },
     prev: {
       money_in: 57583, money_out: 26006, invested: 30000, kept: 1577,
       kept_rate: 0.0274, earned: 57583, other_in: 0,
@@ -317,6 +316,23 @@ describe('Insights (Money Map)', () => {
       expect(screen.queryByText(/same as/)).not.toBeInTheDocument()
       expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
       expect(screen.getByText('What changed')).toBeInTheDocument()
+    })
+
+    it('says why there is no comparison', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            comparison_note: [{ account_label: 'SBI savings', reason: 'was added in November' }],
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+            categories: PARTIAL.categories.map(c => ({ ...c, prev_net: null, delta: null })),
+          })
+          : Promise.resolve([])
+      ))
+      renderInsights()
+      expect(await screen.findByText(/No comparison with .*: SBI savings was added in November\./)).toBeInTheDocument()
     })
   })
 

@@ -35,11 +35,10 @@ describe('Delta', () => {
 })
 
 describe('tileDelta', () => {
-  it('measures the days and accounts the comparison covers, not the whole month', () => {
-    const verdict = { money_out: 6000, compared: { money_out: 1000 }, prev: { money_out: 900 } }
-    expect(tileDelta(verdict, 'money_out')).toBe(100)
+  it('is the tile minus the previous month over the same accounts and days', () => {
+    expect(tileDelta({ money_out: 1000, prev: { money_out: 900 } }, 'money_out')).toBe(100)
   })
   it('is null with no comparison', () => {
-    expect(tileDelta({ money_out: 6000, compared: null, prev: null }, 'money_out')).toBeNull()
+    expect(tileDelta({ money_out: 6000, prev: null }, 'money_out')).toBeNull()
   })
 })

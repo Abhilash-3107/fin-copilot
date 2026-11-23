@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import BooksGrid, { coverageText, checkText, coverageShort, checkShort } from './BooksGrid.jsx'
+import BooksGrid, { coverageText, checkText, cellCheckText, coverageShort, checkShort } from './BooksGrid.jsx'
 
 const cell = (over = {}) => ({
   gap: false, payments: 41, statement_ids: ['s1'], covered: [['2026-10-01', '2026-10-31']], full: true,
@@ -82,6 +82,23 @@ describe('coverage and check words', () => {
     expect(checkShort({ checked: 20, consistent: 19 })).toBe('19/20 balanced')
     expect(checkShort({ checked: 0, consistent: 0 })).toBe('No balances')
   })
+
+  it('says only Balanced or Not balanced for a statement spanning several months, never the whole file\'s count', () => {
+    const spanning = [{ checked: 150, consistent: 150, months: ['2026-06', '2026-07'] }]
+    expect(checkShort({ checked: 150, consistent: 150 }, spanning)).toBe('Balanced')
+    expect(checkShort({ checked: 150, consistent: 148 }, [{ ...spanning[0], consistent: 148 }])).toBe('Not balanced')
+    expect(checkShort({ checked: 0, consistent: 0 }, [{ checked: 0, consistent: 0, months: ['2026-06', '2026-07'] }])).toBe('No balances')
+  })
+
+  it('words a cell with several statements one statement at a time', () => {
+    const several = cell({ statement_checks: [
+      { checked: 150, consistent: 150, months: ['2026-06', '2026-07'] },
+      { checked: 10, consistent: 10, months: null },
+      { checked: 5, consistent: 4, months: null },
+    ] })
+    expect(cellCheckText(several)).toBe('Jun to Jul statement: 150 of 150 balances check out; 14 of 15 balances check out')
+    expect(cellCheckText(cell({ statement_checks: [{ checked: 41, consistent: 41, months: null }] }))).toBe('41 of 41 balances check out')
+  })
 })
 
 describe('BooksGrid', () => {
@@ -113,17 +130,29 @@ describe('BooksGrid', () => {
       .toHaveTextContent('19/20 balanced')
   })
 
-  it('words a spanning statement\'s check as the statement\'s in the cell\'s name, and keeps the short form in the cell', () => {
+  it('words a spanning statement\'s check as the statement\'s in the cell\'s name, and keeps Balanced in the cell', () => {
     const books = {
       ...BOOKS,
       accounts: [{
         ...BOOKS.accounts[0],
-        cells: { '2026-10': cell({ payments: 7, whole_statement: ['2026-08', '2026-10'], balance_check: { checked: 150, consistent: 150 } }) },
+        cells: {
+          '2026-10': cell({
+            payments: 7, balance_check: { checked: 150, consistent: 150 },
+            statement_checks: [{ checked: 150, consistent: 150, months: ['2026-08', '2026-10'] }],
+          }),
+          '2026-09': cell({
+            payments: 7, balance_check: { checked: 150, consistent: 147 }, covered: [['2026-09-01', '2026-09-30']],
+            statement_checks: [{ checked: 150, consistent: 147, months: ['2026-08', '2026-10'] }],
+          }),
+        },
       }],
     }
     render(<MemoryRouter><PrivacyProvider><BooksGrid books={books} selected={null} onShowStatements={vi.fn()} onRename={vi.fn()} /></PrivacyProvider></MemoryRouter>)
     const link = screen.getByRole('link', { name: /Kotak savings, October 2026, 7 payments, Full month, Aug to Oct statement: 150 of 150 balances check out/ })
-    expect(link).toHaveTextContent('150/150 balanced')
+    expect(link).toHaveTextContent('Balanced')
+    expect(link).not.toHaveTextContent('150')
+    const off = screen.getByRole('link', { name: /Kotak savings, September 2026.*Aug to Oct statement: 147 of 150 balances check out/ })
+    expect(off).toHaveTextContent('Not balanced')
   })
 
   it('opens Transactions for the account and the month from a cell, by link so the keyboard reaches it', () => {
