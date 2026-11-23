@@ -30,17 +30,18 @@ small summary payload instead of the whole transaction table. Definitions:
   groups typed split/reimbursement/refund (allocated across the group's spend
   debits pro rata), unlinked credits annotated with a spend category (the
   label itself asserts "money coming back for this kind of spending"), and
-  unlinked Income > Refund credits (attributed to the category of the most
-  recent debit with the same counterparty, else to the most recent spend
+  unlinked Income > Refund credits (attributed to the category of the debit with the
+  same counterparty it is for, see below, else to the most recent spend
   debit of the exact same amount; a credit attributable to no category nets
   nothing). Offsets land on the day the credit arrives (cash view), so they
   sum over any date range.
 - Offsets attributed to a specific debit are capped at that debit's amount,
   so a charge is never netted below zero across mechanisms (e.g. a grouped
   concert charge whose friends' shares came in and which was then fully
-  refunded after cancellation). Counterparty-matched refunds are exempt from
-  the cap because one refund credit can cover several past debits from the
-  same merchant.
+  refunded after cancellation). A refund matched by payee is for one debit of
+  that payee: the newest one with capacity left, but the one of exactly the
+  refund's amount first. If that debit is not sorted (or has no label at all)
+  the refund nets nothing until it is.
 - Everything is computed over date windows, not a month string, so a month
   still in progress is compared like for like: each account is compared over the same
   days of the previous month as it is covered to this month. A comparison is shown only
@@ -315,13 +316,16 @@ def _db_identity(conn: sqlite3.Connection) -> str | None:
 
 # Everything _spend_offsets reads, as (rowid, the columns that decide an offset). Annotations
 # carry the category and source (the effective category also reads whether a payment waits on
-# a pair, which depends on the payments, so those are here too), statements carry the account.
+# a pair, which depends on the payments and on the pairs the user turned down, so those are here
+# too), statements carry the account.
 _OFFSET_INPUTS = (
     "SELECT rowid, statement_id, txn_date, amount, debit_credit, counterparty_key FROM transactions",
     "SELECT rowid, transaction_id, category, subcategory, source FROM annotations",
     "SELECT rowid, txn_a, txn_b, link_type FROM transaction_links",
     "SELECT rowid, group_id, transaction_id, txn_type FROM transaction_group_members",
     "SELECT rowid, account_id FROM statements",
+    # A pair the user said was not one decides whether a payment still waits on a pair.
+    "SELECT rowid, txn_a, txn_b FROM transfer_unpaired",
 )
 
 
@@ -496,6 +500,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
           AND ((a.category = 'Income' AND a.subcategory = 'Refund')
                OR a.category NOT IN ({placeholders}))
           AND NOT {unsorted_sql("a")}
+        ORDER BY t.txn_date, t.rowid
         """,
         NON_SPEND_CATEGORIES,
     ).fetchall()
@@ -507,24 +512,32 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             category_offsets[(row["credit_date"], row["category"], row["account_id"])] += row["amount"]
             continue
         if row["counterparty_key"]:
-            match = conn.execute(
-                f"""
-                SELECT {effective_category_sql("a")} AS category,
-                       (SELECT account_id FROM statements WHERE id = t.statement_id) AS account_id
-                FROM transactions t
-                JOIN annotations a ON a.transaction_id = t.id
-                WHERE t.debit_credit = 'debit' AND t.counterparty_key = ?
-                  AND t.txn_date <= ?
-                ORDER BY t.txn_date DESC LIMIT 1
-                """,
-                (row["counterparty_key"], row["txn_date"]),
-            ).fetchone()
+            # The payee's earlier debits with capacity left, newest first (an unlabelled payment
+            # counts as not sorted). The refund is for the one of exactly its amount, else the newest.
+            candidates = [
+                d for d in conn.execute(
+                    f"""
+                    SELECT t.id, t.amount, {effective_category_sql("a")} AS category,
+                           (SELECT account_id FROM statements WHERE id = t.statement_id) AS account_id
+                    FROM transactions t
+                    LEFT JOIN annotations a ON a.transaction_id = t.id
+                    WHERE t.debit_credit = 'debit' AND t.counterparty_key = ?
+                      AND t.txn_date <= ?
+                    ORDER BY t.txn_date DESC, t.rowid DESC
+                    """,
+                    (row["counterparty_key"], row["txn_date"]),
+                )
+                if _capacity(d["id"], d["amount"]) > 0
+            ]
+            match = next((d for d in candidates if d["amount"] == row["amount"]), candidates[0] if candidates else None)
             if match and match["category"] == UNCATEGORIZED:
-                # The newest charge from this payee is not sorted: the refund is for it, and
-                # nothing says what it was, so it nets nothing (and is not guessed onto an older one).
+                # The debit this refund is for is not sorted: nothing says what it was, so the
+                # refund nets nothing until it is (and is not guessed onto an older one).
                 continue
             if match and _is_spend(match["category"]):
-                category_offsets[(row["credit_date"], match["category"], match["account_id"])] += row["amount"]
+                take = _consume(match["id"], match["amount"], row["amount"])
+                if take > 0:
+                    category_offsets[(row["credit_date"], match["category"], match["account_id"])] += take
                 continue
         amount_match = conn.execute(
             f"""
@@ -926,7 +939,9 @@ def _merchants(conn: sqlite3.Connection, start: str, end: str, account_id: str |
     return items[:8]
 
 
-def _balance_series(conn: sqlite3.Connection, max_points: int = 240, account_id: str | None = None) -> dict:
+def _balance_series(
+    conn: sqlite3.Connection, month: str, max_points: int = 240, account_id: str | None = None
+) -> dict:
     """Running balance over the full history for a single account, one point per
     day (last balance of the day), downsampled evenly if the history outgrows
     max_points.
@@ -934,34 +949,38 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240, account_id:
     running_balance is a per-account chain: each statement continues its own
     account's balance. Interleaving two real accounts by date produces a sawtooth
     that represents neither, and a sum of accounts would be a line nobody holds, so the
-    series is always one account's: the selected one, or with all accounts the busiest,
-    meaning the one with the most balance-carrying rows. Which statements belong
-    to an account is decided once, at ingest (db/queries/accounts.py).
+    series is always one account's: the selected one, or with all accounts the one with the
+    most balance-carrying rows in `month` (the month the page shows), and only when no
+    account has any in that month, the one with the most over the whole history. Which
+    statements belong to an account is decided once, at ingest (db/queries/accounts.py).
 
-    Returns {"account": <label or None>, "series": [{date, balance}, ...]}. A selected
-    account with no balances answers with its label and no points, so the page can say
-    which account has none.
+    Returns {"account": <label or None>, "series": [{date, balance}, ...], "no_balances": bool}.
+    A selected account with no balances answers with its label and no points, so the page
+    can say which account has none. `no_balances` is true when the account drawn has no
+    balance at all (or, with no account drawn, when no statement carries one), so the page
+    can say the statements have none to chart rather than that nothing is imported.
     """
     if account_id:
         chosen = conn.execute(
             "SELECT id, name, bank_name, account_ref FROM accounts WHERE id = ?", (account_id,)
         ).fetchone()
     else:
-        chosen = conn.execute(
-            """
+        busiest = """
             SELECT a.id AS id, a.name AS name, a.bank_name AS bank_name,
                    a.account_ref AS account_ref, COUNT(*) AS n
             FROM transactions t
             JOIN statements s ON s.id = t.statement_id
             JOIN accounts a ON a.id = s.account_id
-            WHERE t.running_balance IS NOT NULL
+            WHERE t.running_balance IS NOT NULL{in_month}
             GROUP BY a.id
             ORDER BY n DESC, a.id
             LIMIT 1
-            """
-        ).fetchone()
+        """
+        chosen = conn.execute(
+            busiest.format(in_month=" AND strftime('%Y-%m', t.txn_date) = ?"), (month,)
+        ).fetchone() or conn.execute(busiest.format(in_month="")).fetchone()
     if chosen is None:
-        return {"account": None, "series": []}
+        return {"account": None, "series": [], "no_balances": True}
     label = account_label(chosen["name"], chosen["bank_name"], chosen["account_ref"])
 
     rows = conn.execute(
@@ -985,7 +1004,7 @@ def _balance_series(conn: sqlite3.Connection, max_points: int = 240, account_id:
             sampled.append(series[-1])
         series = sampled
 
-    return {"account": label, "series": series}
+    return {"account": label, "series": series, "no_balances": not series}
 
 
 def _unexplained(conn: sqlite3.Connection, start: str, end: str, account_id: str | None = None) -> dict:
@@ -1110,7 +1129,7 @@ def summarize_insights(
         "recurring_summary": _recurring_summary(recurring),
         "people": _people_ledger(conn, settled_ids, start, end, account_id),
         "merchants": _merchants(conn, start, end, account_id),
-        "balance": _balance_series(conn, account_id=account_id),
+        "balance": _balance_series(conn, month, account_id=account_id),
         "unexplained": _unexplained(conn, start, end, account_id),
         "annotation": _annotation_coverage(conn, month, account_id),
     }

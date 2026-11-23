@@ -732,8 +732,9 @@ class TestAccountRoutes:
         client, conn = api
         k1, _, _ = _two_accounts(conn)
         client.patch(f"/api/accounts/{k1.account_id}", json={"name": "Kotak savings"})
-        body = client.get("/api/insights").json()
-        assert body["balance"]["account"] == "Kotak savings"
+        # The account with the most balance rows in the month shown: Kotak in May, HDFC in June.
+        assert client.get("/api/insights", params={"month": "2026-05"}).json()["balance"]["account"] == "Kotak savings"
+        assert client.get("/api/insights", params={"month": "2026-06"}).json()["balance"]["account"] == "HDFC ··2222"
 
 
 class TestUploadResponse:

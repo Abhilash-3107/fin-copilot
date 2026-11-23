@@ -9,10 +9,10 @@ a hole at its start.
 from __future__ import annotations
 
 import pytest
+from test_insights_accounts import add_account, add_statement, make_conn, seed
 
 from finance_copilot.db.queries.coverage import month_coverage, statement_spans
 from finance_copilot.db.queries.insights import summarize_insights
-from finance_copilot.tests.test_insights_accounts import add_account, add_statement, make_conn, seed
 
 
 @pytest.fixture
@@ -154,7 +154,7 @@ def test_when_every_account_is_compared_the_tile_is_the_base_of_its_delta(conn):
         for acct in (None, a, b):
             s = summarize_insights(conn, month, account_id=acct)
             assert s["comparison"] is not None
-            first, last = s["period"]["start"], s["period"]["end"]
+            first = s["period"]["start"]
             clause, params = ("", ()) if acct is None else (" AND s.account_id = ?", (acct,))
             covered = conn.execute(
                 "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN statements s ON s.id = t.statement_id "

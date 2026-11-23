@@ -3,15 +3,15 @@ check in each cell, and the moves between the user's own accounts."""
 from __future__ import annotations
 
 import pytest
-
-from finance_copilot.db.queries.books import books
-from finance_copilot.tests.test_insights_accounts import (
+from test_insights_accounts import (
     add_account,
     add_statement,
     link,
     make_conn,
     seed,
 )
+
+from finance_copilot.db.queries.books import books
 
 
 @pytest.fixture

@@ -404,6 +404,51 @@ class TestOffsetsLandInTheAccountOfTheDebitTheyPayBack:
         assert self._shopping(s)["offsets"] == 0
         assert next(c for c in s["categories"] if c["category"] == "Uncategorized")["net"] == 800
 
+    def test_a_payee_refund_of_an_exact_amount_goes_to_that_debit_whatever_is_newer_and_unsorted(self, conn):
+        # The newest debit of the payee is not sorted, but the refund is of exactly 2000, which an
+        # older sorted one was: it nets that one, and sorting the newer one changes nothing.
+        a = add_account(conn, "a")
+        seed(conn, "st_a", "2026-10-05", 2000, "debit", category="Shopping", counterparty="AMAZON")
+        newer = seed(conn, "st_a", "2026-10-20", 500, "debit", category="Uncategorized", counterparty="AMAZON")
+        seed(conn, "st_a", "2026-10-25", 2000, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        before = self._shopping(summarize_insights(conn, "2026-10", account_id=a))
+        assert (before["gross"], before["offsets"], before["net"]) == (2000, 2000, 0)
+        conn.execute("UPDATE annotations SET category = 'Food & Dining' WHERE transaction_id = ?", (newer,))
+        after = self._shopping(summarize_insights(conn, "2026-10", account_id=a))
+        assert (after["offsets"], after["net"]) == (2000, 0)
+
+    def test_a_payee_refund_waits_while_the_debit_it_is_for_is_unsorted(self, conn):
+        a = add_account(conn, "a")
+        seed(conn, "st_a", "2026-10-05", 2000, "debit", category="Shopping", counterparty="AMAZON")
+        newer = seed(conn, "st_a", "2026-10-20", 500, "debit", category="Uncategorized", counterparty="AMAZON")
+        seed(conn, "st_a", "2026-10-25", 500, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        waiting = summarize_insights(conn, "2026-10", account_id=a)
+        assert self._shopping(waiting)["offsets"] == 0
+        assert next(c for c in waiting["categories"] if c["category"] == "Uncategorized")["net"] == 500
+        conn.execute("UPDATE annotations SET category = 'Food & Dining' WHERE transaction_id = ?", (newer,))
+        sorted_now = summarize_insights(conn, "2026-10", account_id=a)
+        food = next(c for c in sorted_now["categories"] if c["category"] == "Food & Dining")
+        assert (food["gross"], food["offsets"], food["net"]) == (500, 500, 0)
+        assert self._shopping(sorted_now)["offsets"] == 0
+
+    def test_a_payee_refund_for_a_purchase_with_no_label_at_all_waits_too(self, conn):
+        a = add_account(conn, "a")
+        seed(conn, "st_a", "2026-10-05", 2000, "debit", category="Shopping", counterparty="AMAZON")
+        seed(conn, "st_a", "2026-10-20", 500, "debit", None, counterparty="AMAZON")
+        seed(conn, "st_a", "2026-10-25", 500, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        s = summarize_insights(conn, "2026-10", account_id=a)
+        assert self._shopping(s)["offsets"] == 0
+        assert next(c for c in s["categories"] if c["category"] == "Uncategorized")["net"] == 500
+
+    def test_a_payee_refund_cannot_net_a_debit_below_zero_when_a_link_took_its_capacity(self, conn):
+        a = add_account(conn, "a")
+        debit = seed(conn, "st_a", "2026-10-05", 1000, "debit", category="Shopping", counterparty="AMAZON")
+        linked = seed(conn, "st_a", "2026-10-10", 1000, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        link(conn, debit, linked)
+        seed(conn, "st_a", "2026-10-12", 1000, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        shopping = self._shopping(summarize_insights(conn, "2026-10", account_id=a))
+        assert (shopping["gross"], shopping["offsets"], shopping["net"]) == (1000, 1000, 0)
+
     def test_the_uncategorized_row_never_takes_offsets(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
         loose = seed(conn, "st_a", "2026-10-03", 999, "debit")  # not sorted
@@ -463,12 +508,42 @@ class TestEveryFigureFollowsTheFilter:
         whole = summarize_insights(conn, "2026-10")["balance"]
         assert whole["account"] == "Kotak savings" and len(whole["series"]) == 3
         theirs = summarize_insights(conn, "2026-10", account_id=b)["balance"]
-        assert theirs == {"account": "SBI savings", "series": [{"date": "2026-10-02", "balance": 50}]}
+        assert theirs == {"account": "SBI savings", "series": [{"date": "2026-10-02", "balance": 50}], "no_balances": False}
+
+    def _balance_rows(self, conn, stmt, days, month="2026-10"):
+        for day in days:
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, running_balance) "
+                "VALUES (?, ?, ?, 10, 'debit', 'X', 500)", (str(ulid.ULID()), stmt, f"{month}-{day:02d}"))
+
+    def test_with_all_accounts_the_line_is_the_account_with_most_balance_rows_in_the_selected_month(self, conn):
+        add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        # Kotak has the most balances overall (October), SBI the most in November.
+        self._balance_rows(conn, "st_a", (1, 2, 3, 4, 5))
+        self._balance_rows(conn, "st_a", (1,), "2026-11")
+        self._balance_rows(conn, "st_b", (1, 2), "2026-11")
+        assert summarize_insights(conn, "2026-10")["balance"]["account"] == "Kotak savings"
+        november = summarize_insights(conn, "2026-11")["balance"]
+        assert november["account"] == "SBI savings"
+        # The line is still the account's whole history, for the page to narrow to the month.
+        assert [p["date"] for p in november["series"]] == ["2026-11-01", "2026-11-02"]
+
+    def test_a_month_no_account_has_balances_in_falls_back_to_the_busiest_over_all_history(self, conn):
+        add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        self._balance_rows(conn, "st_a", (1, 2, 3))
+        self._balance_rows(conn, "st_b", (1,))
+        seed(conn, "st_b", "2026-11-05", 10, "debit", category="Shopping")
+        assert summarize_insights(conn, "2026-11")["balance"]["account"] == "Kotak savings"
+
+    def test_statements_with_no_running_balance_say_so(self, conn):
+        add_account(conn, "a", name="Kotak savings")
+        seed(conn, "st_a", "2026-10-05", 10, "debit", category="Shopping")
+        assert summarize_insights(conn, "2026-10")["balance"] == {"account": None, "series": [], "no_balances": True}
 
     def test_an_account_with_no_balances_says_which_account_has_none(self, conn):
         _, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         seed(conn, "st_a", "2026-10-02", 10, "debit", category="Food & Dining")
-        assert summarize_insights(conn, "2026-10", account_id=b)["balance"] == {"account": "SBI savings", "series": []}
+        assert summarize_insights(conn, "2026-10", account_id=b)["balance"] == {"account": "SBI savings", "series": [], "no_balances": True}
 
     def test_months_stay_the_ledgers_so_the_period_never_loses_a_month(self, conn):
         _, b = add_account(conn, "a"), add_account(conn, "b", "sbi")

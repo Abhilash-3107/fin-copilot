@@ -78,3 +78,59 @@ def test_unlinking_a_refund_moves_the_offset_on_the_next_request(client, tmp_pat
     other.commit()
     other.close()
     assert _category(client, "Shopping")["offsets"] == 0
+
+
+def test_taking_a_pair_apart_moves_the_offset_on_the_next_request(tmp_path):
+    """A payment waits on a pair while an own-account candidate is open, and stops when the user says
+    it is not one (transfer_unpaired): which debit a refund of that amount lands on moves with it."""
+    from finance_copilot.api.deps import get_db
+    from finance_copilot.main import app
+
+    path = str(tmp_path / "finance.db")
+    setup = dbc.get_migrated_db(path)
+    for key, bank in (("k", "kotak"), ("s", "sbi")):
+        setup.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, ?, ?)", (f"acc_{key}", bank, f"XXXX{key}"))
+        setup.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) VALUES (?, ?, '1', '2026-10', ?)",
+            (f"st_{key}", bank, f"acc_{key}"),
+        )
+
+    def add(txn_id, stmt, day, dc, category, subcategory=None, source="manual"):
+        setup.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) VALUES (?, ?, ?, 700, ?, 'X')",
+            (txn_id, stmt, day, dc),
+        )
+        setup.execute(
+            "INSERT INTO annotations (id, transaction_id, category, subcategory, confidence, source) VALUES (?, ?, ?, ?, 0.9, ?)",
+            (f"a_{txn_id}", txn_id, category, subcategory, source),
+        )
+
+    add("old", "st_k", "2026-10-02", "debit", "Shopping")
+    add("out", "st_k", "2026-10-20", "debit", "Transfers", source="llm")
+    add("in", "st_s", "2026-10-21", "credit", "Income", source="llm")
+    add("refund", "st_k", "2026-10-25", "credit", "Income", "Refund")
+    setup.commit()
+
+    def per_request():
+        conn = dbc.get_connection(path)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    app.dependency_overrides[get_db] = per_request
+    insights._offsets_cache.clear()
+    try:
+        client = TestClient(app)
+        # The refund is for the newest 700 debit, which may be a move between the user's own accounts: it waits.
+        assert _category(client, "Shopping")["offsets"] == 0
+        other = dbc.get_connection(path)
+        a, b = sorted(["out", "in"])
+        other.execute("INSERT INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (a, b))
+        other.commit()
+        other.close()
+        assert _category(client, "Shopping")["offsets"] == 700
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        setup.close()
+        insights._offsets_cache.clear()
