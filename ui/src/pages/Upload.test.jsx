@@ -600,7 +600,7 @@ describe('Upload', () => {
       fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
       await waitFor(() => expect(toast).toHaveBeenCalledWith(
-        "Moved Jul 2026 to HDFC ··5678. 3 payments already there, so left out. 1 payment had a different label or note in this account, and the account's own was kept.", 'info',
+        "Moved Jul 2026 to HDFC ··5678. 3 payments already there, so left out. 1 payment had a different label, note or transfer pair in this account, and the account's own was kept.", 'info',
       ))
     })
 
@@ -613,7 +613,7 @@ describe('Upload', () => {
       fireEvent.click(screen.getByRole('menuitem', { name: 'Move to account…' }))
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'HDFC ··5678' }))
       await waitFor(() => expect(toast).toHaveBeenCalledWith(
-        "Jul 2026 was not moved: all 8 payments in it were already in HDFC ··5678, so it was removed. 2 payments had a different label or note in this account, and the account's own was kept.", 'info',
+        "Jul 2026 was not moved: all 8 payments in it were already in HDFC ··5678, so it was removed. 2 payments had a different label, note or transfer pair in this account, and the account's own was kept.", 'info',
       ))
     })
 

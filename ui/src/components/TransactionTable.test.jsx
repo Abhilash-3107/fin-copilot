@@ -98,6 +98,35 @@ describe.each([['TransactionTable', TransactionTable], ['TransactionCards', Tran
   })
 })
 
+describe.each([['TransactionTable', TransactionTable], ['TransactionCards', TransactionCards]])('%s rows waiting on a pair', (_name, Component) => {
+  const WAITING = [
+    { ...BASE, id: 'w1', raw_description: 'NEFT/N123456789/ABHI B', payee: 'Abhi B', channel: 'NEFT', waiting_on_pair: true },
+    { ...BASE, id: 'w2', raw_description: 'UPI/SWIGGY/1/UPI', payee: 'Swiggy', channel: 'UPI', waiting_on_pair: false },
+  ]
+  const annotationMap = {
+    w1: { category: 'Investments', subcategory: 'Mutual Funds', source: 'llm', confidence: 0.97 },
+    w2: { category: 'Food & Dining', subcategory: 'Restaurants', source: 'llm', confidence: 0.97 },
+  }
+  const renderWaiting = () => render(
+    <PrivacyProvider><Component transactions={WAITING} annotationMap={annotationMap} onSelect={() => {}} /></PrivacyProvider>
+  )
+
+  it('says in plain words that it is not sorted and keeps the guess as small text', () => {
+    renderWaiting()
+    const row = screen.getByText('Abhi B').closest('tr, li')
+    expect(within(row).getByText('Not sorted - maybe a move between your accounts')).toBeInTheDocument()
+    expect(within(row).getByText('Guess was Investments › Mutual Funds')).toBeInTheDocument()
+    expect(within(row).queryByText('Investments › Mutual Funds')).not.toBeInTheDocument()
+  })
+
+  it('shows the category of a payment that is not waiting as before', () => {
+    renderWaiting()
+    const row = screen.getByText('Swiggy').closest('tr, li')
+    expect(within(row).getByText('Food & Dining › Restaurants')).toBeInTheDocument()
+    expect(within(row).queryByText(/Not sorted/)).not.toBeInTheDocument()
+  })
+})
+
 describe('TransactionTable header', () => {
   it('names the first column Payee', () => {
     renderTable()

@@ -199,6 +199,26 @@ def _restore_transfers(conn: sqlite3.Connection, states: list[tuple[str, dict]])
             conn.execute("INSERT OR IGNORE INTO transfer_unpaired (txn_a, txn_b) VALUES (?, ?)", (low, high))
 
 
+def _refuse_a_transfer_inside_one_account(conn: sqlite3.Connection, states: list[dict]) -> None:
+    """Money does not transfer within an account. A statement moved since the answer
+    can put the two payments of a link this undo would restore into one account (the
+    move took the pair apart for that reason), so the undo is refused rather than
+    bringing the pair back."""
+    for state in states:
+        link = state["link"]
+        if not link:
+            continue
+        accounts = {
+            row["account_id"]
+            for row in conn.execute(
+                "SELECT s.account_id FROM transactions t JOIN statements s ON s.id = t.statement_id "
+                "WHERE t.id IN (?, ?)", (link["txn_a"], link["txn_b"]),
+            )
+        }
+        if len(accounts) == 1:
+            raise UndoError("Those payments have changed since, so this answer can't be undone.")
+
+
 def undo(conn: sqlite3.Connection, token: str) -> list[str]:
     """Restore the state an answer changed; returns the payments put back.
     Raises UndoError when the token is unknown, expired, already used, or a
@@ -219,6 +239,7 @@ def undo(conn: sqlite3.Connection, token: str) -> list[str]:
         if any(now.get(row["transaction_id"]) != _complete(row["after"]) for row in changes["rows"]):
             raise UndoError("Those payments have changed since, so this answer can't be undone.")
 
+        _refuse_a_transfer_inside_one_account(conn, [_complete(row["before"]) for row in changes["rows"]])
         _restore_transfers(conn, [(row["transaction_id"], _complete(row["before"])) for row in changes["rows"]])
         for row in changes["rows"]:
             tid, before = row["transaction_id"], row["before"]

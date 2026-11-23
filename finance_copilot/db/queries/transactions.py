@@ -4,7 +4,12 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Sequence
 
-from finance_copilot.db.queries.common import UNCATEGORIZED, effective_category_sql, unsorted_sql
+from finance_copilot.db.queries.common import (
+    UNCATEGORIZED,
+    effective_category_sql,
+    unsorted_sql,
+    waiting_on_pair_sql,
+)
 from finance_copilot.db.queries.embeddings import delete_embeddings
 from finance_copilot.db.queries.transfers import (
     move_pair_to_survivor,
@@ -145,8 +150,8 @@ def merge_duplicate_payments(
     account already had (its survivor), so deleting the duplicate loses none of it.
     Returns (carried, not_carried): how many duplicates had work that now sits on
     a survivor, and how many had a label, note, name or group role of the user's
-    that differed from the survivor's own and was dropped in its favour (one
-    duplicate can be both).
+    that differed from the survivor's own and was dropped in its favour, or a transfer
+    pair that could not move (one duplicate can be both).
 
     The survivor's own work wins; the duplicate's fills what it lacks:
     - a note and a name, where the survivor has none;
@@ -193,7 +198,8 @@ def merge_duplicate_payments(
         # A pair moves with its `pair` label or not at all (after the user's own label
         # is carried, so a hand-made Self Transfers label on the duplicate goes with
         # its link). Pairing runs again after the move, so a released pair can return.
-        move_pair_to_survivor(conn, dup, survivor, survivor_label_is_users=survivor_label_is_users)
+        if move_pair_to_survivor(conn, dup, survivor, survivor_label_is_users=survivor_label_is_users):
+            dropped += 1
         # What the user took apart stays apart on the survivor.
         moved += repoint_unpairings(conn, dup, survivor)
 
@@ -435,7 +441,10 @@ def list_transactions(
     """Return transactions as a list of dicts, with optional filters.
 
     include_annotation joins each row's annotation (same shape as the per-id
-    endpoint: annotation_id, category, ...) so list pages need one round-trip.
+    endpoint: annotation_id, category, ...) so list pages need one round-trip. Each
+    such row also says `waiting_on_pair`: its category is a guess held back because
+    the payment could be a move between the user's accounts (common.waiting_on_pair_sql),
+    so the money figures file it under Uncategorized while `category` keeps the guess.
     q is a case-insensitive substring match over the raw description, the
     annotated merchant, the UPI note and the names and notes the user wrote. payee_keys
     are the grouping keys insights rows carry (counterparty key, else merchant).
@@ -445,9 +454,10 @@ def list_transactions(
     page in (txn_date, id) order.
     """
     if include_annotation:
-        query = """
+        query = f"""
             SELECT t.*, a.id AS annotation_id, a.merchant, a.category, a.subcategory,
-                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at
+                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at,
+                   {waiting_on_pair_sql('a')} AS waiting_on_pair
             FROM transactions t
             LEFT JOIN annotations a ON a.transaction_id = t.id
         """
@@ -487,8 +497,11 @@ def list_transactions(
         query += " LIMIT ?"
         params.append(limit)
 
-    rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+    if include_annotation:
+        for row in rows:
+            row["waiting_on_pair"] = bool(row["waiting_on_pair"])
+    return rows
 
 
 def summarize_transactions(
@@ -535,9 +548,12 @@ def list_transaction_facets(
     statement_id: str | None = None,
     month: str | None = None,
 ) -> dict[str, list[str]]:
-    """Distinct annotation categories and sources within the statement/month
+    """Distinct categories and annotation sources within the statement/month
     scope, for populating filter options. Deliberately ignores the annotation
-    filters themselves so an active filter never hides its sibling options."""
+    filters themselves so an active filter never hides its sibling options.
+    Categories are the effective ones (common.effective_category_sql), the same the
+    category filter matches on, so every option returns rows: a guess held back as
+    waiting on a pair is not offered under its own name."""
     conditions: list[str] = []
     params: list = []
     if statement_id:
@@ -549,9 +565,10 @@ def list_transaction_facets(
     where = (" AND " + " AND ".join(conditions)) if conditions else ""
 
     def distinct(column: str) -> list[str]:
+        expression = effective_category_sql("a") if column == "category" else f"a.{column}"
         rows = conn.execute(
             f"""
-            SELECT DISTINCT a.{column} AS v
+            SELECT DISTINCT {expression} AS v
             FROM annotations a
             JOIN transactions t ON t.id = a.transaction_id
             WHERE a.{column} IS NOT NULL{where}

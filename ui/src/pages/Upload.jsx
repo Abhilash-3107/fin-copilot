@@ -542,7 +542,7 @@ export default function Upload() {
       kept = `; your labels and notes on ${of} were kept`
     }
     const differed = notCarried > 0
-      ? ` ${count(notCarried, 'payment')} had a different label or note in this account, and the account's own was kept.`
+      ? ` ${count(notCarried, 'payment')} had a different label, note or transfer pair in this account, and the account's own was kept.`
       : ''
     if (made?.statement_deleted) {
       const was = already === 1 ? 'the one payment in it was' : `all ${count(already, 'payment')} in it were`

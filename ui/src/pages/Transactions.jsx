@@ -89,9 +89,10 @@ function MultiFilter({ label, options, selected, onChange }) {
   )
 }
 
-// What the server resolves for a payment's name; a row is refreshed from the
-// payment's own read after an edit instead of working the name out here.
-const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel', 'transfer']
+// What the server resolves for a payment's name, and whether its guess is held back
+// while it waits on a pair; a row is refreshed from the payment's own read after an
+// edit instead of working either out here.
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel', 'transfer', 'waiting_on_pair']
 // What a row holds of its payment's label, beside the names.
 const LABEL_FIELDS = ['annotation_id', 'category', 'subcategory', 'merchant', 'tags', 'confidence', 'source']
 

@@ -11,6 +11,7 @@ import ReasoningPanel from './ReasoningPanel.jsx'
 import InlineError from './InlineError.jsx'
 import { couldnt } from '../lib/errors.js'
 import { noteLabel } from './PayeeHeading.jsx'
+import { WAITING_WORDS, categoryText } from './CategoryPill.jsx'
 import { capCharacters } from '../lib/text.js'
 
 // Same limits as the API, counted in characters the same way.
@@ -520,6 +521,13 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, o
               </div>
             )}
           </div>
+          {txn.waiting_on_pair && annotation && (
+            <p className="mt-3 rounded-md border border-[#78350f] bg-[#1a1d27] px-3 py-2 text-xs text-[#cbd5e1] break-words">
+              <span className="font-medium text-[#fcd34d]">{WAITING_WORDS}.</span>{' '}
+              The guess was {categoryText(annotation)}. It is in Teach Me, where you can pair it with the other payment,
+              or pick a category here.
+            </p>
+          )}
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>
           <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
           {annotation && (

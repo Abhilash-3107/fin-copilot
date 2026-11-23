@@ -541,6 +541,24 @@ describe('AnnotationPanel focus between forms', () => {
   })
 })
 
+describe('AnnotationPanel payment waiting on a pair', () => {
+  const settled = () => waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  const ANN = { id: 'a1', category: 'Investments', subcategory: 'Mutual Funds', source: 'llm', confidence: 0.97, tags: [] }
+
+  it('says it is not sorted and what the guess was', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: true }, annotation: ANN })
+    await settled()
+    expect(screen.getByText(/Not sorted - maybe a move between your accounts\./)).toBeInTheDocument()
+    expect(screen.getByText(/The guess was Investments › Mutual Funds\./)).toBeInTheDocument()
+  })
+
+  it('says nothing on a payment that is not waiting', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: false }, annotation: ANN })
+    await settled()
+    expect(screen.queryByText(/Not sorted/)).not.toBeInTheDocument()
+  })
+})
+
 describe('AnnotationPanel paired transfer', () => {
   const PAIRED = {
     ...TXN, payee: 'To Own Sbi Savings', note: null,

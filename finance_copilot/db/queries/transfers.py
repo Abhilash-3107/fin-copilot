@@ -270,7 +270,7 @@ def release_transfers(conn: sqlite3.Connection, transaction_ids: list[str], *, d
 
 def move_pair_to_survivor(
     conn: sqlite3.Connection, duplicate_id: str, survivor_id: str, *, survivor_label_is_users: bool
-) -> None:
+) -> bool:
     """A payment that is about to be deleted as a duplicate (a statement moved into an
     account that holds its rows) is paired: the pair moves to the payment the account
     already had, with its `pair` label, or is released, never half-moved.
@@ -283,10 +283,13 @@ def move_pair_to_survivor(
     A release is not the user's decision, so nothing is remembered; pairing runs
     again after the move and may well make the pair again.
     `survivor_label_is_users` is whether the survivor had a user label before the
-    duplicate's own work was carried over. The caller commits."""
+    duplicate's own work was carried over. Returns True when a pair was released, so the
+    caller can tell the user it did not come along (the same as any other work the
+    account's own copy kept instead); a pair with the survivor itself is no loss and
+    False, as is a payment that was not paired. The caller commits."""
     link = transfer_link(conn, duplicate_id)
     if link is None:
-        return
+        return False
     partner = link["txn_b"] if link["txn_a"] == duplicate_id else link["txn_a"]
     low, high = _ordered(survivor_id, partner)
     label = conn.execute(
@@ -306,9 +309,10 @@ def move_pair_to_survivor(
     ):
         conn.execute("DELETE FROM transaction_links WHERE id = ?", (link["id"],))
         _drop_pair_annotations(conn, [duplicate_id, partner])
-        return
+        return partner != survivor_id
     conn.execute("UPDATE transaction_links SET txn_a = ?, txn_b = ? WHERE id = ?", (low, high, link["id"]))
     _write_pair_annotation(conn, survivor_id)
+    return False
 
 
 def repoint_unpairings(conn: sqlite3.Connection, duplicate_id: str, survivor_id: str) -> int:

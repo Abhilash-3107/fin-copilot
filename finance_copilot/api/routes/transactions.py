@@ -12,7 +12,7 @@ from pydantic import BaseModel, field_validator
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.db.queries.app_settings import get_dev_mode
-from finance_copilot.db.queries.common import parse_string_list
+from finance_copilot.db.queries.common import UNCATEGORIZED, parse_string_list, waiting_on_pair_sql
 from finance_copilot.db.queries.payee import (
     MAX_NAME_LENGTH,
     MAX_NOTE_LENGTH,
@@ -151,11 +151,15 @@ def export_transactions(
 
     A user-facing "your data is portable" export; annotation fields are flattened
     onto each row and tags are joined so both formats are flat and spreadsheet-ready.
+    `category` is the category the app counts the payment under.
     """
     rows = with_payee(conn, list_transactions(conn, include_annotation=True))
     records = []
     for r in rows:
         tags = parse_string_list(r.get("tags")) if r.get("annotation_id") else []
+        # The category the app counts the payment under, so an export adds up to the
+        # figures: a guess held back as waiting on a pair is Uncategorized.
+        waiting = r["waiting_on_pair"]
         records.append({
             "id": r["id"],
             "txn_date": r["txn_date"],
@@ -163,8 +167,8 @@ def export_transactions(
             "debit_credit": r["debit_credit"],
             "raw_description": r["raw_description"],
             "running_balance": r.get("running_balance"),
-            "category": r.get("category"),
-            "subcategory": r.get("subcategory"),
+            "category": UNCATEGORIZED if waiting else r.get("category"),
+            "subcategory": None if waiting else r.get("subcategory"),
             "merchant": r.get("merchant"),
             "tags": ",".join(tags),
             "confidence": r.get("confidence"),
@@ -197,9 +201,10 @@ def get_transaction(
     conn: sqlite3.Connection = Depends(get_db),
 ):
     row = conn.execute(
-        """
+        f"""
         SELECT t.*, a.id AS annotation_id, a.merchant, a.category, a.subcategory,
-               a.tags, a.confidence, a.source, a.annotated_at, a.reasoning
+               a.tags, a.confidence, a.source, a.annotated_at, a.reasoning,
+               {waiting_on_pair_sql('a')} AS waiting_on_pair
         FROM transactions t
         LEFT JOIN annotations a ON a.transaction_id = t.id
         WHERE t.id = ?
@@ -209,6 +214,7 @@ def get_transaction(
     if row is None:
         raise HTTPException(status_code=404, detail="Payment not found")
     result = with_transfer(conn, with_payee(conn, [dict(row)]))[0]
+    result["waiting_on_pair"] = bool(result["waiting_on_pair"])
     if result.get("upi_meta"):
         result["upi_meta"] = json.loads(result["upi_meta"])
     result["tags"] = parse_string_list(result.get("tags")) if result.get("annotation_id") else []

@@ -2,6 +2,7 @@ import dayjs from 'dayjs'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import Amount from './Amount.jsx'
 import PaymentLabel from './PaymentLabel.jsx'
+import CategoryPill from './CategoryPill.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Sortable header for the Date/Amount columns (4.12). Clicking toggles the
@@ -96,11 +97,7 @@ export default function TransactionTable({
               </td>
               <td className="px-3 py-2.5">
                 {ann ? (
-                  <span className="inline-flex items-center gap-1">
-                    <span className="bg-[#1e1b4b] text-[#a5b4fc] text-xs px-2 py-0.5 rounded-full whitespace-nowrap">
-                      {ann.subcategory ? `${ann.category} › ${ann.subcategory}` : ann.category}
-                    </span>
-                  </span>
+                  <CategoryPill txn={txn} ann={ann} />
                 ) : (
                   <span className="text-[#94a3b8]">-</span>
                 )}

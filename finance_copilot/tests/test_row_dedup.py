@@ -1135,6 +1135,29 @@ class TestMoveCarriesPairs:
         # Y's credit lost its partner, so it goes back to To sort.
         assert self._label(conn, partner) is None
 
+    @pytest.mark.parametrize("source", ["manual", "imported", "user_rule"])
+    def test_a_pair_released_for_the_survivors_own_label_is_counted_as_work_not_carried(self, api, source):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        self._own_label(conn, at(a, 2), source)
+        self._pair(conn, at(b, 2), partner)
+        body = self._move(client, a, b)
+        assert (body["work_not_carried"], body["work_carried_over"]) == (1, 0)
+
+    def test_a_pair_released_because_the_survivor_is_paired_already_is_counted(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        z = _ingest(conn, _FakeParser([_t(3, 100.0, "credit", text="NEFT/IN/3")], ref="4444"), "z")
+        self._pair(conn, at(a, 2), at(z, 3))
+        self._pair(conn, at(b, 2), partner)
+        assert self._move(client, a, b)["work_not_carried"] == 1
+
+    def test_a_pair_that_moved_is_not_counted_as_work_not_carried(self, api):
+        client, conn = api
+        a, b, at, partner = self._setup(conn)
+        self._pair(conn, at(b, 2), partner)
+        assert self._move(client, a, b)["work_not_carried"] == 0
+
     def test_a_dropped_pair_is_not_remembered_as_the_users_unpairing(self, api):
         client, conn = api
         a, b, at, partner = self._setup(conn)

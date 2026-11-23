@@ -381,8 +381,9 @@ def patch_statement(
         # How many of those had work of the user's (a label, note, name, group,
         # skip or link) that now sits on the payment the account already had.
         "work_carried_over": carried_over,
-        # How many had a label, note, name or group role of the user's that
-        # differed from the account's own copy, which was kept instead.
+        # How many had a label, note, name or group role of the user's, or a transfer
+        # pair, that differed from the account's own copy or could not move: the
+        # account's own was kept instead.
         "work_not_carried": not_carried,
         # Payments in the moved statement's dates that the statement skipped at
         # ingest (they were in its old account then) and that stay there.
