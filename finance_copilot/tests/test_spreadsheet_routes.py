@@ -216,3 +216,36 @@ class TestPreview:
             files={"file": ("x.png", b"\x89PNG\x00\x00", "image/png")}, data={"mapping": "{}"},
         )
         assert got.status_code == 422
+
+
+class TestMovingAReversalAtAFileBoundary:
+    """Move runs the same matcher as ingest: the reversal after a file's end is a
+    payment of its own, not the earlier +100 on the same balance."""
+
+    HEAD = "Example Bank\nAccount Number,XXXX4321\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+    ONE = HEAD + "\n".join([
+        "10/10/2026,UPI/GROCER/1,500.00,,9500.00",
+        "12/10/2026,UPI/CAFE/2,400.00,,9100.00",
+        "14/10/2026,UPI/RAVI/3/SPLIT,,100.00,9200.00",
+    ])
+    TWO = HEAD + "\n".join([
+        "15/10/2026,UPI/SHOP/4/FAILED,100.00,,9100.00",
+        "16/10/2026,UPI/SHOP/4/REVERSAL,,100.00,9200.00",
+        "20/10/2026,UPI/RENT/5,5000.00,,4200.00",
+    ])
+
+    def test_the_reversal_stays_and_the_ledger_reconciles(self, api):
+        client, conn = api
+        one = upload(client, "one.csv", self.ONE.encode(), new_account_name="Main").json()
+        two = upload(client, "two.csv", self.TWO.encode(), new_account_name="Other").json()
+        assert one["account_id"] != two["account_id"]
+        moved = client.patch(f"/api/statements/{two['id']}", json={"account_id": one["account_id"]})
+        assert moved.status_code == 200, moved.text
+        body = moved.json()
+        assert (body["rows_already_there"], body["statement_deleted"]) == (0, False)
+        rows = conn.execute("SELECT debit_credit, amount FROM transactions").fetchall()
+        assert len(rows) == 6
+        balance = 10000.0
+        for r in rows:
+            balance += r["amount"] if r["debit_credit"] == "credit" else -r["amount"]
+        assert round(balance, 2) == 4200.0

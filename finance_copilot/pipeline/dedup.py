@@ -13,10 +13,14 @@ when the date, the amount (to the paisa) and the direction are equal, and
 - at least one has no running balance, and the descriptions are equal once
   upper-cased with whitespace collapsed.
 - a third pass, for every source, after those two: the amount, the direction and
-  the running balance are equal and the dates are up to SHIFT_DAYS apart. A
-  running balance is the account's own state after that payment, so two files
-  that print it equal are the same payment, and banks that print both a value
-  date and a transaction date put different ones in a CSV and a PDF.
+  the running balance are equal and the dates are up to SHIFT_DAYS apart, and
+  both files plainly cover both days: the stored payment's day lies inside the
+  new file's first..last payment dates, and the new payment's day lies inside
+  the span of the stored payment's statement. Banks that print both a value date
+  and a transaction date put different ones in a CSV and a PDF, and then each
+  file covers both days. Without that rule a reversal at a file's edge (+100,
+  -100, +100 on a balance that returns to the same figure) is taken for the
+  payment of the file before it, and a real payment is dropped.
 Counting is a multiset: three identical payments in the file against two in
 the ledger leave one new. A stored payment is never matched twice. Two payments
 with equal text and different balances are two payments, so the balance, when
@@ -26,7 +30,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from finance_copilot.models.transaction import Transaction
@@ -53,14 +57,18 @@ class Payment:
     direction: str  # 'debit' | 'credit'
     balance: int | None  # running balance in paise
     text: str  # normalised description
+    # For a stored payment: the first and last day its statement covers (ISO).
+    # The third pass needs it; a payment without one is never shifted onto.
+    span: tuple[str, str] | None = field(default=None, compare=False)
 
     @classmethod
     def of(
-        cls, day: str, amount: float, direction: str, balance: float | None, description: str
+        cls, day: str, amount: float, direction: str, balance: float | None, description: str,
+        span: tuple[str, str] | None = None,
     ) -> Payment:
         return cls(
             day, _paisa(amount), direction,
-            None if balance is None else _paisa(balance), _normalised(description),
+            None if balance is None else _paisa(balance), _normalised(description), span,
         )
 
     @classmethod
@@ -87,8 +95,10 @@ def match_payments(
     so the answer does not depend on anything but the order of the two lists.
 
     What is still unmatched then goes through the third pass: equal balance,
-    amount and direction, on a day up to `shift_days` away (the nearest first).
-    `shift_days=0` is the first two passes alone.
+    amount and direction, on a day up to `shift_days` away (the nearest first),
+    when the stored payment's day lies within the incoming file's first..last
+    payment days and the incoming payment's day lies within the span its stored
+    payment's statement covers. `shift_days=0` is the first two passes alone.
     """
     slots: dict[tuple[str, int, str], list[int]] = {}
     for index, payment in enumerate(stored):
@@ -118,7 +128,9 @@ def match_payments(
             if answer[i] is None and (payment.balance is not None) == with_balance:
                 take(i, same_text)
 
-    if shift_days > 0:
+    if shift_days > 0 and incoming:
+        file_first = min(p.day for p in incoming)
+        file_last = max(p.day for p in incoming)
         by_state: dict[tuple[int, str, int], list[int]] = {}
         for index, payment in enumerate(stored):
             if payment.balance is not None:
@@ -130,7 +142,7 @@ def match_payments(
             near = sorted(
                 (abs((date.fromisoformat(stored[j].day) - day).days), j)
                 for j in by_state.get((payment.paisa, payment.direction, payment.balance), ())
-                if j not in taken
+                if j not in taken and _covers_both(stored[j], payment, file_first, file_last)
             )
             if near and near[0][0] <= shift_days:
                 taken.add(near[0][1])
@@ -138,9 +150,18 @@ def match_payments(
     return answer
 
 
+def _covers_both(have: Payment, new: Payment, file_first: str, file_last: str) -> bool:
+    """Both files cover both days, so each would have printed the payment."""
+    if have.span is None:
+        return False
+    return file_first <= have.day <= file_last and have.span[0] <= new.day <= have.span[1]
+
+
 # What the account holds, read for the days the incoming payments fall on.
 _STORED_SQL = """
-SELECT t.id, t.txn_date, t.amount, t.debit_credit, t.running_balance, t.raw_description
+SELECT t.id, t.txn_date, t.amount, t.debit_credit, t.running_balance, t.raw_description,
+       COALESCE(s.printed_start, s.period_start) AS span_start,
+       COALESCE(s.printed_end, s.period_end) AS span_end
 FROM transactions t
 JOIN statements s ON s.id = t.statement_id
 WHERE s.account_id = ? AND t.txn_date BETWEEN date(?, ?) AND date(?, ?)
@@ -149,8 +170,13 @@ ORDER BY t.rowid
 
 
 def _payment_of_row(row: sqlite3.Row) -> Payment:
+    keys = row.keys()
+    span = None
+    if "span_start" in keys and row["span_start"] and row["span_end"]:
+        span = (row["span_start"], row["span_end"])
     return Payment.of(
-        row["txn_date"], row["amount"], row["debit_credit"], row["running_balance"], row["raw_description"]
+        row["txn_date"], row["amount"], row["debit_credit"], row["running_balance"],
+        row["raw_description"], span,
     )
 
 
