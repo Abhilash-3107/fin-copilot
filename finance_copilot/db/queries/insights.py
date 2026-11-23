@@ -42,17 +42,17 @@ small summary payload instead of the whole transaction table. Definitions:
   the cap because one refund credit can cover several past debits from the
   same merchant.
 - Everything is computed over date windows, not a month string, so a month
-  still in progress is compared like for like. A month is covered to a different
-  day in each account, so each account is compared over the same days of the
-  previous month as it is covered to this month, and an account that cannot be
-  compared (a new one, or one with a gap in the previous month) is left out of both
-  sides, never counted as zero (see _period_windows).
+  still in progress is compared like for like: each account is compared over the same
+  days of the previous month as it is covered to this month. A comparison is shown only
+  when every account counted in the view can be compared (its statements cover those days
+  of the previous month); when one cannot (a new account, a month it has no statement for,
+  a hole at the start of this month) the view shows no delta at all and says which account
+  and why (see _period_windows).
 
 Additivity across accounts (summarize_insights with account_id): the figures of the
 accounts add up to the figures for all accounts for
-- the verdict tiles (In, Out, Invested, Kept, Earned), and their previous month and
-  the same-days figure the deltas are measured against (`verdict.prev` and
-  `verdict.compared`);
+- the verdict tiles (In, Out, Invested, Kept, Earned), and the previous month's figures
+  over the accounts and days compared (`verdict.prev`), whenever a comparison is shown;
 - each category's gross, net, offsets (an offset counts in the account of the debit it
   pays back), previous net and delta, for every category that has spending this month
   in the accounts that list it; the unsorted figure and the sorting coverage; and the
@@ -72,7 +72,7 @@ import calendar
 import sqlite3
 import zlib
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, timedelta
 from statistics import median
 
 from finance_copilot.db.queries.accounts import account_label, account_labels
@@ -86,7 +86,7 @@ from finance_copilot.db.queries.common import (
     waiting_on_pair_sql,
     windows_condition_sql,
 )
-from finance_copilot.db.queries.coverage import covered_ranges, covered_through, statement_spans
+from finance_copilot.db.queries.coverage import covered_ranges, month_coverage, statement_spans
 from finance_copilot.db.queries.payee import payee_labels
 from finance_copilot.db.queries.transactions import payment_months
 
@@ -116,71 +116,109 @@ def _month_bounds(month: str) -> tuple[date, date]:
     return date(year, mon, 1), date(year, mon, calendar.monthrange(year, mon)[1])
 
 
+def _days_words(first: str, last: str) -> str:
+    """Days of one month in words: "1-20 Oct", "5 Oct", or "October" for the whole month."""
+    a, b = date.fromisoformat(first), date.fromisoformat(last)
+    if a.day == 1 and b.day == calendar.monthrange(b.year, b.month)[1]:
+        return calendar.month_name[b.month]
+    if a == b:
+        return f"{b.day} {calendar.month_abbr[b.month]}"
+    return f"{a.day}-{b.day} {calendar.month_abbr[b.month]}"
+
+
+def _first_gap(ranges: list[tuple[str, str]], window: tuple[str, str]) -> tuple[str, str] | None:
+    """The first stretch of `window` that none of the (sorted, merged) `ranges` covers."""
+    cursor = date.fromisoformat(window[0])
+    end = date.fromisoformat(window[1])
+    for start, stop in ranges:
+        if date.fromisoformat(start) > cursor:
+            return cursor.isoformat(), (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+        cursor = max(cursor, date.fromisoformat(stop) + timedelta(days=1))
+    return (cursor.isoformat(), end.isoformat()) if cursor <= end else None
+
+
 def _period_windows(
     conn: sqlite3.Connection, month: str, account_id: str | None = None
-) -> tuple[dict, dict | None, dict | None]:
+) -> tuple[dict, dict | None, list | None, list[dict]]:
     """How far the ledger covers `month`, and the like-for-like windows to compare with.
 
-    Returns (period, comparison, windows).
+    Returns (period, comparison, previous, note).
 
     period = {month, start, end, covered_through, partial, counted, short}: start/end are
     the calendar bounds of the month, covered_through is the earliest day any counted
     account is covered to. A month is complete only when every account that has a
-    statement touching it is covered to the month's last day (coverage.py: the printed
-    period when a statement has one, else its payments, run on to the month's end when the
-    account's next statement follows; a hole inside the month ends the coverage there).
-    An account with no statement touching the month does not hold it back (the books grid
-    shows it as a gap). With `account_id`, only that account counts. `short` lists the
-    accounts covered to less than the whole month, each with the day it is covered to
-    ({account_id, account_label, covered_through}), so the page can say which one is
-    behind; `counted` is how many accounts the month was judged by.
+    statement touching it is covered to the month's last day, with no hole at its start
+    (coverage.py: the printed period when a statement has one, else its payments, run on to
+    the month's end when the account's next statement follows). An account with no
+    statement touching the month does not hold it back (the books grid shows it as a gap).
+    With `account_id`, only that account counts. `short` lists the accounts that are not
+    covered to the whole month, each as {account_id, account_label, covered_from,
+    covered_through, closed}: `covered_from` is the first day covered when days before it are
+    missing (a hole at the start, else None), `covered_through` the day the first stretch
+    ends, `closed` true when the account has no later statement and the ledger has since
+    moved a month on, so the page can say the statement ends there instead of implying more is
+    coming. `counted` is how many accounts the month was judged by.
 
-    The comparison is cut account by account, because a month is covered to a different
-    day in each: an account covered to day N is compared with days 1..N of the previous
-    month (the whole of it when the account is covered to the month's last day, and never
-    past the previous month's last day). An account whose statements do not cover that
-    window from its first day, or that has no payment at all in the previous month, is
-    left out: a gap, a new account or a quiet one is not a month of zero, and must not
-    show as a change. `windows` = {"current": [...], "previous": [...]} holds one
-    (account_id, first_day, last_day) for each account that is compared, on this month and
-    on the previous one; every figure on either side of a delta is summed over them
-    (common.windows_condition_sql), so both sides are over the same accounts and days, and
-    All accounts is exactly the sum of its accounts.
+    The comparison is cut account by account, because a month is covered to a different day
+    in each: an account covered to day N is compared with days 1..N of the previous month
+    (the whole of it when the account is covered to the month's last day, and never past the
+    previous month's last day). It is shown only when EVERY counted account can be compared:
+    its statements cover this month from the 1st without a hole, it has a statement before
+    this month, and they cover that window of the previous month in full (a covered window
+    with no payments is a month of zero). If any account cannot be, there is no comparison
+    at all, because a delta over only some of the accounts reads as the whole view's.
 
-    comparison = {month, start, end, uniform}: the previous month, `end` the latest window
-    end, and `uniform` false when the accounts' windows end on different days (the page
-    then says "same days for each account"). comparison and windows are None when no
-    account can be compared (the first month of a ledger has nothing to compare with).
+    previous = [(account_id, first_day, last_day), ...], one window per account on the
+    previous month (common.windows_condition_sql); the figures of this month are the month's
+    own, which are over the same accounts and days because no statement covers more than the
+    account has payments in. comparison = {month, start, end, uniform}: the previous month,
+    `end` the latest window end, `uniform` false when the windows end on different days (the
+    page then says "same days for each account"). Both are None when there is no comparison,
+    and `note` then says which accounts could not be compared and why, as [{account_label,
+    reason}] with the reason phrased to follow the label ("has no statement for 1-20 Oct",
+    "was added in November"). The first month of a ledger has nothing before it: no
+    comparison and no note.
 
     The caller decides, from the clock, whether a partial month is really in progress.
     The comparison over covered days is like for like either way.
     """
     first, last = _month_bounds(month)
     first_iso, last_iso = first.isoformat(), last.isoformat()
-    spans = statement_spans(conn, account_id)
-    covered = {
-        acct: through for acct, items in spans.items()
-        if (through := covered_through(items, first_iso, last_iso)) is not None
+    every_span = statement_spans(conn)
+    spans = every_span if account_id is None else {a: i for a, i in every_span.items() if a == account_id}
+    coverage = {}
+    for acct, items in spans.items():
+        if (found := month_coverage(items, first_iso, last_iso)) is not None:
+            coverage[acct] = found
+    short_accounts = {
+        acct: c for acct, c in coverage.items() if c["through"] < last_iso or c["hole_at_start"]
     }
-    through = min(covered.values()) if covered else last_iso
-    partial = through < last_iso
+    through = min((c["through"] for c in coverage.values()), default=last_iso)
     labels = account_labels(conn)
+    newest = conn.execute("SELECT MAX(date(txn_date)) FROM transactions").fetchone()[0]
+    ledger_moved_on = bool(newest) and newest[:7] > month
+
+    def closed(acct) -> bool:
+        return ledger_moved_on and not any(s["start"] > last_iso for s in every_span.get(acct, []))
+
     period = {
         "month": month,
         "start": first_iso,
         "end": last_iso,
         "covered_through": through,
-        "partial": partial,
+        "partial": bool(short_accounts),
         # How many accounts the month was judged by (those with a statement touching it).
-        "counted": len(covered),
+        "counted": len(coverage),
         "short": sorted(
             (
                 {
                     "account_id": acct,
                     "account_label": labels.get(acct, "Other statements"),
-                    "covered_through": day,
+                    "covered_from": c["from"] if c["hole_at_start"] else None,
+                    "covered_through": c["through"],
+                    "closed": closed(acct),
                 }
-                for acct, day in covered.items() if day < last_iso
+                for acct, c in short_accounts.items()
             ),
             key=lambda item: (item["covered_through"], item["account_label"]),
         ),
@@ -188,25 +226,31 @@ def _period_windows(
 
     prev_first, prev_last = _month_bounds(_prev_month(month))
     prev_first_iso = prev_first.isoformat()
-    paid = {
-        row[0] for row in conn.execute(
-            "SELECT DISTINCT s.account_id FROM transactions t JOIN statements s ON s.id = t.statement_id "
-            "WHERE date(t.txn_date) BETWEEN ? AND ?",
-            (prev_first_iso, prev_last.isoformat()),
-        )
-    }
-    current, previous = [], []
-    for acct, day in sorted(covered.items(), key=lambda item: (item[0] is None, item[0] or "")):
-        if day >= last_iso:
-            window_end = prev_last
+    ledger_starts_here = not any(s["start"] < first_iso for items in every_span.values() for s in items)
+    previous, note = [], []
+    for acct, c in sorted(coverage.items(), key=lambda item: (item[0] is None, item[0] or "")):
+        reason = None
+        if not c["earlier"]:
+            reason = f"was added in {calendar.month_name[first.month]}"
+        elif c["gap"]:
+            reason = f"has no statement for {_days_words(*c['gap'])}"
         else:
-            window_end = prev_first.replace(day=min(date.fromisoformat(day).day, prev_last.day))
-        window = (prev_first_iso, window_end.isoformat())
-        if acct in paid and covered_ranges(spans[acct], *window) == [window]:
-            current.append((acct, first_iso, day))
-            previous.append((acct, *window))
-    if not previous:
-        return period, None, None
+            if c["through"] >= last_iso:
+                window_end = prev_last
+            else:
+                window_end = prev_first.replace(day=min(date.fromisoformat(c["through"]).day, prev_last.day))
+            window = (prev_first_iso, window_end.isoformat())
+            missing = _first_gap(covered_ranges(spans[acct], *window), window)
+            if missing:
+                reason = f"has no statement for {_days_words(*missing)}"
+            else:
+                previous.append((acct, *window))
+        if reason:
+            note.append({"account_label": labels.get(acct, "Other statements"), "reason": reason})
+    if note or not previous:
+        # No comparison, and nothing to explain at the very start of a ledger or in a month
+        # no account has a statement for.
+        return period, None, None, [] if ledger_starts_here else note
     ends = {end for _acct, _start, end in previous}
     comparison = {
         "month": _prev_month(month),
@@ -214,7 +258,7 @@ def _period_windows(
         "end": max(ends),
         "uniform": len(ends) == 1,
     }
-    return period, comparison, {"current": current, "previous": previous}
+    return period, comparison, previous, []
 
 
 def _is_spend(category: str | None) -> bool:
@@ -993,25 +1037,17 @@ def summarize_insights(
     if month is None or month not in months:
         month = months[-1]
     prev = _prev_month(month)
-    period, comparison, windows = _period_windows(conn, month, account_id)
+    period, comparison, previous_windows, comparison_note = _period_windows(conn, month, account_id)
     start, end = period["start"], period["end"]
     whole = [(account_id or ALL_ACCOUNTS, start, end)]
 
     cat_offsets, settled_ids = _spend_offsets(conn)
 
     current = _categories_for_range(conn, whole, cat_offsets)
-    # What the deltas measure: this month over the accounts and days the comparison covers
-    # (all of the month, in the usual case where every account is covered to its end), against
-    # the same accounts' days of the previous month.
-    if windows is None:
-        compared, previous = None, None
-    else:
-        # Every counted account compared over the whole month: the month itself.
-        whole_month = len(windows["current"]) == period["counted"] and all(
-            (first, last) == (start, end) for _acct, first, last in windows["current"]
-        )
-        compared = current if whole_month else _categories_for_range(conn, windows["current"], cat_offsets)
-        previous = _categories_for_range(conn, windows["previous"], cat_offsets)
+    # What the deltas measure: this month against the previous month's same days of the same
+    # accounts. Every account in the view is compared or the view has no comparison at all, so
+    # this month's own figures are the other side of every delta.
+    previous = _categories_for_range(conn, previous_windows, cat_offsets) if previous_windows else None
 
     categories = [
         {
@@ -1022,7 +1058,7 @@ def summarize_insights(
             "count": data["count"],
             "prev_net": previous.get(name, {}).get("net", 0.0) if previous is not None else None,
             "delta": (
-                round(compared.get(name, {}).get("net", 0.0) - previous.get(name, {}).get("net", 0.0), 2)
+                round(data["net"] - previous.get(name, {}).get("net", 0.0), 2)
                 if previous is not None else None
             ),
             "subcategories": data["subcategories"],
@@ -1035,8 +1071,8 @@ def summarize_insights(
     if previous is not None:
         # Uncategorized is never a shift worth naming: the unsorted figure and
         # its own breakdown row already cover it.
-        for name in (set(compared) | set(previous)) - {UNCATEGORIZED}:
-            cur_net = compared.get(name, {}).get("net", 0.0)
+        for name in (set(current) | set(previous)) - {UNCATEGORIZED}:
+            cur_net = current.get(name, {}).get("net", 0.0)
             prev_net = previous.get(name, {}).get("net", 0.0)
             delta = round(cur_net - prev_net, 2)
             if abs(delta) >= 1:
@@ -1060,13 +1096,12 @@ def summarize_insights(
         "account": _account_ref(conn, account_id),
         "period": period,
         "comparison": comparison,
+        "comparison_note": comparison_note,
         "verdict": {
             **verdict,
-            # The comparison's two sides over the same accounts and days: `compared` is this
-            # month over them (the tile itself when every account is compared in full), `prev`
-            # the previous month's. A tile's delta is compared - prev.
-            "compared": _verdict(conn, windows["current"]) if windows else None,
-            "prev": _verdict(conn, windows["previous"]) if windows else None,
+            # The previous month over the accounts and days the comparison covers; a tile's
+            # delta is the tile minus this.
+            "prev": _verdict(conn, previous_windows) if previous_windows else None,
         },
         "what_changed": deltas[:3],
         "categories": categories,

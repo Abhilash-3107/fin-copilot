@@ -374,7 +374,10 @@ class TestPeriodWindows:
             "month": "2026-11", "start": "2026-11-01", "end": "2026-11-30",
             "covered_through": "2026-11-15", "partial": True, "counted": 1,
             # The fixture's statement belongs to no account.
-            "short": [{"account_id": None, "account_label": "Other statements", "covered_through": "2026-11-15"}],
+            "short": [{
+                "account_id": None, "account_label": "Other statements", "covered_from": None,
+                "covered_through": "2026-11-15", "closed": False,
+            }],
         }
         assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15", "uniform": True}
         assert s["verdict"]["money_out"] == 30
@@ -420,27 +423,31 @@ class TestPeriodWindows:
         assert s["what_changed"] == []
         assert all(c["delta"] is None and c["prev_net"] is None for c in s["categories"])
 
-    def test_no_comparison_when_the_ledger_starts_inside_the_window(self, conn):
-        # Data starts on 15 Oct: "1-15 Oct" cannot be compared with, so a half
-        # November has nothing honest to be scored against.
+    def test_a_statement_with_no_printed_period_covers_from_the_1st_of_its_first_payments_month(self, conn):
+        # Data starts on 15 Oct and nothing says the statement began later than the 1st, so
+        # 1 to 12 Oct is covered (and quiet): November is compared with it, as with a month of zero.
         seed_txn(conn, "2026-10-15", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-10-28", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 10, "debit", category="Shopping")
         seed_txn(conn, "2026-11-12", 10, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-11")
         assert s["period"]["partial"] is True
-        assert s["comparison"] is None
-        assert s["verdict"]["prev"] is None
+        assert s["comparison"]["end"] == "2026-10-12"
+        assert s["verdict"]["prev"]["money_out"] == 0
+        assert s["comparison_note"] == []
 
-    def test_a_gap_month_has_no_comparison(self, conn):
-        # September and November have data, October has none: November must not
+    def test_a_gap_month_has_no_comparison_and_says_which_days_are_missing(self, conn):
+        # September and November have statements, October has none: November must not
         # be scored against an empty October.
         seed_txn(conn, "2026-09-01", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-09-30", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-30", 100, "debit", category="Shopping")
+        conn.execute("INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s2','test','1','2026-11')")
+        conn.execute("UPDATE transactions SET statement_id = 's2' WHERE txn_date >= '2026-11-01'")
         s = summarize_insights(conn, "2026-11")
         assert s["comparison"] is None
+        assert s["comparison_note"] == [{"account_label": "Other statements", "reason": "has no statement for October"}]
         assert s["verdict"]["prev"] is None
         assert s["what_changed"] == []
         assert all(c["delta"] is None for c in s["categories"])

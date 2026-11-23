@@ -237,17 +237,19 @@ class TestIdentitiesHoldForAllAndForEachAccount:
                     assert cents(got) == item[key], (month, item["id"], key)
 
     def test_the_comparison_adds_up_too(self, conn, seed_value):
-        """Each account is compared over its own windows, so the previous month, this month over
-        the same days, and every category's previous net and delta are sums over the accounts."""
+        """When all accounts are compared, each account is compared too, over its own windows, so
+        the previous month and every category's previous net and delta are sums over the accounts."""
         accounts = three_account_ledger(conn, seed_value)
         for month in months_of(conn):
             whole = summarize_insights(conn, month)
+            if whole["comparison"] is None:
+                assert whole["verdict"]["prev"] is None and whole["what_changed"] == []
+                continue
             parts = [summarize_insights(conn, month, account_id=a) for a in accounts]
-            for side in ("prev", "compared"):
-                held = [p["verdict"][side] for p in parts if p["verdict"][side] is not None]
-                assert (whole["verdict"][side] is None) == (not held), (month, side)
-                for key in ("money_in", "money_out", "invested", "kept", "earned"):
-                    assert cents(sum(v[key] for v in held)) == (whole["verdict"][side][key] if held else 0), (month, side, key)
+            held = [p["verdict"]["prev"] for p in parts if p["verdict"]["prev"] is not None]
+            assert held, month
+            for key in ("money_in", "money_out", "invested", "kept", "earned"):
+                assert cents(sum(v[key] for v in held)) == whole["verdict"]["prev"][key], (month, key)
             # A category is a row only where it has spending this month, so a row's previous net and
             # delta add up over the accounts that list it; the categories every account lists are checked.
             for field in ("prev_net", "delta"):
@@ -256,6 +258,19 @@ class TestIdentitiesHoldForAllAndForEachAccount:
                     if None in rows or c[field] is None:
                         continue
                     assert cents(sum(r[field] or 0 for r in rows)) == c[field], (month, c["category"], field)
+
+    def test_every_delta_is_this_month_minus_the_previous_to_the_paisa(self, conn, seed_value):
+        accounts = three_account_ledger(conn, seed_value)
+        for month in months_of(conn):
+            for account_id in (None, *accounts):
+                s = summarize_insights(conn, month, account_id=account_id)
+                if s["comparison"] is None:
+                    continue
+                assert s["verdict"]["prev"] is not None and s["comparison_note"] == []
+                for c in s["categories"]:
+                    assert c["delta"] == cents(c["net"] - c["prev_net"]), (month, account_id, c["category"])
+                for item in s["what_changed"]:
+                    assert item["delta"] == cents(item["current"] - item["previous"])
 
     def test_every_payment_is_in_one_account_filter(self, conn, seed_value):
         accounts = three_account_ledger(conn, seed_value)
@@ -503,7 +518,9 @@ class TestPartialMonthsAcrossAccounts:
         assert s["period"]["partial"] is True
         assert s["period"]["covered_through"] == "2026-11-15"
         assert s["period"]["counted"] == 2
-        assert s["period"]["short"] == [{"account_id": b, "account_label": "SBI savings", "covered_through": "2026-11-15"}]
+        assert s["period"]["short"] == [
+            {"account_id": b, "account_label": "SBI savings", "covered_from": None, "covered_through": "2026-11-15", "closed": False}
+        ]
 
     def test_each_account_is_compared_over_the_same_days_of_its_own_previous_month(self, conn):
         a, b = self._two(conn)
@@ -511,7 +528,7 @@ class TestPartialMonthsAcrossAccounts:
         assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-31", "uniform": False}
         # Kotak is covered to the 30th: all of October (200). SBI to the 15th: its 2 Oct payment (50), not the 20th.
         assert s["verdict"]["prev"]["money_out"] == 250
-        assert s["verdict"]["compared"]["money_out"] == 30
+        assert s["verdict"]["money_out"] == 30
         shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
         assert (shopping["net"], shopping["prev_net"], shopping["delta"]) == (30, 250, -220)
         kotak = summarize_insights(conn, "2026-11", account_id=a)
@@ -521,8 +538,9 @@ class TestPartialMonthsAcrossAccounts:
         assert sbi["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15", "uniform": True}
         assert sbi["verdict"]["prev"]["money_out"] == 50
 
-    def test_a_new_account_is_not_a_change(self, conn):
-        # SBI opened on 10 Nov and spent 5,000 on its first days: nothing of October to compare it with.
+    def test_a_new_account_means_no_comparison_at_all_and_says_so(self, conn):
+        # SBI opened on 10 Nov and spent 5,000 on its first days: nothing of October to compare it
+        # with, and a delta over Kotak alone would read as the whole view's.
         a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         conn.execute("DELETE FROM statements")
         add_statement(conn, "ka", a, "2026-10-01", "2026-11-30", "2026-10-01", "2026-11-30")
@@ -532,13 +550,18 @@ class TestPartialMonthsAcrossAccounts:
         seed(conn, "sb", "2026-11-12", 5000, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-11")
         assert s["verdict"]["money_out"] == 6000
-        assert s["verdict"]["compared"]["money_out"] == 1000 and s["verdict"]["prev"]["money_out"] == 1000
+        assert s["comparison"] is None and s["verdict"]["prev"] is None
+        assert s["comparison_note"] == [{"account_label": "SBI savings", "reason": "was added in November"}]
         assert s["what_changed"] == []
-        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
-        assert (shopping["prev_net"], shopping["delta"]) == (0.0, 0.0)
-        assert summarize_insights(conn, "2026-11", account_id=b)["comparison"] is None
+        assert all(c["prev_net"] is None and c["delta"] is None for c in s["categories"])
+        sbi = summarize_insights(conn, "2026-11", account_id=b)
+        assert sbi["comparison"] is None
+        assert sbi["comparison_note"] == [{"account_label": "SBI savings", "reason": "was added in November"}]
+        kotak = summarize_insights(conn, "2026-11", account_id=a)
+        assert kotak["comparison"] is not None and kotak["comparison_note"] == []
+        assert kotak["verdict"]["prev"]["money_out"] == 1000
 
-    def test_an_account_with_a_gap_in_the_previous_month_is_left_out_not_counted_as_zero(self, conn):
+    def test_an_account_with_no_statement_for_last_month_means_no_comparison_and_says_so(self, conn):
         a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
         conn.execute("DELETE FROM statements")
         add_statement(conn, "k9", a, "2026-09-01", "2026-09-30", "2026-09-01", "2026-09-30")
@@ -549,12 +572,71 @@ class TestPartialMonthsAcrossAccounts:
         for month in ("09", "10", "11"):
             seed(conn, "s0", f"2026-{month}-05", 100, "debit", category="Food & Dining")
         s = summarize_insights(conn, "2026-11")
-        # Kotak has no October: only SBI is compared (100 against 100), and the 3,000 is no change.
-        assert s["verdict"]["prev"]["money_out"] == 100 and s["verdict"]["compared"]["money_out"] == 100
-        assert s["what_changed"] == []
-        assert summarize_insights(conn, "2026-11", account_id=a)["comparison"] is None
+        assert s["comparison"] is None and s["verdict"]["prev"] is None and s["what_changed"] == []
+        assert s["comparison_note"] == [{"account_label": "Kotak savings", "reason": "has no statement for October"}]
+        assert summarize_insights(conn, "2026-11", account_id=a)["comparison_note"] == s["comparison_note"]
+        # SBI's own view is compared: 100 against 100.
+        sbi = summarize_insights(conn, "2026-11", account_id=b)
+        assert sbi["verdict"]["prev"]["money_out"] == 100 and sbi["comparison_note"] == []
 
-    def test_a_hole_inside_the_month_makes_it_partial_and_the_comparison_stops_there(self, conn):
+    def test_a_statement_missing_part_of_last_months_window_names_the_days(self, conn):
+        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "k10", a, "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31")
+        add_statement(conn, "k11", a, "2026-11-01", "2026-11-30", "2026-11-01", "2026-11-30")
+        add_statement(conn, "s10", b, "2026-10-01", "2026-10-19", "2026-10-01", "2026-10-19")
+        add_statement(conn, "s11", b, "2026-11-01", "2026-11-20", "2026-11-01", "2026-11-20")
+        seed(conn, "k10", "2026-10-05", 100, "debit", category="Shopping")
+        seed(conn, "k11", "2026-11-05", 100, "debit", category="Shopping")
+        seed(conn, "s10", "2026-10-05", 100, "debit", category="Shopping")
+        seed(conn, "s11", "2026-11-05", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["period"]["short"][0]["covered_through"] == "2026-11-20"
+        assert s["comparison"] is None
+        assert s["comparison_note"] == [{"account_label": "SBI savings", "reason": "has no statement for 20 Oct"}]
+        conn.execute("UPDATE statements SET printed_end = '2026-10-10', period_end = '2026-10-10' WHERE id = 's10'")
+        s = summarize_insights(conn, "2026-11")
+        assert s["comparison_note"] == [{"account_label": "SBI savings", "reason": "has no statement for 11-20 Oct"}]
+
+    def test_the_first_month_of_a_ledger_has_no_comparison_and_nothing_to_explain(self, conn):
+        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "ka", a, "2026-11-01", "2026-11-30", "2026-11-01", "2026-11-30")
+        add_statement(conn, "sb", b, "2026-11-05", "2026-11-30", "2026-11-05", "2026-11-30")
+        seed(conn, "ka", "2026-11-05", 100, "debit", category="Shopping")
+        seed(conn, "sb", "2026-11-12", 100, "debit", category="Shopping")
+        for acct in (None, a, b):
+            s = summarize_insights(conn, "2026-11", account_id=acct)
+            assert s["comparison"] is None and s["comparison_note"] == [], acct
+
+    def test_a_covered_window_with_no_payments_is_a_month_of_zero(self, conn):
+        a = add_account(conn, "a", name="Kotak savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "k10", a, "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31")
+        add_statement(conn, "k11", a, "2026-11-01", "2026-11-30", "2026-11-01", "2026-11-30")
+        seed(conn, "k11", "2026-11-05", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["comparison"] is not None and s["verdict"]["prev"]["money_out"] == 0
+        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
+        assert shopping["delta"] == 100
+
+    def test_a_month_that_starts_with_a_hole_is_partial_and_cannot_be_compared(self, conn):
+        # Kotak printed all of October and then 10 to 30 Nov: 1 to 9 Nov is missing.
+        a = add_account(conn, "a", name="Kotak savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "k10", a, "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31")
+        add_statement(conn, "k11", a, "2026-11-10", "2026-11-30", "2026-11-10", "2026-11-30")
+        seed(conn, "k10", "2026-10-05", 100, "debit", category="Shopping")
+        seed(conn, "k11", "2026-11-12", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["period"]["partial"] is True
+        assert s["period"]["short"] == [
+            {"account_id": a, "account_label": "Kotak savings", "covered_from": "2026-11-10", "covered_through": "2026-11-30", "closed": False}
+        ]
+        assert s["comparison"] is None
+        assert s["comparison_note"] == [{"account_label": "Kotak savings", "reason": "has no statement for 1-9 Nov"}]
+
+    def test_a_hole_inside_the_month_makes_it_partial_and_there_is_no_comparison(self, conn):
         a = add_account(conn, "a", name="Kotak savings")
         conn.execute("DELETE FROM statements")
         add_statement(conn, "k10", a, "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31")
@@ -566,10 +648,12 @@ class TestPartialMonthsAcrossAccounts:
         seed(conn, "k2", "2026-11-25", 10, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-11")
         assert s["period"]["partial"] is True and s["period"]["covered_through"] == "2026-11-10"
-        assert s["period"]["short"] == [{"account_id": a, "account_label": "Kotak savings", "covered_through": "2026-11-10"}]
-        assert s["comparison"]["end"] == "2026-10-10"
-        # The 25 Nov payment is past the hole: neither side of the comparison holds it.
-        assert s["verdict"]["compared"]["money_out"] == 10 and s["verdict"]["prev"]["money_out"] == 100
+        assert s["period"]["short"] == [
+            {"account_id": a, "account_label": "Kotak savings", "covered_from": None, "covered_through": "2026-11-10", "closed": False}
+        ]
+        # The 25 Nov payment is past the hole: a delta over 1 to 10 Nov would be wrong, so there is none.
+        assert s["comparison"] is None and s["verdict"]["prev"] is None
+        assert s["comparison_note"] == [{"account_label": "Kotak savings", "reason": "has no statement for 11-19 Nov"}]
         assert s["verdict"]["money_out"] == 20
 
     def test_a_closed_account_whose_last_statement_printed_no_period(self, conn):
@@ -586,12 +670,15 @@ class TestPartialMonthsAcrossAccounts:
         seed(conn, "s9", "2026-09-02", 100, "debit", category="Shopping")
         seed(conn, "s9", "2026-09-12", 100, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-09")
-        # The month is partial, and the page can name the closed account: it is covered to the 12th.
+        # The month is partial, and the page can name the closed account: it is covered to the 12th,
+        # has no later statement, and the ledger has since moved on.
         assert s["period"]["partial"] is True and s["period"]["covered_through"] == "2026-09-12"
-        assert s["period"]["short"] == [{"account_id": b, "account_label": "SBI savings", "covered_through": "2026-09-12"}]
+        assert s["period"]["short"] == [
+            {"account_id": b, "account_label": "SBI savings", "covered_from": None, "covered_through": "2026-09-12", "closed": True}
+        ]
         # Kotak against all of August, SBI against 1 to 12 Aug (its 3 Aug payment only).
         assert s["comparison"] == {"month": "2026-08", "start": "2026-08-01", "end": "2026-08-31", "uniform": False}
-        assert s["verdict"]["prev"]["money_out"] == 1100 and s["verdict"]["compared"]["money_out"] == 1200
+        assert s["verdict"]["prev"]["money_out"] == 1100 and s["verdict"]["money_out"] == 1200
         assert [c["category"] for c in s["what_changed"]] == ["Shopping"]
         assert s["what_changed"][0]["delta"] == 100
         sbi = summarize_insights(conn, "2026-09", account_id=b)
@@ -703,8 +790,12 @@ class TestPartialMonthsAcrossAccounts:
         seed(conn, "ka", "2026-10-05", 100, "debit", category="Shopping")
         seed(conn, "sb", "2026-09-05", 100, "debit", category="Shopping")
         seed(conn, "sc", "2026-11-05", 100, "debit", category="Shopping")
-        assert summarize_insights(conn, "2026-11", account_id=b)["comparison"] is None
-        assert summarize_insights(conn, "2026-11")["comparison"] is not None  # Kotak's October is there
+        sbi = summarize_insights(conn, "2026-11", account_id=b)
+        assert sbi["comparison"] is None
+        assert sbi["comparison_note"] == [{"account_label": "SBI ··XXXb", "reason": "has no statement for October"}]
+        # Kotak's October is there, but SBI has none: the all-accounts view is not compared either.
+        assert summarize_insights(conn, "2026-11")["comparison"] is None
+        assert summarize_insights(conn, "2026-11", account_id=a)["comparison"] is not None
 
 
 class TestTheFilterOnPayments:
