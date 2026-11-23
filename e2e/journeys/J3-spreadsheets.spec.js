@@ -142,11 +142,8 @@ test.describe('J3 spreadsheets', () => {
 
     await fileRow(page, 'copy.csv').getByRole('button', { name: 'Leave it out' }).click()
     await expect(fileRow(page, 'copy.csv')).toHaveCount(0)
-    // Focus goes to the row beside it while another file is on the page, else to the drop zone: never the page.
-    await expect.poll(() => page.evaluate(() => {
-      const now = document.activeElement
-      return now?.tagName === 'LI' || (now?.getAttribute('role') === 'button' && /Drop your bank statements here/.test(now.textContent))
-    })).toBe(true)
+    // Focus goes to the row beside it (oct.pdf, the one other file on the page), never the page.
+    await expect(fileRow(page, 'oct.pdf')).toBeFocused()
     expect((await app.api.get('/statements')).length).toBe(1)
 
     // The person can still say yes: the columns and the way round are sent again with it.
