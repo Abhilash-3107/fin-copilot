@@ -140,7 +140,8 @@ test.describe('J9 failure states', () => {
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(failures(page)).toHaveCount(0)
-    await expect(page.getByRole('table')).toBeVisible()
+    // The statements list, not the books above it.
+    await expect(page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Balanced' }) })).toBeVisible()
   })
 
   test('Settings says a tab could not load its rules, never "No rules yet", and recovers', async ({ page, tolerate, app }) => {

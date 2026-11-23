@@ -61,7 +61,8 @@ test.describe('J1 first run', () => {
     expect((await app.api.get(`/insights?month=${month}`)).verdict.money_out).toBeCloseTo(spent, 2)
 
     await open(page, '/transactions')
-    await page.getByRole('combobox').first().selectOption({ label: 'All statements' })
+    // The move is on the 28th, which today (the 15th) has not reached: look at every month.
+    await page.getByRole('combobox', { name: 'Period' }).selectOption('all')
     await expect(page.getByRole('row').filter({ hasText: 'Moved to SBI savings' }).first()).toBeVisible()
     await open(page, '/upload')
     await expect(page.getByText('Kotak savings').first()).toBeVisible()

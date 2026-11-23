@@ -2,7 +2,7 @@
 // see sorting start by itself, and follow the way on to Teach Me.
 import { readFileSync } from 'node:fs'
 import { test, expect } from '../fixtures.js'
-import { open, skipToPayment } from '../lib/ui.js'
+import { open, openMenu, skipToPayment } from '../lib/ui.js'
 import {
   FIXTURE_PDF, FIXTURE_PDF_NOV, FIXTURE_PDF_OTHER_BANK, FIXTURE_PDF_OVERLAP, FIXTURE_PDF_TRANSFER_IN, FIXTURE_PDF_TRANSFER_OUT,
 } from '../lib/statement.js'
@@ -18,7 +18,8 @@ const fileRow = (page, name) => page.getByRole('listitem').filter({ hasText: nam
 // The toast live region is also a status, so pick the drop's own summary.
 const summaryOf = (page) => page.getByRole('status').filter({ hasText: 'Finished:' })
 // The fixture header has no bank name, so its account reads "Bank" and the last digits of its number.
-const statementRows = (page) => page.getByRole('row').filter({ hasText: 'Bank ··0000' })
+// The statements list, not the books grid above it: its rows are the ones with a menu.
+const statementRows = (page) => page.getByRole('row').filter({ hasText: 'Bank ··0000', has: page.getByRole('button', { name: /^More for / }) })
 
 test.describe('J3 add a statement', () => {
   test('the page says what it supports before the first upload', async ({ page }) => {
@@ -51,7 +52,7 @@ test.describe('J3 add a statement', () => {
     const row = statementRows(page).first()
     await expect(row.getByRole('button', { name: /Sort again/ })).toBeVisible()
     await expect(page.getByText(/memory|rebuild/i)).toHaveCount(0)
-    await row.getByRole('button', { name: /^More for / }).click()
+    await openMenu(row.getByRole('button', { name: /^More for / }))
     await expect(page.getByRole('menuitem')).toHaveText(['Name this account', 'Start over', 'Delete'])
     // The keys work: Escape closes the menu and puts focus back on its button.
     await page.keyboard.press('Escape')
@@ -224,7 +225,6 @@ test.describe('J3 with no model connected', () => {
 
 test.describe('J3 accounts', () => {
   const accountRows = (page) => page.getByRole('row').filter({ has: page.getByRole('button', { name: /^More for / }) })
-  const picker = (page) => page.getByRole('combobox').first()
 
   test('a statement lands in a new account that can be named on its row, and the name follows it to Transactions', async ({ page, app }) => {
     await drop(page, FIXTURE_PDF)
@@ -241,16 +241,19 @@ test.describe('J3 accounts', () => {
     // Focus lands on the line that now says the name, not on the page body.
     await expect(row.getByText('Added to a new account, Salary account.')).toBeFocused()
 
-    // The list says it too, and so does the server.
-    await expect(page.getByRole('row').filter({ hasText: 'Salary account' })).toHaveCount(1)
+    // The books say it too (the account's row), and so does the server.
+    await expect(page.getByRole('rowheader', { name: /Salary account/ })).toHaveCount(1)
+    await expect(accountRows(page).filter({ hasText: 'Salary account' })).toHaveCount(1)
     const [account] = await app.api.get('/accounts')
     expect(account).toMatchObject({ name: 'Salary account', account_label: 'Salary account', account_ref_last4: '0000', statement_count: 1 })
     expect(JSON.stringify(account)).not.toContain('XXXX0000')
 
-    // Move on inside the app, without a reload: the picker already has the new name.
+    // Move on inside the app, without a reload: with one account there is nothing to filter by,
+    // and the statement picker and Sort again are gone from the ledger (Sort again lives on this page).
     await page.getByRole('link', { name: 'Transactions' }).first().click()
-    await expect(page.getByRole('button', { name: 'Sort again' })).toBeVisible()
-    await expect(picker(page).locator('option')).toHaveText(['All statements', 'Salary account - 1 Oct to 8 Oct'])
+    await expect(page.getByRole('searchbox')).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Account' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Sort again' })).toHaveCount(0)
   })
 
   test('naming is cancelled with Escape and saves nothing', async ({ page, app }) => {
@@ -287,7 +290,7 @@ test.describe('J3 accounts', () => {
     await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Added to Bank ··0000')
     expect(await app.api.get('/accounts')).toHaveLength(1)
 
-    await page.getByRole('button', { name: 'More for Bank ··0000 - 1 Nov to 8 Nov' }).click()
+    await openMenu(page.getByRole('button', { name: 'More for Bank ··0000 - 1 Nov to 8 Nov' }))
     await page.getByRole('menuitem', { name: 'Move to account…' }).click()
     const dialog = page.getByRole('dialog', { name: 'Move to account' })
     await expect(dialog.getByText('A new account', { exact: true })).toBeVisible()
@@ -339,11 +342,12 @@ test.describe('J3 accounts', () => {
     await expect(fileRow(page, 'sample_statement_nov.pdf')).toContainText('Added to Salary account')
     await expect(fileRow(page, 'sample_statement_nov.pdf').getByRole('button', { name: 'Name it' })).toHaveCount(0)
     expect(await app.api.get('/accounts')).toHaveLength(1)
-    const list = page.getByText('Your accounts').locator('..')
-    await expect(list).toContainText('Salary account')
-    await expect(list).toContainText('2 statements')
+    const row = page.getByRole('rowheader', { name: /Salary account/ })
+    await expect(row).toHaveCount(1)
     // The latest closing balance, with the day it is as of.
-    await expect(list).toContainText(/₹[\d,]+ as of 8 Nov 2026/)
+    await expect(row).toContainText(/₹[\d,]+ as of 8 Nov 2026/)
+    await expect(page.getByRole('link', { name: /Salary account, October 2026/ })).toBeVisible()
+    await expect(page.getByRole('link', { name: /Salary account, November 2026/ })).toBeVisible()
   })
 
   test('a statement from another bank is its own account, and can be moved between accounts', async ({ page, app }) => {
@@ -361,7 +365,7 @@ test.describe('J3 accounts', () => {
     expect([other.period_start, other.period_end]).toEqual(['2026-10-02', '2026-10-12'])
 
     // Move the other bank's statement into the first account: the emptied account goes away.
-    await accountRows(page).filter({ hasText: 'HDFC ··4321' }).getByRole('button', { name: /^More for / }).click()
+    await openMenu(accountRows(page).filter({ hasText: 'HDFC ··4321' }).getByRole('button', { name: /^More for / }))
     await page.getByRole('menuitem', { name: 'Move to account…' }).click()
     const dialog = page.getByRole('dialog', { name: 'Move to account' })
     await expect(dialog.getByRole('button', { name: 'HDFC ··4321' })).toHaveCount(0)
@@ -423,13 +427,11 @@ test.describe('J3 overlapping statements', () => {
     await drop(page, FIXTURE_PDF_OVERLAP)
     await expect(summaryOf(page)).toContainText('Finished:')
     await page.getByRole('link', { name: 'Transactions' }).first().click()
-    await expect(page.getByRole('button', { name: 'Sort again' })).toBeVisible()
+    await expect(page.getByRole('searchbox')).toBeVisible()
     const period = page.getByRole('combobox', { name: 'Period' })
     await expect(period.locator('option')).toHaveText(['All time', 'Nov 2026', 'Oct 2026'])
     await period.selectOption('2026-11')
-    await expect(page.getByRole('combobox').first().locator('option')).toHaveText(['All statements', 'Bank ··0000 - 5 Oct to 15 Nov'])
-    // The statement stays picked in November, which it runs into: the list is its November payments.
-    await expect(page.getByRole('combobox').first()).toHaveValue(/\S/)
+    // The month is the unit: the list is the account's November payments, whichever statement brought them.
     await expect(page.getByText(/^11 payments/)).toBeVisible()
   })
 
@@ -443,7 +445,7 @@ test.describe('J3 overlapping statements', () => {
     await drop(page, FIXTURE_PDF_OVERLAP)
     await expect(fileRow(page, 'sample_statement_overlap.pdf')).toContainText('7 new payments, 8 already in your ledger')
 
-    await accountRows(page).filter({ hasText: '5 Oct to 15 Nov' }).getByRole('button', { name: /^More for / }).click()
+    await openMenu(accountRows(page).filter({ hasText: '5 Oct to 15 Nov' }).getByRole('button', { name: /^More for / }))
     await page.getByRole('menuitem', { name: 'Move to account…' }).click()
     const dialog = page.getByRole('dialog', { name: 'Move to account' })
     await dialog.getByRole('button', { name: 'Bank ··0000' }).first().click()
@@ -500,7 +502,6 @@ test.describe('J3 a transfer between your own accounts', () => {
 
     // The ledger says it on both rows, in words.
     await open(page, '/transactions')
-    await page.getByRole('combobox').first().selectOption({ label: 'All statements' })
     await expect(page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' })).toHaveCount(1)
     await expect(page.getByRole('row').filter({ hasText: 'Moved from ICICI ··7788' })).toHaveCount(1)
   })
@@ -509,7 +510,6 @@ test.describe('J3 a transfer between your own accounts', () => {
     await drop(page, both)
     await expect(fileRow(page, 'sample_statement_transfer_in.pdf')).toContainText('1 transfer paired')
     await open(page, '/transactions')
-    await page.getByRole('combobox').first().selectOption({ label: 'All statements' })
     await page.getByRole('row').filter({ hasText: 'Moved to Axis ··1234' }).click()
 
     const panel = page.locator('aside').filter({ hasText: 'As printed on the statement' })
@@ -571,5 +571,110 @@ test.describe('J3 a transfer between your own accounts', () => {
     await page.keyboard.press('z')
     await expect(quartz).toBeVisible()
     expect((await rows(app)).find((t) => t.id === lone.id).transfer).toBeNull()
+  })
+})
+
+// The books: one row per account, one column per month, and a month with no statement is a gap you can see.
+test.describe('J3 the books', () => {
+  test.beforeEach(async ({ app }) => {
+    await app.loadDemo()
+  })
+
+  /** The demo's SBI statement for a month: delete it to make a gap. */
+  async function deleteSbiMonth(app, month) {
+    const statements = await app.api.get('/statements')
+    const target = statements.find((s) => s.account_label === 'SBI savings' && s.payment_months.length === 1 && s.payment_months[0] === month)
+    expect(target, `an SBI statement for ${month}`).toBeDefined()
+    await app.api.delete(`/statements/${target.id}`)
+  }
+
+  test('every account has a row and every month a column, and a month with no statement reads as a gap', async ({ page, app }) => {
+    await deleteSbiMonth(app, '2026-10')
+    await open(page, '/upload')
+
+    await expect(page.getByRole('rowheader', { name: /Kotak savings/ })).toBeVisible()
+    await expect(page.getByRole('rowheader', { name: /SBI savings/ })).toBeVisible()
+    const grid = page.getByRole('region', { name: 'Your books' })
+    await expect(grid.getByRole('columnheader')).toHaveText(['Account', 'Nov 2026', 'Oct 2026', 'Sep 2026', 'Aug 2026'])
+
+    const gap = page.getByRole('img', { name: 'SBI savings, October 2026, no statement' })
+    await expect(gap).toHaveText('No statement')
+    // Kotak has all four, and no gap.
+    await expect(grid.getByRole('img', { name: /Kotak savings, .*no statement/ })).toHaveCount(0)
+    await expect(grid.getByRole('link', { name: /^Kotak savings, / })).toHaveCount(4)
+    await expect(grid.getByRole('link', { name: /^SBI savings, / })).toHaveCount(3)
+  })
+
+  test('a cell says what the account has that month, how much of it is covered and whether the balances check out', async ({ page }) => {
+    await open(page, '/upload')
+    const october = page.getByRole('link', { name: /^Kotak savings, October 2026, \d+ payments?, balanced$/ })
+    await expect(october).toContainText('Full month')
+    await expect(october).toContainText(/\d+ of \d+ balances check out/)
+    // The month in progress is covered to today (the 15th), whichever account.
+    const november = page.getByRole('link', { name: /^SBI savings, November 2026, / })
+    await expect(november).toContainText('to 15 Nov')
+  })
+
+  test('a cell opens Transactions for its account and month, and the list is what the cell counted', async ({ page, app }) => {
+    await open(page, '/upload')
+    const cell = page.getByRole('link', { name: /^SBI savings, October 2026, / })
+    const counted = Number((await cell.getAttribute('aria-label')).match(/(\d+) payments?/)[1])
+    // Reachable from the keyboard, and Enter follows it.
+    await cell.focus()
+    await expect(cell).toBeFocused()
+    await page.keyboard.press('Enter')
+
+    await expect(page).toHaveURL(/#\/transactions/)
+    await expect(page.getByRole('searchbox')).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Account' }).locator('option:checked')).toHaveText('SBI savings')
+    await expect(page.getByRole('combobox', { name: 'Period' }).locator('option:checked')).toHaveText('Oct 2026')
+    await expect(page.getByText(new RegExp(`^${counted} payments?`))).toBeVisible()
+    const sbi = (await app.api.get('/accounts')).find((a) => a.account_label === 'SBI savings')
+    expect(await app.api.get(`/transactions?month=2026-10&account_id=${sbi.id}&limit=1000`)).toHaveLength(counted)
+  })
+
+  test('a cell\'s statements are picked out below, with the actions every statement has', async ({ page }) => {
+    await open(page, '/upload')
+    await page.getByRole('button', { name: 'Statements in Kotak savings, October 2026' }).click()
+    await expect(page.getByText('Showing the statements in Kotak savings, October 2026')).toBeVisible()
+    const rows = page.getByRole('row').filter({ has: page.getByRole('button', { name: /^More for / }) })
+    await expect(rows).toHaveCount(1)
+    await expect(rows.first().getByRole('button', { name: /Sort again/ })).toBeVisible()
+    await page.getByRole('button', { name: 'Show all' }).click()
+    await expect(rows).toHaveCount(8)
+  })
+
+  test('the moves between the accounts are listed, and say they are not counted', async ({ page }) => {
+    await open(page, '/upload')
+    await expect(page.getByText(/Moved ₹10,000 from Kotak savings to SBI savings on 28 Oct, not counted/)).toBeVisible()
+  })
+
+  test('an account is renamed from its row in the books, and the name is the one everywhere', async ({ page, app }) => {
+    await open(page, '/upload')
+    await page.getByRole('button', { name: 'Rename SBI savings' }).click()
+    const name = page.getByRole('textbox', { name: 'Name this account' })
+    await expect(name).toBeFocused()
+    await name.fill('Joint SBI')
+    await name.press('Enter')
+    await expect(page.getByRole('rowheader', { name: /Joint SBI/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Rename Joint SBI' })).toBeFocused()
+    expect((await app.api.get('/accounts')).map((a) => a.account_label)).toContain('Joint SBI')
+  })
+
+  test('the account filter appears with two accounts and follows the user between the screens', async ({ page }) => {
+    await open(page, '/dashboard')
+    const filter = page.getByRole('combobox', { name: 'Account' })
+    await expect(filter.locator('option')).toHaveText(['All accounts', 'Kotak savings', 'SBI savings'])
+    await filter.selectOption({ label: 'SBI savings' })
+    await expect(page.getByText('Showing', { exact: false })).toHaveCount(0)
+    await open(page, '/insights')
+    await expect(page.getByRole('combobox', { name: 'Account' }).locator('option:checked')).toHaveText('SBI savings')
+    await open(page, '/transactions')
+    await expect(page.getByRole('combobox', { name: 'Account' }).locator('option:checked')).toHaveText('SBI savings')
+    // One account's payments carry one running balance; several do not.
+    await expect(page.getByRole('columnheader', { name: 'Balance' })).toBeVisible()
+    await page.getByRole('combobox', { name: 'Account' }).selectOption({ label: 'All accounts' })
+    await expect(page.getByRole('columnheader', { name: 'Account' })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: 'Balance' })).toHaveCount(0)
   })
 })

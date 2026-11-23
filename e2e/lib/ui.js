@@ -49,7 +49,7 @@ const ARRIVED = {
   '/groups': (page) => page.getByRole('heading', { name: 'Groups', exact: true }),
   '/upload': (page) => page.getByRole('heading', { name: 'Add Statement' }),
   '/settings': (page) => page.getByRole('heading', { name: 'Settings', exact: true }),
-  '/transactions': (page) => page.getByRole('button', { name: 'Sort again' }),
+  '/transactions': (page) => page.getByRole('searchbox'),
   // Teach Me has no fixed text: its empty and finished states are what some journeys judge.
   '/review': null,
 }
@@ -204,4 +204,15 @@ export async function skipToPayment(page, pattern) {
   }
   await expect(wanted).toBeVisible()
   return wanted
+}
+
+/**
+ * Open a row's "More" menu. The menu closes when the page scrolls under it, so a button
+ * that Playwright has to scroll into view is brought into view first and the scroll's own
+ * events are let through before the click.
+ */
+export async function openMenu(menuButton) {
+  await menuButton.scrollIntoViewIfNeeded()
+  await menuButton.page().evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await menuButton.click()
 }
