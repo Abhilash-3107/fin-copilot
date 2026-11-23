@@ -160,14 +160,16 @@ function BalanceChart({ balance }) {
 
 // Row 2b: the top category shifts against the comparison window, as sentences
 // with click-through - the "what changed" a person actually opens the page for.
-function WhatChanged({ changes, month, vs }) {
+function WhatChanged({ changes, month, vs, explained = false }) {
   const { accountId: account } = useLedger()
   return (
     <div className={`${card} p-4`}>
       <p className={`${cardTitle} mb-3`}>{vs ? `What changed vs ${vs}` : 'What changed'}</p>
       {!vs ? (
         <p className="text-sm text-[#94a3b8]">
-          There is no earlier period to compare with yet.
+          {explained
+            ? 'This month is not compared, so nothing is listed here.'
+            : 'There is no earlier period to compare with yet.'}
         </p>
       ) : changes.length === 0 ? (
         <p className="text-sm text-[#94a3b8]">No meaningful shifts from {vs}.</p>
@@ -472,7 +474,7 @@ export default function Insights() {
 
           <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
             <BalanceChart balance={data.balance} />
-            <WhatChanged changes={data.what_changed} month={data.month} vs={vs} />
+            <WhatChanged changes={data.what_changed} month={data.month} vs={vs} explained={Boolean(noComparison)} />
           </div>
 
           <CategoryBreakdown

@@ -333,6 +333,8 @@ describe('Insights (Money Map)', () => {
       ))
       renderInsights()
       expect(await screen.findByText(/No comparison with .*: SBI savings was added in November\./)).toBeInTheDocument()
+      expect(screen.getByText('This month is not compared, so nothing is listed here.')).toBeInTheDocument()
+      expect(screen.queryByText(/no earlier period/)).not.toBeInTheDocument()
     })
   })
 
