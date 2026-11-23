@@ -1096,6 +1096,138 @@ describe('Upload', () => {
   })
 })
 
+describe('Upload with spreadsheets', () => {
+  const csv = (name = 'export.csv') => new File(['When,What,Moved,Left'], name, { type: 'text/csv' })
+  const asked = (extra = {}) => ({
+    detail: "We couldn't tell which column is which. Check the columns, and choose the account.",
+    needs: ['mapping', 'account'],
+    columns: ['When', 'What', 'Moved', 'Left'],
+    preview: [['2026-10-02', 'UPI/SWIGGY/1', '-540.00', '51460.00']],
+    guess: { date: 0, description: 1, amount: 2, balance: 3 },
+    parsed: { rows: [{ date: '2026-10-02', description: 'UPI/SWIGGY/1', amount: 540, direction: 'debit', balance: 51460 }], error: null },
+    accounts: [{ id: 'a1', account_label: 'Kotak savings' }],
+    ...extra,
+  })
+  const refusal = (body, status = 422) => Object.assign(new Error(body.detail), { status, body })
+  const SEND = ADD_BUTTON
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    jobCtx.job = null
+    jobCtx.startAnnotation = vi.fn()
+    jobCtx.watchJobs = vi.fn()
+    pollJob.mockResolvedValue(SORTED)
+    Object.assign(demoCtx, { sample: false, removable: false, mixed: false, hosted: false })
+    serve()
+  })
+
+  it('takes a CSV, an XLSX and an XLS, and says what else can be added', async () => {
+    const { container } = renderUpload()
+    expect(container.querySelector('input[type=file]')).toHaveAttribute('accept', expect.stringContaining('.xlsx'))
+    expect(screen.getByText('PDF, CSV, XLSX or XLS. You can add several at once.')).toBeInTheDocument()
+    expect(await screen.findByText(/Spreadsheets \(CSV, XLSX, XLS\) from any bank work too/)).toBeInTheDocument()
+    fireEvent.change(container.querySelector('input[type=file]'), {
+      target: { files: [csv('a.csv'), new File(['x'], 'b.XLSX'), new File(['x'], 'c.xls')] },
+    })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByText('a.csv')).toBeInTheDocument()
+    expect(screen.getByText('b.XLSX')).toBeInTheDocument()
+    expect(screen.getByText('c.xls')).toBeInTheDocument()
+  })
+
+  it('refuses anything else in the same words', async () => {
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), {
+      target: { files: [new File(['x'], 'photo.png', { type: 'image/png' })] },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent("photo.png isn't a PDF, CSV, XLSX or XLS file. Only those can be added.")
+    await screen.findByText(/No statements yet/)
+  })
+
+  it('asks on the file\'s own row, then sends the same file again with the answer', async () => {
+    mockApi.upload
+      .mockRejectedValueOnce(refusal(asked()))
+      .mockResolvedValue(uploaded('s9', { rows_added: 6, rows_already_in: 0 }))
+    const { container } = renderUpload()
+    const file = csv()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+
+    const form = await screen.findByRole('group', { name: 'Check what each column is' })
+    expect(within(form).getByRole('combobox', { name: 'What column Moved holds' })).toHaveValue('amount')
+    expect(screen.queryByRole('button', { name: SEND })).not.toBeInTheDocument()
+    expect(mockApi.upload).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: 'a1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add this statement' }))
+    await screen.findByText(/6 payments added/)
+    const [path, sent] = mockApi.upload.mock.calls.at(-1)
+    expect(path).toBe('/statements/upload')
+    expect(sent.get('file')).toBe(file)
+    expect(sent.get('account_id')).toBe('a1')
+    expect(JSON.parse(sent.get('mapping'))).toEqual({ date: 0, description: 1, amount: 2, balance: 3 })
+    expect(screen.queryByRole('group', { name: 'Check what each column is' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the form open, with the reason, when the answer was not enough', async () => {
+    mockApi.upload
+      .mockRejectedValueOnce(refusal(asked()))
+      .mockRejectedValueOnce(Object.assign(new Error('The running balance doesn\'t add up at row 4.'), { status: 422, body: {} }))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    const form = await screen.findByRole('group', { name: 'Check what each column is' })
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: 'a1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add this statement' }))
+    expect(await within(form).findByText("The running balance doesn't add up at row 4.")).toBeInTheDocument()
+    expect(within(form).getByLabelText('Account')).toHaveValue('a1')
+  })
+
+  it('leaves the file out on Cancel, and nothing was sent but the first try', async () => {
+    mockApi.upload.mockRejectedValueOnce(refusal(asked()))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    const form = await screen.findByRole('group', { name: 'Check what each column is' })
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByText('export.csv')).not.toBeInTheDocument()
+    expect(mockApi.upload).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds a copy that matches nothing and adds it only when told to', async () => {
+    mockApi.upload
+      .mockRejectedValueOnce(refusal({
+        detail: 'This file covers days Kotak savings already has, and 8 of its 8 payments on those days match nothing there.',
+        needs: ['overlap'], overlap: { rows_in_overlap: 8, unmatched: 8, account_label: 'Kotak savings' },
+      }))
+      .mockResolvedValue(uploaded('s9'))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('match nothing there')
+    fireEvent.click(screen.getByRole('button', { name: 'Add it anyway' }))
+    await screen.findByText(/8 payments added/)
+    expect(mockApi.upload.mock.calls.at(-1)[1].get('confirm_overlap')).toBe('true')
+  })
+
+  it('a refusal without a question still reads as a failure on the row', async () => {
+    mockApi.upload.mockRejectedValueOnce(Object.assign(new Error('Nothing new: all 8 payments in this file are already in Kotak savings.'), { status: 409 }))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    expect(await screen.findByText(/Nothing new/)).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: /column/ })).not.toBeInTheDocument()
+  })
+
+  it('says when a file had no running balance to check', async () => {
+    mockApi.upload.mockResolvedValue(uploaded('s9', { balance_check: { checked: 0, consistent: 0, balanced: true } }))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    expect(await screen.findByText(/No running balance in this file, so it could not be checked/)).toBeInTheDocument()
+  })
+})
+
 describe('Upload when the statement list fails', () => {
   beforeEach(() => {
     vi.clearAllMocks()

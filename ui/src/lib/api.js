@@ -21,10 +21,13 @@ export function describeDetail(detail) {
 }
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  // `body` is the whole JSON answer when there was one: a few refusals carry
+  // more than a sentence (an upload that needs an answer says what it needs).
+  constructor(status, message, body = null) {
     super(describeDetail(message))
     this.status = status
     this.name = 'ApiError'
+    this.body = body
   }
 }
 
@@ -57,11 +60,13 @@ export async function apiFetch(path, options = {}) {
   if (!res.ok) {
     const text = await res.text()
     let detail = text
+    let body = null
     try {
       const parsed = JSON.parse(text)
       detail = parsed.detail ?? text
+      body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
     } catch (_) {}
-    throw new ApiError(res.status, detail)
+    throw new ApiError(res.status, detail, body)
   }
 
   const contentType = res.headers.get('content-type') ?? ''

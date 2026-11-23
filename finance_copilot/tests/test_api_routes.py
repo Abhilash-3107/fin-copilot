@@ -1821,17 +1821,28 @@ class TestUploadStartsSorting:
         assert self._upload(client, parser).status_code == 409
         assert conn.execute("SELECT COUNT(*) FROM annotation_jobs").fetchone()[0] == 1
 
-    def test_a_file_that_is_not_a_pdf_is_refused_before_parsing(self, file_db_client):
+    def test_a_file_that_is_not_a_statement_is_refused_before_parsing(self, file_db_client):
         client, conn = file_db_client
         with patch("finance_copilot.pipeline.ingest.detect_parser") as detect:
             resp = client.post(
                 "/api/statements/upload",
-                files={"file": ("notes.txt", b"just some words", "text/plain")},
+                files={"file": ("notes.txt", b"\x89PNG\r\n\x1a\n\x00\x00", "text/plain")},
             )
         assert resp.status_code == 422
         assert "notes.txt" in resp.json()["detail"]
-        assert "PDF" in resp.json()["detail"]
+        assert "PDF, CSV, XLSX or XLS" in resp.json()["detail"]
         detect.assert_not_called()
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0
+
+    def test_a_text_file_with_no_table_in_it_is_refused_in_words_not_asked_about(self, file_db_client):
+        client, conn = file_db_client
+        resp = client.post(
+            "/api/statements/upload",
+            files={"file": ("notes.txt", b"just some words", "text/plain")},
+        )
+        assert resp.status_code == 422
+        assert "needs" not in resp.json()
+        assert "No table of payments" in resp.json()["detail"]
         assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0
 
     def test_a_second_upload_while_a_job_runs_queues_behind_it(self, file_db_client):

@@ -150,6 +150,11 @@ def ingest_spreadsheet(
     try:
         _refuse_duplicate(_conn, file_sha256)
         table = sheet.read_table(contents)
+        if not sheet.has_payment_rows(table):
+            raise sheet.SpreadsheetError(
+                "No table of payments was found in this file. A statement needs a date, a "
+                "description and an amount on each row."
+            )
         ref = account_ref_in_text(table.preamble)
         layout = get_layout(_conn, table.signature)
 

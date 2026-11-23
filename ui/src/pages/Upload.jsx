@@ -7,6 +7,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import InlineError from '../components/InlineError.jsx'
+import ImportMapping from '../components/ImportMapping.jsx'
 import ActionMenu from '../components/ActionMenu.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import { useLedger } from '../contexts/LedgerContext.jsx'
@@ -60,13 +61,16 @@ function CoverageBadge({ done, total }) {
 // A dialog's text is built while it is closed, when there is no statement yet.
 const spanOf = s => (s ? statementSpan(s) : '')
 
-const isPdf = f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+// What can be added. The server decides by what is in the file; this only keeps
+// an obvious mistake (a photo, a text note) from being sent at all.
+const isStatementFile = f => f.type === 'application/pdf' || /\.(pdf|csv|xlsx|xls)$/i.test(f.name)
+const NOT_A_STATEMENT = "isn't a PDF, CSV, XLSX or XLS file. Only those can be added."
 
 // One line per file in a drop: what went in, then how sorting is going. The
 // states are ready (chosen, not sent), uploading, sorting, sorted, and failed
 // (the file did not go in: the reason is shown and the file can be retried).
 function balanceLine(check) {
-  if (!check || check.checked === 0) return 'No running balance to check'
+  if (!check || check.checked === 0) return 'No running balance in this file, so it could not be checked'
   return check.balanced
     ? 'Balance checks out'
     : `Balance check: ${check.consistent} of ${check.checked} steps reconcile`
@@ -193,7 +197,7 @@ function AccountLine({ statement, label, onName }) {
   )
 }
 
-function FileRow({ entry, onRemove, accountLabel, onNameAccount }) {
+function FileRow({ entry, onRemove, accountLabel, onNameAccount, onAnswer }) {
   const { file, status, statement } = entry
   const added = statement && (
     <>
@@ -208,8 +212,19 @@ function FileRow({ entry, onRemove, accountLabel, onNameAccount }) {
       <div className="min-w-0 flex-1">
         <span className="text-sm text-[#e2e8f0] break-all">{file.name}</span>
         {status === 'ready' && <p className="text-xs text-[#94a3b8] mt-0.5">Ready to add</p>}
-        {status === 'uploading' && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
+        {status === 'uploading' && !entry.ask && <p className="text-xs text-[#94a3b8] mt-0.5">Reading the statement…</p>}
         {status === 'failed' && <p className="text-xs text-[#fca5a5] mt-0.5">{entry.message}</p>}
+        {entry.ask && (status === 'needs' || status === 'uploading') && (
+          <ImportMapping
+            key={entry.ask.detail + entry.ask.needs.join()}
+            ask={entry.ask}
+            file={file}
+            busy={status === 'uploading'}
+            error={entry.message}
+            onSubmit={answer => onAnswer(entry, answer)}
+            onCancel={() => onAnswer(entry, null)}
+          />
+        )}
         {added && <p className="text-xs text-[#94a3b8] mt-0.5">{added}</p>}
         {statement?.account_id && (
           <AccountLine
@@ -326,8 +341,8 @@ export default function Upload() {
   // sorted belongs to a drop in progress and must stay on the page.
   function addFiles(files) {
     const picked = Array.from(files)
-    const pdfs = picked.filter(isPdf)
-    setRefused(picked.filter(f => !isPdf(f)).map(f => `${f.name} isn't a PDF. Only PDF statements can be added.`))
+    const pdfs = picked.filter(isStatementFile)
+    setRefused(picked.filter(f => !isStatementFile(f)).map(f => `${f.name} ${NOT_A_STATEMENT}`))
     if (pdfs.length === 0) return
     setEntries(list => [
       ...list.filter(e => e.status !== 'sorted'),
@@ -364,6 +379,50 @@ export default function Upload() {
       })
   }
 
+  // Send one file. `answer` is what a spreadsheet's form collected (the columns,
+  // the account, or "add it anyway"); the same file goes again with it. A file
+  // the server cannot place yet comes back as a question (a 422 with `needs`),
+  // which the row asks in place; anything else it says is the reason it failed.
+  async function sendEntry(entry, answer = null) {
+    patchEntry(entry.id, { status: 'uploading', message: null })
+    try {
+      const form = new FormData()
+      form.append('file', entry.file)
+      if (password) form.append('password', password)
+      for (const [key, value] of Object.entries(answer ?? {})) form.append(key, String(value))
+      const result = await api.upload('/statements/upload', form)
+      if (result.sorting_job_id) {
+        patchEntry(entry.id, { status: 'sorting', statement: result, job: null, ask: null })
+        watchJobs()
+        trackSorting(entry.id, result.id, result.sorting_job_id)
+      } else {
+        patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued", ask: null })
+      }
+      refresh()
+    } catch (e) {
+      if (e?.status === 422 && e.body?.needs) {
+        // Asked again after an answer: the earlier one keeps what the person chose.
+        patchEntry(entry.id, { status: 'needs', ask: e.body, message: null })
+      } else if (answer && entry.ask && e?.status === 422) {
+        // The answer was not enough (the columns do not read, the name is taken):
+        // the form stays open with the reason.
+        patchEntry(entry.id, { status: 'needs', message: errorReason(e) })
+      } else {
+        // A refusal with a reason of its own ("Nothing new: ...", "already added") reads as it is.
+        patchEntry(entry.id, { status: 'failed', ask: null, message: e?.status === 409 ? e.message : couldnt('read this file', e) })
+      }
+    }
+  }
+
+  // The form on a file's row: null means the person left the file out.
+  async function answerEntry(entry, answer) {
+    if (answer === null) {
+      setEntries(list => list.filter(e => e.id !== entry.id))
+      return
+    }
+    await sendEntry(entry, answer)
+  }
+
   // One file after another: each has its own result, so a bad file does not
   // lose the others. The server starts sorting a statement the moment it lands;
   // this only follows that work.
@@ -371,26 +430,7 @@ export default function Upload() {
     const todo = entries.filter(e => ['ready', 'failed'].includes(e.status))
     if (todo.length === 0) return
     setUploading(true)
-    for (const entry of todo) {
-      patchEntry(entry.id, { status: 'uploading', message: null })
-      try {
-        const form = new FormData()
-        form.append('file', entry.file)
-        if (password) form.append('password', password)
-        const result = await api.upload('/statements/upload', form)
-        if (result.sorting_job_id) {
-          patchEntry(entry.id, { status: 'sorting', statement: result, job: null })
-          watchJobs()
-          trackSorting(entry.id, result.id, result.sorting_job_id)
-        } else {
-          patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued" })
-        }
-        refresh()
-      } catch (e) {
-        // A refusal with a reason of its own ("Nothing new: ...", "already added") reads as it is.
-        patchEntry(entry.id, { status: 'failed', message: e?.status === 409 ? e.message : couldnt('read this file', e) })
-      }
-    }
+    for (const entry of todo) await sendEntry(entry)
     setUploading(false)
   }
 
@@ -588,11 +628,11 @@ export default function Upload() {
       >
         <UploadIcon size={32} className="mx-auto mb-3 text-[#94a3b8]" />
         <p className="text-sm text-[#94a3b8]">Drop your bank statements here, or click to browse</p>
-        <p className="text-xs text-[#94a3b8] mt-1">PDF only. You can add several at once.</p>
+        <p className="text-xs text-[#94a3b8] mt-1">PDF, CSV, XLSX or XLS. You can add several at once.</p>
         <input
           ref={fileRef}
           type="file"
-          accept=".pdf,application/pdf"
+          accept=".pdf,.csv,.xlsx,.xls,application/pdf,text/csv"
           multiple
           onChange={onFileChange}
           disabled={removable}
@@ -616,6 +656,10 @@ export default function Upload() {
             Any date range works, a mid-month download included. Payments you already have are
             skipped, so statements can overlap.
           </li>
+          <li>
+            Spreadsheets (CSV, XLSX, XLS) from any bank work too. The first time a layout is new
+            you are asked once what each column is, and the next file like it goes in by itself.
+          </li>
           <li>Password-protected PDFs work: enter the password after you choose the file.</li>
           <li>
             Your statement stays on this computer. If you connect an online AI model in Settings,
@@ -638,7 +682,8 @@ export default function Upload() {
                 entry={entry}
                 accountLabel={accountLabels.get(entry.statement?.account_id)}
                 onNameAccount={nameAccount}
-                onRemove={entry.status === 'ready' || entry.status === 'failed'
+                onAnswer={answerEntry}
+                onRemove={['ready', 'failed', 'needs'].includes(entry.status)
                   ? () => setEntries(list => list.filter(e => e.id !== entry.id))
                   : null}
               />

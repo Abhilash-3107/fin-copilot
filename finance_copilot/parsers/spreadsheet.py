@@ -499,6 +499,13 @@ def starting_mapping(table: Table) -> dict[str, int]:
     return _guess_mapping(table)
 
 
+def has_payment_rows(table: Table) -> bool:
+    """Whether anything in the file looks like a payment (a date and a number on
+    one row). A file with none is not a statement, and asking which column is which
+    would be a question with no answer."""
+    return table.recognised is not None or any(_is_data_row(row) for row in table.rows)
+
+
 def parse_mapping_field(text: str) -> dict[str, int]:
     """The person's column choices as the form sends them: JSON {role: column}."""
     try:
