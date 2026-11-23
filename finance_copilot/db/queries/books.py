@@ -85,6 +85,9 @@ def books(conn: sqlite3.Connection) -> dict:
             checked = sum(checks.get(s["id"], {}).get("checked", 0) for s in found)
             consistent = sum(checks.get(s["id"], {}).get("consistent", 0) for s in found)
             ranges = covered_ranges(items, first, last)
+            # A statement's balance check is of its whole file, so a file that spans several months
+            # repeats in each: the cell says which months that file is, for the page to word it so.
+            widest = max((_span_months(s) for s in found), key=len)
             cells[month] = {
                 "gap": False,
                 "payments": payments.get((account["id"], month), 0),
@@ -92,6 +95,7 @@ def books(conn: sqlite3.Connection) -> dict:
                 "covered": [list(r) for r in ranges],
                 "full": ranges == [(first, last)],
                 "balance_check": {"checked": checked, "consistent": consistent},
+                "whole_statement": [widest[0], widest[-1]] if len(widest) > 1 else None,
             }
         accounts.append({**account, "cells": cells})
     accounts.sort(key=lambda a: a["account_label"].lower())

@@ -130,6 +130,22 @@ def test_the_balance_check_is_the_stored_one_added_up_over_the_cells_statements(
     assert kotak["cells"]["2026-11"]["balance_check"] == {"checked": 20, "consistent": 19}
 
 
+def test_a_statement_spanning_several_months_says_so_in_every_month_it_checks(conn):
+    a = add_account(conn, "a", name="Kotak savings")
+    conn.execute("DELETE FROM statements")
+    _statement(conn, "k", a, "2026-08-01", "2026-10-31", checked=150, consistent=150)
+    for day in ("2026-08-05", "2026-09-05", "2026-10-05"):
+        seed(conn, "k", day, 10, "debit", category="Shopping")
+    _statement(conn, "k11", a, "2026-11-01", "2026-11-30", checked=20, consistent=20)
+    seed(conn, "k11", "2026-11-05", 10, "debit", category="Shopping")
+    cells = _grid(conn)["accounts"][0]["cells"]
+    # The check is of the whole file, so each month it covers names the file's months; a one-month statement names nothing.
+    for month in ("2026-08", "2026-09", "2026-10"):
+        assert cells[month]["balance_check"] == {"checked": 150, "consistent": 150}
+        assert cells[month]["whole_statement"] == ["2026-08", "2026-10"], month
+    assert cells["2026-11"]["whole_statement"] is None
+
+
 def test_a_statement_without_balances_checks_nothing(conn, two):
     _kotak, sbi = _grid(conn)["accounts"]
     assert sbi["cells"]["2026-11"]["balance_check"] == {"checked": 0, "consistent": 0}

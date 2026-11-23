@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import BooksGrid, { coverageText, checkText } from './BooksGrid.jsx'
+import BooksGrid, { coverageText, checkText, coverageShort, checkShort } from './BooksGrid.jsx'
 
 const cell = (over = {}) => ({
   gap: false, payments: 41, statement_ids: ['s1'], covered: [['2026-10-01', '2026-10-31']], full: true,
@@ -61,6 +61,27 @@ describe('coverage and check words', () => {
     expect(checkText({ checked: 20, consistent: 19 })).toBe('19 of 20 balances check out')
     expect(checkText({ checked: 0, consistent: 0 })).toBe('No balances to check')
   })
+
+  it('says "1 balance checks out" for a single balance', () => {
+    expect(checkText({ checked: 1, consistent: 1 })).toBe('1 of 1 balance checks out')
+    expect(checkText({ checked: 1, consistent: 0 })).toBe('0 of 1 balance checks out')
+  })
+
+  it('words the check as the statement\'s when its file spans more months than the cell', () => {
+    expect(checkText({ checked: 150, consistent: 150 }, ['2026-08', '2026-10'])).toBe('Aug to Oct statement: 150 of 150 balances check out')
+    expect(checkText({ checked: 150, consistent: 150 }, ['2025-12', '2026-02'])).toBe('Dec 2025 to Feb 2026 statement: 150 of 150 balances check out')
+  })
+
+  it('has a short form for the cell: a word for coverage and a few characters for the balances', () => {
+    expect(coverageShort(cell(), '2026-10')).toBe('Full')
+    expect(coverageShort(cell({ full: false, covered: [['2026-11-01', '2026-11-15']] }), '2026-11')).toBe('to 15 Nov')
+    expect(coverageShort(cell({ full: false, covered: [['2026-10-10', '2026-10-31']] }), '2026-10')).toBe('from 10 Oct')
+    expect(coverageShort(cell({ full: false, covered: [['2026-10-10', '2026-10-20']] }), '2026-10')).toBe('10-20 Oct')
+    expect(coverageShort(cell({ full: false, covered: [['2026-10-01', '2026-10-10'], ['2026-10-20', '2026-10-31']] }), '2026-10')).toBe('Partial')
+    expect(checkShort({ checked: 49, consistent: 49 })).toBe('49/49 balanced')
+    expect(checkShort({ checked: 20, consistent: 19 })).toBe('19/20 balanced')
+    expect(checkShort({ checked: 0, consistent: 0 })).toBe('No balances')
+  })
 })
 
 describe('BooksGrid', () => {
@@ -80,14 +101,29 @@ describe('BooksGrid', () => {
 
   it('says how much of a month is covered, and how many balances check out', () => {
     renderGrid()
-    const partial = screen.getByRole('link', { name: 'SBI savings, November 2026, 3 payments, no balances to check' })
+    const partial = screen.getByRole('link', { name: 'SBI savings, November 2026, 3 payments, to 15 Nov, No balances to check' })
     expect(partial).toHaveTextContent('to 15 Nov')
-    expect(partial).toHaveTextContent('No balances to check')
-    const balanced = screen.getByRole('link', { name: 'Kotak savings, October 2026, 41 payments, balanced' })
-    expect(balanced).toHaveTextContent('41 of 41 balances check out')
-    expect(balanced).toHaveTextContent('Full month')
-    expect(screen.getByRole('link', { name: 'Kotak savings, November 2026, 20 payments, not fully balanced' }))
-      .toHaveTextContent('19 of 20 balances check out')
+    expect(partial).toHaveTextContent('No balances')
+    const balanced = screen.getByRole('link', { name: 'Kotak savings, October 2026, 41 payments, Full month, 41 of 41 balances check out' })
+    expect(balanced).toHaveTextContent('41/41 balanced')
+    expect(balanced).toHaveTextContent('Full')
+    // The full words are on hover too, so the short form never hides them.
+    expect(balanced).toHaveAttribute('title', balanced.getAttribute('aria-label'))
+    expect(screen.getByRole('link', { name: 'Kotak savings, November 2026, 20 payments, Full month, 19 of 20 balances check out' }))
+      .toHaveTextContent('19/20 balanced')
+  })
+
+  it('words a spanning statement\'s check as the statement\'s in the cell\'s name, and keeps the short form in the cell', () => {
+    const books = {
+      ...BOOKS,
+      accounts: [{
+        ...BOOKS.accounts[0],
+        cells: { '2026-10': cell({ payments: 7, whole_statement: ['2026-08', '2026-10'], balance_check: { checked: 150, consistent: 150 } }) },
+      }],
+    }
+    render(<MemoryRouter><PrivacyProvider><BooksGrid books={books} selected={null} onShowStatements={vi.fn()} onRename={vi.fn()} /></PrivacyProvider></MemoryRouter>)
+    const link = screen.getByRole('link', { name: /Kotak savings, October 2026, 7 payments, Full month, Aug to Oct statement: 150 of 150 balances check out/ })
+    expect(link).toHaveTextContent('150/150 balanced')
   })
 
   it('opens Transactions for the account and the month from a cell, by link so the keyboard reaches it', () => {

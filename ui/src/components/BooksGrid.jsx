@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Pencil } from 'lucide-react'
 import dayjs from 'dayjs'
@@ -22,30 +22,59 @@ export function coverageText(cell, month) {
   return [...parts, ...several].join(', ')
 }
 
-// The stored balance check of the cell's statements, in words.
-export function checkText({ checked, consistent }) {
+// The stored balance check of the cell's statements, in words. A statement's check is of its
+// whole file, so for a file that spans several months (`whole`, its first and last month) the
+// words are the statement's: "Aug to Oct statement: 150 of 150 balances check out".
+export function checkText({ checked, consistent }, whole = null) {
   if (!checked) return 'No balances to check'
-  return `${consistent} of ${checked} balances check out`
+  const verb = checked === 1 ? 'balance checks' : 'balances check'
+  const words = `${consistent} of ${checked} ${verb} out`
+  if (!whole) return words
+  const [first, last] = whole.map(m => dayjs(m))
+  const format = first.year() === last.year() ? 'MMM' : 'MMM YYYY'
+  return `${first.format(format)} to ${last.format(format)} statement: ${words}`
 }
 
-function accessibleName(label, month, cell) {
+// What a cell says in its small print: how much of the month is covered in a word or two, and
+// the balances in a few characters. The full words are the cell's title and accessible name.
+export function coverageShort(cell, month) {
+  if (cell.full) return 'Full'
+  if (cell.covered.length > 1) return 'Partial'
+  const [start, end] = cell.covered[0]
+  const first = `${month}-01`
+  const last = dayjs(first).endOf('month').format('YYYY-MM-DD')
+  const day = d => dayjs(d).format('D MMM')
+  if (start === first) return `to ${day(end)}`
+  if (end === last) return `from ${day(start)}`
+  return `${dayjs(start).format('D')}-${day(end)}`
+}
+
+export function checkShort({ checked, consistent }) {
+  return checked ? `${consistent}/${checked} balanced` : 'No balances'
+}
+
+// The whole sentence of a cell, for its accessible name and title.
+function cellWords(label, month, cell) {
   const when = dayjs(month).format('MMMM YYYY')
   if (cell.gap) return `${label}, ${when}, no statement`
-  const { checked, consistent } = cell.balance_check
-  const state = !checked ? 'no balances to check' : consistent === checked ? 'balanced' : 'not fully balanced'
-  return `${label}, ${when}, ${count(cell.payments, 'payment')}, ${state}`
+  return [
+    label, when, count(cell.payments, 'payment'), coverageText(cell, month),
+    checkText(cell.balance_check, cell.whole_statement),
+  ].join(', ')
 }
 
 function Cell({ account, month, cell, selected, onShowStatements }) {
   const when = dayjs(month).format('MMMM YYYY')
   if (!cell) return <td className="border-b border-[#1a1d27]" />
   if (cell.gap) {
+    const words = cellWords(account.account_label, month, cell)
     return (
-      <td className="px-2 py-2 border-b border-[#1a1d27] align-top">
+      <td className="px-1 py-2 border-b border-[#1a1d27] align-top">
         <div
           role="img"
-          aria-label={accessibleName(account.account_label, month, cell)}
-          className="rounded-md border border-dashed border-[#78350f] px-2 py-1.5 text-xs text-[#fdba74]"
+          aria-label={words}
+          title={words}
+          className="h-[4.25rem] flex items-center justify-center rounded-md border border-dashed border-[#78350f] px-1 text-center text-[11px] leading-tight text-[#fdba74]"
         >
           No statement
         </div>
@@ -54,24 +83,26 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
   }
   const { checked, consistent } = cell.balance_check
   const off = checked > 0 && consistent < checked
+  const words = cellWords(account.account_label, month, cell)
   return (
-    <td className="px-2 py-2 border-b border-[#1a1d27] align-top">
-      <div className={`rounded-md border px-2 py-1.5 text-xs leading-snug ${selected ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] bg-[#171a2e]'}`}>
+    <td className="px-1 py-2 border-b border-[#1a1d27] align-top">
+      <div className={`h-[4.25rem] rounded-md border px-1 py-1 text-[11px] leading-tight ${selected ? 'border-[#6366f1] bg-[#1e2440]' : 'border-[#2d3148] bg-[#171a2e]'}`}>
         <Link
           to={txnFilterPath({ month, account: account.id })}
-          aria-label={accessibleName(account.account_label, month, cell)}
-          className="block rounded hover:text-[#a5b4fc] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#6366f1]"
+          aria-label={words}
+          title={words}
+          className="block rounded whitespace-nowrap hover:text-[#a5b4fc] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#6366f1]"
         >
           <span className="block font-medium text-[#e2e8f0]">{count(cell.payments, 'payment')}</span>
-          <span className={`block ${cell.full ? 'text-[#94a3b8]' : 'text-[#fbbf24]'}`}>{coverageText(cell, month)}</span>
-          <span className={`block ${off ? 'text-[#fdba74]' : 'text-[#94a3b8]'}`}>{checkText(cell.balance_check)}</span>
+          <span className={`block ${cell.full ? 'text-[#94a3b8]' : 'text-[#fbbf24]'}`}>{coverageShort(cell, month)}</span>
+          <span className={`block text-[10px] ${off ? 'text-[#fdba74]' : 'text-[#94a3b8]'}`}>{checkShort(cell.balance_check)}</span>
         </Link>
         <button
           type="button"
           aria-label={`Statements in ${account.account_label}, ${when}`}
           aria-pressed={selected}
           onClick={() => onShowStatements(account.id, month)}
-          className="mt-1 text-[11px] text-[#818cf8] hover:underline"
+          className="text-[#818cf8] hover:underline whitespace-nowrap"
         >
           {count(cell.statement_ids.length, 'statement')}
         </button>
@@ -80,6 +111,10 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
   )
 }
 
+// The widths that fit 3 accounts by 12 months at 1440: below them the grid scrolls inside its box.
+const ACCOUNT_REM = 10
+const MONTH_REM = 5.25
+
 // The books: one row per account, one column per month, newest first. A month an
 // account has no statement for, between its first and its last, is a visible gap.
 // A cell opens Transactions for that account and month; its statements button picks
@@ -87,8 +122,27 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
 export default function BooksGrid({ books, selected, onShowStatements, onRename }) {
   const [renaming, setRenaming] = useState(null)
   const renameButtons = useRef({})
+  const scroller = useRef(null)
+  // Below the width that fits the months, the grid scrolls inside its box; the edge says there is more.
+  const [moreRight, setMoreRight] = useState(false)
   const months = [...books.months].reverse()
-  if (books.accounts.length === 0) return null
+  const shown = books.accounts.length > 0
+
+  useEffect(() => {
+    const box = scroller.current
+    if (!box) return undefined
+    const update = () => setMoreRight(box.scrollLeft + box.clientWidth < box.scrollWidth - 1)
+    update()
+    box.addEventListener('scroll', update, { passive: true })
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update)
+    observer?.observe(box)
+    return () => {
+      box.removeEventListener('scroll', update)
+      observer?.disconnect()
+    }
+  }, [shown, months.length])
+
+  if (!shown) return null
 
   function endRename(id) {
     setRenaming(null)
@@ -104,15 +158,20 @@ export default function BooksGrid({ books, selected, onShowStatements, onRename 
           One row per account, one column per month. A month with no statement shows as a gap.
         </p>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-sm">
+      <div className="relative">
+      <div ref={scroller} className="overflow-x-auto">
+        <table className="w-full table-fixed border-collapse text-sm" style={{ minWidth: `${ACCOUNT_REM + months.length * MONTH_REM}rem` }}>
+          <colgroup>
+            <col style={{ width: `${ACCOUNT_REM}rem` }} />
+            {months.map(m => <col key={m} />)}
+          </colgroup>
           <thead>
             <tr>
-              <th scope="col" className="sticky left-0 z-10 bg-[#13151f] px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] min-w-[13rem]">
+              <th scope="col" className="sticky left-0 z-10 bg-[#13151f] px-4 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] ">
                 Account
               </th>
               {months.map(m => (
-                <th key={m} scope="col" className="px-2 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] min-w-[8.5rem] whitespace-nowrap">
+                <th key={m} scope="col" className="px-1 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] border-b border-[#1e2235] whitespace-nowrap">
                   {dayjs(m).format('MMM YYYY')}
                 </th>
               ))}
@@ -121,7 +180,7 @@ export default function BooksGrid({ books, selected, onShowStatements, onRename 
           <tbody>
             {books.accounts.map(account => (
               <tr key={account.id}>
-                <th scope="row" className="sticky left-0 z-10 bg-[#13151f] px-4 py-2 text-left font-normal border-b border-[#1a1d27] align-top">
+                <th scope="row" className="sticky left-0 z-10 bg-[#13151f] px-3 py-2 text-left font-normal border-b border-[#1a1d27] align-top">
                   {renaming === account.id ? (
                     <NameField
                       initial={account.account_label}
@@ -134,7 +193,7 @@ export default function BooksGrid({ books, selected, onShowStatements, onRename 
                   ) : (
                     <>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[#e2e8f0] font-medium">{account.account_label}</span>
+                        <span className="min-w-0 truncate text-[#e2e8f0] font-medium" title={account.account_label}>{account.account_label}</span>
                         <button
                           type="button"
                           ref={node => { renameButtons.current[account.id] = node }}
@@ -168,6 +227,10 @@ export default function BooksGrid({ books, selected, onShowStatements, onRename 
             ))}
           </tbody>
         </table>
+      </div>
+      {moreRight && (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-[#13151f] to-transparent" />
+      )}
       </div>
       {books.transfers.length > 0 && (
         <div className="border-t border-[#2d3148] px-4 py-3">

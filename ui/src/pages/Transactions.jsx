@@ -138,10 +138,17 @@ export default function Transactions() {
   // A deep link says which slice it means (its own account, or every account) before
   // the first ask, so the first list is already the one the page will show.
   const [filtersSeeded, setFiltersSeeded] = useState(false)
+  // A link to one payment (the palette) says nothing of its month or account: they are
+  // the payment's own, known once it has been read. The list waits for that too.
+  const [linkPending, setLinkPending] = useState(false)
+  // The account a link named, until the accounts are in and say whether the ledger has it;
+  // `unknownAccount` is then the plain message that it does not.
+  const requestedAccount = useRef(null)
+  const [unknownAccount, setUnknownAccount] = useState(false)
   // Nothing is asked until the accounts, the period and the link are settled:
   // asking early and again when they arrive would replace the first answer, an
   // error included, and would show the list twice.
-  const ready = periodReady && !ledgerLoading && filtersSeeded
+  const ready = periodReady && !ledgerLoading && filtersSeeded && !linkPending
   // One account's payments carry one running balance; several interleave, which
   // means nothing, so the balance column is for a single account only.
   const oneAccount = accounts.length === 1 || Boolean(accountId)
@@ -385,15 +392,46 @@ export default function Transactions() {
     // account. A payment link (the palette) names one payment: openLinkedPayment keeps
     // the filter unless it would hide that payment.
     const linked = searchParams.get('txn')
-    if (linked) pendingPayment.current = linked
+    if (linked) {
+      pendingPayment.current = linked
+      setLinkPending(true)
+    }
     const account = searchParams.get('account')
-    if (account) setAccountId(account)
-    else if (isDeepLink(searchParams) && !linked) setAccountId('')
+    setUnknownAccount(false)
+    if (account) {
+      requestedAccount.current = account
+      setAccountId(account)
+    } else if (isDeepLink(searchParams) && !linked) setAccountId('')
     setFiltersSeeded(true)
+    // The account and the month are in the filters now: leaving them in the address would put
+    // them back on a refresh, or after the user has chosen another account or month.
+    if (account || m) {
+      const rest = new URLSearchParams(searchParams)
+      rest.delete('account')
+      rest.delete('month')
+      lastWrittenParams.current = rest.toString()
+      setSearchParams(rest, { replace: true })
+    }
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
+
+  // A link's account that the ledger does not have shows every account (the filter
+  // reads an unknown one as none): say so, and keep it out of the remembered filter.
+  useEffect(() => {
+    if (ledgerLoading || !requestedAccount.current) return
+    const known = accounts.some(a => a.id === requestedAccount.current)
+    requestedAccount.current = null
+    if (known) return
+    setAccountId('')
+    setUnknownAccount(true)
+    // setAccountId is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledgerLoading, accounts, searchParams])
+
+  // Choosing an account answers the message.
+  useEffect(() => { if (accountId) setUnknownAccount(false) }, [accountId])
 
   // Reflect filter edits back into the URL so any filtered view survives a
   // refresh and can be shared. `replace` keeps keystrokes out of history; the
@@ -483,12 +521,16 @@ export default function Transactions() {
         setMonth(m)
         // The account filter stays unless it would hide this payment.
         if (accountIdRef.current && full.account_id !== accountIdRef.current) setAccountId('')
+        setLinkPending(false)
         scrollTarget.current = full.id
         setDetailError(null)
         setActiveTxn(full)
         showRecord(full)
       })
-      .catch(e => setLinkError({ id, status: e?.status }))
+      .catch(e => {
+        setLinkError({ id, status: e?.status })
+        setLinkPending(false)
+      })
       .finally(() => {
         setSearchParams(prev => {
           const next = new URLSearchParams(prev)
@@ -771,6 +813,11 @@ export default function Transactions() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
+        {unknownAccount && (
+          <p className="m-4 rounded-xl border border-[#78350f] bg-[#2a1d0a] px-4 py-3 text-sm text-[#fcd34d]">
+            That account isn't in your ledger, so this shows every account.
+          </p>
+        )}
         {linkError && (
           <p role="alert" className="m-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
             {linkError.status === 404 ? (
