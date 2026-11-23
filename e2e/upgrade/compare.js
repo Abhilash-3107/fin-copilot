@@ -18,17 +18,20 @@ function parseUpiMeta(facts) {
  * @param {{ facts: object, figures: object }} before the snapshot taken on the previous release
  * @param {{ facts: object, figures: object }} after the snapshot taken on the release under test
  * @param {{ version: string, from: string, changes: object[] }} expected expected-changes.json
- * @param {{ today: string, planted: object }} context the day the previous release seeded on (a
- *   YYYY-MM-DD string) and what the journey planted for the migrations to repair
+ * @param {{ planted: object }} context what the journey planted for the migrations to repair. Nothing
+ *   here is a date: the verdict is about the ledger (fixed) and never about the day it is opened on
  * @returns {{ problems: string[], report: string[] }}
  */
-export function compareSnapshots(before, after, expected, { today, planted }) {
+export function compareSnapshots(before, after, expected, { planted }) {
   const [was, now] = [structuredClone(before), structuredClone(after)]
   for (const snapshot of [was, now]) parseUpiMeta(snapshot.facts)
 
+  const months = Object.keys(was.figures.months).sort()
   const vars = {
-    month: today.slice(0, 7),
-    firstMonth: Object.keys(was.figures.months).sort()[0],
+    // The ledger's own first and last months. The last is the one its newest statement stops in the
+    // middle of, so a month in progress is the same month whichever day the ledger is opened on.
+    firstMonth: months[0],
+    lastMonth: months.at(-1),
     ...planted.ids,
   }
   const problems = []

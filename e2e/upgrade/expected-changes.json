@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "from": "0.1.2",
   "changes": [
     {
@@ -234,24 +234,22 @@
     {
       "id": "figures-partial-month-comparison",
       "scope": "derived",
-      "path": "months.{month}.comparison.*",
+      "path": "months.{lastMonth}.comparison.*",
       "kinds": [
         "changed"
       ],
-      "optional": true,
-      "reason": "A month still running is compared with the same days of the previous month, not with all of it. Optional because on the last day of a month nothing is partial."
+      "reason": "A month the statements only partly cover (the newest statement stops in the middle of it) is compared with the same days of the previous month, not with all of it, so the figures it is measured against are the previous month's first days."
     },
     {
       "id": "figures-partial-month-what-changed",
       "scope": "derived",
-      "path": "months.{month}.whatChanged**",
+      "path": "months.{lastMonth}.whatChanged**",
       "kinds": [
         "changed",
         "added",
         "removed"
       ],
-      "optional": true,
-      "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears."
+      "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears. What changed also never names Uncategorized, which the unsorted figure and its own row already cover."
     },
     {
       "id": "figures-no-comparison-when-an-account-is-new",
@@ -643,8 +641,7 @@
         "cadence": "monthly",
         "active": true
       },
-      "optional": true,
-      "reason": "A recurring charge to a payee with no merchant name is listed under the payee as the bank printed it, instead of the printed name in title case, so Recurring, Money Map and the Ledger call it the same thing."
+      "reason": "A recurring charge to a payee with no merchant name is listed under the payee as the bank printed it, instead of the printed name in title case, so Recurring, Money Map and the Ledger call it the same thing. Only the name moves: the journey checks that its amount, cadence and category are the ones it had."
     },
     {
       "id": "figures-recurring-name-as-printed-new",
@@ -660,20 +657,7 @@
         "cadence": "monthly",
         "active": true
       },
-      "optional": true,
       "reason": "The same row under its new name. Its amount, cadence and category are unchanged, which the journey checks for every recurring row: a name may change in case and nothing else."
-    },
-    {
-      "id": "figures-recurring-name-as-printed-in-case",
-      "scope": "derived",
-      "path": "months.*.recurring[*].name",
-      "kinds": [
-        "changed"
-      ],
-      "from": "Chai Wala Corner",
-      "to": "CHAI WALA CORNER",
-      "optional": true,
-      "reason": "The same change as the two entries before it, seen from the other side: a recurring row is keyed by its category when its newest charge has one, and by its name when it has none. Which one the journey meets depends on the day it runs (whether the newest charge of the demo data has been sorted by then), so each shape has an entry and none is required; the journey's own check holds that a name changes in case and nothing else."
     },
     {
       "id": "stored-statements-account",

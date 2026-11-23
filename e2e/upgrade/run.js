@@ -6,12 +6,13 @@
 //
 // Needs network access to PyPI for the previous release. The wheel to test is
 // FC_E2E_WHEEL (the .whl, or a folder holding exactly one) and defaults to ../dist.
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TEMP_PREFIX, installWheel, wheelPath } from '../global-setup.js'
-import { killTree, makeApi, startServer } from '../lib/server.js'
+import { killTree, makeApi, startServer, TODAY } from '../lib/server.js'
 import { derivedFigures, paymentAccounts, storedFacts } from '../lib/snapshot.js'
 import { uploadFixture, uploadFixtureNov } from '../lib/statement.js'
 import { compareSnapshots } from './compare.js'
@@ -28,11 +29,34 @@ function fail(message) {
   process.exitCode = 1
 }
 
-/** The day the previous release seeds its demo on, which is the real date: 0.1.2 has no FC_TODAY. */
-function localToday() {
-  const now = new Date()
-  const two = (n) => String(n).padStart(2, '0')
-  return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`
+/**
+ * The ledger is made on one fixed day and the new release opens it on another, as a user's would be.
+ *
+ * The previous release (0.1.2) has no FC_TODAY and reads the real date in one place, when it seeds
+ * its demo, so its demo is seeded by seed-previous.py on DEMO_DAY, the day the journeys pin, and
+ * nothing in the ledger depends on the day the run happens. The release under test gets FC_TODAY:
+ * the same day by default, or FC_UPGRADE_TODAY, "the day the user upgrades" (the 1st, the last day
+ * of a 31-day month, a February: the comparison has to hold on any day on or after the ledger's).
+ */
+const DEMO_DAY = TODAY
+
+function upgradeDay() {
+  const day = process.env.FC_UPGRADE_TODAY || DEMO_DAY
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(day))) {
+    throw new Error(`FC_UPGRADE_TODAY must be a date like 2026-11-15, got ${JSON.stringify(day)}`)
+  }
+  if (day < DEMO_DAY) throw new Error(`FC_UPGRADE_TODAY ${day} is before the day the ledger is made (${DEMO_DAY}): nobody upgrades before they used it.`)
+  return day
+}
+
+/** Seed the previous release's demo on DEMO_DAY, before it starts, with that release's own seeder. */
+function seedPreviousDemo(from, dataDir) {
+  const out = execFileSync(
+    'uvx',
+    ['--from', `finance-copilot==${from}`, 'python', '-I', path.join(here, 'seed-previous.py'), dataDir, DEMO_DAY],
+    { cwd: os.tmpdir(), encoding: 'utf8', env: { ...process.env, FC_IGNORE_DOTENV: '1' } },
+  )
+  console.log(out.trim())
 }
 
 // Text the journey plants where a migration of this release acts. expected-changes.json
@@ -48,17 +72,16 @@ const RENAMED_BANK = 'Salary account'
  * data, a real statement with machine answers, then what they add by hand.
  * Only routes that release has are used.
  *
- * @returns the day the demo was seeded on, and what the journey planted for the
- *   migrations to repair (ids by the names expected-changes.json uses)
+ * @returns what the journey planted for the migrations to repair (ids by the names
+ *   expected-changes.json uses)
  */
 async function buildLedger(api) {
-  // The demo is anchored to the day the previous release believes it is, which is
-  // the real date (it has no FC_TODAY). The run on the new release is pinned to that day, so a
-  // midnight in the middle of the seeding would leave the two runs a day apart.
-  const dayBefore = localToday()
-  await api.post('/data/demo')
-  const today = localToday()
-  if (today !== dayBefore) throw new Error(`Midnight passed while the demo was being seeded (${dayBefore} -> ${today}): run the journey again.`)
+  // The demo was seeded on DEMO_DAY (seedPreviousDemo). A ledger without that day's payment means
+  // it was not, and every date-shaped expectation below would then be wrong, so stop here and say so.
+  const seeded = await api.get('/transactions?limit=1000')
+  if (!seeded.some((t) => t.txn_date === DEMO_DAY && t.raw_description === 'POS/GLENS BAKEHOUSE KORAMANGALA')) {
+    throw new Error(`The previous release's demo has no payment dated ${DEMO_DAY}: it was not seeded on that day.`)
+  }
 
   const statement = await uploadFixture(api)
   // The same account a month later, left as the parser read it.
@@ -107,7 +130,6 @@ async function buildLedger(api) {
   await api.post(`/groups/${group.id}/members`, { transaction_id: debit.id, people: [person.id], txn_type: 'split' })
 
   return {
-    today,
     planted: {
       ids: { closingBalanceRow: closing.id, bankLineRow: bankLine.id, duplicateSubcategory: DUPLICATE_SUBCATEGORY, accountMonth },
       duplicateOf: restaurants.id,
@@ -141,6 +163,8 @@ export async function main() {
   let server
   try {
     // 1. The previous published release, from PyPI, as a user runs it.
+    const today = upgradeDay()
+    console.log(`The ledger is made on ${DEMO_DAY} and opened on ${today}`)
     const previousLaunch = (dir, port) => ({
       cmd: 'uvx',
       args: ['--from', `finance-copilot==${expected.from}`, 'finance-copilot', '--data-dir', dir, '--port', String(port), '--no-browser'],
@@ -157,8 +181,9 @@ export async function main() {
       return started
     }
     console.log(`Starting finance-copilot ${expected.from} from PyPI on ${dataDir}`)
+    seedPreviousDemo(expected.from, dataDir)
     server = await startPrevious()
-    const { today, planted } = await buildLedger(makeApi(server.url))
+    const { planted } = await buildLedger(makeApi(server.url))
     await killTree(server.child)
     // Rows the previous release's API cannot make, written with it stopped, then it reads them back.
     plantLegacyRows(dataDir, { closingBalanceRow: planted.ids.closingBalanceRow, duplicateOf: planted.duplicateOf, duplicateId: DUPLICATE_SUBCATEGORY })
@@ -176,7 +201,7 @@ export async function main() {
       args: ['--data-dir', dir, '--port', String(port), '--no-browser'],
       cwd: os.tmpdir(),
     })
-    // The same day the previous release seeded on, so a midnight between the two runs cannot move a figure.
+    // The day the user upgrades on: the one the demo was made on unless the journey is asked otherwise.
     server = await startServer(dataDir, null, { launch: currentLaunch, today })
     const api = makeApi(server.url)
     const now = (await api.get('/health')).version
@@ -189,10 +214,10 @@ export async function main() {
 
     // 3. Compare.
     mkdirSync(reportDir, { recursive: true })
-    for (const [name, value] of Object.entries({ before, after, context: { today, planted } })) {
+    for (const [name, value] of Object.entries({ before, after, context: { day: today, planted } })) {
       writeFileSync(path.join(reportDir, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`)
     }
-    const { problems, report } = compareSnapshots(before, after, expected, { today, planted })
+    const { problems, report } = compareSnapshots(before, after, expected, { planted })
     writeFileSync(path.join(reportDir, 'report.txt'), `${report.join('\n')}\n`)
     console.log(report.join('\n'))
     if (/Traceback|ERROR/.test(startupLog)) problems.push('the new release logged an error while opening the old ledger')

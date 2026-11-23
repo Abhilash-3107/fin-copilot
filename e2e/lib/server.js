@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url'
 import { serverMode, wheelBin } from '../global-setup.js'
 import { CHAT_MODEL, EMBED_MODEL } from '../stub-model.js'
 
+/** The day every journey runs on, and the upgrade journey unless FC_UPGRADE_TODAY says otherwise. The server reads it from FC_TODAY. */
+export const TODAY = '2026-11-15'
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 export function freePort() {

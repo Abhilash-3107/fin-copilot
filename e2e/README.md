@@ -74,23 +74,31 @@ cd e2e && npm run upgrade
 It needs network access to PyPI.
 `FC_E2E_WHEEL` picks the wheel and defaults to `../dist`.
 
-1. `uvx --from finance-copilot==<from> finance-copilot --data-dir <tmp> ...` starts the previous release.
-   The journey loads the demo data, uploads the fixture statement, and sorts a few payments, adds a person, a rule and a group member, all through that release's own API.
+1. The previous release's demo is seeded first, on 2026-11-15 (the day the journeys pin), by `upgrade/seed-previous.py`, which runs that release's own seeder with the previous release's Python.
+   The release has no `FC_TODAY` and reads the real date in exactly one place, the demo route, so seeding it with the day given makes the ledger the same on every run.
+   `uvx --from finance-copilot==<from> finance-copilot --data-dir <tmp> ...` then starts it.
+   The journey uploads the fixture statements, and sorts a few payments, adds a person, a rule and a group member, all through that release's own API.
    It also plants what the migrations that rewrite data act on: a merchant typed by hand with two slashes (migration 030 must keep it), a machine-labelled merchant copied from a bank line (030 clears it), a description ending in "Closing Balance" (027 strips it) and an unused duplicate subcategory (033 deletes it).
    The first three go through the API; the last two cannot be made there, so `upgrade/db.js` writes them with the server stopped, and the old release is started again to read them back.
-   The day the demo is seeded on is read right after it, and the journey stops if midnight fell inside the seeding.
+   The journey stops if the demo has no payment dated the seeding day.
 2. It records stored facts (`lib/snapshot.js` `storedFacts`, plus what `upgrade/db.js` reads from the SQLite file: the annotation category ids and snooze times that migrations 035 and 036 rewrite, and the schema itself, meaning which migrations ran, the tables and columns they add and the start count of each sorting job) and derived figures (`derivedFigures`: In, Out, Invested, Kept, the breakdown, the recurring totals, the people panel, per month).
    Both take the release as an argument, because the old and new API differ; each release's payload is mapped to one neutral shape in `lib/snapshot.js`.
 3. It stops that release, starts the wheel on the same folder, and records both again.
 4. Every difference must be explained by an entry in `upgrade/expected-changes.json` for this version, with its reason.
-   An entry that matches nothing is also a failure (a stale entry would hide the day the change comes back), unless it is marked `optional`, which a date-dependent change is.
+   An entry that matches nothing is also a failure (a stale entry would hide the day the change comes back).
+   The ledger is the same on every run, so every entry either happens or is stale: none is `optional`.
    The same list goes into `CHANGELOG.md` under "Figures that change in this release".
 
-An entry has a `scope` (`stored` or `derived`), a `path` pattern or a list of them (`*` is one key, `**` is anything; `{month}` is the month the run happens in, `{firstMonth}` the first month of the ledger, and the ids of the planted rows have their own names), optional `kinds` (`added`, `removed`, `changed`), optional `from` and `to` values, optional `appends` (a regular expression for the text a changed string gained at its end), and a `reason` written for the person reading the changelog.
+An entry has a `scope` (`stored` or `derived`), a `path` pattern or a list of them (`*` is one key, `**` is anything; `{firstMonth}` and `{lastMonth}` are the first and last month of the ledger (the last is the one its newest statement stops in the middle of), and the ids of the planted rows have their own names), optional `kinds` (`added`, `removed`, `changed`), optional `from` and `to` values, optional `appends` (a regular expression for the text a changed string gained at its end), and a `reason` written for the person reading the changelog.
 Pin `from` and `to` wherever the values are fixed, and scope a path to the rows or months it explains (`demo_*` rows, the first month): a loose entry lets a regression through.
 `upgrade/invariants.js` holds what paths cannot say: the new value in relation to the old one (an id names its label, a person's months add up to the old all-time figure, unsorted never shrinks, the headline equals Kept).
 `upgrade/compare.test.js` damages a good upgrade in one way at a time and checks the comparison fails each time, so an entry that gets looser breaks a test.
 Snapshots and a report go to `test-results/upgrade/`.
+
+J15 does not depend on the day it runs.
+The ledger is made on the fixed day above, and the release under test opens it on `FC_TODAY`, which is the same day unless `FC_UPGRADE_TODAY=YYYY-MM-DD` says when the user upgrades (it must not be before the ledger's day).
+The verdict and the report are the same on the 15th, the 30th, the 1st, a 31-day month's last day, a February and a leap day, because every month the figures name is the ledger's own and none is the month of the run.
+Run it on another day to check that: `FC_UPGRADE_TODAY=2027-02-28 npm run upgrade`.
 
 For a new release, set `version` and `from` at the top of `expected-changes.json` and review every entry: the file describes one release.
 A release candidate (`0.3.0rc1`) runs the file of the release it leads to (`0.3.0`): the journey compares base versions, and still checks that the server reports the wheel's exact version.

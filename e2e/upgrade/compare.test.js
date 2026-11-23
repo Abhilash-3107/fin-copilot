@@ -1,6 +1,6 @@
 // The comparison of J15 has to fail on a damaged upgrade, not only pass on a
 // good one. This builds a small ledger as 0.1.2 leaves it, applies to it exactly
-// what 0.2.0 declares in expected-changes.json, checks the comparison is silent,
+// what the release declares in expected-changes.json, checks the comparison is silent,
 // and then breaks the result in one way at a time. Each break is a regression
 // that once passed the journey because the expected changes were too permissive.
 import assert from 'node:assert/strict'
@@ -9,7 +9,6 @@ import { test } from 'node:test'
 import { compareSnapshots } from './compare.js'
 
 const expected = JSON.parse(readFileSync(new URL('./expected-changes.json', import.meta.url), 'utf8'))
-const today = '2026-11-15'
 const BANK_LINE = 'UPI/RAVI KUMAR SHA/120777386275/self'
 const TYPED = 'Chai/Stall/Koramangala'
 const planted = {
@@ -112,7 +111,7 @@ function ledgerBefore() {
   return { facts, figures }
 }
 
-/** What 0.2.0 does to that ledger, as expected-changes.json declares it. */
+/** What the release does to that ledger, as expected-changes.json declares it. */
 function upgrade(before) {
   const after = structuredClone(before)
   const { facts, figures } = after
@@ -216,27 +215,27 @@ function upgrade(before) {
   return after
 }
 
-const compare = (before, after) => compareSnapshots(before, after, expected, { today, planted }).problems
+const compare = (before, after) => compareSnapshots(before, after, expected, { planted }).problems
 
-test('the ledger before and the ledger after 0.2.0 agree on every figure the release keeps', () => {
+test('the ledger before and the ledger after the release agree on every figure the release keeps', () => {
   const before = ledgerBefore()
   assert.deepEqual(compare(before, upgrade(before)), [])
 })
 
-// The recurring row is keyed by its category when it has one and by its name when it has none, and
-// which it has depends on the day the journey runs: the demo data is seeded on that day, and the
-// newest charge of the recurring payee is sorted or not by the time the snapshot is taken.
-// Both days must pass, and a rename of more than the case must still fail on either.
-for (const [day, category] of [['the newest charge is not sorted', null], ['the newest charge is sorted', 'Food & Dining']]) {
-  test(`the recurring row's rename in case passes when ${day}`, () => {
-    const before = ledgerBefore()
-    for (const month of Object.values(before.figures.months)) month.recurring = [{ ...CHAI, category }]
-    const after = upgrade(before)
-    for (const month of Object.values(after.figures.months)) month.recurring = [{ ...CHAI, category, name: 'CHAI WALA CORNER' }]
-    assert.deepEqual(compare(before, after), [])
-  })
+// A recurring row to a payee with no merchant name is listed under the payee as the bank printed it,
+// instead of in title case: the name moves in case and nothing else. The journey's ledger is made on a
+// fixed day, so the demo's newest Chai Wala charge is always unsorted and the row is keyed by its name.
+test("the recurring row's rename in case passes", () => {
+  const before = ledgerBefore()
+  for (const month of Object.values(before.figures.months)) month.recurring = [{ ...CHAI, category: null }]
+  const after = upgrade(before)
+  for (const month of Object.values(after.figures.months)) month.recurring = [{ ...CHAI, category: null, name: 'CHAI WALA CORNER' }]
+  assert.deepEqual(compare(before, after), [])
+})
 
-  test(`a recurring row that changes more than its case fails when ${day}`, () => {
+// A rename of more than the case fails, whether the row carries a category (it is then keyed by it) or not.
+for (const [shape, category] of [['no category', null], ['a category', 'Food & Dining']]) {
+  test(`a recurring row that changes more than its case fails when it has ${shape}`, () => {
     const before = ledgerBefore()
     for (const month of Object.values(before.figures.months)) month.recurring = [{ ...CHAI, category }]
     const after = upgrade(before)
@@ -792,3 +791,13 @@ for (const [name, [damage, message, preparation]] of Object.entries(regressions)
     assert.ok(problems.some((p) => message.test(p)), `no problem matches ${message}:\n${problems.join('\n')}`)
   })
 }
+
+// The verdict of J15 is about a ledger made on a fixed day, never about the day the journey runs.
+// An entry that may or may not happen, or that names the month of the run, is how a date drift got
+// patched in before; neither is allowed back.
+test('no entry depends on the day the journey runs', () => {
+  for (const entry of expected.changes) {
+    assert.ok(!entry.optional, `${entry.id} is optional: an entry either happens on the journey's ledger or is stale`)
+    for (const path of [entry.path].flat()) assert.ok(!path.includes('{month}'), `${entry.id} names the month of the run`)
+  }
+})
