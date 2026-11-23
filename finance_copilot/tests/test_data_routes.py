@@ -254,6 +254,19 @@ class TestAccountsInBackupsAndWipes:
         assert _restore(client, backup).status_code == 200
         assert [a["account_label"] for a in client.get("/api/accounts").json()] == ["Salary"]
 
+    def test_delete_everything_forgets_remembered_spreadsheet_layouts_and_a_backup_keeps_them(self, file_db):
+        client, conn, _ = file_db
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('a1', 'kotak', '1234')")
+        conn.execute(
+            "INSERT INTO import_layouts (signature, mapping, account_id) VALUES ('sig', '{\"date\": 0}', 'a1')"
+        )
+        conn.commit()
+        backup = client.get("/api/data/backup").content
+        assert client.post("/api/data/delete-all").status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM import_layouts").fetchone()[0] == 0
+        assert _restore(client, backup).status_code == 200
+        assert conn.execute("SELECT signature, account_id FROM import_layouts").fetchall()[0][:] == ("sig", "a1")
+
     def test_delete_everything_removes_the_accounts_too(self, file_db):
         client, conn, _ = file_db
         conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('a1', 'kotak', '1234')")
