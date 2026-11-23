@@ -165,7 +165,8 @@ describe('ImportMapping', () => {
   describe('when the file mostly matches nothing', () => {
     const held = ask({
       needs: ['overlap'],
-      detail: 'This file covers days Kotak savings already has, and 8 of its 8 payments on those days match nothing there.',
+      detail: 'This file covers days Kotak savings already has, and all 8 of its payments on those days match nothing there.',
+      account_id: 'a1',
     })
 
     it('says so and leaves the choice to the person', () => {
@@ -177,11 +178,156 @@ describe('ImportMapping', () => {
       expect(onCancel).toHaveBeenCalled()
     })
 
-    it('puts focus on adding it anyway and Escape leaves it out', () => {
+    it('puts focus on the safe action, leaving it out, and Escape leaves it out', () => {
       const { onCancel } = setup({ ask: held })
-      expect(screen.getByRole('button', { name: 'Add it anyway' })).toHaveFocus()
-      fireEvent.keyDown(screen.getByRole('button', { name: 'Add it anyway' }), { key: 'Escape' })
+      expect(screen.getByRole('button', { name: 'Leave it out' })).toHaveFocus()
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Leave it out' }), { key: 'Escape' })
       expect(onCancel).toHaveBeenCalled()
+    })
+
+    it('offers another account: one that exists, or a new one with a name', () => {
+      const { onSubmit } = setup({ ask: held })
+      fireEvent.click(screen.getByRole('button', { name: 'This is another account' }))
+      const choose = screen.getByLabelText('Account')
+      expect(choose).toHaveFocus()
+      // The account it was held against is not offered as "another".
+      expect(within(choose).queryByRole('option', { name: 'Kotak savings' })).not.toBeInTheDocument()
+      const add = screen.getByRole('button', { name: 'Add to this account' })
+      expect(add).toBeDisabled()
+      fireEvent.change(choose, { target: { value: 'a2' } })
+      fireEvent.click(add)
+      expect(onSubmit).toHaveBeenCalledWith({ account_id: 'a2' })
+    })
+
+    it('a new account needs a name and focus goes to the name; Enter adds', () => {
+      const { onSubmit } = setup({ ask: held })
+      fireEvent.click(screen.getByRole('button', { name: 'This is another account' }))
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: '__new__' } })
+      const name = screen.getByLabelText('Name for the new account')
+      expect(name).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Add to this account' })).toBeDisabled()
+      fireEvent.change(name, { target: { value: ' Joint ' } })
+      fireEvent.keyDown(name, { key: 'Enter' })
+      expect(onSubmit).toHaveBeenCalledWith({ new_account_name: 'Joint' })
+    })
+
+    it('Escape closes the account choice first and returns to its button; a second Escape leaves the file out', async () => {
+      const { onCancel } = setup({ ask: held })
+      const another = screen.getByRole('button', { name: 'This is another account' })
+      fireEvent.click(another)
+      fireEvent.keyDown(screen.getByLabelText('Account'), { key: 'Escape' })
+      expect(onCancel).not.toHaveBeenCalled()
+      expect(screen.queryByLabelText('Account')).not.toBeInTheDocument()
+      await waitFor(() => expect(another).toHaveFocus())
+      fireEvent.keyDown(another, { key: 'Escape' })
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('the account the file already names', () => {
+    it('starts on it, and it can still be changed', () => {
+      const { onSubmit } = setup({ ask: ask({ needs: ['mapping'], account_id: 'a2' }) })
+      expect(screen.getByLabelText('Account')).toHaveValue('a2')
+      fireEvent.click(screen.getByRole('button', { name: 'Add this statement' }))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ account_id: 'a2' }))
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'a1' } })
+      expect(screen.getByLabelText('Account')).toHaveValue('a1')
+    })
+
+    it('ignores an account that is not in the list', () => {
+      setup({ ask: ask({ needs: ['mapping'], account_id: 'gone' }) })
+      expect(screen.getByLabelText('Account')).toHaveValue('')
+    })
+  })
+
+  describe('when the dates could be read either way', () => {
+    const rows = date => ({
+      rows: [{ date, description: 'UPI/A/1', amount: 100, direction: 'debit', balance: null }], error: null,
+    })
+    const dates = ask({
+      needs: ['dates'],
+      account_id: 'a1',
+      date_order: 'dmy',
+      parsed: { ...rows('2026-10-01'), date_choices: { dmy: rows('2026-10-01'), mdy: rows('2026-01-10') } },
+    })
+
+    it('asks which way round, day first chosen, with the parsed rows under each choice', () => {
+      const { onSubmit } = setup({ ask: dates })
+      expect(screen.getByRole('group', { name: 'Which way round are the dates?' })).toBeInTheDocument()
+      const day = screen.getByRole('radio', { name: /Day first/ })
+      const month = screen.getByRole('radio', { name: /Month first/ })
+      expect(day).toBeChecked()
+      expect(month).not.toBeChecked()
+      expect(within(screen.getByRole('table', { name: /day first/ })).getByText('1 Oct 2026')).toBeInTheDocument()
+      expect(within(screen.getByRole('table', { name: /month first/ })).getByText('10 Jan 2026')).toBeInTheDocument()
+      fireEvent.click(month)
+      fireEvent.click(screen.getByRole('button', { name: 'Add this statement' }))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ date_order: 'mdy', account_id: 'a1' }))
+    })
+
+    it('starts on the answer the layout remembered', () => {
+      setup({ ask: { ...dates, date_order: 'mdy' } })
+      expect(screen.getByRole('radio', { name: /Month first/ })).toBeChecked()
+    })
+
+    it('will not add while the chosen reading cannot be read', () => {
+      const broken = { ...dates, parsed: { ...dates.parsed, date_choices: { dmy: rows('2026-10-01'), mdy: { rows: [], error: 'The date "x" in row 3 isn\'t one we can read.' } } } }
+      setup({ ask: broken })
+      expect(screen.getByRole('button', { name: 'Add this statement' })).toBeEnabled()
+      fireEvent.click(screen.getByRole('radio', { name: /Month first/ }))
+      expect(screen.getByRole('button', { name: 'Add this statement' })).toBeDisabled()
+    })
+
+    it('sends no date order for a file whose dates are settled', () => {
+      const { onSubmit } = setup()
+      fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'a1' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Add this statement' }))
+      expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('date_order')
+    })
+  })
+
+  describe('privacy mode on the raw preview', () => {
+    it.each(['1000.00 Dr', '9000.00 Cr', '₹1,000', 'INR 500', '(250.00)', '100.00-', '12'])(
+      'hides %s in any column but the date and the description',
+      figure => {
+        privacy.hidden = true
+        setup({ ask: ask({
+          columns: ['When', 'What', 'Moved', 'Left', 'Note'],
+          preview: [['2026-10-02', 'UPI/SWIGGY/1', figure, figure, figure]],
+          guess: { date: 0, description: 1, amount: 2 },
+        }) })
+        const shown = screen.getAllByText(figure)
+        expect(shown).toHaveLength(3)
+        shown.forEach(el => expect(el).toHaveAttribute('data-privacy-mask'))
+      },
+    )
+
+    it('hides a cell of a column left out, whatever it holds', () => {
+      privacy.hidden = true
+      setup({ ask: ask({ preview: [['2026-10-02', 'UPI/X', 'Dr 1000', '51460.00']], guess: { date: 0, description: 1 } }) })
+      expect(screen.getByText('Dr 1000')).toHaveAttribute('data-privacy-mask')
+    })
+
+    it('leaves the date and a description with no figure readable', () => {
+      privacy.hidden = true
+      setup()
+      expect(screen.getByText('2026-10-02')).not.toHaveAttribute('data-privacy-mask')
+      screen.getAllByText('UPI/SWIGGY/ORDER/1/UPI').forEach(el => expect(el).not.toHaveAttribute('data-privacy-mask'))
+    })
+
+    it('hides a description that holds a figure, here and in the parsed rows', () => {
+      privacy.hidden = true
+      setup({ ask: ask({
+        preview: [['2026-10-02', 'Rent 5000 for October', '-540.00', '1.00']],
+        parsed: { rows: [{ date: '2026-10-02', description: 'Rent 5000', amount: 540, direction: 'debit', balance: null }], error: null },
+      }) })
+      expect(screen.getByText('Rent 5000 for October')).toHaveAttribute('data-privacy-mask')
+      expect(screen.getByText('Rent 5000')).toHaveAttribute('data-privacy-mask')
+    })
+
+    it('shows the figures when privacy mode is off', () => {
+      setup({ ask: ask({ preview: [['2026-10-02', 'x', '₹1,000', 'INR 500']], guess: { date: 0, description: 1 } }) })
+      expect(screen.getByText('₹1,000')).not.toHaveAttribute('data-privacy-mask')
     })
   })
 })

@@ -1205,7 +1205,7 @@ describe('Upload with spreadsheets', () => {
   it('holds a copy that matches nothing and adds it only when told to', async () => {
     mockApi.upload
       .mockRejectedValueOnce(refusal({
-        detail: 'This file covers days Kotak savings already has, and 8 of its 8 payments on those days match nothing there.',
+        detail: 'This file covers days Kotak savings already has, and all 8 of its payments on those days match nothing there.',
         needs: ['overlap'], overlap: { rows_in_overlap: 8, unmatched: 8, account_label: 'Kotak savings' },
       }))
       .mockResolvedValue(uploaded('s9'))
@@ -1216,6 +1216,116 @@ describe('Upload with spreadsheets', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add it anyway' }))
     await screen.findByText(/8 payments added/)
     expect(mockApi.upload.mock.calls.at(-1)[1].get('confirm_overlap')).toBe('true')
+  })
+
+  const held = {
+    detail: 'This file covers days Kotak savings already has, and all 8 of its payments on those days match nothing there.',
+    needs: ['overlap'], overlap: { rows_in_overlap: 8, unmatched: 8, account_label: 'Kotak savings' },
+    account_id: 'a1', accounts: [{ id: 'a1', account_label: 'Kotak savings' }, { id: 'a2', account_label: 'SBI savings' }],
+  }
+
+  it('Add it anyway after the form still sends the columns and the account it was given', async () => {
+    mockApi.upload
+      .mockRejectedValueOnce(refusal(asked()))
+      .mockRejectedValueOnce(refusal(held))
+      .mockResolvedValue(uploaded('s9'))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    const form = await screen.findByRole('group', { name: 'Check what each column is' })
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: 'a1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add this statement' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add it anyway' }))
+    await screen.findByText(/8 payments added/)
+    const sent = mockApi.upload.mock.calls.at(-1)[1]
+    expect(sent.get('confirm_overlap')).toBe('true')
+    expect(sent.get('account_id')).toBe('a1')
+    expect(JSON.parse(sent.get('mapping'))).toEqual({ date: 0, description: 1, amount: 2, balance: 3 })
+  })
+
+  it('another account chosen on the held notice replaces the one sent before', async () => {
+    mockApi.upload
+      .mockRejectedValueOnce(refusal(asked()))
+      .mockRejectedValueOnce(refusal(held))
+      .mockResolvedValue(uploaded('s9'))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    const form = await screen.findByRole('group', { name: 'Check what each column is' })
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: '__new__' } })
+    fireEvent.change(within(form).getByLabelText('Name for the new account'), { target: { value: 'Old' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add this statement' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'This is another account' }))
+    fireEvent.change(screen.getByLabelText('Account'), { target: { value: 'a2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add to this account' }))
+    await screen.findByText(/8 payments added/)
+    const sent = mockApi.upload.mock.calls.at(-1)[1]
+    expect(sent.get('account_id')).toBe('a2')
+    expect(sent.get('new_account_name')).toBeNull()
+    expect(sent.get('confirm_overlap')).toBeNull()
+    expect(JSON.parse(sent.get('mapping'))).toEqual({ date: 0, description: 1, amount: 2, balance: 3 })
+  })
+
+  it('an account-less held file lands after the form and Add it anyway, with nothing else asked', async () => {
+    // A truncated export: no balance, no number. The form asks for the account, then the hold.
+    mockApi.upload
+      .mockRejectedValueOnce(refusal(asked({ needs: ['account'], detail: 'Which account is this file from?' })))
+      .mockRejectedValueOnce(refusal(held))
+      .mockResolvedValue(uploaded('s9'))
+    const { container } = renderUpload()
+    fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+    fireEvent.click(screen.getByRole('button', { name: SEND }))
+    const form = await screen.findByRole('group', { name: 'Which account is this file from?' })
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: 'a1' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add this statement' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add it anyway' }))
+    await screen.findByText(/8 payments added/)
+    expect(mockApi.upload).toHaveBeenCalledTimes(3)
+    expect(screen.queryByRole('group', { name: /account/ })).not.toBeInTheDocument()
+  })
+
+  describe('keyboard focus when a file is left out', () => {
+    it('the held notice starts on Leave it out; Escape moves focus to the drop zone', async () => {
+      mockApi.upload.mockRejectedValueOnce(refusal(held))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+      fireEvent.click(screen.getByRole('button', { name: SEND }))
+      const leave = await screen.findByRole('button', { name: 'Leave it out' })
+      await waitFor(() => expect(leave).toHaveFocus())
+      fireEvent.keyDown(leave, { key: 'Escape' })
+      await waitFor(() => expect(screen.getByRole('button', { name: /Drop your bank statements here/ })).toHaveFocus())
+      expect(document.body).not.toHaveFocus()
+    })
+
+    it('leaving out one of two files moves focus to the next row', async () => {
+      mockApi.upload.mockRejectedValue(refusal(asked()))
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv('one.csv'), csv('two.csv')] } })
+      fireEvent.click(screen.getByRole('button', { name: SEND }))
+      const forms = await screen.findAllByRole('group', { name: 'Check what each column is' })
+      fireEvent.click(within(forms[0]).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.getByText('two.csv').closest('li')).toHaveFocus())
+    })
+
+    it('Remove on a ready file moves focus to the drop zone when it was the last', async () => {
+      const { container } = renderUpload()
+      fireEvent.change(container.querySelector('input[type=file]'), { target: { files: [csv()] } })
+      fireEvent.click(screen.getByRole('button', { name: 'Remove export.csv' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: /Drop your bank statements here/ })).toHaveFocus())
+    })
+
+    it('the drop zone opens the file picker from the keyboard', async () => {
+      const { container } = renderUpload()
+      await screen.findByText(/No statements yet/)
+      const picker = container.querySelector('input[type=file]')
+      const click = vi.spyOn(picker, 'click')
+      const zone = screen.getByRole('button', { name: /Drop your bank statements here/ })
+      fireEvent.keyDown(zone, { key: 'Enter' })
+      expect(click).toHaveBeenCalled()
+      click.mockClear()
+      fireEvent.keyDown(zone, { key: ' ' })
+      expect(click).toHaveBeenCalled()
+    })
   })
 
   it('a refusal without a question still reads as a failure on the row', async () => {

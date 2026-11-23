@@ -197,7 +197,16 @@ function AccountLine({ statement, label, onName, accountNamed }) {
   )
 }
 
-function FileRow({ entry, onRemove, accountLabel, accountNamed, onNameAccount, onAnswer }) {
+// What the person has answered so far, with the newest on top. An account chosen
+// replaces a new account named, and the other way round: a file goes to one.
+function mergeAnswer(before, next) {
+  const merged = { ...(before ?? {}), ...(next ?? {}) }
+  if (next?.account_id) delete merged.new_account_name
+  if (next?.new_account_name) delete merged.account_id
+  return merged
+}
+
+function FileRow({ entry, onRemove, accountLabel, accountNamed, onNameAccount, onAnswer, rowRef }) {
   const { file, status, statement } = entry
   const added = statement && (
     <>
@@ -207,7 +216,11 @@ function FileRow({ entry, onRemove, accountLabel, accountNamed, onNameAccount, o
     </>
   )
   return (
-    <li className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0">
+    <li
+      ref={rowRef}
+      tabIndex={-1}
+      className="flex items-start gap-3 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 outline-none"
+    >
       <FileText size={14} className="text-[#818cf8] shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <span className="text-sm text-[#e2e8f0] break-all">{file.name}</span>
@@ -295,6 +308,11 @@ export default function Upload() {
   // Each row's More button, to hand focus back to after a rename.
   const moreButtons = useRef({})
   const fileRef = useRef(null)
+  // Where focus goes when a file row is taken away (Escape on its form, Leave it out,
+  // Remove): the next row, or the drop zone. Never the page.
+  const dropRef = useRef(null)
+  const rowRefs = useRef({})
+  const focusAfterRemoval = useRef(null)
 
   const loadStatements = useCallback(async () => {
     try {
@@ -336,6 +354,20 @@ export default function Upload() {
   const patchEntry = useCallback((id, patch) => {
     setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
   }, [])
+
+  function removeEntry(id) {
+    const at = entries.findIndex(e => e.id === id)
+    const next = entries[at + 1] ?? entries[at - 1]
+    focusAfterRemoval.current = next ? next.id : 'drop'
+    setEntries(list => list.filter(e => e.id !== id))
+  }
+
+  useEffect(() => {
+    const target = focusAfterRemoval.current
+    if (target === null) return
+    focusAfterRemoval.current = null
+    ;(target === 'drop' ? dropRef.current : rowRefs.current[target])?.focus()
+  }, [entries])
 
   // Take the PDFs, say which of the others were left out. Only files that are
   // finished and sorted make way for the new ones: a file still being read or
@@ -385,19 +417,22 @@ export default function Upload() {
   // the server cannot place yet comes back as a question (a 422 with `needs`),
   // which the row asks in place; anything else it says is the reason it failed.
   async function sendEntry(entry, answer = null) {
-    patchEntry(entry.id, { status: 'uploading', message: null })
+    // Every answer given for this file goes with each try: "Add it anyway" after the
+    // column form still carries the columns and the account.
+    const given = answer ? mergeAnswer(entry.answer, answer) : null
+    patchEntry(entry.id, { status: 'uploading', message: null, answer: given })
     try {
       const form = new FormData()
       form.append('file', entry.file)
       if (password) form.append('password', password)
-      for (const [key, value] of Object.entries(answer ?? {})) form.append(key, String(value))
+      for (const [key, value] of Object.entries(given ?? {})) form.append(key, String(value))
       const result = await api.upload('/statements/upload', form)
       if (result.sorting_job_id) {
-        patchEntry(entry.id, { status: 'sorting', statement: result, job: null, ask: null })
+        patchEntry(entry.id, { status: 'sorting', statement: result, job: null, ask: null, answer: null })
         watchJobs()
         trackSorting(entry.id, result.id, result.sorting_job_id)
       } else {
-        patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued", ask: null })
+        patchEntry(entry.id, { status: 'sortFailed', statement: result, message: "it couldn't be queued", ask: null, answer: null })
       }
       refresh()
     } catch (e) {
@@ -410,7 +445,7 @@ export default function Upload() {
         patchEntry(entry.id, { status: 'needs', message: errorReason(e) })
       } else {
         // A refusal with a reason of its own ("Nothing new: ...", "already added") reads as it is.
-        patchEntry(entry.id, { status: 'failed', ask: null, message: e?.status === 409 ? e.message : couldnt('read this file', e) })
+        patchEntry(entry.id, { status: 'failed', ask: null, answer: null, message: e?.status === 409 ? e.message : couldnt('read this file', e) })
       }
     }
   }
@@ -418,7 +453,7 @@ export default function Upload() {
   // The form on a file's row: null means the person left the file out.
   async function answerEntry(entry, answer) {
     if (answer === null) {
-      setEntries(list => list.filter(e => e.id !== entry.id))
+      removeEntry(entry.id)
       return
     }
     await sendEntry(entry, answer)
@@ -613,6 +648,13 @@ export default function Upload() {
 
       {/* Drop zone */}
       <div
+        ref={dropRef}
+        role="button"
+        tabIndex={removable ? -1 : 0}
+        onKeyDown={e => {
+          if (removable || e.target !== e.currentTarget) return
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileRef.current?.click() }
+        }}
         // While sample data is in the ledger a statement can't be added. The
         // frame goes quiet but the words stay readable, so it can still say why.
         aria-disabled={removable || undefined}
@@ -659,8 +701,8 @@ export default function Upload() {
             skipped, so statements can overlap.
           </li>
           <li>
-            Spreadsheets (CSV, XLSX, XLS) from any bank work too. The first time a layout is new
-            you are asked once what each column is, and the next file like it goes in by itself.
+            Spreadsheets (CSV, XLSX, XLS) from any bank work too. A new layout asks what each
+            column is, and the next file like it goes in by itself.
           </li>
           <li>Password-protected PDFs work: enter the password after you choose the file.</li>
           <li>
@@ -686,8 +728,9 @@ export default function Upload() {
                 accountNamed={namedAccounts.has(entry.statement?.account_id)}
                 onNameAccount={nameAccount}
                 onAnswer={answerEntry}
+                rowRef={el => { if (el) rowRefs.current[entry.id] = el; else delete rowRefs.current[entry.id] }}
                 onRemove={['ready', 'failed', 'needs'].includes(entry.status)
-                  ? () => setEntries(list => list.filter(e => e.id !== entry.id))
+                  ? () => removeEntry(entry.id)
                   : null}
               />
             ))}
