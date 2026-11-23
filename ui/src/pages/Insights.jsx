@@ -10,6 +10,8 @@ import { api } from '../lib/api.js'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import AccountFilter from '../components/AccountFilter.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
@@ -19,7 +21,7 @@ import Delta, { tileDelta } from '../components/Delta.jsx'
 import PersonNet from '../components/PersonNet.jsx'
 import { count } from '../lib/plural.js'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { coverageLabel, comparisonLabel } from '../lib/period.js'
+import { coverageLabel, comparisonLabel, insightsQuery, shortAccountsLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
@@ -151,6 +153,7 @@ function BalanceChart({ balance }) {
 // Row 2b: the top category shifts against the comparison window, as sentences
 // with click-through - the "what changed" a person actually opens the page for.
 function WhatChanged({ changes, month, vs }) {
+  const { accountId: account } = useLedger()
   return (
     <div className={`${card} p-4`}>
       <p className={`${cardTitle} mb-3`}>{vs ? `What changed vs ${vs}` : 'What changed'}</p>
@@ -165,7 +168,7 @@ function WhatChanged({ changes, month, vs }) {
           {changes.map(c => (
             <li key={c.category}>
               <Link
-                to={txnFilterPath({ category: c.category, month })}
+                to={txnFilterPath({ category: c.category, month, account })}
                 className="group flex items-baseline justify-between gap-3 text-sm"
               >
                 <span className="text-[#e2e8f0] group-hover:text-[#a5b4fc]">
@@ -202,6 +205,7 @@ function DeltaShort({ delta }) {
 // The reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other money out)
 // and the total follow, so the list always closes on Out.
 function CategoryBreakdown({ categories, breakdown, unexplained, month, heading, vs }) {
+  const { accountId: account } = useLedger()
   const [expanded, setExpanded] = useState(null)
   const maxNet = Math.max(1, ...categories.map(c => Math.abs(c.net)))
   const hasDeltas = categories.some(c => c.delta != null)
@@ -257,7 +261,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                   ))}
                   <li className="px-4 pt-1 pl-10">
                     <Link
-                      to={txnFilterPath({ category: c.category, month })}
+                      to={txnFilterPath({ category: c.category, month, account })}
                       className="text-xs text-[#818cf8] hover:text-[#a5b4fc]"
                     >
                       View payments →
@@ -272,7 +276,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
               <div className="px-4 py-2.5 grid grid-cols-[minmax(10rem,1fr)_2fr_7rem_7rem] items-center gap-3 text-sm">
                 {e.key === 'transfers' ? (
                   <Link
-                    to={txnFilterPath({ category: 'Transfers', month })}
+                    to={txnFilterPath({ category: 'Transfers', month, account })}
                     className="truncate text-[#94a3b8] hover:text-[#a5b4fc]"
                   >
                     {e.label}
@@ -359,6 +363,7 @@ function PeoplePanel({ people, monthName }) {
 // Row 6: payees with order counts and average ticket, on canonical
 // payee keys so ZOMATO and ZOMATO LIMITED are one payee.
 function MerchantsPanel({ merchants, heading, month }) {
+  const { accountId: account } = useLedger()
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
@@ -385,7 +390,7 @@ function MerchantsPanel({ merchants, heading, month }) {
               <tr key={m.keys.join(',')} className="border-b border-[#1a1d27] last:border-0">
                 <td className="px-4 py-2">
                   <Link
-                    to={txnFilterPath({ payeeKeys: m.keys, month })}
+                    to={txnFilterPath({ payeeKeys: m.keys, month, account })}
                     state={{ payeeName: m.name }}
                     className="text-[#e2e8f0] hover:text-[#a5b4fc]"
                   >
@@ -405,23 +410,25 @@ function MerchantsPanel({ merchants, heading, month }) {
 }
 
 export default function Insights() {
-  const { month: periodMonth } = usePeriod()
+  const { month: periodMonth, ready } = usePeriod()
+  const { accountId, multiple } = useLedger()
 
   // The page is month-anchored: every number answers "how was this month".
   // "All time" falls back to the latest month with data (the server's default),
   // and the picker (allowAll={false}) shows that month.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const { data, loading, error, reload } = useLoad(useCallback(
-    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
-  ))
+    () => api.get(`/insights?${insightsQuery(requestMonth, accountId)}`), [requestMonth, accountId],
+  ), { enabled: ready })
 
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
+  const behind = shortAccountsLabel(data?.period, { oneAccount: Boolean(accountId) })
   const heading = data?.month ? dayjs(data.month).format('MMMM YYYY') : ''
 
   return (
     <div className="px-6 py-5 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Money Map
           {data?.month && (
@@ -433,8 +440,15 @@ export default function Insights() {
             </span>
           )}
         </h1>
-        <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
+        <div className="flex items-center gap-3">
+          <AccountFilter />
+          <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
+        </div>
       </div>
+      {behind && <p className="-mt-2 text-xs text-[#fbbf24]">Not every account is covered to the end of the month: {behind}.</p>}
+      {multiple && accountId && data?.month && data.annotation?.total === 0 && (
+        <p className="text-sm text-[#94a3b8]">{data.account?.label ?? 'This account'} has no payments in {dayjs(data.month).format('MMMM YYYY')}.</p>
+      )}
 
       {loading ? (
         <p className="text-sm text-[#94a3b8]">Crunching your numbers…</p>

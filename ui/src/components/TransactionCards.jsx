@@ -9,7 +9,7 @@ import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 // Selection checkbox is included so bulk actions work on mobile too.
 export default function TransactionCards({
   transactions, annotationMap = {}, activeId, onSelect,
-  selectable = false, selected, onToggle,
+  selectable = false, selected, onToggle, showAccount = false,
 }) {
   if (!transactions.length) return null
 
@@ -49,6 +49,7 @@ export default function TransactionCards({
               </div>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 <span className="text-xs text-[#94a3b8]">{dayjs(txn.txn_date).format('DD MMM YY')}</span>
+                {showAccount && txn.account_label && <span className="text-xs text-[#94a3b8]">{txn.account_label}</span>}
                 {ann && <CategoryPill txn={txn} ann={ann} />}
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
                   {sourceLabel(src)}

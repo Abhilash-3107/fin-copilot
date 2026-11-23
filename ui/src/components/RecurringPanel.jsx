@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 import { RefreshCw } from 'lucide-react'
 import Amount from './Amount.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 
 function Row({ item, onOpen }) {
   return (
@@ -53,8 +54,9 @@ function Subheading({ children }) {
 // own headings and are not in it.
 export default function RecurringPanel({ items = [], summary = { monthly_total: 0, count: 0 } }) {
   const navigate = useNavigate()
+  const { accountId } = useLedger()
   // By the key the row was grouped on, never by its name: a name is only a label.
-  const open = item => navigate(txnFilterPath({ payeeKeys: item.keys }), { state: { payeeName: item.name } })
+  const open = item => navigate(txnFilterPath({ payeeKeys: item.keys, account: accountId }), { state: { payeeName: item.name } })
 
   const monthly = items.filter(i => i.active && i.cadence === 'monthly')
   const irregular = items.filter(i => i.active && i.cadence !== 'monthly')

@@ -40,3 +40,22 @@ export function comparisonLabel(comparison) {
   }
   return dayRange(comparison.start, comparison.end)
 }
+
+// Which accounts are behind in a partial month, as the server names them: "SBI
+// savings to 15 Nov". Empty when the user looks at one account (the page already
+// says which) or when the month is complete.
+export function shortAccountsLabel(period, { oneAccount = false } = {}) {
+  if (oneAccount || !period?.partial) return ''
+  return (period.short ?? [])
+    .map(item => `${item.account_label} to ${dayjs(item.covered_through).format('D MMM')}`)
+    .join(', ')
+}
+
+// The query string of /insights: the month (the server's latest when none) and the
+// account (every account when none). One place, so Dashboard and Money Map ask alike.
+export function insightsQuery(month, accountId) {
+  const params = new URLSearchParams()
+  if (month) params.set('month', month)
+  if (accountId) params.set('account_id', accountId)
+  return params.toString()
+}

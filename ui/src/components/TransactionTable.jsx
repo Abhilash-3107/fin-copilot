@@ -23,6 +23,7 @@ function SortHeader({ label, col, sort, order, onSort, align = 'left' }) {
 export default function TransactionTable({
   transactions, annotationMap = {}, activeId, onSelect,
   selectable = false, selected, onToggle, onToggleAll, sort, order, onSort,
+  showAccount = false, showBalance = false,
 }) {
   if (!transactions.length) return null
 
@@ -48,9 +49,11 @@ export default function TransactionTable({
             {onSort ? <SortHeader label="Date" col="date" sort={sort} order={order} onSort={onSort} /> : 'Date'}
           </th>
           <th className={`${th} text-left`}>Payee</th>
+          {showAccount && <th className={`${th} text-left`}>Account</th>}
           <th className={`${th} text-right`}>
             {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
           </th>
+          {showBalance && <th className={`${th} text-right`}>Balance</th>}
           {['Category', 'Source', 'How sure'].map(h => (
             <th key={h} className={`${th} text-left`}>{h}</th>
           ))}
@@ -93,9 +96,17 @@ export default function TransactionTable({
               <td className="px-3 py-2.5 max-w-[480px]">
                 <PaymentLabel txn={txn} className="max-w-[460px]" />
               </td>
+              {showAccount && (
+                <td className="px-3 py-2.5 whitespace-nowrap text-xs text-[#94a3b8]">{txn.account_label}</td>
+              )}
               <td className="px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right">
                 <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
+              {showBalance && (
+                <td className="px-3 py-2.5 whitespace-nowrap tabular-nums text-xs text-right text-[#94a3b8]">
+                  {txn.running_balance != null ? <Amount value={txn.running_balance} /> : '-'}
+                </td>
+              )}
               <td className="px-3 py-2.5">
                 {ann ? (
                   <CategoryPill txn={txn} ann={ann} />
