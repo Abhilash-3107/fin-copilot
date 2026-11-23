@@ -65,6 +65,62 @@ def account_label(name: str | None, bank_name: str, account_ref: str | None) -> 
     return f"{bank} {MASK}{last4}" if last4 else bank
 
 
+def _plain_number(ref: str) -> str:
+    return ref.replace("-", "").replace(" ", "").upper()
+
+
+def _unmasked_tail(plain: str) -> str:
+    """The digits a number prints after its last mask character ("XXXXXX4321" -> "4321");
+    all of it when nothing is masked."""
+    tail = []
+    for char in reversed(plain):
+        if char in "X*":
+            break
+        tail.append(char)
+    return "".join(reversed(tail))
+
+
+def same_number(a: str | None, b: str | None) -> bool:
+    """Whether two printed account numbers are one account's. The one rule for a PDF
+    and a spreadsheet: equal, or one (or both) masked and the digits the mask
+    leaves agree, four at least ("XXXXXX4321" is "1234564321"). Two full numbers
+    are the same only when equal."""
+    if not a or not b:
+        return False
+    a, b = _plain_number(a), _plain_number(b)
+    if a == b:
+        return True
+    masked = [x for x in (a, b) if any(c in "X*" for c in x)]
+    if not masked:
+        return False
+    keep = min(len(_unmasked_tail(x)) for x in masked)
+    return keep >= 4 and a[-keep:] == b[-keep:] and a[-keep:].isdigit()
+
+
+def _bank_fits(account_bank: str, bank: str) -> bool:
+    """The same bank, or one of them is unknown (the generic parser could not place it)."""
+    return account_bank == bank or UNKNOWN_BANK in (account_bank, bank)
+
+
+def accounts_with_number(
+    conn: sqlite3.Connection, bank_name: str, account_ref: str | None
+) -> list[sqlite3.Row]:
+    """The accounts a printed number names, by the shared rule: the same bank (an
+    unknown bank fits any), and the same number. Accounts holding the very same
+    number are returned alone when there are any, so a full number is not made
+    ambiguous by a masked one that also fits."""
+    ref = (account_ref or "").strip()
+    if not ref:
+        return []
+    bank = bank_key(bank_name)
+    fitting = [
+        a for a in conn.execute("SELECT id, bank_name, account_ref FROM accounts")
+        if _bank_fits(a["bank_name"], bank) and same_number(a["account_ref"], ref)
+    ]
+    exact = [a for a in fitting if _plain_number(a["account_ref"]) == _plain_number(ref) and a["bank_name"] == bank]
+    return exact or fitting
+
+
 def _remembered_account(conn: sqlite3.Connection, bank: str, ref: str | None) -> str | None:
     """The account of the statement with this bank and number that holds the latest
     month (an unknown number matches an unknown number), when it still exists. The
@@ -94,7 +150,10 @@ def resolve_account(
     with no number follows it only into an account that has no number either:
     which of several numbered accounts it belongs to is not something to guess.
     Otherwise, never guess between accounts:
-    - Same bank and same number: that account.
+    - Same bank and same number (one rule, `same_number`: a masked number is a full
+      one when the digits it leaves agree): that account. An account of unknown bank
+      is the account of a known bank that names its number, and takes that bank.
+      Two accounts matching start a new one.
     - A number and the bank's only account has none (older statements printed no
       number): that account takes the number. Not for an unknown bank, where an
       unnumbered account may be a different bank's.
@@ -121,6 +180,14 @@ def resolve_account(
         for account in accounts:
             if account["account_ref"] == ref:
                 return account["id"], False
+        named = accounts_with_number(conn, bank, ref)
+        if len(named) == 1:
+            if named[0]["bank_name"] == UNKNOWN_BANK and bank != UNKNOWN_BANK:
+                conn.execute("UPDATE accounts SET bank_name = ? WHERE id = ?", (bank, named[0]["id"]))
+            return named[0]["id"], False
+        if named:
+            # Two accounts carry this number: which one is not for us to guess.
+            return create_account(conn, bank, ref), True
         if bank != UNKNOWN_BANK and len(accounts) == 1 and accounts[0]["account_ref"] is None:
             conn.execute("UPDATE accounts SET account_ref = ? WHERE id = ?", (ref, accounts[0]["id"]))
             return accounts[0]["id"], False

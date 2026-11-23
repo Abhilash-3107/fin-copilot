@@ -21,13 +21,16 @@ from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.accounts import (
     NAME_MAX_LENGTH,
     UNKNOWN_BANK,
+    accounts_with_number,
     create_account,
     list_accounts,
     ref_last4,
+    same_number,
 )
 from finance_copilot.db.queries.import_layouts import get_layout, remember_layout
 from finance_copilot.models.transaction import Statement
 from finance_copilot.parsers import spreadsheet as sheet
+from finance_copilot.parsers.bank_identity import identify_bank
 from finance_copilot.parsers.base import account_ref_in_text
 from finance_copilot.pipeline.ingest import (
     ParsedFile,
@@ -50,31 +53,11 @@ class NeedsAnswer(ValueError):
         self.body = body
 
 
-def _plain_ref(ref: str) -> str:
-    return ref.replace("-", "").replace(" ", "").upper()
-
-
-def _same_number(a: str | None, b: str | None) -> bool:
-    """Two printed account numbers are one: equal, or one masked and the other's
-    last four digits the same (a CSV's "XXXXXX8074" and a PDF's "3250508074")."""
-    if not a or not b:
-        return False
-    a, b = _plain_ref(a), _plain_ref(b)
-    if a == b:
-        return True
-    masked = any(c in "X*" for c in a + b)
-    return masked and len(a) >= 4 and len(b) >= 4 and a[-4:] == b[-4:] and a[-4:].isdigit()
-
-
-def _account_with_number(conn: sqlite3.Connection, ref: str | None) -> str | None:
-    """The one account that number names; None when none or several do."""
-    if not ref:
-        return None
-    found = [
-        r["id"] for r in conn.execute("SELECT id, account_ref FROM accounts")
-        if _same_number(r["account_ref"], ref)
-    ]
-    return found[0] if len(found) == 1 else None
+def _account_with_number(conn: sqlite3.Connection, bank: str | None, ref: str | None) -> str | None:
+    """The one account that number names (the same rule a PDF uses); None when none
+    or several do: which of several is not for us to choose."""
+    found = accounts_with_number(conn, bank or UNKNOWN_BANK, ref)
+    return found[0]["id"] if len(found) == 1 else None
 
 
 def _exists(conn: sqlite3.Connection, account_id: str | None) -> dict | None:
@@ -87,17 +70,17 @@ def _exists(conn: sqlite3.Connection, account_id: str | None) -> dict | None:
 
 
 def _decide_account(
-    conn: sqlite3.Connection, ref: str | None, remembered_id: str | None
+    conn: sqlite3.Connection, bank: str | None, ref: str | None, remembered_id: str | None
 ) -> str | None:
     """The account a file belongs to without being asked, or None."""
-    named = _account_with_number(conn, ref)
+    named = _account_with_number(conn, bank, ref)
     if named:
         return named
     kept = _exists(conn, remembered_id)
     if kept is None:
         return None
     # A number above the table that this account does not carry is a different account.
-    if ref and kept["account_ref"] and not _same_number(kept["account_ref"], ref):
+    if ref and kept["account_ref"] and not same_number(kept["account_ref"], ref):
         return None
     return kept["id"]
 
@@ -181,7 +164,7 @@ def ingest_spreadsheet(
         elif name:
             decided = None
         else:
-            decided = _decide_account(_conn, ref, layout["account_id"] if layout else None)
+            decided = _decide_account(_conn, identify_bank(table.preamble) if table.preamble else None, ref, layout["account_id"] if layout else None)
 
         needs = []
         if chosen is None:
@@ -211,6 +194,9 @@ def ingest_spreadsheet(
                 raise ValueError("That account isn't in your ledger any more. Choose the account again.")
             if row["account_ref"] is None and parsed.account_ref:
                 c.execute("UPDATE accounts SET account_ref = ? WHERE id = ?", (parsed.account_ref, decided))
+            if row["bank_name"] == UNKNOWN_BANK and parsed.bank:
+                # A file that names its bank tells an account of unknown bank what it is.
+                c.execute("UPDATE accounts SET bank_name = ? WHERE id = ?", (parsed.bank, decided))
             return decided, False
 
         def landed(c: sqlite3.Connection, statement: Statement) -> None:

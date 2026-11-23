@@ -273,3 +273,57 @@ class TestAMonthAlreadyAddedAsAPdf:
         ingest_pdf(str(FIXTURES / "sample_statement_nov.pdf"), conn=conn)
         got = ingest_spreadsheet(conn, fixture("sample_statement_overlap.csv"))
         assert got.rows_added == 3
+
+
+class TestOneAccountFromEitherFile:
+    """The same account's CSV (masked number, no bank named) and PDF (full number,
+    bank known) are one account, in either order."""
+
+    CSV = (
+        b"Statement of account\nAccount No,XXXXXX4321\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+        b"01/10/2026,UPI/A/1,100.00,,900.00\n02/10/2026,UPI/B/2,,50.00,950.00\n"
+    )
+
+    def _pdf_like(self, conn, ref, bank="kotak"):
+        from finance_copilot.db.queries.accounts import resolve_account
+
+        return resolve_account(conn, bank, ref)
+
+    def test_a_csv_then_the_same_accounts_pdf(self):
+        conn = _conn()
+        got = ingest_spreadsheet(conn, self.CSV, new_account_name="Kotak savings")
+        account, created = self._pdf_like(conn, "1234564321")
+        assert (account, created) == (got.account_id, False)
+        assert [r["bank_name"] for r in conn.execute("SELECT bank_name FROM accounts")] == ["kotak"]
+
+    def test_a_pdf_then_the_same_accounts_csv(self):
+        conn = _conn()
+        account, _ = self._pdf_like(conn, "1234564321")
+        conn.execute("INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) VALUES ('s0', 'kotak', 'x', '2026-09', ?)", (account,))
+        conn.commit()
+        got = ingest_spreadsheet(conn, self.CSV)
+        assert got.account_id == account and not got.account_is_new
+
+    def test_two_accounts_that_match_the_masked_number_ask_which(self):
+        conn = _conn()
+        a, _ = self._pdf_like(conn, "1234564321")
+        b, _ = self._pdf_like(conn, "9999994321")
+        for acc, sid in ((a, "s1"), (b, "s2")):
+            conn.execute("INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) VALUES (?, 'kotak', 'x', '2026-09', ?)", (sid, acc))
+        conn.commit()
+        with pytest.raises(NeedsAnswer) as asked:
+            ingest_spreadsheet(conn, self.CSV)
+        assert asked.value.needs == ["account"]
+        assert nothing_new_stored(conn)
+
+    def test_a_csv_of_unknown_bank_takes_the_known_bank_when_the_next_file_names_it(self):
+        conn = _conn()
+        ingest_spreadsheet(conn, self.CSV, new_account_name="Savings")
+        assert [r["bank_name"] for r in conn.execute("SELECT bank_name FROM accounts")] == ["generic"]
+        account, created = self._pdf_like(conn, "1234564321")
+        assert created is False
+        assert [r["bank_name"] for r in conn.execute("SELECT bank_name FROM accounts")] == ["kotak"]
+
+
+def nothing_new_stored(conn) -> bool:
+    return count(conn, "statements") == 2 and count(conn, "transactions") == 0

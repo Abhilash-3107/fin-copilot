@@ -218,6 +218,80 @@ def _period_statement(conn, stmt_id, bank, ref, account_id, month, uploaded="202
     conn.commit()
 
 
+class TestOneNumberRule:
+    """A masked number (a CSV's "XXXXXX4321") and a full one (a PDF's "1234564321")
+    are one account when the digits the mask leaves agree (four at least); an
+    account whose bank is unknown can be matched by number to a file whose bank is
+    known, and then takes the bank. Two accounts matching is never settled by
+    guessing: a new account."""
+
+    @pytest.mark.parametrize("a,b,same", [
+        ("XXXXXX4321", "1234564321", True),
+        ("1234564321", "XXXXXX4321", True),
+        ("XXXX4321", "XXXXXX4321", True),
+        ("XXXX4321", "XXXX8321", False),
+        ("XX21", "1234564321", False),  # fewer than four digits left by the mask
+        ("1234564321", "1234564321", True),
+        ("1234564321", "9999994321", False),  # two full numbers differ
+        ("XXXX4321", "12345 64321", True),
+        ("xxxx-4321", "1234-564321", True),
+        ("", "1234564321", False),
+        (None, "1234564321", False),
+    ])
+    def test_the_rule(self, a, b, same):
+        from finance_copilot.db.queries.accounts import same_number
+
+        assert same_number(a, b) is same
+
+    def test_a_full_number_joins_the_account_a_masked_one_made(self):
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "kotak", "XXXXXX4321")
+        got, created = resolve_account(conn, "kotak", "1234564321")
+        assert (got, created) == (first, False)
+        assert _account_count(conn) == 1
+
+    def test_a_masked_number_joins_the_account_a_full_one_made(self):
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "kotak", "1234564321")
+        got, created = resolve_account(conn, "kotak", "XXXXXX4321")
+        assert (got, created) == (first, False)
+
+    def test_an_account_of_unknown_bank_takes_the_known_bank_of_the_file_that_names_it(self):
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "generic", "XXXXXX4321")
+        got, created = resolve_account(conn, "kotak", "1234564321")
+        assert (got, created) == (first, False)
+        assert _row(conn, first)["bank_name"] == "kotak"
+
+    def test_an_unknown_bank_file_joins_a_known_bank_account_by_number(self):
+        conn = _make_conn()
+        first, _ = resolve_account(conn, "kotak", "1234564321")
+        got, created = resolve_account(conn, "generic", "XXXXXX4321")
+        assert (got, created) == (first, False)
+        assert _row(conn, first)["bank_name"] == "kotak"
+
+    def test_another_known_bank_with_the_same_digits_is_another_account(self):
+        conn = _make_conn()
+        resolve_account(conn, "kotak", "1234564321")
+        _, created = resolve_account(conn, "hdfc", "XXXXXX4321")
+        assert created is True
+
+    def test_two_accounts_that_match_are_not_chosen_between(self):
+        conn = _make_conn()
+        a, _ = resolve_account(conn, "kotak", "1234564321")
+        b, _ = resolve_account(conn, "kotak", "9999994321")
+        got, created = resolve_account(conn, "kotak", "XXXXXX4321")
+        assert created is True and got not in (a, b)
+
+    def test_a_full_number_beats_masked_ones_that_also_match(self):
+        conn = _make_conn()
+        resolve_account(conn, "kotak", "XXXXXX4321")
+        full = conn.execute("SELECT id FROM accounts").fetchone()[0]
+        # The same bank and the very same number is the account that holds it.
+        got, created = resolve_account(conn, "kotak", "XXXXXX4321")
+        assert (got, created) == (full, False)
+
+
 class TestTheLatestMonthDecides:
     """The next statement continues the account that holds the latest month, not the one
     uploaded last: re-uploading an old month must not drag the chain after it."""
