@@ -254,6 +254,19 @@
       "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears."
     },
     {
+      "id": "figures-comparison-leaves-out-an-account-with-nothing-to-compare",
+      "scope": "derived",
+      "path": [
+        "months.*.whatChanged[*].current",
+        "months.*.whatChanged[*].delta"
+      ],
+      "kinds": [
+        "changed"
+      ],
+      "optional": true,
+      "reason": "Each account is compared over the same days of the previous month, and an account with no statement covering them (one that was opened or first added in this month) is left out of both sides, so its payments no longer show as a change in what moved. The journey's own second account starts in the middle of the ledger, so its spending drops out of the category it was part of."
+    },
+    {
       "id": "figures-breakdown-closes-on-out",
       "scope": "derived",
       "path": "months.*.breakdownExtras",
