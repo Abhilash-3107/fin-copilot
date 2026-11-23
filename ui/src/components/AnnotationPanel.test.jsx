@@ -552,6 +552,14 @@ describe('AnnotationPanel payment waiting on a pair', () => {
     expect(screen.getByText(/The guess was Investments › Mutual Funds\./)).toBeInTheDocument()
   })
 
+  it('shows it as not sorted, with no source or confidence of the guess', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: true }, annotation: ANN })
+    await settled()
+    expect(screen.getByText('not sorted')).toBeInTheDocument()
+    expect(screen.queryByText('llm')).not.toBeInTheDocument()
+    expect(screen.queryByText('97%')).not.toBeInTheDocument()
+  })
+
   it('says nothing on a payment that is not waiting', async () => {
     renderPanel({ txn: { ...TXN, waiting_on_pair: false }, annotation: ANN })
     await settled()

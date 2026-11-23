@@ -17,7 +17,7 @@ export default function TransactionCards({
     <ul className="divide-y divide-[#1a1d27]">
       {transactions.map(txn => {
         const ann = annotationMap[txn.id]
-        const src = ann?.source ?? 'pending'
+        const src = txn.waiting_on_pair ? 'pending' : (ann?.source ?? 'pending')
         const isActive = txn.id === activeId
         const isSelected = selectable && selected?.has(txn.id)
 

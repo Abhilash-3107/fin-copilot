@@ -434,7 +434,8 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, o
 
   if (!txn) return null
 
-  const src = annotation?.source
+  // A guess held back is not an answer: no source or confidence of its own beside it.
+  const src = txn?.waiting_on_pair ? 'pending' : annotation?.source
 
   return (
     <>
@@ -537,7 +538,7 @@ function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, o
               </span>
               {/* Manual annotations are human truth, and a pair is a fact: a
                   confidence next to either reads as a contradiction. */}
-              {src !== 'manual' && src !== 'pair' && (
+              {src !== 'manual' && src !== 'pair' && !txn.waiting_on_pair && (
                 <div className="flex-1">
                   <ConfidenceBar confidence={annotation.confidence} />
                 </div>

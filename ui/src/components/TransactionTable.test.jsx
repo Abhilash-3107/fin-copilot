@@ -119,6 +119,14 @@ describe.each([['TransactionTable', TransactionTable], ['TransactionCards', Tran
     expect(within(row).queryByText('Investments › Mutual Funds')).not.toBeInTheDocument()
   })
 
+  it('shows no source or confidence of its own: the guess is not an answer', () => {
+    renderWaiting()
+    const row = screen.getByText('Abhi B').closest('tr, li')
+    expect(within(row).getByText('not sorted')).toBeInTheDocument()
+    expect(within(row).queryByText('llm')).not.toBeInTheDocument()
+    expect(within(row).queryByText('97%')).not.toBeInTheDocument()
+  })
+
   it('shows the category of a payment that is not waiting as before', () => {
     renderWaiting()
     const row = screen.getByText('Swiggy').closest('tr, li')

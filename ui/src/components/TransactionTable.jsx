@@ -59,7 +59,8 @@ export default function TransactionTable({
       <tbody>
         {transactions.map(txn => {
           const ann = annotationMap[txn.id]
-          const src = ann?.source ?? 'pending'
+          // A guess held back is not an answer: the row reads as not sorted, with no source or confidence of its own.
+          const src = txn.waiting_on_pair ? 'pending' : (ann?.source ?? 'pending')
           const isActive = txn.id === activeId
           const isSelected = selectable && selected?.has(txn.id)
           return (
@@ -112,7 +113,7 @@ export default function TransactionTable({
                     next to a "manual" pill reads as a contradiction, so show
                     nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
-                {ann?.confidence == null || src === 'manual' || src === 'pair' ? (
+                {ann?.confidence == null || txn.waiting_on_pair || src === 'manual' || src === 'pair' ? (
                   <span className="text-[#94a3b8]">-</span>
                 ) : ann.confidence >= 0.8 ? (
                   <span className="text-xs tabular-nums text-[#94a3b8]">
