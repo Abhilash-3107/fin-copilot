@@ -90,6 +90,8 @@ async function buildLedger(api) {
   await api.post('/annotations', {
     transaction_id: bankLine.id, merchant: BANK_LINE_MERCHANT, category: 'Shopping', subcategory: 'General Retail', source: 'llm', confidence: 0.9,
   })
+  // The month the planted account first appears: the earliest month with a payment of the statement it was planted on.
+  const accountMonth = rows.filter((t) => t.statement_id === statement.id).map((t) => t.txn_date.slice(0, 7)).sort()[0]
   const closing = rows.find((t) => t.statement_id === statement.id && t.raw_description === CLOSING_BALANCE_ROW)
   if (!closing) throw new Error(`The fixture statement has no payment described ${CLOSING_BALANCE_ROW}`)
   const categories = await api.get('/categories')
@@ -107,7 +109,7 @@ async function buildLedger(api) {
   return {
     today,
     planted: {
-      ids: { closingBalanceRow: closing.id, bankLineRow: bankLine.id, duplicateSubcategory: DUPLICATE_SUBCATEGORY },
+      ids: { closingBalanceRow: closing.id, bankLineRow: bankLine.id, duplicateSubcategory: DUPLICATE_SUBCATEGORY, accountMonth },
       duplicateOf: restaurants.id,
       typedMerchant: { id: typed.id, value: TYPED_MERCHANT },
     },

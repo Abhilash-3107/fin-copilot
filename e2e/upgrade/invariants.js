@@ -107,6 +107,39 @@ function figuresAgreeWithEachOther(before, after) {
   return problems
 }
 
+/**
+ * A month either shows a comparison or says why it does not, and what it shows is one set of figures:
+ * every delta is this month's figure minus the previous month's to the paisa, the four tiles are
+ * measured from the same accounts and days (Kept is In minus Out minus Invested on both sides, so a
+ * base that differed from the figure shown on any tile would break it), and a month with no
+ * comparison lists nothing under What changed. Only the first month of a ledger has no comparison
+ * and nothing to say about it.
+ */
+function comparisonsAreHonest(before, after) {
+  const problems = []
+  const months = Object.keys(after.figures.months).sort()
+  for (const [month, m] of Object.entries(after.figures.months)) {
+    const note = m.comparisonNote ?? []
+    if (m.comparison === null) {
+      if (month !== months[0] && note.length === 0) problems.push(`${month}: no comparison and no reason given`)
+      if (m.whatChanged.length > 0) problems.push(`${month}: no comparison, yet What changed lists ${m.whatChanged.length} rows`)
+      continue
+    }
+    if (note.length > 0) problems.push(`${month}: a comparison is shown and also a reason for having none (${note.join('; ')})`)
+    const was = m.comparison
+    if (cents(m.kept - (m.in - m.out - m.invested)) !== 0) problems.push(`${month}: Kept ${m.kept} is not In - Out - Invested`)
+    if (cents(was.kept - (was.in - was.out - was.invested)) !== 0) {
+      problems.push(`${month}: the previous month's Kept ${was.kept} is not its In - Out - Invested (the tiles are not measured from one set of payments)`)
+    }
+    for (const row of m.whatChanged) {
+      if (cents(row.delta) !== cents(row.current - row.previous)) {
+        problems.push(`${month}: ${row.category} moved by ${row.delta}, but ${row.current} less ${row.previous} is ${cents(row.current - row.previous)}`)
+      }
+    }
+  }
+  return problems
+}
+
 /** Teach Me holds every payment with no category, so each one it newly holds had none. */
 function queueOnlyGainsUnsortedPayments(before, after) {
   const unsorted = new Set(
@@ -569,6 +602,7 @@ export function checkInvariants(before, after) {
     ...peopleFiguresAddUpToTheOldTotals(before, after),
     ...unsortedOnlyGrows(before, after),
     ...figuresAgreeWithEachOther(before, after),
+    ...comparisonsAreHonest(before, after),
     ...queueOnlyGainsUnsortedPayments(before, after),
   ]
 }

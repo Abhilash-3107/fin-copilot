@@ -164,6 +164,7 @@ const FIGURES_FROM_INSIGHTS = {
     kept: i.verdict.kept,
     keptHeadline: i.verdict.invested + i.verdict.kept,
     comparison: pickTotals(i.verdict.prev),
+    comparisonNote: [],
     whatChanged: i.what_changed,
     breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
     breakdownExtras: null,
@@ -182,6 +183,8 @@ const FIGURES_FROM_INSIGHTS = {
     kept: i.verdict.kept,
     keptHeadline: i.verdict.kept,
     comparison: pickTotals(i.verdict.prev),
+    // Why a month shows no comparison, one reason per account that could not be compared.
+    comparisonNote: i.comparison_note.map((n) => n.reason),
     whatChanged: i.what_changed,
     breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
     breakdownExtras: i.breakdown.extras,

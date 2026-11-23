@@ -13,7 +13,8 @@ const today = '2026-11-15'
 const BANK_LINE = 'UPI/RAVI KUMAR SHA/120777386275/self'
 const TYPED = 'Chai/Stall/Koramangala'
 const planted = {
-  ids: { closingBalanceRow: 'R3', bankLineRow: 'R4', duplicateSubcategory: 'dup_restaurants' },
+  // The month the journey's own account first appears in: a month with no comparison, and a reason why.
+  ids: { closingBalanceRow: 'R3', bankLineRow: 'R4', duplicateSubcategory: 'dup_restaurants', accountMonth: '2026-10' },
   typedMerchant: { id: 'R5', value: TYPED },
 }
 
@@ -34,7 +35,7 @@ const payment = (id, over = {}) => ({
 const sortedPayments = (transactions) => transactions.filter((t) => t.annotation_id !== null).length
 const member = (t) => ({ id: t.id, transaction_id: t.id, upi_meta: t.upi_meta })
 const month = (over) => ({
-  in: 1000, out: 600, invested: 100, kept: 300, keptHeadline: 400, comparison: { in: 0, out: 0, invested: 0, kept: 0 },
+  in: 1000, out: 600, invested: 100, kept: 300, keptHeadline: 400, comparison: { in: 0, out: 0, invested: 0, kept: 0 }, comparisonNote: [],
   whatChanged: [{ category: 'Housing', delta: 500, current: 500, previous: 0 }], breakdown: [{ category: 'Housing', net: 500 }],
   breakdownExtras: null, recurringHeader: 80, committedEachMonth: 90, unexplained: { count: 1, total: 100 },
   people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], recurring: [CHAI],
@@ -102,6 +103,7 @@ function ledgerBefore() {
     months: {
       '2026-08': month(),
       '2026-09': month({ comparison: { in: 900, out: 500, invested: 100, kept: 300 } }),
+      '2026-10': month({ comparison: { in: 900, out: 500, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 50, current: 500, previous: 450 }] }),
       '2026-11': month({ comparison: { in: 800, out: 400, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 100, current: 500, previous: 400 }] }),
     },
     people: [{ id: 'p1', sent: 300 }],
@@ -196,6 +198,11 @@ function upgrade(before) {
   }
   m['2026-08'].comparison = null
   m['2026-08'].whatChanged = []
+  // The month the second account first appears in: nothing before it to compare it with, so no comparison, and the reason.
+  m['2026-10'].comparison = null
+  m['2026-10'].whatChanged = []
+  m['2026-10'].comparisonNote = ['was added in October']
+  m['2026-10'].people = []
   m['2026-11'].comparison = { in: 800, out: 300, invested: 100, kept: 400 }
   m['2026-11'].whatChanged = []
   m['2026-11'].unexplained = { count: 2, total: 250 }
@@ -300,6 +307,52 @@ const regressions = {
   'the first month keeps comparing with zeros': [
     (a) => (a.figures.months['2026-08'].comparison = { in: 0, out: 0, invested: 0, kept: 0 }),
     /did not happen/,
+  ],
+  'the new account\'s month keeps comparing without it': [
+    (a, b) => (a.figures.months['2026-10'].comparison = b.figures.months['2026-10'].comparison),
+    /"figures-no-comparison-when-an-account-is-new" \(derived\) did not happen/,
+  ],
+  'the new account\'s month gives no reason': [
+    (a) => (a.figures.months['2026-10'].comparisonNote = []),
+    /2026-10: no comparison and no reason given/,
+  ],
+  'the new account\'s month keeps a What changed row': [
+    (a) => (a.figures.months['2026-10'].whatChanged = [{ category: 'Housing', delta: 50, current: 500, previous: 450 }]),
+    /2026-10: no comparison, yet What changed lists 1 rows/,
+  ],
+  'a month shows a comparison and a reason for having none': [
+    (a) => (a.figures.months['2026-09'].comparisonNote = ['was added in September']),
+    /2026-09: a comparison is shown and also a reason for having none/,
+  ],
+  'a full month is no longer compared when no account is new in it': [
+    (a) => {
+      a.figures.months['2026-09'].comparison = null
+      a.figures.months['2026-09'].whatChanged = []
+    },
+    /months\.2026-09\.comparison|2026-09: no comparison and no reason given/,
+  ],
+  'a What changed delta in a full month is off by 777': [
+    (a) => (a.figures.months['2026-09'].whatChanged[0].delta += 777),
+    /months\.2026-09\.whatChanged\[Housing\]\.delta|Housing moved by 1277/,
+  ],
+  'a What changed figure in a full month is off by 777': [
+    (a) => (a.figures.months['2026-09'].whatChanged[0].current += 777),
+    /months\.2026-09\.whatChanged\[Housing\]\.current/,
+  ],
+  'a What changed previous figure in a full month is off by 777': [
+    (a) => (a.figures.months['2026-09'].whatChanged[0].previous += 777),
+    /months\.2026-09\.whatChanged\[Housing\]\.previous/,
+  ],
+  'the comparison\'s Out in a full month is off by 777': [
+    (a) => (a.figures.months['2026-09'].comparison.out += 777),
+    /months\.2026-09\.comparison\.out/,
+  ],
+  'the previous month\'s Kept is not measured from the same payments as the other tiles': [
+    (a, b) => {
+      a.figures.months['2026-09'].comparison.kept = 999
+      b.figures.months['2026-09'].comparison.kept = 999
+    },
+    /the previous month's Kept 999 is not its In - Out - Invested/,
   ],
   'every people panel is empty': [
     (a) => Object.values(a.figures.months).forEach((m) => (m.people = [])),

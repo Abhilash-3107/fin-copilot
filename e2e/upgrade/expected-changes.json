@@ -254,17 +254,32 @@
       "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears."
     },
     {
-      "id": "figures-comparison-leaves-out-an-account-with-nothing-to-compare",
+      "id": "figures-no-comparison-when-an-account-is-new",
       "scope": "derived",
-      "path": [
-        "months.*.whatChanged[*].current",
-        "months.*.whatChanged[*].delta"
-      ],
+      "path": "months.{accountMonth}.comparison",
       "kinds": [
         "changed"
       ],
-      "optional": true,
-      "reason": "Each account is compared over the same days of the previous month, and an account with no statement covering them (one that was opened or first added in this month) is left out of both sides, so its payments no longer show as a change in what moved. The journey's own second account starts in the middle of the ledger, so its spending drops out of the category it was part of."
+      "to": null,
+      "reason": "A month is compared only when every account in it can be compared with the previous month. The journey's own account has its first statement in this month, so it has nothing before it to be compared with, and the month shows no comparison at all (it used to compare the accounts that could be, which read as a change in the whole)."
+    },
+    {
+      "id": "figures-no-changes-when-an-account-is-new",
+      "scope": "derived",
+      "path": "months.{accountMonth}.whatChanged[*]",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "What changed lists nothing for a month that has no comparison."
+    },
+    {
+      "id": "figures-comparison-note-when-an-account-is-new",
+      "scope": "derived",
+      "path": "months.{accountMonth}.comparisonNote[*]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "The month says why it has no comparison, naming the account that was added in it."
     },
     {
       "id": "figures-breakdown-closes-on-out",
