@@ -350,7 +350,7 @@ class TestPeriodWindows:
             "month": "2026-02", "start": "2026-02-01", "end": "2026-02-28",
             "covered_through": "2026-02-28", "partial": False, "counted": 1, "short": [],
         }
-        assert s["comparison"] == {"month": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}
+        assert s["comparison"] == {"month": "2026-01", "start": "2026-01-01", "end": "2026-01-31", "uniform": True}
         assert s["verdict"]["prev"]["money_out"] == 200
 
     def test_covered_to_the_31st_against_a_30_day_previous_month(self, conn):
@@ -376,7 +376,7 @@ class TestPeriodWindows:
             # The fixture's statement belongs to no account.
             "short": [{"account_id": None, "account_label": "Other statements", "covered_through": "2026-11-15"}],
         }
-        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15"}
+        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15", "uniform": True}
         assert s["verdict"]["money_out"] == 30
         assert s["verdict"]["prev"]["money_out"] == 300  # 1st, 10th, 15th only
         shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
@@ -408,7 +408,7 @@ class TestPeriodWindows:
         seed_txn(conn, "2026-01-01", 10, "debit", category="Shopping")
         seed_txn(conn, "2026-01-12", 10, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-01")
-        assert s["comparison"] == {"month": "2025-12", "start": "2025-12-01", "end": "2025-12-12"}
+        assert s["comparison"] == {"month": "2025-12", "start": "2025-12-01", "end": "2025-12-12", "uniform": True}
         assert s["verdict"]["prev"]["money_out"] == 100
 
     def test_first_month_of_the_ledger_has_no_comparison(self, conn):

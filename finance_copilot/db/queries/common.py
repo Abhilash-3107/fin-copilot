@@ -112,3 +112,33 @@ def account_scope_sql(account_id: str | None, txn: str = "t") -> tuple[str, tupl
     """account_condition_sql as " AND ..." (or nothing), for appending to a WHERE clause."""
     condition, params = account_condition_sql(account_id, txn)
     return (f" AND {condition}", params) if condition else ("", ())
+
+
+# A window that holds every account's payments, for windows_condition_sql.
+ALL_ACCOUNTS = "*"
+
+
+def windows_condition_sql(windows: list[tuple[str | None, str, str]], txn: str = "t") -> tuple[str, tuple]:
+    """The condition, and its parameters, that limits payments `txn` to a set of windows,
+    each (account_id, first_day, last_day): the payments of that account dated in the range.
+    The account is ALL_ACCOUNTS for every account, or None for the statements that belong to
+    no account. No windows match nothing.
+
+    The one way a comparison is cut: each account has its own window (the same days of the
+    previous month as it is covered to this month), and the figures on both sides of a delta
+    are summed over those windows, so they are over the same accounts and the same days."""
+    if not windows:
+        return "0", ()
+    parts, params = [], []
+    for account_id, first, last in windows:
+        part = f"(date({txn}.txn_date) BETWEEN ? AND ?"
+        params += [first, last]
+        if account_id == ALL_ACCOUNTS:
+            part += ")"
+        elif account_id is None:
+            part += f" AND {txn}.statement_id IN (SELECT id FROM statements WHERE account_id IS NULL))"
+        else:
+            part += f" AND {txn}.statement_id IN (SELECT id FROM statements WHERE account_id = ?))"
+            params.append(account_id)
+        parts.append(part)
+    return "(" + " OR ".join(parts) + ")", tuple(params)

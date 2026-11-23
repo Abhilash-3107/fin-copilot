@@ -66,10 +66,12 @@ def touching(spans: list[dict], first: str, last: str) -> list[dict]:
 
 
 def covered_through(spans: list[dict], first: str, last: str) -> str | None:
-    """The last day of [first, last] the account's statements cover, or None when none
-    touches it."""
-    found = touching(spans, first, last)
-    return max(min(s["end"], last) for s in found) if found else None
+    """The last day of the first unbroken stretch of [first, last] that the account's
+    statements cover, or None when none touches it. A hole inside the range ends the
+    stretch: statements printing 1 to 10 and 20 to 30 Nov cover the month through the 10th,
+    so the month reads as partial, as the grid shows it (two ranges)."""
+    ranges = covered_ranges(spans, first, last)
+    return ranges[0][1] if ranges else None
 
 
 def covered_ranges(spans: list[dict], first: str, last: str) -> list[tuple[str, str]]:

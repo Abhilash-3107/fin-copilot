@@ -41,30 +41,52 @@ small summary payload instead of the whole transaction table. Definitions:
   refunded after cancellation). Counterparty-matched refunds are exempt from
   the cap because one refund credit can cover several past debits from the
   same merchant.
-- Everything is computed over a date range, not a month string, so a month
-  still in progress is compared like for like: when the ledger only covers a
-  month up to day D, the comparison window is days 1..D of the previous month,
-  and there is no comparison at all when the ledger does not reach back to the
-  start of that window (see _period_windows).
+- Everything is computed over date windows, not a month string, so a month
+  still in progress is compared like for like. A month is covered to a different
+  day in each account, so each account is compared over the same days of the
+  previous month as it is covered to this month, and an account that cannot be
+  compared (a new one, or one with a gap in the previous month) is left out of both
+  sides, never counted as zero (see _period_windows).
+
+Additivity across accounts (summarize_insights with account_id): the figures of the
+accounts add up to the figures for all accounts for
+- the verdict tiles (In, Out, Invested, Kept, Earned), and their previous month and
+  the same-days figure the deltas are measured against (`verdict.prev` and
+  `verdict.compared`);
+- each category's gross, net, offsets (an offset counts in the account of the debit it
+  pays back), previous net and delta, for every category that has spending this month
+  in the accounts that list it; the unsorted figure and the sorting coverage; and the
+  people ledger, each person's sent, received, net and count, and the unmatched payments.
+They do not add up for
+- recurring charges: a charge is recurring when it repeats across months at one
+  merchant, which is judged over the payments in view, so two accounts' halves of a
+  pattern may each fall short and the whole may qualify (or the reverse);
+- top merchants: ranked and cut to eight in each view;
+- what changed: the top three shifts of each view;
+- the balance line: always one account's, never a sum;
+- the period itself: a month is complete only when every counted account is.
 """
 from __future__ import annotations
 
 import calendar
 import sqlite3
+import zlib
 from collections import Counter, defaultdict
 from datetime import date
 from statistics import median
 
 from finance_copilot.db.queries.accounts import account_label, account_labels
 from finance_copilot.db.queries.common import (
+    ALL_ACCOUNTS,
     UNCATEGORIZED,
     account_scope_sql,
     effective_category_sql,
     effective_subcategory_sql,
     unsorted_sql,
     waiting_on_pair_sql,
+    windows_condition_sql,
 )
-from finance_copilot.db.queries.coverage import covered_through, statement_spans
+from finance_copilot.db.queries.coverage import covered_ranges, covered_through, statement_spans
 from finance_copilot.db.queries.payee import payee_labels
 from finance_copilot.db.queries.transactions import payment_months
 
@@ -96,28 +118,39 @@ def _month_bounds(month: str) -> tuple[date, date]:
 
 def _period_windows(
     conn: sqlite3.Connection, month: str, account_id: str | None = None
-) -> tuple[dict, dict | None]:
-    """How far the ledger covers `month`, and the like-for-like window to compare with.
+) -> tuple[dict, dict | None, dict | None]:
+    """How far the ledger covers `month`, and the like-for-like windows to compare with.
 
-    Returns (period, comparison). period = {month, start, end, covered_through,
-    partial, counted, short}: start/end are the calendar bounds of the month, covered_through is
-    the last day every account is covered to. A month is complete only when every account
-    that has a statement touching it is covered to the month's last day (coverage.py: the
-    printed period when a statement has one, else its payments, run on to the month's end
-    when the account's next statement follows). An account with no statement touching the
-    month does not hold it back (the books grid shows it as a gap). With `account_id`,
-    only that account counts. `short` lists the accounts that are covered to less than the
-    whole month, each with the day it is covered to ({account_id, account_label,
-    covered_through}), so the page can say which one is behind; `counted` is how many
-    accounts the month was judged by.
+    Returns (period, comparison, windows).
 
-    comparison = {month, start, end} is the previous month when `month` is complete,
-    or only its first N days when `month` is covered to day N (N being the earliest day
-    any counted account is covered to), so a half month is never scored against a whole
-    one. It is None when the previous month has no payments at all in the accounts
-    counted (a gap is not a month of zero spend), or when their coverage does not reach
-    back to the start of that window (the first month of a ledger has nothing to
-    compare with).
+    period = {month, start, end, covered_through, partial, counted, short}: start/end are
+    the calendar bounds of the month, covered_through is the earliest day any counted
+    account is covered to. A month is complete only when every account that has a
+    statement touching it is covered to the month's last day (coverage.py: the printed
+    period when a statement has one, else its payments, run on to the month's end when the
+    account's next statement follows; a hole inside the month ends the coverage there).
+    An account with no statement touching the month does not hold it back (the books grid
+    shows it as a gap). With `account_id`, only that account counts. `short` lists the
+    accounts covered to less than the whole month, each with the day it is covered to
+    ({account_id, account_label, covered_through}), so the page can say which one is
+    behind; `counted` is how many accounts the month was judged by.
+
+    The comparison is cut account by account, because a month is covered to a different
+    day in each: an account covered to day N is compared with days 1..N of the previous
+    month (the whole of it when the account is covered to the month's last day, and never
+    past the previous month's last day). An account whose statements do not cover that
+    window from its first day, or that has no payment at all in the previous month, is
+    left out: a gap, a new account or a quiet one is not a month of zero, and must not
+    show as a change. `windows` = {"current": [...], "previous": [...]} holds one
+    (account_id, first_day, last_day) for each account that is compared, on this month and
+    on the previous one; every figure on either side of a delta is summed over them
+    (common.windows_condition_sql), so both sides are over the same accounts and days, and
+    All accounts is exactly the sum of its accounts.
+
+    comparison = {month, start, end, uniform}: the previous month, `end` the latest window
+    end, and `uniform` false when the accounts' windows end on different days (the page
+    then says "same days for each account"). comparison and windows are None when no
+    account can be compared (the first month of a ledger has nothing to compare with).
 
     The caller decides, from the clock, whether a partial month is really in progress.
     The comparison over covered days is like for like either way.
@@ -153,30 +186,43 @@ def _period_windows(
         ),
     }
 
-    prev = _prev_month(month)
-    prev_first, prev_last = _month_bounds(prev)
-    if partial:
-        covered_day = date.fromisoformat(through).day
-        window_end = prev_first.replace(day=min(covered_day, prev_last.day))
-    else:
-        window_end = prev_last
-    scope, scope_params = account_scope_sql(account_id)
-    prev_has_data = conn.execute(
-        f"SELECT 1 FROM transactions t WHERE date(t.txn_date) BETWEEN ? AND ?{scope} LIMIT 1",
-        (prev_first.isoformat(), prev_last.isoformat(), *scope_params),
-    ).fetchone()
-    ledger_start = min((s["start"] for items in spans.values() for s in items), default=None)
-    if not prev_has_data or ledger_start is None or ledger_start > prev_first.isoformat():
-        return period, None
-    return period, {
-        "month": prev,
-        "start": prev_first.isoformat(),
-        "end": window_end.isoformat(),
+    prev_first, prev_last = _month_bounds(_prev_month(month))
+    prev_first_iso = prev_first.isoformat()
+    paid = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT s.account_id FROM transactions t JOIN statements s ON s.id = t.statement_id "
+            "WHERE date(t.txn_date) BETWEEN ? AND ?",
+            (prev_first_iso, prev_last.isoformat()),
+        )
     }
+    current, previous = [], []
+    for acct, day in sorted(covered.items(), key=lambda item: (item[0] is None, item[0] or "")):
+        if day >= last_iso:
+            window_end = prev_last
+        else:
+            window_end = prev_first.replace(day=min(date.fromisoformat(day).day, prev_last.day))
+        window = (prev_first_iso, window_end.isoformat())
+        if acct in paid and covered_ranges(spans[acct], *window) == [window]:
+            current.append((acct, first_iso, day))
+            previous.append((acct, *window))
+    if not previous:
+        return period, None, None
+    ends = {end for _acct, _start, end in previous}
+    comparison = {
+        "month": _prev_month(month),
+        "start": prev_first_iso,
+        "end": max(ends),
+        "uniform": len(ends) == 1,
+    }
+    return period, comparison, {"current": current, "previous": previous}
 
 
 def _is_spend(category: str | None) -> bool:
-    return (category or "Uncategorized") not in NON_SPEND_CATEGORIES
+    """Whether a debit in this category can be paid back as spending. Uncategorized is not
+    one: nothing says what an unsorted payment was, so a refund is never taken off it. The
+    Uncategorized row therefore always shows the unsorted figure, whatever refunds arrive."""
+    category = category or UNCATEGORIZED
+    return category not in NON_SPEND_CATEGORIES and category != UNCATEGORIZED
 
 
 def _merge_merchant_keys(keys: list[str]) -> dict[str, str]:
@@ -206,8 +252,9 @@ def _merge_merchant_keys(keys: list[str]) -> dict[str, str]:
 # Memo for _spend_offsets, keyed by database file. The computation walks the
 # whole ledger (correctness needs the full set of settled credit ids for the
 # people ledger), so it can't be scoped to the requested month; instead cache it
-# and invalidate on a cheap fingerprint of everything that can change an offset.
-# Dashboard + Money Map load it back-to-back for the same state, which this
+# and invalidate on a fingerprint of everything that can change an offset. On the 20,000-row
+# synthetic ledger the walk takes about 350 ms and the fingerprint about 30 ms, so the memo
+# earns its place: Dashboard + Money Map load back-to-back for the same state, which this
 # collapses to one walk. Keyed by db path so distinct databases (notably each
 # in-memory test DB) never collide on a coincidentally-equal fingerprint.
 _offsets_cache: dict = {}
@@ -222,19 +269,32 @@ def _db_identity(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-def _offsets_fingerprint(conn: sqlite3.Connection) -> tuple:
-    """Signature of every input to _spend_offsets, sensitive to *any* row change.
+# Everything _spend_offsets reads, as (rowid, the columns that decide an offset). Annotations
+# carry the category and source (the effective category also reads whether a payment waits on
+# a pair, which depends on the payments, so those are here too), statements carry the account.
+_OFFSET_INPUTS = (
+    "SELECT rowid, statement_id, txn_date, amount, debit_credit, counterparty_key FROM transactions",
+    "SELECT rowid, transaction_id, category, subcategory, source FROM annotations",
+    "SELECT rowid, txn_a, txn_b, link_type FROM transaction_links",
+    "SELECT rowid, group_id, transaction_id, txn_type FROM transaction_group_members",
+    "SELECT rowid, account_id FROM statements",
+)
 
-    Two independent change counters make it complete:
-    - conn.total_changes: SQLite's running count of rows inserted/updated/deleted
-      through *this* connection. Catches same-connection edits - including a
-      category re-label that leaves all row counts unchanged - which a
-      count/timestamp fingerprint misses at datetime()'s one-second resolution.
-    - data_version (PRAGMA): bumps when *another* connection commits, catching
-      writes this connection didn't make.
-    Together they change on every committed modification from any source."""
-    data_version = conn.execute("PRAGMA data_version").fetchone()[0]
-    return (conn.total_changes, data_version)
+
+def _offsets_fingerprint(conn: sqlite3.Connection) -> tuple:
+    """Signature of every input to _spend_offsets, sensitive to any change visible to this
+    connection, whichever connection made it.
+
+    Each request opens its own connection, and a fresh connection always reports
+    total_changes 0 and data_version 1, so neither counter can tell one request's ledger
+    from the next. The signature is therefore read from the data: a checksum of every row
+    that decides an offset (a category re-label that leaves every count unchanged moves it).
+    It reads those rows once, which costs a few percent of the walk it saves."""
+    checksum = 0
+    for query in _OFFSET_INPUTS:
+        for row in conn.execute(query):
+            checksum = zlib.crc32(repr(tuple(row)).encode(), checksum)
+    return (checksum,)
 
 
 def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
@@ -242,18 +302,22 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
 
     Which credit nets which debit is decided over the whole ledger, whatever account is
     being looked at: a refund in one account can pay back a purchase in another, and a
-    debit's capacity is used up once. Where an offset is *counted* is the account that
-    holds the credit row. A view of one account therefore nets the credits that arrived
-    in it, in the category of the debit each pays back (a refund received in SBI for a
-    Kotak purchase shows as a negative row in SBI's view, and nothing in Kotak's); all
-    accounts together net every credit once, as before. Each view's breakdown still closes
-    on its Out, because the rows and the "refunds and paybacks" line use the same offsets.
+    debit's capacity is used up once. An offset is counted in the account of the debit it
+    pays back, on the day the credit arrived, in that debit's category: for a link, for each
+    debit's share of a group credit, and for a counterparty or amount match. A view of one
+    account therefore nets, in each category, the refunds of its own purchases whichever
+    account they arrived in, and never shows a negative row for a refund of something it did
+    not buy; all accounts together net every credit once, so the accounts' figures add up to
+    the figures for all. The credit itself still counts in the In of the account it arrived
+    in. Only a credit with a spend category and no debit behind it stays with the credit's
+    account. An unsorted debit is never offset (_is_spend). Each view's breakdown closes on
+    its Out, because its rows and its "refunds and paybacks" line use the same offsets.
 
     Returns (category_offsets, used_credit_ids):
-    - category_offsets: {(credit_date, category, credit_account_id): amount} for offsets
+    - category_offsets: {(credit_date, category, debit_account_id): amount} for offsets
       attributable to a spend category, landing on the day the credit arrived
-      (sum them over any range with _offsets_in_range). A credit attributable to no category nets nothing;
-      it still shows up in the verdict's cash view as money in.
+      (sum them over any window with _offsets_in_windows). A credit attributable to no
+      category nets nothing; it still shows up in the verdict's cash view as money in.
     - used_credit_ids: credit transactions consumed as offsets, so other
       panels (the people ledger) can avoid counting a settled share twice.
     """
@@ -314,7 +378,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
         debit_category = row[f"{debit}_category"]
         if _is_spend(debit_category):
             category_offsets[
-                (row[f"{credit}_date"], debit_category or "Uncategorized", row[f"{credit}_account"])
+                (row[f"{credit}_date"], debit_category, row[f"{debit}_account"])
             ] += amount
 
     # 2. Group credits: shares friends paid back inside an expense group,
@@ -363,7 +427,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                 share = attributable * cap / total_capacity
                 remaining[deb["id"]] -= share
                 category_offsets[
-                    (cred["credit_date"], deb["category"] or "Uncategorized", cred["account_id"])
+                    (cred["credit_date"], deb["category"], deb["account_id"])
                 ] += share
 
     # 3. Unlinked credits nobody grouped or linked. A credit annotated with a
@@ -401,7 +465,8 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
         if row["counterparty_key"]:
             match = conn.execute(
                 f"""
-                SELECT {effective_category_sql("a")} AS category
+                SELECT {effective_category_sql("a")} AS category,
+                       (SELECT account_id FROM statements WHERE id = t.statement_id) AS account_id
                 FROM transactions t
                 JOIN annotations a ON a.transaction_id = t.id
                 WHERE t.debit_credit = 'debit' AND t.counterparty_key = ?
@@ -411,18 +476,17 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                 (row["counterparty_key"], row["txn_date"]),
             ).fetchone()
             if match and _is_spend(match["category"]):
-                category_offsets[
-                    (row["credit_date"], match["category"] or "Uncategorized", row["account_id"])
-                ] += row["amount"]
+                category_offsets[(row["credit_date"], match["category"], match["account_id"])] += row["amount"]
                 continue
         amount_match = conn.execute(
             f"""
-            SELECT t.id, t.amount, {effective_category_sql("a")} AS category
+            SELECT t.id, t.amount, {effective_category_sql("a")} AS category,
+                   (SELECT account_id FROM statements WHERE id = t.statement_id) AS account_id
             FROM transactions t
             LEFT JOIN annotations a ON a.transaction_id = t.id
             WHERE t.debit_credit = 'debit' AND t.amount = ?
               AND t.txn_date <= ? AND t.txn_date >= date(?, '-60 days')
-              AND {effective_category_sql("a")} NOT IN ({placeholders})
+              AND {effective_category_sql("a")} NOT IN ({placeholders}, '{UNCATEGORIZED}')
             ORDER BY t.txn_date DESC LIMIT 1
             """,
             (row["amount"], row["txn_date"], row["txn_date"], *NON_SPEND_CATEGORIES),
@@ -430,9 +494,7 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
         if amount_match:
             take = _consume(amount_match["id"], amount_match["amount"], row["amount"])
             if take > 0:
-                category_offsets[
-                    (row["credit_date"], amount_match["category"] or "Uncategorized", row["account_id"])
-                ] += take
+                category_offsets[(row["credit_date"], amount_match["category"], amount_match["account_id"])] += take
 
     result = (dict(category_offsets), used_credit_ids)
     if db_id is not None:
@@ -441,27 +503,30 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
     return dict(result[0]), set(result[1])
 
 
-def _offsets_in_range(
-    cat_offsets: dict, start: str, end: str, account_id: str | None = None
-) -> dict[str, float]:
-    """Offsets whose credit arrived in [start, end] (in the account, when one is
-    asked for), summed per category."""
+def _offsets_in_windows(cat_offsets: dict, windows: list[tuple[str | None, str, str]]) -> dict[str, float]:
+    """Offsets that count in the windows (common.windows_condition_sql's), summed per category.
+    An offset counts in a window when its credit arrived in the window's days and it is
+    taken off a debit of the window's account."""
     out: dict[str, float] = defaultdict(float)
-    for (credit_date, category, credit_account), amount in cat_offsets.items():
-        if start <= credit_date <= end and (account_id is None or credit_account == account_id):
-            out[category] += amount
+    for (credit_date, category, debit_account), amount in cat_offsets.items():
+        for window_account, start, end in windows:
+            if start <= credit_date <= end and window_account in (ALL_ACCOUNTS, debit_account):
+                out[category] += amount
+                break
     return out
 
 
-def _verdict(conn: sqlite3.Connection, start: str, end: str, account_id: str | None = None) -> dict:
-    """Cash-view tiles for [start, end]; see the module docstring for the model.
+def _verdict(conn: sqlite3.Connection, windows: list[tuple[str | None, str, str]]) -> dict:
+    """Cash-view tiles over the payments in `windows` (common.windows_condition_sql: one
+    month of one account or of all, or the per-account windows of a comparison); see the
+    module docstring for the model.
 
     No linking, netting or heuristics feed these numbers, so a missed
     reimbursement can never make the tiles contradict each other - a friend's
     unmatched payback simply shows up inside In (and other_in).
     """
     excluded = ",".join("?" for _ in OUT_EXCLUDED_CATEGORIES)
-    scope, scope_params = account_scope_sql(account_id)
+    condition, condition_params = windows_condition_sql(windows)
     row = conn.execute(
         f"""
         SELECT
@@ -483,10 +548,10 @@ def _verdict(conn: sqlite3.Connection, start: str, end: str, account_id: str | N
                  {effective_subcategory_sql("a")} AS sub
           FROM transactions t
           LEFT JOIN annotations a ON a.transaction_id = t.id
-          WHERE date(t.txn_date) BETWEEN ? AND ?{scope}
+          WHERE {condition}
         ) t
         """,
-        (*OUT_EXCLUDED_CATEGORIES, start, end, *scope_params),
+        (*OUT_EXCLUDED_CATEGORIES, *condition_params),
     ).fetchone()
     money_in, money_out = row["money_in"], row["money_out"]
     invested = row["invested"]
@@ -503,11 +568,11 @@ def _verdict(conn: sqlite3.Connection, start: str, end: str, account_id: str | N
 
 
 def _categories_for_range(
-    conn: sqlite3.Connection, start: str, end: str, cat_offsets: dict, account_id: str | None = None
+    conn: sqlite3.Connection, windows: list[tuple[str | None, str, str]], cat_offsets: dict
 ) -> dict[str, dict]:
-    """Net spend per category over [start, end], with a subcategory drill-down."""
+    """Net spend per category over the payments in `windows`, with a subcategory drill-down."""
     placeholders = ",".join("?" for _ in NON_SPEND_CATEGORIES)
-    scope, scope_params = account_scope_sql(account_id)
+    condition, condition_params = windows_condition_sql(windows)
     rows = conn.execute(
         f"""
         SELECT category, subcategory, COUNT(*) AS n, SUM(amount) AS total
@@ -516,12 +581,12 @@ def _categories_for_range(
                  {effective_subcategory_sql("a")} AS subcategory, t.amount
           FROM transactions t
           LEFT JOIN annotations a ON a.transaction_id = t.id
-          WHERE t.debit_credit = 'debit' AND date(t.txn_date) BETWEEN ? AND ?{scope}
+          WHERE t.debit_credit = 'debit' AND {condition}
         )
         WHERE category NOT IN ({placeholders})
         GROUP BY 1, 2
         """,
-        (start, end, *scope_params, *NON_SPEND_CATEGORIES),
+        (*condition_params, *NON_SPEND_CATEGORIES),
     ).fetchall()
     categories: dict[str, dict] = {}
     for row in rows:
@@ -536,7 +601,7 @@ def _categories_for_range(
         sub["count"] += row["n"]
     # Offsets can land in a window where the category had no debit (e.g. a
     # refund arriving a month later); surface those as negative-net rows.
-    offsets = _offsets_in_range(cat_offsets, start, end, account_id)
+    offsets = _offsets_in_windows(cat_offsets, windows)
     for category in offsets:
         if category not in categories:
             categories[category] = {
@@ -924,16 +989,25 @@ def summarize_insights(
     if month is None or month not in months:
         month = months[-1]
     prev = _prev_month(month)
-    period, comparison = _period_windows(conn, month, account_id)
+    period, comparison, windows = _period_windows(conn, month, account_id)
     start, end = period["start"], period["end"]
+    whole = [(account_id or ALL_ACCOUNTS, start, end)]
 
     cat_offsets, settled_ids = _spend_offsets(conn)
 
-    current = _categories_for_range(conn, start, end, cat_offsets, account_id)
-    previous = (
-        _categories_for_range(conn, comparison["start"], comparison["end"], cat_offsets, account_id)
-        if comparison else None
-    )
+    current = _categories_for_range(conn, whole, cat_offsets)
+    # What the deltas measure: this month over the accounts and days the comparison covers
+    # (all of the month, in the usual case where every account is covered to its end), against
+    # the same accounts' days of the previous month.
+    if windows is None:
+        compared, previous = None, None
+    else:
+        # Every counted account compared over the whole month: the month itself.
+        whole_month = len(windows["current"]) == period["counted"] and all(
+            (first, last) == (start, end) for _acct, first, last in windows["current"]
+        )
+        compared = current if whole_month else _categories_for_range(conn, windows["current"], cat_offsets)
+        previous = _categories_for_range(conn, windows["previous"], cat_offsets)
 
     categories = [
         {
@@ -944,7 +1018,7 @@ def summarize_insights(
             "count": data["count"],
             "prev_net": previous.get(name, {}).get("net", 0.0) if previous is not None else None,
             "delta": (
-                round(data["net"] - previous.get(name, {}).get("net", 0.0), 2)
+                round(compared.get(name, {}).get("net", 0.0) - previous.get(name, {}).get("net", 0.0), 2)
                 if previous is not None else None
             ),
             "subcategories": data["subcategories"],
@@ -957,8 +1031,8 @@ def summarize_insights(
     if previous is not None:
         # Uncategorized is never a shift worth naming: the unsorted figure and
         # its own breakdown row already cover it.
-        for name in (set(current) | set(previous)) - {UNCATEGORIZED}:
-            cur_net = current.get(name, {}).get("net", 0.0)
+        for name in (set(compared) | set(previous)) - {UNCATEGORIZED}:
+            cur_net = compared.get(name, {}).get("net", 0.0)
             prev_net = previous.get(name, {}).get("net", 0.0)
             delta = round(cur_net - prev_net, 2)
             if abs(delta) >= 1:
@@ -972,7 +1046,7 @@ def summarize_insights(
     latest_date = conn.execute(
         f"SELECT MAX(t.txn_date) FROM transactions t WHERE 1 = 1{scope}", scope_params
     ).fetchone()[0]
-    verdict = _verdict(conn, start, end, account_id)
+    verdict = _verdict(conn, whole)
     recurring = _recurring(conn, latest_date, account_id) if latest_date else []
 
     return {
@@ -984,7 +1058,11 @@ def summarize_insights(
         "comparison": comparison,
         "verdict": {
             **verdict,
-            "prev": _verdict(conn, comparison["start"], comparison["end"], account_id) if comparison else None,
+            # The comparison's two sides over the same accounts and days: `compared` is this
+            # month over them (the tile itself when every account is compared in full), `prev`
+            # the previous month's. A tile's delta is compared - prev.
+            "compared": _verdict(conn, windows["current"]) if windows else None,
+            "prev": _verdict(conn, windows["previous"]) if windows else None,
         },
         "what_changed": deltas[:3],
         "categories": categories,

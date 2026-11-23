@@ -105,7 +105,7 @@ class TestTheUnsignedNeftPair:
         assert s["people"]["unmatched"]["count"] == 0 and s["people"]["items"] == []
         assert [e for e in s["breakdown"]["extras"] if e["key"] == "transfers"] == []
 
-    def test_a_refund_linked_to_the_unsorted_debit_offsets_uncategorized(self, api):
+    def test_a_refund_linked_to_the_unsorted_debit_never_comes_off_uncategorized(self, api):
         client, conn, debit, credit = _ledger(api)
         k = conn.execute("SELECT id FROM statements WHERE bank_name = 'kotak'").fetchone()[0]
         conn.execute(
@@ -118,7 +118,9 @@ class TestTheUnsignedNeftPair:
         conn.commit()
         s = summarize_insights(conn, MONTH)
         row = next(c for c in s["categories"] if c["category"] == "Uncategorized")
-        assert (row["gross"], row["offsets"], row["net"]) == (25000.0, 1000.0, 24000.0)
+        # Nothing says what the unsorted debit was, so no refund is taken off it: the row is the unsorted figure.
+        assert (row["gross"], row["offsets"], row["net"]) == (25000.0, 0.0, 25000.0)
+        assert row["net"] == s["unexplained"]["total"]
         assert not any(c["category"] == "Transfers" for c in s["categories"])
         assert round(sum(c["net"] for c in s["categories"]) + sum(e["total"] for e in s["breakdown"]["extras"]), 2) == s["verdict"]["money_out"]
 

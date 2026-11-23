@@ -223,6 +223,40 @@ class TestIdentitiesHoldForAllAndForEachAccount:
             assert {k: cents(v) for k, v in net.items()} == {c["category"]: c["net"] for c in whole["categories"]}
             assert sum(p["annotation"]["total"] for p in parts) == whole["annotation"]["total"]
 
+    def test_the_people_ledger_adds_up(self, conn, seed_value):
+        accounts = three_account_ledger(conn, seed_value)
+        for name in ("alpha", "beta", "gamma"):
+            conn.execute("INSERT INTO people (id, name, upi, relationship) VALUES (?, ?, ?, 'friend')", (f"p_{name}", name, name))
+        for month in months_of(conn):
+            whole = summarize_insights(conn, month)["people"]
+            parts = [summarize_insights(conn, month, account_id=a)["people"] for a in accounts]
+            for key in ("sent", "received", "count"):
+                assert cents(sum(p["unmatched"][key] for p in parts)) == whole["unmatched"][key], (month, key)
+                for item in whole["items"]:
+                    got = sum(i[key] for p in parts for i in p["items"] if i["id"] == item["id"])
+                    assert cents(got) == item[key], (month, item["id"], key)
+
+    def test_the_comparison_adds_up_too(self, conn, seed_value):
+        """Each account is compared over its own windows, so the previous month, this month over
+        the same days, and every category's previous net and delta are sums over the accounts."""
+        accounts = three_account_ledger(conn, seed_value)
+        for month in months_of(conn):
+            whole = summarize_insights(conn, month)
+            parts = [summarize_insights(conn, month, account_id=a) for a in accounts]
+            for side in ("prev", "compared"):
+                held = [p["verdict"][side] for p in parts if p["verdict"][side] is not None]
+                assert (whole["verdict"][side] is None) == (not held), (month, side)
+                for key in ("money_in", "money_out", "invested", "kept", "earned"):
+                    assert cents(sum(v[key] for v in held)) == (whole["verdict"][side][key] if held else 0), (month, side, key)
+            # A category is a row only where it has spending this month, so a row's previous net and
+            # delta add up over the accounts that list it; the categories every account lists are checked.
+            for field in ("prev_net", "delta"):
+                for c in whole["categories"]:
+                    rows = [next((r for r in p["categories"] if r["category"] == c["category"]), None) for p in parts]
+                    if None in rows or c[field] is None:
+                        continue
+                    assert cents(sum(r[field] or 0 for r in rows)) == c[field], (month, c["category"], field)
+
     def test_every_payment_is_in_one_account_filter(self, conn, seed_value):
         accounts = three_account_ledger(conn, seed_value)
         whole = summarize_transactions(conn)
@@ -262,11 +296,11 @@ class TestTheFilterIsOneDefinition:
         assert summarize_insights(conn, "2026-10", account_id=b)["verdict"]["money_out"] == 0
 
 
-class TestOffsetsLandInTheViewThatHoldsTheCredit:
-    """A refund or a group credit takes spending off in the account view that contains the
-    credit row, in the category of the debit it pays back. In all accounts that is the same
-    figure as before; in the account of the debit alone nothing is netted, in the account of
-    the credit alone the category shows a negative net. Each view's breakdown still closes."""
+class TestOffsetsLandInTheAccountOfTheDebitTheyPayBack:
+    """A refund, a group share or a matched credit takes spending off in the account view of the
+    debit it pays back, on the day the credit arrived, in that debit's category. In all accounts
+    that is the same figure as before. The credit itself still counts in its own account's In.
+    Each view's breakdown closes on its Out."""
 
     def _refund_across_accounts(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
@@ -276,30 +310,39 @@ class TestOffsetsLandInTheViewThatHoldsTheCredit:
         seed(conn, "st_a", "2026-10-07", 400, "debit", category="Food & Dining")
         return a, b
 
+    @staticmethod
+    def _shopping(s):
+        return next((c for c in s["categories"] if c["category"] == "Shopping"), None)
+
     def test_all_accounts_net_the_refund_off_shopping(self, conn):
         self._refund_across_accounts(conn)
-        s = summarize_insights(conn, "2026-10")
-        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
+        shopping = self._shopping(summarize_insights(conn, "2026-10"))
         assert (shopping["gross"], shopping["offsets"], shopping["net"]) == (3000, 3000, 0)
 
-    def test_the_account_that_paid_shows_no_offset_and_still_closes(self, conn):
+    def test_the_account_that_paid_nets_the_refund_and_closes(self, conn):
         a, _b = self._refund_across_accounts(conn)
         s = summarize_insights(conn, "2026-10", account_id=a)
-        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
-        assert (shopping["gross"], shopping["offsets"], shopping["net"]) == (3000, 0, 3000)
+        shopping = self._shopping(s)
+        assert (shopping["gross"], shopping["offsets"], shopping["net"]) == (3000, 3000, 0)
         assert cents(sum(c["net"] for c in s["categories"]) + sum(e["total"] for e in s["breakdown"]["extras"])) == s["verdict"]["money_out"] == 3400
 
-    def test_the_account_that_received_it_shows_a_negative_row_and_still_closes(self, conn):
+    def test_the_account_that_received_it_has_no_category_row_for_it_and_still_counts_it_in(self, conn):
         _a, b = self._refund_across_accounts(conn)
         s = summarize_insights(conn, "2026-10", account_id=b)
-        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
-        assert (shopping["gross"], shopping["offsets"], shopping["net"]) == (0, 3000, -3000)
-        assert s["verdict"]["money_out"] == 0
-        extras = {e["key"]: e["total"] for e in s["breakdown"]["extras"]}
-        assert extras == {"paid_back": 3000.0}
-        assert cents(sum(c["net"] for c in s["categories"]) + sum(extras.values())) == 0
+        assert self._shopping(s) is None, "no negative row with nothing behind it"
+        assert s["categories"] == []
+        assert s["breakdown"]["extras"] == []
+        assert s["verdict"]["money_in"] == 3000 and s["verdict"]["money_out"] == 0
 
-    def test_a_group_credit_lands_in_the_account_it_arrived_in(self, conn):
+    def test_the_offset_counts_on_the_day_the_credit_arrived(self, conn):
+        a, _b = self._refund_across_accounts(conn)
+        conn.execute("UPDATE transactions SET txn_date = '2026-11-02' WHERE amount = 3000 AND debit_credit = 'credit'")
+        october = self._shopping(summarize_insights(conn, "2026-10", account_id=a))
+        assert (october["gross"], october["offsets"]) == (3000, 0)
+        november = self._shopping(summarize_insights(conn, "2026-11", account_id=a))
+        assert (november["gross"], november["offsets"], november["net"]) == (0, 3000, -3000)
+
+    def test_a_group_share_nets_the_account_of_the_debit(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
         concert = seed(conn, "st_a", "2026-10-05", 4000, "debit", category="Entertainment")
         share = seed(conn, "st_b", "2026-10-09", 1000, "credit", category="Transfers")
@@ -307,9 +350,49 @@ class TestOffsetsLandInTheViewThatHoldsTheCredit:
         whole = summarize_insights(conn, "2026-10")
         assert next(c for c in whole["categories"] if c["category"] == "Entertainment")["net"] == 3000
         mine = summarize_insights(conn, "2026-10", account_id=a)
-        assert next(c for c in mine["categories"] if c["category"] == "Entertainment")["net"] == 4000
+        assert next(c for c in mine["categories"] if c["category"] == "Entertainment")["net"] == 3000
         theirs = summarize_insights(conn, "2026-10", account_id=b)
-        assert next(c for c in theirs["categories"] if c["category"] == "Entertainment")["net"] == -1000
+        assert all(c["category"] != "Entertainment" for c in theirs["categories"])
+        assert theirs["verdict"]["money_in"] == 1000
+
+    def test_a_group_share_over_debits_in_two_accounts_is_split_between_them(self, conn):
+        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        add_account(conn, "c", "hdfc")
+        one = seed(conn, "st_a", "2026-10-05", 3000, "debit", category="Entertainment")
+        two = seed(conn, "st_b", "2026-10-05", 1000, "debit", category="Entertainment")
+        share = seed(conn, "st_c", "2026-10-09", 2000, "credit", category="Transfers")
+        group(conn, [(one, "split"), (two, "split"), (share, "split")])
+        nets = {acct: next(c for c in summarize_insights(conn, "2026-10", account_id=acct)["categories"] if c["category"] == "Entertainment")["net"] for acct in (a, b)}
+        assert nets == {a: 1500, b: 500}
+
+    def test_a_counterparty_matched_refund_nets_the_account_of_the_debit(self, conn):
+        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        seed(conn, "st_a", "2026-10-05", 800, "debit", category="Shopping", counterparty="AMAZON")
+        seed(conn, "st_b", "2026-10-20", 300, "credit", category="Income", subcategory="Refund", counterparty="AMAZON")
+        assert self._shopping(summarize_insights(conn, "2026-10", account_id=a))["net"] == 500
+        assert self._shopping(summarize_insights(conn, "2026-10", account_id=b)) is None
+        assert self._shopping(summarize_insights(conn, "2026-10"))["net"] == 500
+
+    def test_an_amount_matched_refund_nets_the_account_of_the_debit(self, conn):
+        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        seed(conn, "st_a", "2026-10-05", 800, "debit", category="Shopping")
+        seed(conn, "st_b", "2026-10-20", 800, "credit", category="Income", subcategory="Refund")
+        assert self._shopping(summarize_insights(conn, "2026-10", account_id=a))["net"] == 0
+        assert self._shopping(summarize_insights(conn, "2026-10", account_id=b)) is None
+
+    def test_the_uncategorized_row_never_takes_offsets(self, conn):
+        a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
+        loose = seed(conn, "st_a", "2026-10-03", 999, "debit")  # not sorted
+        seed(conn, "st_a", "2026-10-04", 100, "debit", category="Food & Dining")
+        seed(conn, "st_b", "2026-10-09", 999, "credit", category="Income", subcategory="Refund")  # same amount
+        paid = seed(conn, "st_b", "2026-10-10", 50, "credit", category="Income", subcategory="Refund")
+        link(conn, loose, paid, "refund")
+        for account_id in (None, a, b):
+            s = summarize_insights(conn, "2026-10", account_id=account_id)
+            row = next((c for c in s["categories"] if c["category"] == "Uncategorized"), None)
+            figure = s["unexplained"]["total"]
+            assert (row["net"] if row else 0) == figure, account_id
+            assert (row["offsets"] if row else 0) == 0, account_id
 
     def test_a_spend_labelled_credit_nets_its_own_accounts_category(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
@@ -413,19 +496,105 @@ class TestPartialMonthsAcrossAccounts:
         assert s["period"]["counted"] == 2
         assert s["period"]["short"] == [{"account_id": b, "account_label": "SBI savings", "covered_through": "2026-11-15"}]
 
-    def test_the_comparison_runs_to_the_earliest_covered_day(self, conn):
-        self._two(conn)
+    def test_each_account_is_compared_over_the_same_days_of_its_own_previous_month(self, conn):
+        a, b = self._two(conn)
         s = summarize_insights(conn, "2026-11")
-        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15"}
-        # Both accounts' 2 Oct payments are in it, the 20 Oct ones are not.
-        assert s["verdict"]["prev"]["money_out"] == 150
+        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-31", "uniform": False}
+        # Kotak is covered to the 30th: all of October (200). SBI to the 15th: its 2 Oct payment (50), not the 20th.
+        assert s["verdict"]["prev"]["money_out"] == 250
+        assert s["verdict"]["compared"]["money_out"] == 30
+        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
+        assert (shopping["net"], shopping["prev_net"], shopping["delta"]) == (30, 250, -220)
+        kotak = summarize_insights(conn, "2026-11", account_id=a)
+        assert kotak["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-31", "uniform": True}
+        assert kotak["verdict"]["prev"]["money_out"] == 200
+        sbi = summarize_insights(conn, "2026-11", account_id=b)
+        assert sbi["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15", "uniform": True}
+        assert sbi["verdict"]["prev"]["money_out"] == 50
+
+    def test_a_new_account_is_not_a_change(self, conn):
+        # SBI opened on 10 Nov and spent 5,000 on its first days: nothing of October to compare it with.
+        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "ka", a, "2026-10-01", "2026-11-30", "2026-10-01", "2026-11-30")
+        add_statement(conn, "sb", b, "2026-11-10", "2026-11-30", "2026-11-10", "2026-11-30")
+        seed(conn, "ka", "2026-10-05", 1000, "debit", category="Food & Dining")
+        seed(conn, "ka", "2026-11-05", 1000, "debit", category="Food & Dining")
+        seed(conn, "sb", "2026-11-12", 5000, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["verdict"]["money_out"] == 6000
+        assert s["verdict"]["compared"]["money_out"] == 1000 and s["verdict"]["prev"]["money_out"] == 1000
+        assert s["what_changed"] == []
+        shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
+        assert (shopping["prev_net"], shopping["delta"]) == (0.0, 0.0)
+        assert summarize_insights(conn, "2026-11", account_id=b)["comparison"] is None
+
+    def test_an_account_with_a_gap_in_the_previous_month_is_left_out_not_counted_as_zero(self, conn):
+        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "k9", a, "2026-09-01", "2026-09-30", "2026-09-01", "2026-09-30")
+        add_statement(conn, "k11", a, "2026-11-01", "2026-11-30", "2026-11-01", "2026-11-30")
+        add_statement(conn, "s0", b, "2026-09-01", "2026-11-30", "2026-09-01", "2026-11-30")
+        seed(conn, "k9", "2026-09-05", 3000, "debit", category="Food & Dining")
+        seed(conn, "k11", "2026-11-05", 3000, "debit", category="Food & Dining")
+        for month in ("09", "10", "11"):
+            seed(conn, "s0", f"2026-{month}-05", 100, "debit", category="Food & Dining")
+        s = summarize_insights(conn, "2026-11")
+        # Kotak has no October: only SBI is compared (100 against 100), and the 3,000 is no change.
+        assert s["verdict"]["prev"]["money_out"] == 100 and s["verdict"]["compared"]["money_out"] == 100
+        assert s["what_changed"] == []
+        assert summarize_insights(conn, "2026-11", account_id=a)["comparison"] is None
+
+    def test_a_hole_inside_the_month_makes_it_partial_and_the_comparison_stops_there(self, conn):
+        a = add_account(conn, "a", name="Kotak savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "k10", a, "2026-10-01", "2026-10-31", "2026-10-01", "2026-10-31")
+        add_statement(conn, "k1", a, "2026-11-01", "2026-11-10", "2026-11-01", "2026-11-10")
+        add_statement(conn, "k2", a, "2026-11-20", "2026-11-30", "2026-11-20", "2026-11-30")
+        seed(conn, "k10", "2026-10-05", 100, "debit", category="Shopping")
+        seed(conn, "k10", "2026-10-25", 100, "debit", category="Shopping")
+        seed(conn, "k1", "2026-11-05", 10, "debit", category="Shopping")
+        seed(conn, "k2", "2026-11-25", 10, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-11")
+        assert s["period"]["partial"] is True and s["period"]["covered_through"] == "2026-11-10"
+        assert s["period"]["short"] == [{"account_id": a, "account_label": "Kotak savings", "covered_through": "2026-11-10"}]
+        assert s["comparison"]["end"] == "2026-10-10"
+        # The 25 Nov payment is past the hole: neither side of the comparison holds it.
+        assert s["verdict"]["compared"]["money_out"] == 10 and s["verdict"]["prev"]["money_out"] == 100
+        assert s["verdict"]["money_out"] == 20
+
+    def test_a_closed_account_whose_last_statement_printed_no_period(self, conn):
+        # SBI closed on 12 Sep and its last statement printed no period; Kotak carries on.
+        a, b = add_account(conn, "a", name="Kotak savings"), add_account(conn, "b", "sbi", name="SBI savings")
+        conn.execute("DELETE FROM statements")
+        add_statement(conn, "ka", a, "2026-08-01", "2026-10-31", "2026-08-01", "2026-10-31")
+        add_statement(conn, "s8", b, "2026-08-01", "2026-08-31", "2026-08-01", "2026-08-31")
+        add_statement(conn, "s9", b, "2026-09-02", "2026-09-12")  # no printed period
+        for month in ("08", "09", "10"):
+            seed(conn, "ka", f"2026-{month}-05", 1000, "debit", category="Food & Dining")
+        seed(conn, "s8", "2026-08-03", 100, "debit", category="Shopping")
+        seed(conn, "s8", "2026-08-25", 100, "debit", category="Shopping")
+        seed(conn, "s9", "2026-09-02", 100, "debit", category="Shopping")
+        seed(conn, "s9", "2026-09-12", 100, "debit", category="Shopping")
+        s = summarize_insights(conn, "2026-09")
+        # The month is partial, and the page can name the closed account: it is covered to the 12th.
+        assert s["period"]["partial"] is True and s["period"]["covered_through"] == "2026-09-12"
+        assert s["period"]["short"] == [{"account_id": b, "account_label": "SBI savings", "covered_through": "2026-09-12"}]
+        # Kotak against all of August, SBI against 1 to 12 Aug (its 3 Aug payment only).
+        assert s["comparison"] == {"month": "2026-08", "start": "2026-08-01", "end": "2026-08-31", "uniform": False}
+        assert s["verdict"]["prev"]["money_out"] == 1100 and s["verdict"]["compared"]["money_out"] == 1200
+        assert [c["category"] for c in s["what_changed"]] == ["Shopping"]
+        assert s["what_changed"][0]["delta"] == 100
+        sbi = summarize_insights(conn, "2026-09", account_id=b)
+        assert sbi["period"]["covered_through"] == "2026-09-12"
+        assert sbi["comparison"]["end"] == "2026-08-12"
 
     def test_with_one_account_selected_only_that_account_counts(self, conn):
         a, b = self._two(conn)
         mine = summarize_insights(conn, "2026-11", account_id=a)
         assert mine["period"]["partial"] is False and mine["period"]["covered_through"] == "2026-11-30"
         assert mine["period"]["short"] == []
-        assert mine["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-31"}
+        assert mine["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-31", "uniform": True}
         theirs = summarize_insights(conn, "2026-11", account_id=b)
         assert theirs["period"]["partial"] is True and theirs["period"]["covered_through"] == "2026-11-15"
         assert theirs["comparison"]["end"] == "2026-10-15"
@@ -454,10 +623,12 @@ class TestPartialMonthsAcrossAccounts:
         assert summarize_insights(conn, "2026-11")["period"]["partial"] is False
 
     def test_without_a_printed_period_the_last_payment_decides(self, conn):
-        self._two(conn, sbi_printed=False)
+        _a, b = self._two(conn, sbi_printed=False)
         s = summarize_insights(conn, "2026-11")
         assert s["period"]["covered_through"] == "2026-11-14"
-        assert s["comparison"]["end"] == "2026-10-14"
+        # Kotak is compared over all of October, SBI over 1 to 14 Oct.
+        assert s["comparison"]["end"] == "2026-10-31" and s["comparison"]["uniform"] is False
+        assert summarize_insights(conn, "2026-11", account_id=b)["comparison"]["end"] == "2026-10-14"
 
     def test_a_printed_period_is_exact_so_a_real_gap_before_the_next_statement_shows(self, conn):
         a, b = self._two(conn)
