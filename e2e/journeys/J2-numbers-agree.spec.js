@@ -405,6 +405,12 @@ test.describe('J2 numbers agree while a transfer waits for an answer', () => {
     const arrived = all.find((t) => t.debit_credit === 'credit' && t.amount === 25000)
     expect([lone.category, lone.subcategory, arrived.category, arrived.subcategory]).toEqual(['Transfers', 'Peer Transfer', 'Transfers', 'Peer Transfer'])
     expect([lone.transfer, arrived.transfer], 'nothing pairs without a sign').toEqual([null, null])
+    expect([lone.waiting_on_pair, arrived.waiting_on_pair], 'the guess is held back').toEqual([true, true])
+    expect((await app.api.get('/transactions/facets?month=2026-10')).categories, 'a filter offers only what it can return').not.toContain('Transfers')
+    await open(page, '/transactions?month=2026-10&category=Uncategorized')
+    const waiting = page.getByRole('row').filter({ hasText: 'Not sorted - maybe a move between your accounts' })
+    await expect(waiting).toHaveCount(2)
+    await expect(waiting.filter({ hasText: 'Guess was Transfers › Peer Transfer' })).toHaveCount(2)
 
     const before = await unsortedEverywhere(page)
     expect(before.dashboard, 'the 25,000 waits for an answer, so it is unsorted').toBeGreaterThanOrEqual(25000)
