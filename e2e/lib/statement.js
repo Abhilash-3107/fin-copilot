@@ -28,6 +28,13 @@ export const FIXTURE_PDF_OVERLAP = path.resolve(here, '../../finance_copilot/tes
  */
 export const FIXTURE_PDF_TRANSFER_OUT = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_out.pdf')
 export const FIXTURE_PDF_TRANSFER_IN = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_in.pdf')
+/**
+ * A second export of the first of those accounts: 14 to 31 October, so it holds the signed
+ * 12,000 transfer, the 7,000 and the electricity bill again, and brings one payment the month's
+ * file did not have (28 October). Added after the month it adds that one payment and no second
+ * copy of the transfer.
+ */
+export const FIXTURE_PDF_TRANSFER_OUT_LATE = path.resolve(here, '../../finance_copilot/tests/fixtures/sample_statement_transfer_out_late.pdf')
 
 /**
  * Two more accounts of one person (October 2026, SBI and Kotak). Rs 25,000 leaves the first on the

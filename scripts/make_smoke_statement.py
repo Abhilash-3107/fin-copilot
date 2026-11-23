@@ -110,6 +110,14 @@ TRANSFER_OUT_ROWS = [
     ("22/10/2026", "UPI/ELECTRICITY BOARD/BILL/700112234", 1730.00, None),
 ]
 
+# A second export of the first account, as a bank prints it when asked for the second half of the
+# month: the rows from the 14th on (the signed 12,000 transfer among them) and one payment the
+# month's file did not have. Added after the month, it brings that one payment and no second
+# copy of the transfer.
+TRANSFER_OUT_LATE_ROWS = TRANSFER_OUT_ROWS[3:] + [
+    ("28/10/2026", "UPI/ZEPTO/ORDER/700112236/UPI", 365.00, None),
+]
+
 TRANSFER_IN_ROWS = [
     ("05/10/2026", "UPI/ZEPTO/ORDER/800112233/UPI", 310.00, None),
     ("15/10/2026", "IMPS/INWARD/400999111", None, 12000.00),
@@ -216,6 +224,13 @@ def build_transfer_pair() -> None:
     build(
         FIXTURES / "sample_statement_transfer_out.pdf", 40000.00, TRANSFER_OUT_ROWS,
         "01/10/2026 - 31/10/2026", account="XXXX7788", ifsc="ICIC0000456",
+    )
+    opening = 40000.00
+    for _, _, debit, credit in TRANSFER_OUT_ROWS[:3]:
+        opening = round(opening - (debit or 0) + (credit or 0), 2)
+    build(
+        FIXTURES / "sample_statement_transfer_out_late.pdf", opening, TRANSFER_OUT_LATE_ROWS,
+        "14/10/2026 - 31/10/2026", account="XXXX7788", ifsc="ICIC0000456",
     )
     build(
         FIXTURES / "sample_statement_transfer_in.pdf", 15000.00, TRANSFER_IN_ROWS,
