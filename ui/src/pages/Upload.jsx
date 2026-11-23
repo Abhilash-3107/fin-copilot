@@ -145,7 +145,7 @@ function NewAccountForm({ onMove }) {
 // Where the statement went: into an account the ledger already had, or a new
 // one, which is the moment to give it a name. Focus follows the keyboard: Escape
 // returns to "Name it", saving lands on the line that now says the name.
-function AccountLine({ statement, label, onName }) {
+function AccountLine({ statement, label, onName, accountNamed }) {
   const [naming, setNaming] = useState(false)
   const [named, setNamed] = useState(false)
   const lineRef = useRef(null)
@@ -184,8 +184,8 @@ function AccountLine({ statement, label, onName }) {
   return (
     <p ref={lineRef} tabIndex={-1} className="text-xs text-[#94a3b8] mt-0.5 outline-none">
       Added to a new account, {label}.
-      {/* Named here, or from the statement list: either way there is nothing left to offer. */}
-      {!named && label === statement.account_label && (
+      {/* Named here, in the column form, or from the statement list: nothing left to offer. */}
+      {!named && !accountNamed && label === statement.account_label && (
         <>
           {' '}
           <button ref={nameItRef} type="button" onClick={() => setNaming(true)} className="text-[#818cf8] hover:underline">
@@ -197,7 +197,7 @@ function AccountLine({ statement, label, onName }) {
   )
 }
 
-function FileRow({ entry, onRemove, accountLabel, onNameAccount, onAnswer }) {
+function FileRow({ entry, onRemove, accountLabel, accountNamed, onNameAccount, onAnswer }) {
   const { file, status, statement } = entry
   const added = statement && (
     <>
@@ -230,6 +230,7 @@ function FileRow({ entry, onRemove, accountLabel, onNameAccount, onAnswer }) {
           <AccountLine
             statement={statement}
             label={accountLabel ?? statement.account_label}
+            accountNamed={accountNamed}
             onName={name => onNameAccount(statement.account_id, name)}
           />
         )}
@@ -570,6 +571,7 @@ export default function Upload() {
   }
 
   const accountLabels = new Map(accounts.map(a => [a.id, a.account_label]))
+  const namedAccounts = new Set(accounts.filter(a => a.name).map(a => a.id))
 
   // The grid cell the list is narrowed to, and its statements.
   const detailAccount = detail && books.accounts.find(a => a.id === detail.accountId)
@@ -681,6 +683,7 @@ export default function Upload() {
                 key={entry.id}
                 entry={entry}
                 accountLabel={accountLabels.get(entry.statement?.account_id)}
+                accountNamed={namedAccounts.has(entry.statement?.account_id)}
                 onNameAccount={nameAccount}
                 onAnswer={answerEntry}
                 onRemove={['ready', 'failed', 'needs'].includes(entry.status)

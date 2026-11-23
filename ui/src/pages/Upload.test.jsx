@@ -813,6 +813,14 @@ describe('Upload', () => {
       expect(within(row).queryByRole('button', { name: 'Name it' })).not.toBeInTheDocument()
     })
 
+    it('offers no naming when the account was named on the column form', async () => {
+      mockApi.upload.mockResolvedValue(uploaded('s1', { account_id: 'a9', account_label: 'Salary account', account_is_new: true }))
+      ledger.accounts = [{ id: 'a9', account_label: 'Salary account', name: 'Salary account', statement_count: 1, balance: null }]
+      const row = await drop()
+      expect(await within(row).findByText(/Added to a new account, Salary account\./)).toBeInTheDocument()
+      expect(within(row).queryByRole('button', { name: 'Name it' })).not.toBeInTheDocument()
+    })
+
     it('leaves the account as it was when naming is cancelled with Escape', async () => {
       mockApi.upload.mockResolvedValue(uploaded('s1', { account_id: 'a9', account_label: 'Kotak ··8074', account_is_new: true }))
       const row = await drop()
