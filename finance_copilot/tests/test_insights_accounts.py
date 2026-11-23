@@ -409,6 +409,7 @@ class TestPartialMonthsAcrossAccounts:
         s = summarize_insights(conn, "2026-11")
         assert s["period"]["partial"] is True
         assert s["period"]["covered_through"] == "2026-11-15"
+        assert s["period"]["counted"] == 2
         assert s["period"]["short"] == [{"account_id": b, "account_label": "SBI savings", "covered_through": "2026-11-15"}]
 
     def test_the_comparison_runs_to_the_earliest_covered_day(self, conn):

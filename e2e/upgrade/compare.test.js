@@ -332,6 +332,12 @@ const regressions = {
     (a) => (a.facts.statements[0].account_id = 'acc_gone'),
     /statement s belongs to account acc_gone, which is not in the ledger/,
   ],
+  // The payment rows do not carry their account in the snapshot (it is their statement's), so a
+  // statement moved to another account must still show.
+  'a statement is in another account than it was': [
+    (a) => (a.facts.statements[0].account_id = 'acc_demo_s'),
+    /statement s|account acc_s holds no statement|unexpected stored change: statements\[s\]\.account_id/,
+  ],
   'an account holds no statement': [
     (a) => a.facts.accounts.push({ ...a.facts.accounts[0], id: 'acc_empty' }),
     /account acc_empty holds no statement/,

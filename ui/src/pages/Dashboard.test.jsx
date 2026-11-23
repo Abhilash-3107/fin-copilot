@@ -837,12 +837,28 @@ describe('Dashboard with two accounts', () => {
     serve({
       ...SUMMARY,
       period: {
-        ...SUMMARY.period, covered_through: '2026-05-15', partial: true,
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
         short: [{ account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' }],
       },
     })
     renderDashboard()
     expect(await screen.findByText(/SBI savings to 15 May/)).toBeInTheDocument()
+  })
+
+  it('names no account when every account stops on the same day: the month is just in progress', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
+        short: [
+          { account_id: 'acc_k', account_label: 'Kotak savings', covered_through: '2026-05-15' },
+          { account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' },
+        ],
+      },
+    })
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByText(/Not every account is covered/)).not.toBeInTheDocument()
   })
 
   it('does not name the account behind when one account is selected', async () => {

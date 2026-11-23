@@ -36,7 +36,10 @@ async function allTransactions(api) {
   let after = ''
   for (;;) {
     const page = await api.get(`/transactions?include=annotation&limit=${PAGE}${after}`)
-    rows.push(...page)
+    // The account a payment sits in is its statement's, which statements and accounts carry and
+    // J15 compares; the row's own copy (added in 0.3.0 for the account column) is only that
+    // statement's account read through the row.
+    rows.push(...page.map(({ account_id: _id, account_label: _label, ...row }) => row))
     if (page.length < PAGE) return rows
     after = `&after=${page.at(-1).id}`
   }

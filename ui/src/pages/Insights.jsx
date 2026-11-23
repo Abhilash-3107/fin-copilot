@@ -79,6 +79,7 @@ function VerdictStrip({ verdict, vs }) {
 function BalanceChart({ balance }) {
   const { hidden } = usePrivacy()
   const { money, tick } = useMoney()
+  const { multiple, accountId } = useLedger()
   const series = balance.series
   const account = balance.account
   const data = {
@@ -135,7 +136,12 @@ function BalanceChart({ balance }) {
     <div className={`${card} p-4`}>
       <div className="flex items-baseline justify-between mb-3">
         <p className={cardTitle}>Balance over time</p>
-        {account && <span className="text-xs text-[#94a3b8]">{account}</span>}
+        {account && (
+          <span className="text-xs text-[#94a3b8]">
+            {/* With every account selected the line is still one account's, never a sum. */}
+            {multiple && !accountId ? `Showing ${account}` : account}
+          </span>
+        )}
       </div>
       <div className={`h-52 ${hidden ? 'blur-[6px] select-none' : ''}`}>
         {series.length > 1 ? (

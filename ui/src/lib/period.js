@@ -46,7 +46,11 @@ export function comparisonLabel(comparison) {
 // says which) or when the month is complete.
 export function shortAccountsLabel(period, { oneAccount = false } = {}) {
   if (oneAccount || !period?.partial) return ''
-  return (period.short ?? [])
+  const short = period.short ?? []
+  // Every account counted stops on the same day: the month is just in progress, which the
+  // coverage badge already says. Naming accounts is for when one is behind the others.
+  if (short.length === period.counted && new Set(short.map(s => s.covered_through)).size === 1) return ''
+  return short
     .map(item => `${item.account_label} to ${dayjs(item.covered_through).format('D MMM')}`)
     .join(', ')
 }

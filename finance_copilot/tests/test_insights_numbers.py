@@ -348,7 +348,7 @@ class TestPeriodWindows:
         s = summarize_insights(conn, "2026-02")
         assert s["period"] == {
             "month": "2026-02", "start": "2026-02-01", "end": "2026-02-28",
-            "covered_through": "2026-02-28", "partial": False, "short": [],
+            "covered_through": "2026-02-28", "partial": False, "counted": 1, "short": [],
         }
         assert s["comparison"] == {"month": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}
         assert s["verdict"]["prev"]["money_out"] == 200
@@ -372,7 +372,7 @@ class TestPeriodWindows:
         s = summarize_insights(conn, "2026-11")
         assert s["period"] == {
             "month": "2026-11", "start": "2026-11-01", "end": "2026-11-30",
-            "covered_through": "2026-11-15", "partial": True,
+            "covered_through": "2026-11-15", "partial": True, "counted": 1,
             # The fixture's statement belongs to no account.
             "short": [{"account_id": None, "account_label": "Other statements", "covered_through": "2026-11-15"}],
         }

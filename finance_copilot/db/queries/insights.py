@@ -100,7 +100,7 @@ def _period_windows(
     """How far the ledger covers `month`, and the like-for-like window to compare with.
 
     Returns (period, comparison). period = {month, start, end, covered_through,
-    partial, short}: start/end are the calendar bounds of the month, covered_through is
+    partial, counted, short}: start/end are the calendar bounds of the month, covered_through is
     the last day every account is covered to. A month is complete only when every account
     that has a statement touching it is covered to the month's last day (coverage.py: the
     printed period when a statement has one, else its payments, run on to the month's end
@@ -108,7 +108,8 @@ def _period_windows(
     month does not hold it back (the books grid shows it as a gap). With `account_id`,
     only that account counts. `short` lists the accounts that are covered to less than the
     whole month, each with the day it is covered to ({account_id, account_label,
-    covered_through}), so the page can say which one is behind.
+    covered_through}), so the page can say which one is behind; `counted` is how many
+    accounts the month was judged by.
 
     comparison = {month, start, end} is the previous month when `month` is complete,
     or only its first N days when `month` is covered to day N (N being the earliest day
@@ -137,6 +138,8 @@ def _period_windows(
         "end": last_iso,
         "covered_through": through,
         "partial": partial,
+        # How many accounts the month was judged by (those with a statement touching it).
+        "counted": len(covered),
         "short": sorted(
             (
                 {
