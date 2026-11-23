@@ -22,6 +22,7 @@ from finance_copilot.db.queries.accounts import (
     create_account,
     delete_empty_accounts,
     label_for_statement,
+    list_accounts,
     ref_last4,
 )
 from finance_copilot.db.queries.annotations import sorted_counts_by_statement
@@ -84,20 +85,30 @@ def _read_upload(file: UploadFile) -> tuple[bytes, str]:
     return contents, kind
 
 
-def _held_body(held: OverlapNeedsConfirmation) -> dict:
-    first = f"{held.unmatched} of its {held.rows_in_overlap} payments" if held.rows_in_overlap > 1 else "its payment"
+def _held_body(held: OverlapNeedsConfirmation, conn: sqlite3.Connection) -> dict:
+    n, total = held.unmatched, held.rows_in_overlap
+    if total == 1:
+        first = "its one payment on those days matches nothing there"
+    elif n == total:
+        first = f"all {total} of its payments on those days match nothing there"
+    else:
+        first = f"{n} of its {total} payments on those days match nothing there"
     return {
         "detail": (
-            f"This file covers days {held.account_label} already has, and {first} on those days "
-            "match nothing there. It may be a statement you already added, printed another way, "
-            "and adding it would count those payments twice. Add it only if it is not."
+            f"This file covers days {held.account_label} already has, and {first}. "
+            "It may be a statement you already added, printed another way, "
+            "and adding it would count those payments twice. Add it only if it is not, "
+            "or say it is another account."
         ),
         "needs": ["overlap"],
         "overlap": {
-            "rows_in_overlap": held.rows_in_overlap,
-            "unmatched": held.unmatched,
+            "rows_in_overlap": total,
+            "unmatched": n,
             "account_label": held.account_label,
         },
+        # The account it was held against, and the others it could belong to.
+        "account_id": held.account_id,
+        "accounts": [{"id": a["id"], "account_label": a["account_label"]} for a in list_accounts(conn)],
     }
 
 
@@ -148,7 +159,7 @@ def upload_statement(
     except NeedsAnswer as asked:
         return JSONResponse(status_code=422, content=asked.body)
     except OverlapNeedsConfirmation as held:
-        return JSONResponse(status_code=422, content=_held_body(held))
+        return JSONResponse(status_code=422, content=_held_body(held, conn))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

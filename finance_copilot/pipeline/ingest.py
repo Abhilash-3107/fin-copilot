@@ -441,11 +441,12 @@ class OverlapNeedsConfirmation(Exception):
     covers: probably a copy printed another way, which would add every payment
     twice. Raised before anything is written, so the person can stop."""
 
-    def __init__(self, rows_in_overlap: int, unmatched: int, account_label: str):
+    def __init__(self, rows_in_overlap: int, unmatched: int, account_label: str, account_id: str):
         super().__init__()
         self.rows_in_overlap = rows_in_overlap
         self.unmatched = unmatched
         self.account_label = account_label
+        self.account_id = account_id
 
 
 # A file whose payments mostly do not match the account over days it already
@@ -537,7 +538,7 @@ def ingest_parsed(
     except _HeldForConfirmation as held:
         raise OverlapNeedsConfirmation(
             held.split.rows_in_overlap, held.split.unmatched_in_overlap,
-            account_labels(conn)[held.account_id],
+            account_labels(conn)[held.account_id], held.account_id,
         ) from None
     # The file landed (a refusal above raised before here, so pairing never runs
     # for a file that added nothing). Pairing sees the rows just inserted and

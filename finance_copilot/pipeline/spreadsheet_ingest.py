@@ -21,6 +21,7 @@ layout remembered, or a question.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 
 from finance_copilot.db.connection import get_migrated_db
@@ -47,6 +48,16 @@ from finance_copilot.pipeline.ingest import (
 SPREADSHEET_PARSER_VERSION = "spreadsheet 0.1.0"
 
 _PREVIEW_ROWS = 5
+
+# A run of nine or more digits that is not part of a figure (no digit, dot or comma
+# touching it): what a full account number looks like in a cell.
+_LONG_NUMBER = re.compile(r"(?<![\d.,])(\d{5,})(\d{4})(?![\d.,])")
+
+
+def _masked_cell(text: str) -> str:
+    """A cell for the form's raw preview, with anything that looks like a full account
+    number cut to its last four digits: the form needs to show columns, not numbers."""
+    return _LONG_NUMBER.sub(lambda m: "X" * len(m.group(1)) + m.group(2), text)
 
 
 class NeedsAnswer(ValueError):
@@ -104,7 +115,7 @@ def _needs_body(
         "date_order": date_order,
         "columns": table.columns,
         "preview": [
-            [(row[i] if i < len(row) else "") for i in range(table.width)]
+            [_masked_cell(row[i]) if i < len(row) else "" for i in range(table.width)]
             for row in table.data_rows[:_PREVIEW_ROWS]
         ],
         "guess": guess,

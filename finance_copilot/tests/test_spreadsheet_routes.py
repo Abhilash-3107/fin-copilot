@@ -320,3 +320,38 @@ class TestHostileFiles:
 
         sheet.read_table((FIXTURES / "sample_statement.xls").read_bytes())
         assert capsys.readouterr().out == ""
+
+
+class TestWhatTheFormIsTold:
+    def test_the_raw_preview_keeps_the_last_four_of_anything_like_an_account_number(self, api):
+        client, _ = api
+        text = (
+            "When,What,Moved,Left\n"
+            "2026-10-01,NEFT/50100123456789/RENT,-100.00,900.00\n"
+            "2026-10-02,UPI/4001122/X,1234567890,950.00\n"
+        ).encode()
+        body = upload(client, "odd.csv", text).json()
+        cells = [c for row in body["preview"] for c in row]
+        assert "NEFT/XXXXXXXXXX6789/RENT" in cells
+        assert "50100123456789" not in json.dumps(body)
+        assert "4001122" in " ".join(cells)  # seven digits: not a number to hide
+        assert "900.00" in cells and "-100.00" in cells  # figures stay
+
+    def test_a_held_copy_says_all_of_its_payments_and_lists_the_accounts(self, api):
+        client, _ = api
+        pdf = upload(client, "sample_statement.pdf").json()
+        stripped = (FIXTURES / "sample_statement.csv").read_text().replace("XXXX0000", "")
+        # No balance column and shortened narration: nothing matches, over the same days.
+        lines = ["Date,Narration,Withdrawal Amt.,Deposit Amt."]
+        import csv as _csv
+        import io as _io
+        for row in _csv.reader(_io.StringIO(stripped)):
+            if row and row[0][:2].isdigit() and "/" in row[0]:
+                lines.append(",".join([row[0], row[1][:8], row[2].replace(",", ""), row[3].replace(",", "")]))
+        body = upload(client, "copy.csv", "\n".join(lines).encode()).json()
+        if body["needs"] == ["account"]:  # no number in this copy: say which account first
+            body = upload(client, "copy.csv", "\n".join(lines).encode(), account_id=pdf["account_id"]).json()
+        assert body["needs"] == ["overlap"]
+        assert "all 8 of its payments on those days match nothing there" in body["detail"]
+        assert body["account_id"] == pdf["account_id"]
+        assert [a["id"] for a in body["accounts"]] == [pdf["account_id"]]
