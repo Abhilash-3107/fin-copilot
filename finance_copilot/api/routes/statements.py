@@ -113,6 +113,8 @@ def upload_statement(
     account_id: Annotated[str | None, Form()] = None,
     new_account_name: Annotated[str | None, Form()] = None,
     confirm_overlap: Annotated[bool, Form()] = False,
+    # "dmy" or "mdy": which way round a date column that does not say goes.
+    date_order: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
     """Upload a PDF, CSV, XLSX or XLS, read it, persist statement + transactions, return the Statement.
@@ -139,6 +141,7 @@ def upload_statement(
             statement = ingest_spreadsheet(
                 conn, contents, mapping=mapping, account_id=account_id,
                 new_account_name=new_account_name, confirm_overlap=confirm_overlap,
+                date_order=date_order,
             )
     except (DuplicateStatementError, NothingNewError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -177,6 +180,7 @@ def _ingest_pdf_bytes(contents: bytes, password: str | None, conn: sqlite3.Conne
 def preview_upload(
     file: UploadFile,
     mapping: Annotated[str, Form()],
+    date_order: Annotated[str | None, Form()] = None,
 ):
     """The first payments of a spreadsheet as they would be read with these columns,
     or why they cannot be: what the mapping form shows beside the column choices.
@@ -186,7 +190,7 @@ def preview_upload(
         raise HTTPException(status_code=422, detail="A PDF has no columns to choose.")
     try:
         table = sheet.read_table(contents)
-        return sheet.preview(table, sheet.parse_mapping_field(mapping))
+        return sheet.preview(table, sheet.parse_mapping_field(mapping), date_order=date_order)
     except sheet.SpreadsheetError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

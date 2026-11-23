@@ -19,13 +19,14 @@ from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.accounts import delete_empty_accounts
 from finance_copilot.db.queries.import_layouts import get_layout
 from finance_copilot.parsers.spreadsheet import SpreadsheetError
+from finance_copilot.pipeline import spreadsheet_ingest as _ingest
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
     NothingNewError,
     OverlapNeedsConfirmation,
     ingest_pdf,
 )
-from finance_copilot.pipeline.spreadsheet_ingest import NeedsAnswer, ingest_spreadsheet
+from finance_copilot.pipeline.spreadsheet_ingest import NeedsAnswer
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -36,6 +37,14 @@ def _conn() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     init_db(conn)
     return conn
+
+
+def ingest_spreadsheet(conn, contents, **answers):
+    """The ingest, with the dates read day first where a file of early-month days
+    leaves it open (the fixtures' days stop at the 8th or the 12th): what these tests
+    are about is not that question, which TestWhichWayRoundTheDatesGo asks."""
+    answers.setdefault("date_order", "dmy")
+    return _ingest.ingest_spreadsheet(conn, contents, **answers)
 
 
 def fixture(name: str) -> bytes:
@@ -327,3 +336,90 @@ class TestOneAccountFromEitherFile:
 
 def nothing_new_stored(conn) -> bool:
     return count(conn, "statements") == 2 and count(conn, "transactions") == 0
+
+
+NAMED_EARLY = (
+    "Example Bank\nAccount Number,XXXX0000\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+    "01/10/2026,UPI/A/1,100.00,,24900.00\n02/10/2026,UPI/B/2,,50.00,24950.00\n03/10/2026,UPI/C/3,10.00,,24940.00\n"
+)
+
+
+class TestWhichWayRoundTheDatesGo:
+    """A file whose days are all 12 or less, and whose order nothing settles, is asked
+    about, even when it names its account and its header is known. The answer is kept
+    with the layout."""
+
+    def _with_account(self):
+        conn = _conn()
+        pdf = ingest_pdf(str(FIXTURES / "sample_statement.pdf"), conn=conn)  # XXXX0000
+        return conn, pdf
+
+    def test_a_file_that_names_its_account_is_still_asked_and_stores_nothing(self):
+        conn, pdf = self._with_account()
+        before = {t: count(conn, t) for t in ("statements", "transactions", "accounts", "import_layouts")}
+        with pytest.raises(NeedsAnswer) as asked:
+            _ingest.ingest_spreadsheet(conn, NAMED_EARLY.encode())
+        body = asked.value.body
+        assert asked.value.needs == ["dates"]
+        assert body["account_id"] == pdf.account_id  # the form starts on the account the file names
+        assert body["date_order"] == "dmy"
+        assert set(body["parsed"]["date_choices"]) == {"dmy", "mdy"}
+        assert body["parsed"]["date_choices"]["mdy"]["rows"][0]["date"] == "2026-01-10"
+        assert {t: count(conn, t) for t in before} == before
+
+    def test_the_answer_decides_how_the_dates_read_and_is_remembered_with_the_layout(self):
+        conn, pdf = self._with_account()
+        got = _ingest.ingest_spreadsheet(conn, NAMED_EARLY.encode(), date_order="mdy")
+        assert got.account_id == pdf.account_id
+        days = [r[0] for r in conn.execute("SELECT txn_date FROM transactions WHERE statement_id = ? ORDER BY txn_date", (got.id,))]
+        assert days == ["2026-01-10", "2026-02-10", "2026-03-10"]
+        layout = conn.execute("SELECT date_order FROM import_layouts").fetchone()
+        assert layout["date_order"] == "mdy"
+
+    def test_the_next_file_with_the_header_is_read_the_same_way_without_asking(self):
+        conn, _ = self._with_account()
+        _ingest.ingest_spreadsheet(conn, NAMED_EARLY.encode(), date_order="mdy")
+        later = NAMED_EARLY.replace("01/10", "04/10").replace("02/10", "05/10").replace("03/10", "06/10")
+        got = _ingest.ingest_spreadsheet(conn, later.encode())  # asks nothing
+        assert conn.execute("SELECT MIN(txn_date) FROM transactions WHERE statement_id = ?", (got.id,)).fetchone()[0] == "2026-04-10"
+
+    def test_a_file_that_says_its_own_order_is_not_overruled_by_the_remembered_one(self):
+        conn, _ = self._with_account()
+        _ingest.ingest_spreadsheet(conn, NAMED_EARLY.encode(), date_order="mdy")
+        settled = NAMED_EARLY.replace("03/10/2026", "25/10/2026")
+        got = _ingest.ingest_spreadsheet(conn, settled.encode(), confirm_overlap=True)
+        assert conn.execute("SELECT MAX(txn_date) FROM transactions WHERE statement_id = ?", (got.id,)).fetchone()[0] == "2026-10-25"
+        # ... and it did not forget the answer the person gave.
+        assert conn.execute("SELECT date_order FROM import_layouts").fetchone()["date_order"] == "mdy"
+
+    def test_an_unknown_header_with_ambiguous_dates_asks_for_the_columns_the_account_and_the_dates(self):
+        conn = _conn()
+        text = "When,What,Moved,Left\n01/10/2026,UPI/A/1,-100.00,900.00\n02/10/2026,UPI/B/2,50.00,950.00\n"
+        with pytest.raises(NeedsAnswer) as asked:
+            _ingest.ingest_spreadsheet(conn, text.encode())
+        assert asked.value.needs == ["mapping", "account", "dates"]
+
+    def test_a_wrong_date_order_is_refused_in_words(self):
+        conn, _ = self._with_account()
+        with pytest.raises(ValueError, match="day first or month first"):
+            _ingest.ingest_spreadsheet(conn, NAMED_EARLY.encode(), date_order="ymd")
+
+    def test_a_file_that_names_its_account_but_not_its_columns_starts_the_form_on_that_account(self):
+        conn, pdf = self._with_account()
+        text = "Account Number,XXXX0000\n\nWhen,What,Moved,Left\n2026-10-01,UPI/A/1,-100.00,900.00\n2026-10-02,UPI/B/2,50.00,950.00\n"
+        with pytest.raises(NeedsAnswer) as asked:
+            _ingest.ingest_spreadsheet(conn, text.encode())
+        assert asked.value.needs == ["mapping"]
+        assert asked.value.body["account_id"] == pdf.account_id
+
+    def test_a_file_with_no_header_row_never_goes_to_an_account_by_its_layout(self):
+        conn = _conn()
+        text = "2026-10-01,UPI/A/1,-100.00,900.00\n2026-10-02,UPI/B/2,50.00,950.00\n2026-10-03,UPI/C/3,-5.00,945.00\n"
+        mapping = json.dumps({"date": 0, "description": 1, "amount": 2, "balance": 3})
+        first = _ingest.ingest_spreadsheet(conn, text.encode(), mapping=mapping, new_account_name="Savings")
+        assert conn.execute("SELECT account_id FROM import_layouts").fetchone()["account_id"] is None
+        again = "2026-10-04,UPI/D/4,-5.00,940.00\n2026-10-05,UPI/E/5,-5.00,935.00\n"
+        with pytest.raises(NeedsAnswer) as asked:
+            _ingest.ingest_spreadsheet(conn, again.encode())
+        assert asked.value.needs == ["account"]  # the columns are remembered, the account is asked
+        assert first.account_id

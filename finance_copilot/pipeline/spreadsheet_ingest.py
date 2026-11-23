@@ -9,8 +9,14 @@ is stored; the answer comes back with the same file.
 Which columns, first match wins: the person's choice sent with the file, the
 layout remembered for this header (migration 045), what the header names. Which
 account: the person's choice, the account whose number the rows above the table
-name, the account the layout remembered. A remembered layout never overrides a
-number above the table that names a different account.
+name (one rule for PDFs and spreadsheets: accounts.same_number), the account the
+layout remembered. A remembered layout never overrides a number above the table
+that names a different account, and a file with no header row never goes to an
+account by its layout (the columns may be remembered; the account is asked).
+Which way round the dates go: what the date column itself says; when it says
+nothing (every value has a day of 12 or less, and both readings keep the dates in
+order, or neither does), the person's answer sent with the file, or the one the
+layout remembered, or a question.
 """
 from __future__ import annotations
 
@@ -87,18 +93,22 @@ def _decide_account(
 
 def _needs_body(
     conn: sqlite3.Connection, table: sheet.Table, needs: list[str], guess: dict[str, int],
-    message: str, ref: str | None,
+    message: str, ref: str | None, decided: str | None, date_order: str,
 ) -> dict:
     return {
         "detail": message,
         "needs": needs,
+        # The account the file already names (or its layout remembered), so the form
+        # starts there; the person can still change it.
+        "account_id": decided,
+        "date_order": date_order,
         "columns": table.columns,
         "preview": [
             [(row[i] if i < len(row) else "") for i in range(table.width)]
             for row in table.data_rows[:_PREVIEW_ROWS]
         ],
         "guess": guess,
-        "parsed": sheet.preview(table, guess, _PREVIEW_ROWS),
+        "parsed": sheet.preview(table, guess, _PREVIEW_ROWS, date_order=date_order),
         "accounts": [
             {"id": a["id"], "account_label": a["account_label"]} for a in list_accounts(conn)
         ],
@@ -109,7 +119,12 @@ def _needs_body(
 def _ask(needs: list[str]) -> str:
     if "mapping" in needs:
         return "We couldn't tell which column is which. Check the columns, and choose the account."
-    return "Which account is this file from? Choose it once and the next file like it will go there by itself."
+    if "account" in needs:
+        return "Which account is this file from? Choose it once and the next file like it will go there by itself."
+    return (
+        "The dates in this file could be day first or month first, and nothing in it says which. "
+        "Choose the way round, and check the first rows read right."
+    )
 
 
 def ingest_spreadsheet(
@@ -120,13 +135,16 @@ def ingest_spreadsheet(
     account_id: str | None = None,
     new_account_name: str | None = None,
     confirm_overlap: bool = False,
+    date_order: str | None = None,
 ) -> Statement:
     """Read a spreadsheet statement and add it. `mapping` is the person's column
     choice as the form sends it (JSON {role: column}); `account_id` or
     `new_account_name` their account. Raises SpreadsheetError (the file cannot be
     read, in plain words), NeedsAnswer (ask; nothing stored), OverlapNeedsConfirmation
     (the file mostly matches nothing over days the account covers, and
-    `confirm_overlap` was not given), DuplicateStatementError, NothingNewError."""
+    `confirm_overlap` was not given), DuplicateStatementError, NothingNewError.
+    `date_order` ("dmy" or "mdy") answers a date column that does not say which way
+    round it is."""
     file_sha256 = hashlib.sha256(contents).hexdigest()
     own = conn is None
     _conn = conn or get_migrated_db()
@@ -164,18 +182,31 @@ def ingest_spreadsheet(
         elif name:
             decided = None
         else:
-            decided = _decide_account(_conn, identify_bank(table.preamble) if table.preamble else None, ref, layout["account_id"] if layout else None)
+            # A file with no header row has nothing in it that says it is the layout's:
+            # two exports with unnamed columns share a signature by width alone.
+            remembered = layout["account_id"] if layout and table.header_row is not None else None
+            decided = _decide_account(
+                _conn, identify_bank(table.preamble) if table.preamble else None, ref, remembered
+            )
 
+        if date_order is not None and date_order not in sheet.DATE_ORDERS:
+            raise ValueError("The date order has to be day first or month first.")
+        guess = chosen if chosen is not None else sheet.starting_mapping(table)
+        reading, ambiguous = sheet.date_reading(table, guess)
+        asked_order = date_order or (layout["date_order"] if layout else None)
         needs = []
         if chosen is None:
             needs.append("mapping")
         if decided is None and not name:
             needs.append("account")
+        if ambiguous and asked_order is None:
+            needs.append("dates")
         if needs:
-            guess = chosen if chosen is not None else sheet.starting_mapping(table)
-            raise NeedsAnswer(needs, _needs_body(_conn, table, needs, guess, _ask(needs), ref))
+            raise NeedsAnswer(needs, _needs_body(
+                _conn, table, needs, guess, _ask(needs), ref, decided, asked_order or reading
+            ))
 
-        parsed = sheet.parse_table(table, chosen)
+        parsed = sheet.parse_table(table, chosen, date_order=asked_order)
         account = _exists(_conn, decided) if decided else None
         file = ParsedFile(
             transactions=parsed.transactions,
@@ -200,7 +231,11 @@ def ingest_spreadsheet(
             return decided, False
 
         def landed(c: sqlite3.Connection, statement: Statement) -> None:
-            remember_layout(c, table.signature, chosen, statement.account_id)
+            remember_layout(
+                c, table.signature, chosen,
+                statement.account_id if table.header_row is not None else None,
+                date_order if ambiguous else None,
+            )
 
         return ingest_parsed(
             _conn, file_sha256, file, choose,

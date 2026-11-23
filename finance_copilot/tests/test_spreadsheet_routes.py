@@ -47,7 +47,11 @@ def api(tmp_path, monkeypatch):
 
 
 def upload(client, name, data=None, **fields):
+    """Day first where a file of early-month days leaves it open (the fixtures' days stop at
+    the 8th or the 12th); a test of that question sends its own date_order or `ask=True`."""
     body = data if data is not None else (FIXTURES / name).read_bytes()
+    if fields.pop("ask", False) is False:
+        fields.setdefault("date_order", "dmy")
     return client.post("/api/statements/upload", files={"file": (name, body, "application/octet-stream")}, data=fields)
 
 
@@ -249,3 +253,41 @@ class TestMovingAReversalAtAFileBoundary:
         for r in rows:
             balance += r["amount"] if r["debit_credit"] == "credit" else -r["amount"]
         assert round(balance, 2) == 4200.0
+
+
+class TestTheDateQuestionOverTheApi:
+    EARLY = (
+        "Example Bank\nAccount Number,XXXX0000\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+        "01/10/2026,UPI/A/1,100.00,,24900.00\n02/10/2026,UPI/B/2,,50.00,24950.00\n03/10/2026,UPI/C/3,10.00,,24940.00\n"
+    ).encode()
+
+    def test_an_ambiguous_file_is_a_422_that_says_so_and_carries_both_readings(self, api):
+        client, conn = api
+        pdf = upload(client, "sample_statement.pdf").json()
+        got = upload(client, "early.csv", self.EARLY, ask=True)
+        assert got.status_code == 422
+        body = got.json()
+        assert body["needs"] == ["dates"]
+        assert body["account_id"] == pdf["account_id"] and body["date_order"] == "dmy"
+        assert set(body["parsed"]["date_choices"]) == {"dmy", "mdy"}
+        assert counts(conn)["statements"] == 1
+
+    def test_the_answer_lands_it(self, api):
+        client, _ = api
+        upload(client, "sample_statement.pdf")
+        got = upload(client, "early.csv", self.EARLY, ask=True, date_order="mdy", confirm_overlap="true")
+        assert got.status_code == 200, got.text
+
+    def test_the_preview_follows_the_chosen_order(self, api):
+        client, _ = api
+        mapping = json.dumps({"date": 0, "description": 1, "debit": 2, "credit": 3, "balance": 4})
+
+        def preview(**fields):
+            return client.post(
+                "/api/statements/upload/preview",
+                files={"file": ("early.csv", self.EARLY, "text/csv")}, data={"mapping": mapping, **fields},
+            ).json()
+
+        assert preview()["rows"][0]["date"] == "2026-10-01"
+        assert set(preview()["date_choices"]) == {"dmy", "mdy"}
+        assert preview(date_order="mdy")["rows"][0]["date"] == "2026-01-10"

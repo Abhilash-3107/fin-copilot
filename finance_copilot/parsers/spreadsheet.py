@@ -63,6 +63,19 @@ class SpreadsheetError(ValueError):
     """A file that cannot be read as a statement, in words for the person."""
 
 
+class DateOrderUnclear(SpreadsheetError):
+    """The dates could be day first or month first and nothing in the file says
+    which: the person is asked (the form's "Dates are day first / month first")."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The dates in this file could be day first (01/10 is 1 October) or month first "
+            "(01/10 is 10 January). Choose which way round they are."
+        )
+
+DATE_ORDERS = ("dmy", "mdy")
+
+
 # --- what kind of file it is ------------------------------------------------
 
 
@@ -342,9 +355,9 @@ def read_rows(contents: bytes) -> tuple[str, list[list[str]]]:
 
 def _is_data_row(row: list[str]) -> bool:
     """A row that looks like a payment: a date in one cell and a number in another."""
-    has_date = any(generic._parse_date(c) for c in row if c)
+    has_date = any(generic.parse_date_either_way(c) for c in row if c)
     return has_date and any(
-        generic._parse_amount(c) is not None and generic._parse_date(c) is None for c in row if c
+        generic._parse_amount(c) is not None and generic.parse_date_either_way(c) is None for c in row if c
     )
 
 
@@ -465,13 +478,13 @@ def _guess_mapping(table: Table) -> dict[str, int]:
 
     if "date" not in roles:
         for c in columns:
-            if _rate(samples[c], lambda t: generic._parse_date(t) is not None) >= 0.8:
+            if _rate(samples[c], lambda t: generic.parse_date_either_way(t) is not None) >= 0.8:
                 roles["date"] = c
                 break
     taken = set(roles.values())
 
     def is_number(text: str) -> bool:
-        return generic._parse_amount(text) is not None and generic._parse_date(text) is None
+        return generic._parse_amount(text) is not None and generic.parse_date_either_way(text) is None
 
     numeric = [c for c in range(table.width) if c not in taken and _rate(samples[c], is_number) >= 0.8]
     taken |= set(numeric)
@@ -575,18 +588,85 @@ def _day(value: date) -> str:
     return f"{value.day} {calendar.month_abbr[value.month]} {value.year}"
 
 
-def parse_table(table: Table, mapping: dict[str, int]) -> Parsed:
+_NUMERIC_DATE_RE = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](?:\d{2}|\d{4})$")
+
+
+def _in_order(days: list[date]) -> bool:
+    """Oldest first or newest first all the way: how a bank's file runs."""
+    return days == sorted(days) or days == sorted(days, reverse=True)
+
+
+def date_reading(table: Table, mapping: dict[str, int]) -> tuple[str, bool]:
+    """(order, ambiguous) for the file's date column: "dmy" or "mdy", and whether
+    the file leaves it open. A value with a part above 12 settles it (a 25 is a
+    day). Failing that, when only one reading keeps the dates in order down the
+    file, that is the one. When both do, or neither, the file does not say: the
+    order is "dmy" (the Indian convention) and ambiguous is True, so the person is
+    asked. Dates written with a month name or the year first are never ambiguous."""
+    column = mapping.get("date")
+    if column is None:
+        return "dmy", False
+    shapes = []
+    for row in table.data_rows:
+        if column < len(row):
+            text = generic._TIME_RE.sub("", row[column].strip()).strip()
+            found = _NUMERIC_DATE_RE.match(text)
+            if found:
+                shapes.append((text, int(found.group(1)), int(found.group(2))))
+    if not shapes:
+        return "dmy", False
+    first_big = any(a > 12 for _, a, _ in shapes)
+    second_big = any(b > 12 for _, _, b in shapes)
+    if first_big or second_big:
+        # Both at once is no one order: the rows that do not read the column's
+        # usual way are named when it is read.
+        return ("mdy" if second_big and not first_big else "dmy"), False
+    if all(a == b for _, a, b in shapes):
+        return "dmy", False
+    readings = {
+        order: [d for d in (generic._parse_date(text, order) for text, _, _ in shapes) if d is not None]
+        for order in DATE_ORDERS
+    }
+    fits = [order for order in DATE_ORDERS if len(readings[order]) == len(shapes) and _in_order(readings[order])]
+    if len(fits) == 1:
+        return fits[0], False
+    return "dmy", True
+
+
+def parse_table(table: Table, mapping: dict[str, int], date_order: str | None = None) -> Parsed:
     """The table's payments, read with these columns and checked: every date must
     read, every payment must have a direction, and where there is a balance column
-    each balance must follow from the one before it."""
+    each balance must follow from the one before it. `date_order` is the person's
+    answer ("dmy" or "mdy") for a date column that does not say which it is; a
+    column that does say keeps its own order."""
     cmap = column_map(table, mapping)
-    result = generic.extract_with_map(table.data_rows, cmap, first_row=table.first_data + 1)
+    order, ambiguous = date_reading(table, mapping)
+    if ambiguous:
+        if date_order is None:
+            raise DateOrderUnclear()
+        if date_order not in DATE_ORDERS:
+            raise SpreadsheetError("The date order has to be day first or month first.")
+        order = date_order
+    result = generic.extract_with_map(table.data_rows, cmap, first_row=table.first_data + 1, date_order=order)
 
     if result.bad_dates:
         row, text = result.bad_dates[0]
         raise SpreadsheetError(
             f'The date "{text}" in row {row} isn\'t one we can read. '
             "Dates need the day first, like 25/10/2026, or the year first, like 2026-10-25."
+        )
+    if result.bad_amounts:
+        row, text = result.bad_amounts[0]
+        raise SpreadsheetError(
+            f'The amount "{text}" in row {row} isn\'t one we can read, so it was not guessed. '
+            "Amounts look like 1,234.50, 1234.50, (1,234.50), -1,234.50 or 1,234.50 Dr."
+        )
+    if result.mixed_decimals:
+        row, text, before = result.mixed_decimals
+        now, was = ("a decimal comma", "a decimal point") if before == "dot" else ("a decimal point", "a decimal comma")
+        raise SpreadsheetError(
+            f'Row {row} writes "{text}" with {now}, but the rows above it in that column use {was}. '
+            "A column has to use one way, or an amount could be read 100 times too large."
         )
     if not result.transactions:
         if result.skipped_unknown_direction:
@@ -623,11 +703,9 @@ def _no_direction(count: int) -> str:
     )
 
 
-def preview(table: Table, mapping: dict[str, int], limit: int = 5) -> dict:
-    """The first payments as they would be read with these columns, or the message
-    that says why they cannot be: what the form shows beside the columns."""
+def _preview_rows(table: Table, mapping: dict[str, int], order: str | None, limit: int) -> dict:
     try:
-        parsed = parse_table(table, mapping)
+        parsed = parse_table(table, mapping, date_order=order)
     except SpreadsheetError as exc:
         return {"rows": [], "error": str(exc)}
     return {
@@ -643,3 +721,19 @@ def preview(table: Table, mapping: dict[str, int], limit: int = 5) -> dict:
         ],
         "error": None,
     }
+
+
+def preview(table: Table, mapping: dict[str, int], limit: int = 5, date_order: str | None = None) -> dict:
+    """The first payments as they would be read with these columns, or the message
+    that says why they cannot be: what the form shows beside the columns. Where the
+    date column does not say which way round it is, `date_choices` holds the reading
+    for each way ({"dmy": ..., "mdy": ...}) and `rows` follows the chosen one, day
+    first until the person chooses."""
+    try:
+        _, ambiguous = date_reading(table, mapping) if "date" in mapping else ("dmy", False)
+    except SpreadsheetError:
+        ambiguous = False
+    if not ambiguous:
+        return {**_preview_rows(table, mapping, None, limit), "date_choices": None}
+    choices = {order: _preview_rows(table, mapping, order, limit) for order in DATE_ORDERS}
+    return {**choices[date_order if date_order in DATE_ORDERS else "dmy"], "date_choices": choices}

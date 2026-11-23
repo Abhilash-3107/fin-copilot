@@ -54,9 +54,11 @@ def read(contents: bytes):
     return sheet.read_table(contents)
 
 
-def parsed(contents: bytes, mapping=None):
+def parsed(contents: bytes, mapping=None, date_order="dmy"):
+    """Read with the day first where a file of early-month dates leaves it open: what
+    these tests are about is not the question that raises (TestDateOrder)."""
     table = read(contents)
-    return sheet.parse_table(table, mapping or sheet.starting_mapping(table))
+    return sheet.parse_table(table, mapping or sheet.starting_mapping(table), date_order=date_order)
 
 
 # --- what kind of file it is ------------------------------------------------
@@ -364,7 +366,10 @@ class TestPlainErrors:
         assert "row 5" in str(caught.value)  # two rows above, the header, then the second payment
 
     def test_a_date_that_does_not_read_names_the_row(self):
-        rows = [HEADER, OCT[0], ("10/25/2026", "UPI/X/9", "10.00", "", "24,578.00"), OCT[1]]
+        # A column that has a day above 12 in the first place AND in the second place
+        # is not one order: the rows that do not read the column's way are named.
+        rows = [HEADER, OCT[0], ("10/25/2026", "UPI/X/9", "10.00", "", "24,578.00"),
+                ("26/10/2026", "UPI/Y/9", "10.00", "", "24,568.00")]
         with pytest.raises(SpreadsheetError) as caught:
             parsed(as_csv(rows))
         message = str(caught.value)
@@ -390,7 +395,7 @@ class TestPlainErrors:
             parsed(as_csv([HEADER, ("", "", "", "", "")]))
 
     def test_the_messages_use_no_parser_words(self):
-        for contents in (b"", as_csv([HEADER, ("10/25/2026", "x", "1.00", "", "")])):
+        for contents in (b"", as_csv([HEADER, ("10/25/2026", "x", "1.00", "", ""), ("26/10/2026", "y", "1.00", "", "")])):
             with pytest.raises(SpreadsheetError) as caught:
                 parsed(contents)
             for word in ("Traceback", "ValueError", "csv.Error", "column index", "None"):
@@ -430,7 +435,7 @@ class TestHeaderAndMapping:
     def test_the_person_can_choose_the_columns(self):
         rows = [["When", "What", "Out", "In", "Left"]] + [list(r) for r in OCT]
         table = read(as_csv(rows))
-        got = sheet.parse_table(table, {"date": 0, "description": 1, "debit": 2, "credit": 3, "balance": 4})
+        got = sheet.parse_table(table, {"date": 0, "description": 1, "debit": 2, "credit": 3, "balance": 4}, date_order="dmy")
         assert len(got.transactions) == 4
 
     def test_a_mapping_without_a_date_or_amount_is_refused_in_plain_words(self):
@@ -454,7 +459,7 @@ class TestHeaderAndMapping:
         """The balance column chosen as the amount: the chain does not add up."""
         table = read(as_csv([HEADER, *OCT]))
         with pytest.raises(SpreadsheetError, match="running balance"):
-            sheet.parse_table(table, {"date": 0, "description": 1, "debit": 4, "credit": 3, "balance": 2})
+            sheet.parse_table(table, {"date": 0, "description": 1, "debit": 4, "credit": 3, "balance": 2}, date_order="dmy")
 
 
 class TestSignature:
@@ -488,6 +493,7 @@ class TestPreview:
     def test_the_first_rows_as_they_would_be_read(self):
         table = read(as_csv([HEADER, *OCT]))
         rows = sheet.preview(table, sheet.starting_mapping(table), limit=3)
+        rows.pop("date_choices")  # the early days of a month leave the order open (TestDateOrder)
         assert rows == {
             "rows": [
                 {"date": "2026-10-01", "description": "UPI/SWIGGY/ORDER/400112233/UPI", "amount": 412.0,
@@ -506,8 +512,173 @@ class TestPreview:
         assert got["rows"] == []
         assert got["error"]
 
-    def test_a_date_read_the_wrong_way_round_shows_before_saving(self):
-        """A column of month-first dates reads as nothing, not as the wrong day."""
-        rows = [["Date", "Narration", "Amount"], ("10/25/2026", "x", "-1.00"), ("10/26/2026", "y", "2.00")]
+    def test_a_date_the_wrong_way_round_shows_before_saving(self):
+        """A column that mixes both orders names the row that does not read."""
+        rows = [["Date", "Narration", "Amount"], ("10/25/2026", "x", "-1.00"), ("26/10/2026", "y", "2.00")]
         table = read(as_csv(rows))
         assert sheet.preview(table, sheet.starting_mapping(table))["error"]
+
+
+# --- amounts written in other ways -----------------------------------------
+
+
+def amounts(*cells, header=("Date", "Narration", "Amount")) -> list[tuple[float, str]]:
+    rows = [list(header)] + [[f"{i + 1:02d}/10/2026", f"UPI/P/{i}", c] for i, c in enumerate(cells)]
+    got = parsed(as_csv(rows))
+    return [(t.amount, t.debit_credit) for t in got.transactions]
+
+
+class TestAmountForms:
+    # (the cell, a second row that tells the column how it speaks, what the cell is)
+    @pytest.mark.parametrize("cell,other,expected", [
+        ("(100.00)", "5.00", (100.0, "debit")),
+        ("( 1,100.50 )", "5.00", (1100.5, "debit")),
+        ("\u2212100.00", "5.00", (100.0, "debit")),
+        ("-100.00", "5.00", (100.0, "debit")),
+        ("100.00-", "5.00", (100.0, "debit")),
+        ("100.00 -", "5.00", (100.0, "debit")),
+        ("100.00DR", "5.00 Cr", (100.0, "debit")),
+        ("100.00dr", "5.00 Cr", (100.0, "debit")),
+        ("100.00 Dr", "5.00 Cr", (100.0, "debit")),
+        ("100.00CR", "5.00 Dr", (100.0, "credit")),
+        ("100.00cr", "5.00 Dr", (100.0, "credit")),
+        ("100.00 Cr.", "5.00 Dr", (100.0, "credit")),
+        ("\u20b91,000.00", "-1.00", (1000.0, "credit")),
+        ("INR 500", "-1.00", (500.0, "credit")),
+        ("+100.00", "-1.00", (100.0, "credit")),
+    ])
+    def test_every_form_of_a_money_cell_reads(self, cell, other, expected):
+        assert amounts(cell, other)[0] == expected
+
+    def test_a_cell_that_has_digits_and_cannot_be_read_is_refused_with_its_row(self):
+        rows = [["Date", "Narration", "Amount"], ("01/10/2026", "A", "-5.00"), ("02/10/2026", "B", "12 345")]
+        with pytest.raises(SpreadsheetError) as caught:
+            parsed(as_csv(rows))
+        message = str(caught.value)
+        assert '"12 345"' in message and "row 3" in message
+
+    def test_an_unreadable_balance_is_refused_too(self):
+        rows = [HEADER, ("01/10/2026", "A", "10.00", "", "n/a 24"), ("02/10/2026", "B", "10.00", "", "24,970.00")]
+        with pytest.raises(SpreadsheetError, match='"n/a 24" in row 2'):
+            parsed(as_csv(rows))
+
+    def test_a_dash_or_a_word_in_a_money_cell_is_just_empty(self):
+        rows = [HEADER, ("01/10/2026", "A", "10.00", "-", "24,990.00"), ("02/10/2026", "B", "NA", "5.00", "24,995.00")]
+        assert [t.amount for t in parsed(as_csv(rows)).transactions] == [10.0, 5.0]
+
+
+class TestDecimalComma:
+    def test_a_comma_before_exactly_two_digits_and_no_dot_is_a_decimal_comma(self):
+        rows = [("Date", "Narration", "Withdrawal", "Deposit", "Balance"),
+                ("01/10/2026", "A", "100,00", "", "900,00"),
+                ("02/10/2026", "B", "", "50,50", "950,50")]
+        got = parsed(as_csv(rows, delimiter=";"))
+        assert [(t.amount, t.running_balance) for t in got.transactions] == [(100.0, 900.0), (50.5, 950.5)]
+
+    def test_indian_grouping_is_never_a_decimal_comma(self):
+        rows = [HEADER, ("01/10/2026", "A", "1,00,000", "", "9,00,000"), ("02/10/2026", "B", "1,000", "", "8,99,000")]
+        got = parsed(as_csv(rows))
+        assert [t.amount for t in got.transactions] == [100000.0, 1000.0]
+
+    def test_a_column_that_mixes_a_point_and_a_comma_names_the_first_row_that_disagrees(self):
+        rows = [("Date", "Narration", "Amount"),
+                ("01/10/2026", "A", "-100.00"), ("02/10/2026", "B", "-250,00"), ("03/10/2026", "C", "-5.00")]
+        with pytest.raises(SpreadsheetError) as caught:
+            parsed(as_csv(rows))
+        assert "Row 3" in str(caught.value) and "250,00" in str(caught.value)
+
+    def test_a_thousands_dot_with_a_decimal_comma_is_refused_not_read_100_times_wrong(self):
+        rows = [("Date", "Narration", "Amount"), ("01/10/2026", "A", "-1.234,56"), ("02/10/2026", "B", "5,00")]
+        with pytest.raises(SpreadsheetError, match="row 2"):
+            parsed(as_csv(rows, delimiter=";"))
+
+
+class TestDatesWithATime:
+    def test_a_time_after_the_date_is_dropped(self):
+        rows = [("Date", "Narration", "Amount"),
+                ("01/10/2026 10:15:00", "A", "-100.00"), ("2026-10-02 11:00:00", "B", "50.00"),
+                ("03/10/2026 9:05", "C", "-1.00"), ("04-10-2026 10:15 PM", "D", "-1.00")]
+        got = parsed(as_csv(rows))
+        assert [t.txn_date for t in got.transactions] == [date(2026, 10, d) for d in (1, 2, 3, 4)]
+
+    def test_an_xlsx_datetime_cell_is_a_date(self):
+        rows = [("Date", "Narration", "Amount"), (datetime(2026, 10, 1, 10, 15), "A", -100.0), (datetime(2026, 10, 2), "B", 50.0)]
+        assert [t.txn_date.day for t in parsed(as_xlsx(rows)).transactions] == [1, 2]
+
+
+# --- which way round the dates go -------------------------------------------
+
+
+def dated(*texts, header=("Date", "Narration", "Amount")):
+    return as_csv([list(header)] + [[t, f"UPI/P/{i}", "-1.00" if i % 2 else "2.00"] for i, t in enumerate(texts)])
+
+
+class TestDateOrder:
+    def test_a_day_above_twelve_in_the_first_place_settles_it_day_first(self):
+        got = parsed(dated("05/10/2026", "06/10/2026", "25/10/2026"))
+        assert [t.txn_date for t in got.transactions] == [date(2026, 10, d) for d in (5, 6, 25)]
+        table = read(dated("05/10/2026", "06/10/2026", "25/10/2026"))
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", False)
+
+    def test_a_day_above_twelve_in_the_second_place_settles_it_month_first(self):
+        contents = dated("10/05/2026", "10/06/2026", "10/25/2026")
+        got = parsed(contents)
+        assert [t.txn_date for t in got.transactions] == [date(2026, 10, d) for d in (5, 6, 25)]
+        table = read(contents)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("mdy", False)
+
+    def test_only_one_reading_keeping_the_dates_in_order_is_the_one_used(self):
+        day_first = dated("08/10/2026", "02/11/2026", "03/11/2026")  # month first would run Aug, Feb, Mar
+        table = read(day_first)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", False)
+        month_first = dated("10/08/2026", "11/02/2026", "11/03/2026")
+        table = read(month_first)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("mdy", False)
+        assert parsed(month_first).transactions[1].txn_date == date(2026, 11, 2)
+
+    def test_both_readings_in_order_cannot_be_told_apart(self):
+        contents = dated("01/10/2026", "02/10/2026", "03/10/2026")  # Oct 1..3 or Jan, Feb, Mar 10
+        table = read(contents)
+        mapping = sheet.starting_mapping(table)
+        assert sheet.date_reading(table, mapping) == ("dmy", True)
+        with pytest.raises(sheet.DateOrderUnclear):
+            sheet.parse_table(table, mapping)
+
+    def test_neither_reading_in_order_cannot_be_told_apart_either(self):
+        table = read(dated("05/03/2026", "01/02/2026", "06/07/2026"))
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", True)
+
+    def test_the_person_chooses_and_the_dates_read_that_way(self):
+        table = read(dated("01/10/2026", "02/10/2026", "03/10/2026"))
+        mapping = sheet.starting_mapping(table)
+        day_first = sheet.parse_table(table, mapping, date_order="dmy")
+        month_first = sheet.parse_table(table, mapping, date_order="mdy")
+        assert day_first.transactions[0].txn_date == date(2026, 10, 1)
+        assert month_first.transactions[0].txn_date == date(2026, 1, 10)
+
+    def test_a_choice_never_overrules_a_column_that_settles_it(self):
+        table = read(dated("05/10/2026", "06/10/2026", "25/10/2026"))
+        got = sheet.parse_table(table, sheet.starting_mapping(table), date_order="mdy")
+        assert got.transactions[0].txn_date == date(2026, 10, 5)
+
+    def test_dates_that_are_not_numeric_never_need_asking(self):
+        table = read(dated("01-Oct-2026", "2026-10-02", "03 Oct 2026"))
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", False)
+
+    def test_a_column_of_one_number_twice_is_not_ambiguous(self):
+        table = read(dated("05/05/2026", "05/05/2026", "06/06/2026"))
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", False)
+
+    def test_the_preview_shows_each_reading_when_the_column_is_ambiguous(self):
+        table = read(dated("01/10/2026", "02/10/2026", "03/10/2026"))
+        got = sheet.preview(table, sheet.starting_mapping(table))
+        assert set(got["date_choices"]) == {"dmy", "mdy"}
+        assert got["date_choices"]["dmy"]["rows"][0]["date"] == "2026-10-01"
+        assert got["date_choices"]["mdy"]["rows"][0]["date"] == "2026-01-10"
+        assert got["rows"] == got["date_choices"]["dmy"]["rows"]
+        chosen = sheet.preview(table, sheet.starting_mapping(table), date_order="mdy")
+        assert chosen["rows"] == got["date_choices"]["mdy"]["rows"]
+
+    def test_the_preview_of_a_settled_column_has_no_choices(self):
+        table = read(dated("05/10/2026", "25/10/2026"))
+        assert sheet.preview(table, sheet.starting_mapping(table))["date_choices"] is None
