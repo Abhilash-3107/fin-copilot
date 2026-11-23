@@ -113,7 +113,7 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
 
 // The widths that fit 3 accounts by 12 months at 1440: below them the grid scrolls inside its box.
 const ACCOUNT_REM = 10
-const MONTH_REM = 5.25
+const MONTH_REM = 6
 
 // The books: one row per account, one column per month, newest first. A month an
 // account has no statement for, between its first and its last, is a visible gap.
