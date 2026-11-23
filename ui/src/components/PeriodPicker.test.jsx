@@ -4,7 +4,7 @@ import { render, screen, within, waitFor } from '@testing-library/react'
 const { mockApi } = vi.hoisted(() => ({ mockApi: { get: vi.fn() } }))
 vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class ApiError extends Error {} }))
 
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from './PeriodPicker.jsx'
 
@@ -17,11 +17,11 @@ const STATEMENTS = [
 
 function renderPicker(props) {
   render(
-    <StatementProvider>
+    <LedgerProvider>
       <PeriodProvider>
         <PeriodPicker {...props} />
       </PeriodProvider>
-    </StatementProvider>
+    </LedgerProvider>
   )
 }
 

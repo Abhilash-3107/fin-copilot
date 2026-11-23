@@ -38,7 +38,7 @@ vi.mock('react-chartjs-2', () => ({
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from '../contexts/AnnotationJobContext.jsx'
 import Dashboard from './Dashboard.jsx'
@@ -118,13 +118,13 @@ function renderDashboard() {
   render(
     <MemoryRouter>
       <PrivacyProvider>
-        <StatementProvider>
+        <LedgerProvider>
           <PeriodProvider>
             <AnnotationJobProvider>
               <Dashboard />
             </AnnotationJobProvider>
           </PeriodProvider>
-        </StatementProvider>
+        </LedgerProvider>
       </PrivacyProvider>
     </MemoryRouter>
   )
@@ -771,5 +771,108 @@ describe('Dashboard when the API fails', () => {
     heal()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+})
+
+describe('Dashboard with two accounts', () => {
+  const ACCOUNTS = [
+    { id: 'acc_k', account_label: 'Kotak savings', statement_count: 4 },
+    { id: 'acc_s', account_label: 'SBI savings', statement_count: 3 },
+  ]
+  const serve = (summary = SUMMARY) => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(summary)
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(COUNTS)
+      if (path === '/accounts') return Promise.resolve(ACCOUNTS)
+      if (path === '/transactions/months') return Promise.resolve({ months: ['2026-04', '2026-05'] })
+      return Promise.resolve([])
+    })
+  }
+  const insightsCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith('/insights'))
+
+  it('offers every account beside the period, and asks once for the remembered account', async () => {
+    serve()
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    const filter = await screen.findByRole('combobox', { name: 'Account' })
+    await screen.findByText('Kept')
+    expect([...filter.options].map(o => o.textContent)).toEqual(['All accounts', 'Kotak savings', 'SBI savings'])
+    expect(filter).toHaveValue('acc_s')
+    expect(insightsCalls()).toEqual(['/insights?month=2026-05&account_id=acc_s'])
+  })
+
+  it('shows no account filter for one account', async () => {
+    mockApi.get.mockImplementation(path => (path.startsWith('/insights') ? Promise.resolve(SUMMARY) : Promise.resolve(path === '/accounts' ? [ACCOUNTS[0]] : [])))
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
+  })
+
+  it('asks again for the account chosen, and remembers it', async () => {
+    serve()
+    renderDashboard()
+    await screen.findByText('Kept')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_k' } })
+    await waitFor(() => expect(insightsCalls().at(-1)).toBe('/insights?month=2026-05&account_id=acc_k'))
+    expect(localStorage.getItem('fc_account_id')).toBe('acc_k')
+    await screen.findByText('Kept')
+  })
+
+  it('drills through into Transactions with the account the figure is for', async () => {
+    serve()
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderDashboard()
+    const link = await screen.findByRole('link', { name: /Food & Dining/ })
+    expect(link.getAttribute('href')).toContain('account=acc_k')
+  })
+
+  it('does not name an account in a drill-through when every account is shown', async () => {
+    serve()
+    renderDashboard()
+    const link = await screen.findByRole('link', { name: /Food & Dining/ })
+    expect(link.getAttribute('href')).not.toContain('account=')
+  })
+
+  it('says which account is behind in a partial month', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true,
+        short: [{ account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' }],
+      },
+    })
+    renderDashboard()
+    expect(await screen.findByText(/SBI savings to 15 May/)).toBeInTheDocument()
+  })
+
+  it('does not name the account behind when one account is selected', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true,
+        short: [{ account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' }],
+      },
+    })
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByText(/SBI savings to 15 May/)).not.toBeInTheDocument()
+  })
+
+  it('says the balance line is one account\'s, not a sum', async () => {
+    serve()
+    renderDashboard()
+    expect(await screen.findByText('Showing Kotak')).toBeInTheDocument()
+  })
+
+  it('says an account has no payments in the month instead of showing zeros', async () => {
+    serve({
+      ...SUMMARY, account: { id: 'acc_s', label: 'SBI savings' }, annotation: { total: 0, annotated: 0 },
+      verdict: { ...SUMMARY.verdict, money_in: 0, money_out: 0, invested: 0, kept: 0, kept_rate: null, prev: null },
+      comparison: null, categories: [], recurring: [], what_changed: [], unexplained: { count: 0, total: 0 },
+    })
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    expect(await screen.findByText(/SBI savings has no payments in May 2026/)).toBeInTheDocument()
   })
 })

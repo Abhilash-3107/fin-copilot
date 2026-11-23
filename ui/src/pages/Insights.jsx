@@ -21,7 +21,7 @@ import Delta, { tileDelta } from '../components/Delta.jsx'
 import PersonNet from '../components/PersonNet.jsx'
 import { count } from '../lib/plural.js'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { coverageLabel, comparisonLabel, insightsQuery, shortAccountsLabel } from '../lib/period.js'
+import { coverageLabel, comparisonLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
@@ -418,7 +418,7 @@ export default function Insights() {
   // and the picker (allowAll={false}) shows that month.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const { data, loading, error, reload } = useLoad(useCallback(
-    () => api.get(`/insights?${insightsQuery(requestMonth, accountId)}`), [requestMonth, accountId],
+    () => api.get(insightsPath(requestMonth, accountId)), [requestMonth, accountId],
   ), { enabled: ready })
 
   const vs = comparisonLabel(data?.comparison)

@@ -31,8 +31,8 @@ const serve = () => {
 }
 
 const reloadAppStatements = vi.fn()
-vi.mock('../contexts/StatementContext.jsx', () => ({
-  useStatement: () => ({ reload: reloadAppStatements }),
+vi.mock('../contexts/LedgerContext.jsx', () => ({
+  useLedger: () => ({ reload: reloadAppStatements }),
 }))
 const { privacy } = vi.hoisted(() => ({ privacy: { hidden: false } }))
 vi.mock('../contexts/PrivacyContext.jsx', () => ({

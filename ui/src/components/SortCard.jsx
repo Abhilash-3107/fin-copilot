@@ -8,6 +8,7 @@ import ReasoningPanel from './ReasoningPanel.jsx'
 import TagInput from './TagInput.jsx'
 import { labelOf } from '../lib/categoryOptions.js'
 import { count } from '../lib/plural.js'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import { TEACH_ME_KEYS, keyLabel } from '../lib/shortcuts.js'
 
 const KBD = 'bg-[#1e2235] px-1.5 py-0.5 rounded text-[10px] text-[#94a3b8]'
@@ -26,6 +27,7 @@ export default function SortCard({
   onChoose, onCreateCategory, onConfirm, onSkip, onUndo,
   cardRef, typeaheadRef,
 }) {
+  const { multiple } = useLedger()
   const [showPrinted, setShowPrinted] = useState(false)
   const [showTags, setShowTags] = useState(false)
   useEffect(() => { setShowPrinted(false); setShowTags(false) }, [item.transaction_id])
@@ -50,6 +52,7 @@ export default function SortCard({
         </div>
         <div className="mt-2 flex items-center gap-3 text-xs text-[#94a3b8]">
           <span>{dayjs(item.txn_date).format('DD MMM YYYY')}</span>
+          {multiple && item.account_label && <span>{item.account_label}</span>}
           {/* The printed line is the heading when no payee could be read from it. */}
           {item.payee && (
             <button

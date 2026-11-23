@@ -8,6 +8,7 @@ import dayjs from 'dayjs'
 import { api } from '../lib/api.js'
 import Amount from './Amount.jsx'
 import { txnFilterPath } from '../lib/txnLink.js'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import { useDialog } from '../lib/useDialog.js'
 import { ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { OPEN_PALETTE_EVENT, PALETTE_KEY } from '../lib/shortcuts.js'
@@ -68,6 +69,7 @@ export default function CommandPalette() {
 
 function Palette({ onClose }) {
   const navigate = useNavigate()
+  const { multiple } = useLedger()
   const listId = useId()
   const [query, setQuery] = useState('')
   const [txns, setTxns] = useState([])
@@ -129,7 +131,7 @@ function Palette({ onClose }) {
       key: `txn:${t.id}`,
       icon: Receipt,
       label: t.payee,
-      meta: <>{dayjs(t.txn_date).format('DD MMM')} · <Amount value={t.amount} decimals={0} debitCredit={t.debit_credit} /></>,
+      meta: <>{dayjs(t.txn_date).format('DD MMM')} · <Amount value={t.amount} decimals={0} debitCredit={t.debit_credit} />{multiple && t.account_label ? ` · ${t.account_label}` : ''}</>,
       run: () => navigate(`/transactions?txn=${encodeURIComponent(t.id)}`),
     }))
 

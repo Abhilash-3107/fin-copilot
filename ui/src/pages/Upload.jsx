@@ -9,7 +9,7 @@ import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import InlineError from '../components/InlineError.jsx'
 import ActionMenu from '../components/ActionMenu.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
-import { useStatement } from '../contexts/StatementContext.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import Amount from '../components/Amount.jsx'
 import Modal from '../components/Modal.jsx'
 import Tooltip from '../components/Tooltip.jsx'
@@ -289,9 +289,9 @@ export default function Upload() {
   // re-attached after a reload): one run at a time, so every Sort again waits.
   const { job, startAnnotation, watchJobs } = useAnnotationJob()
   const hosted = useDemoData().hosted
-  // The app-wide statement list (the Transactions picker reads it): told when
-  // anything here changes a statement or its account's name.
-  const { reload: reloadAppStatements } = useStatement()
+  // The app-wide accounts and months (the account filter and the period picker read
+  // them): told when anything here changes a statement or its account's name.
+  const { reload: reloadAppStatements } = useLedger()
   const [statements, setStatements] = useState([])
   const [accounts, setAccounts] = useState([])
   // The files of this drop, one entry each, and the ones refused up front.

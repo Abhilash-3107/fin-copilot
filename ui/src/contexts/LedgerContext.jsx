@@ -57,8 +57,13 @@ export function LedgerProvider({ children }) {
   return <LedgerContext.Provider value={value}>{children}</LedgerContext.Provider>
 }
 
+// A screen outside the provider (a component drawn on its own) sees a ledger with a
+// single account: no filter, no account labels.
+const NO_LEDGER = {
+  accounts: [], months: [], multiple: false, accountId: '', account: null,
+  setAccountId: () => {}, loading: false, error: null, reload: () => {},
+}
+
 export function useLedger() {
-  const ctx = useContext(LedgerContext)
-  if (!ctx) throw new Error('useLedger must be used within a LedgerProvider')
-  return ctx
+  return useContext(LedgerContext) ?? NO_LEDGER
 }

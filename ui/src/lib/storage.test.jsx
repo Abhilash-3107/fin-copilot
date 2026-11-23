@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { readStored, writeStored } from './storage.js'
 import { PrivacyProvider, usePrivacy } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider, usePeriod } from '../contexts/PeriodContext.jsx'
 
 vi.mock('./api.js', () => ({ api: { get: vi.fn(() => Promise.resolve([])) } }))
@@ -32,7 +32,7 @@ describe('providers with blocked storage', () => {
       return <p>{String(hidden)} {String(month)}</p>
     }
     render(
-      <PrivacyProvider><StatementProvider><PeriodProvider><Probe /></PeriodProvider></StatementProvider></PrivacyProvider>,
+      <PrivacyProvider><LedgerProvider><PeriodProvider><Probe /></PeriodProvider></LedgerProvider></PrivacyProvider>,
     )
     expect(await screen.findByText('false null')).toBeInTheDocument()
   })

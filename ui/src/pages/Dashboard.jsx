@@ -21,7 +21,7 @@ import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
-import { coverageLabel, isInProgress, comparisonLabel, insightsQuery, shortAccountsLabel } from '../lib/period.js'
+import { coverageLabel, isInProgress, comparisonLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
@@ -484,7 +484,7 @@ export default function Dashboard() {
   // that month rather than a value the figures do not honour.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const summaryLoad = useLoad(useCallback(
-    () => api.get(`/insights?${insightsQuery(requestMonth, accountId)}`), [requestMonth, accountId],
+    () => api.get(insightsPath(requestMonth, accountId)), [requestMonth, accountId],
   ), { enabled: ready })
   // Counts only: the queue itself can be thousands of rows long. Low-confidence
   // guesses waiting in Teach Me span every month, not just this one.

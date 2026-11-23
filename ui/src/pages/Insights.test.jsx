@@ -30,7 +30,7 @@ vi.mock('react-chartjs-2', () => ({
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import Insights from './Insights.jsx'
 
@@ -101,11 +101,11 @@ function renderInsights() {
   render(
     <MemoryRouter>
       <PrivacyProvider>
-        <StatementProvider>
+        <LedgerProvider>
           <PeriodProvider>
             <Insights />
           </PeriodProvider>
-        </StatementProvider>
+        </LedgerProvider>
       </PrivacyProvider>
     </MemoryRouter>
   )
@@ -368,5 +368,41 @@ describe('Insights when the API fails', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByText(/What changed/i)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('Money Map with two accounts', () => {
+  const ACCOUNTS = [
+    { id: 'acc_k', account_label: 'Kotak savings', statement_count: 4 },
+    { id: 'acc_s', account_label: 'SBI savings', statement_count: 3 },
+  ]
+  beforeEach(() => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/accounts') return Promise.resolve(ACCOUNTS)
+      if (path === '/transactions/months') return Promise.resolve({ months: SUMMARY.months })
+      return Promise.resolve([])
+    })
+  })
+  const insightsCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith('/insights'))
+
+  it('asks once for the remembered account, and again for another', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderInsights()
+    await screen.findByText('Kept')
+    expect(insightsCalls()).toHaveLength(1)
+    expect(insightsCalls()[0]).toContain('account_id=acc_k')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_s' } })
+    await waitFor(() => expect(insightsCalls().at(-1)).toContain('account_id=acc_s'))
+    await screen.findByText('Kept')
+  })
+
+  it('names the account in every drill-through while one is selected', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderInsights()
+    await screen.findByText('Kept')
+    const hrefs = screen.getAllByRole('link').map(l => l.getAttribute('href')).filter(h => h?.startsWith('#/transactions') || h?.startsWith('/transactions'))
+    expect(hrefs.length).toBeGreaterThan(0)
+    for (const h of hrefs) expect(h).toContain('account=acc_k')
   })
 })

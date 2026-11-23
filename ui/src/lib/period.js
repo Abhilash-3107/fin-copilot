@@ -51,11 +51,12 @@ export function shortAccountsLabel(period, { oneAccount = false } = {}) {
     .join(', ')
 }
 
-// The query string of /insights: the month (the server's latest when none) and the
-// account (every account when none). One place, so Dashboard and Money Map ask alike.
-export function insightsQuery(month, accountId) {
+// The path of /insights: the month (the server's latest when none) and the account
+// (every account when none). One place, so Dashboard and Money Map ask alike.
+export function insightsPath(month, accountId) {
   const params = new URLSearchParams()
   if (month) params.set('month', month)
   if (accountId) params.set('account_id', accountId)
-  return params.toString()
+  const query = params.toString()
+  return query ? `/insights?${query}` : '/insights'
 }

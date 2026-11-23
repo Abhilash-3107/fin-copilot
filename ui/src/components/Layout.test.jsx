@@ -4,7 +4,7 @@ import { Routes, Route } from 'react-router-dom'
 import { MemoryRouter } from '../test/router.jsx'
 
 const { statementCtx } = vi.hoisted(() => ({ statementCtx: { error: null, reload: vi.fn() } }))
-vi.mock('../contexts/StatementContext.jsx', () => ({ useStatement: () => statementCtx }))
+vi.mock('../contexts/LedgerContext.jsx', () => ({ useLedger: () => statementCtx }))
 vi.mock('../contexts/AnnotationJobContext.jsx', () => ({ useAnnotationJob: () => ({ job: null }) }))
 vi.mock('./Sidebar.jsx', () => ({ default: () => <nav /> }))
 vi.mock('./TopBar.jsx', () => ({ default: () => <header /> }))
@@ -29,10 +29,10 @@ function renderAt(path) {
 }
 
 describe('Layout and the statement list', () => {
-  it('says the statements could not load, above the page, with Retry', () => {
+  it('says the accounts could not load, above the page, with Retry', () => {
     statementCtx.error = new TypeError('Failed to fetch')
     renderAt('/dashboard')
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load your statements.")
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load your accounts.")
     expect(screen.getByText('Dashboard page')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(statementCtx.reload).toHaveBeenCalledTimes(1)
