@@ -158,7 +158,7 @@ function Palette({ onClose }) {
     }))
 
     return [...pageMatches, ...payeeMatches, ...txnMatches, ...peopleMatches, ...groupMatches]
-  }, [query, txns, people, groups, navigate])
+  }, [query, txns, people, groups, navigate, multiple])
 
   const runItem = useCallback((item) => {
     if (!item) return
