@@ -423,18 +423,18 @@ class TestPeriodWindows:
         assert s["what_changed"] == []
         assert all(c["delta"] is None and c["prev_net"] is None for c in s["categories"])
 
-    def test_a_statement_with_no_printed_period_covers_from_the_1st_of_its_first_payments_month(self, conn):
-        # Data starts on 15 Oct and nothing says the statement began later than the 1st, so
-        # 1 to 12 Oct is covered (and quiet): November is compared with it, as with a month of zero.
+    def test_a_first_statement_with_no_printed_period_starts_at_its_first_payment(self, conn):
+        # Data starts on 15 Oct and nothing says what happened on 1 to 14 Oct: November is
+        # not compared with a quiet October that may not have been quiet.
         seed_txn(conn, "2026-10-15", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-10-28", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 10, "debit", category="Shopping")
         seed_txn(conn, "2026-11-12", 10, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-11")
         assert s["period"]["partial"] is True
-        assert s["comparison"]["end"] == "2026-10-12"
-        assert s["verdict"]["prev"]["money_out"] == 0
-        assert s["comparison_note"] == []
+        assert s["comparison"] is None
+        assert s["verdict"]["prev"] is None
+        assert s["comparison_note"] == [{"account_label": "Other statements", "reason": "has no statement for 1-12 Oct"}]
 
     def test_a_gap_month_has_no_comparison_and_says_which_days_are_missing(self, conn):
         # September and November have statements, October has none: November must not

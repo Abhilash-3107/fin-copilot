@@ -4,9 +4,11 @@ One definition, read by the Money Map and Dashboard (is this month complete, and
 compared with the last one?) and by the books grid (what does each account's month hold?).
 
 Only a printed period is exact. A statement that printed none (every ledger upgraded from
-0.2.0) covers from the 1st of its first payment's month, or from the day after the account's
-previous statement ends if that is later, to its last payment, and, because the account's
-next statement exists, runs on to the end of that month (or the day before the next statement
+0.2.0) covers, for an account's first statement, from its first payment's date (nobody has seen
+the days before it, so they are not covered), and for a later one from the day after the
+account's previous statement ends (never before the 1st of its first payment's month, and never
+later than its own first payment), to its last payment, and, because the account's next
+statement exists, runs on to the end of that month (or the day before the next statement
 begins, if sooner): a month followed by later data was not left open just because nothing was
 paid after the 28th or before the 3rd. It never runs past its month, so a missing month between
 two statements still shows. A printed period is never stretched, so a real gap between two
@@ -70,14 +72,14 @@ def statement_spans(conn: sqlite3.Connection, account_id: str | None = None) -> 
                 month_end = end.replace(day=calendar.monthrange(end.year, end.month)[1])
                 reaches = min(month_end, date.fromisoformat(min(later)) - timedelta(days=1))
                 span["end"] = max(span["end"], reaches.isoformat())
-        # Then starts: the 1st of the first payment's month, or the day after the account's
-        # previous statement ends, whichever is later, and never after the payment itself.
+        # Then starts. An account's first statement begins at its first payment. A later one
+        # begins the day after the account's previous statement ends, but not before the 1st of
+        # its first payment's month (a missing month between two statements still shows), and
+        # never after the payment itself.
         previous_end = None
         for span in items:
-            if not span["printed"]:
-                begins = _month_start(span["start"])
-                if previous_end is not None:
-                    begins = max(begins, (date.fromisoformat(previous_end) + timedelta(days=1)).isoformat())
+            if not span["printed"] and previous_end is not None:
+                begins = max(_month_start(span["start"]), (date.fromisoformat(previous_end) + timedelta(days=1)).isoformat())
                 span["start"] = min(span["start"], begins)
             previous_end = span["end"] if previous_end is None else max(previous_end, span["end"])
     if account_id is not None:

@@ -1,10 +1,11 @@
 """Which days each account's statements cover (db/queries/coverage.py).
 
-Only a printed period is exact. A statement that printed none covers from the 1st of its
-first payment's month (or the day after the account's previous statement ends, if later),
-and runs on to the end of its last payment's month when a later statement exists. A month
-whose coverage does not start on the 1st, in an account that has an earlier statement, has
-a hole at its start.
+Only a printed period is exact. A statement that printed none covers, for an account's first
+statement, from its first payment's date (nobody has seen the days before it), and for a
+later one from the day after the account's previous statement ends (never later than its own
+first payment, never before the 1st of its month). It runs on to the end of its last
+payment's month when a later statement exists. A month whose coverage does not start on the
+1st, in an account that has an earlier statement, has a hole at its start.
 """
 from __future__ import annotations
 
@@ -32,12 +33,43 @@ def spans_of(conn, account):
     return [(s["start"], s["end"]) for s in statement_spans(conn, account)[account]]
 
 
-def test_an_unprinted_statement_covers_from_the_first_of_its_first_payments_month(conn):
+def test_an_accounts_first_unprinted_statement_covers_from_its_first_payment(conn):
+    a = add_account(conn, "a")
+    conn.execute("DELETE FROM statements")
+    unprinted(conn, "oct", a, "2026-10", 15, 29)
+    assert spans_of(conn, a) == [("2026-10-15", "2026-10-29")]
+
+
+def test_a_later_unprinted_statement_chains_from_the_day_after_the_previous_one_ends(conn):
     a = add_account(conn, "a")
     conn.execute("DELETE FROM statements")
     unprinted(conn, "oct", a, "2026-10", 3, 29)
     unprinted(conn, "nov", a, "2026-11", 3, 27)
-    assert spans_of(conn, a) == [("2026-10-01", "2026-10-31"), ("2026-11-01", "2026-11-27")]
+    assert spans_of(conn, a) == [("2026-10-03", "2026-10-31"), ("2026-11-01", "2026-11-27")]
+
+
+def test_a_later_unprinted_statement_after_a_missing_month_still_shows_the_missing_month(conn):
+    a = add_account(conn, "a")
+    conn.execute("DELETE FROM statements")
+    unprinted(conn, "sep", a, "2026-09", 3, 28)
+    unprinted(conn, "nov", a, "2026-11", 3, 27)
+    assert spans_of(conn, a) == [("2026-09-03", "2026-09-30"), ("2026-11-01", "2026-11-27")]
+
+
+def test_a_first_statement_starting_mid_month_makes_the_next_month_not_comparable(conn):
+    from finance_copilot.db.queries.books import books
+
+    a = add_account(conn, "a", name="Kotak savings")
+    conn.execute("DELETE FROM statements")
+    unprinted(conn, "oct", a, "2026-10", 15, 28)
+    unprinted(conn, "nov", a, "2026-11", 1, 12)
+    october = summarize_insights(conn, "2026-10")
+    assert october["period"]["partial"] is False  # the account only began that month: no hole
+    november = summarize_insights(conn, "2026-11")
+    assert november["comparison"] is None
+    assert november["comparison_note"] == [{"account_label": "Kotak savings", "reason": "has no statement for 1-12 Oct"}]
+    cell = books(conn)["accounts"][0]["cells"]["2026-10"]
+    assert cell["full"] is False and cell["covered"] == [["2026-10-15", "2026-10-31"]]
 
 
 def test_an_unprinted_statement_starts_the_day_after_the_previous_one_ends_when_that_is_later(conn):
@@ -65,15 +97,19 @@ def test_a_printed_period_is_exact_and_only_widened_to_hold_its_own_payments(con
     assert spans_of(conn, a) == [("2026-10-10", "2026-10-28")]
 
 
-def test_monthly_files_whose_first_payment_is_on_the_3rd_read_complete(conn):
+def test_monthly_files_whose_first_payment_is_on_the_3rd_chain_into_full_months(conn):
     a = add_account(conn, "a")
     conn.execute("DELETE FROM statements")
     for month, last in (("2026-09", 28), ("2026-10", 29), ("2026-11", 27)):
         unprinted(conn, month[5:], a, month, 3, last)
     october = summarize_insights(conn, "2026-10")
     assert october["period"]["partial"] is False and october["period"]["short"] == []
-    assert october["comparison"] is not None and october["comparison_note"] == []
+    # The account's first file begins on 3 Sep, so 1-2 Sep are not covered: October is complete
+    # but cannot be compared with September. Every month after that can.
+    assert october["comparison"] is None
+    assert october["comparison_note"] == [{"account_label": "Kotak ··XXXa", "reason": "has no statement for 1-2 Sep"}]
     november = summarize_insights(conn, "2026-11")
+    assert november["period"]["partial"] is True and november["comparison_note"] == []
     # The last statement stops where its payments stop: covered to the 27th, compared with 1 to 27 Oct.
     assert november["period"]["covered_through"] == "2026-11-27"
     assert november["comparison"]["end"] == "2026-10-27"
@@ -130,7 +166,9 @@ def test_the_grid_reads_monthly_files_with_no_printed_period_as_full(conn):
 
     monthly_pair(conn)
     for account in books(conn)["accounts"]:
-        assert account["cells"]["2026-09"]["full"] is True, account["account_label"]
+        # The first file begins on its first payment: nobody has seen 1-2 Sep.
+        assert account["cells"]["2026-09"]["covered"] == [["2026-09-03", "2026-09-30"]], account["account_label"]
+        assert account["cells"]["2026-09"]["full"] is False
         assert account["cells"]["2026-10"]["full"] is True
         # The newest file stops where its payments stop: nothing follows it.
         assert account["cells"]["2026-11"]["full"] is False
@@ -150,7 +188,7 @@ def test_when_every_account_is_compared_the_tile_is_the_base_of_its_delta(conn):
     """The figure on a tile and the figure its delta is measured from are the same payments:
     this month over the accounts and days compared is the month itself."""
     a, b = monthly_pair(conn)
-    for month in ("2026-10", "2026-11"):
+    for month in ("2026-11",):
         for acct in (None, a, b):
             s = summarize_insights(conn, month, account_id=acct)
             assert s["comparison"] is not None
