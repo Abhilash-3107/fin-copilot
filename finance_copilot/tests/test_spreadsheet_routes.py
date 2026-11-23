@@ -323,19 +323,22 @@ class TestHostileFiles:
 
 
 class TestWhatTheFormIsTold:
-    def test_the_raw_preview_keeps_the_last_four_of_anything_like_an_account_number(self, api):
+    def test_the_raw_preview_keeps_the_last_four_of_a_number_outside_the_description_column(self, api):
         client, _ = api
         text = (
-            b"When,What,Moved,Left\n"
-            b"2026-10-01,NEFT/50100123456789/RENT,-100.00,900.00\n"
-            b"2026-10-02,UPI/4001122/X,1234567890,950.00\n"
+            b"Date,Narration,Moved,Left,Ref\n"
+            b"2026-10-01,NEFT/50100123456789/RENT,-100.00,900.00,50100123456789\n"
+            b"2026-10-02,UPI/4001122/X,50.00,950.00,4001122\n"
         )
         body = upload(client, "odd.csv", text).json()
+        assert body["guess"]["description"] == 1
         cells = [c for row in body["preview"] for c in row]
-        assert "NEFT/XXXXXXXXXX6789/RENT" in cells
-        assert "50100123456789" not in json.dumps(body)
+        # The description is shown whole, like the read preview below it.
+        assert "NEFT/50100123456789/RENT" in cells
+        assert body["preview"][0][4] == "XXXXXXXXXX6789"  # any other column keeps four digits
         assert "4001122" in " ".join(cells)  # seven digits: not a number to hide
         assert "900.00" in cells and "-100.00" in cells  # figures stay
+        assert "50100123456789" not in json.dumps(body["preview"][0][4])
 
     def test_a_held_copy_says_all_of_its_payments_and_lists_the_accounts(self, api):
         client, _ = api

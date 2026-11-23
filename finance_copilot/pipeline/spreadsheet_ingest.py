@@ -58,7 +58,8 @@ _LONG_NUMBER = re.compile(r"(?<![\d.,])(\d{5,})(\d{4})(?![\d.,])")
 
 def _masked_cell(text: str) -> str:
     """A cell for the form's raw preview, with anything that looks like a full account
-    number cut to its last four digits: the form needs to show columns, not numbers."""
+    number cut to its last four digits: the form needs to show columns, not numbers.
+    Not used for the Description column, which the form's other preview shows whole."""
     return _LONG_NUMBER.sub(lambda m: "X" * len(m.group(1)) + m.group(2), text)
 
 
@@ -129,7 +130,10 @@ def _needs_body(
         "date_order": date_order,
         "columns": table.columns,
         "preview": [
-            [_masked_cell(row[i]) if i < len(row) else "" for i in range(table.width)]
+            [
+                (row[i] if i == guess.get("description") else _masked_cell(row[i])) if i < len(row) else ""
+                for i in range(table.width)
+            ]
             for row in table.data_rows[:_PREVIEW_ROWS]
         ],
         "guess": guess,
