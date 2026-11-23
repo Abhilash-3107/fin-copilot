@@ -7,6 +7,8 @@ import logging
 import re
 import sqlite3
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -300,6 +302,16 @@ class NothingNewError(ValueError):
         super().__init__(f"Nothing new: {what} already in {account_label}.")
 
 
+class _HeldForConfirmation(Exception):
+    """Inside the write step: the file mostly matches nothing over days the account
+    covers. It rolls the step back; ingest_parsed then raises OverlapNeedsConfirmation."""
+
+    def __init__(self, split, account_id: str):
+        super().__init__()
+        self.split = split
+        self.account_id = account_id
+
+
 class _AllAlreadyIn(Exception):
     """Inside the write step: every payment of the file is in the account. It rolls
     the step back; ingest_pdf then names the account as it stands after that."""
@@ -412,6 +424,128 @@ def _pair_transfers(conn: sqlite3.Connection, statement: Statement) -> int:
     return 0
 
 
+@dataclass
+class ParsedFile:
+    """What a front end (a PDF, a spreadsheet) hands the shared core: the payments
+    as read, the statement's identity, and nothing about how it was read."""
+
+    transactions: list[Transaction]  # as parsed, balance rows included
+    bank_name: str
+    parser_version: str
+    account_ref: str | None
+    printed: tuple[date, date] | None  # the period the file says it covers, unchecked
+
+
+class OverlapNeedsConfirmation(Exception):
+    """A file whose payments mostly match nothing on days the account already
+    covers: probably a copy printed another way, which would add every payment
+    twice. Raised before anything is written, so the person can stop."""
+
+    def __init__(self, rows_in_overlap: int, unmatched: int, account_label: str):
+        super().__init__()
+        self.rows_in_overlap = rows_in_overlap
+        self.unmatched = unmatched
+        self.account_label = account_label
+
+
+# A file whose payments mostly do not match the account over days it already
+# covers is held for the person's say-so (when the front end asks for it).
+def _mostly_unmatched(split) -> bool:
+    return split.rows_in_overlap > 0 and split.unmatched_in_overlap * 2 > split.rows_in_overlap
+
+
+ChooseAccount = Callable[[sqlite3.Connection, Statement], tuple[str, bool]]
+
+
+def ingest_parsed(
+    conn: sqlite3.Connection,
+    file_sha256: str,
+    parsed: ParsedFile,
+    choose_account: ChooseAccount,
+    *,
+    hold_mostly_unmatched: bool = False,
+    on_landed: Callable[[sqlite3.Connection, Statement], None] | None = None,
+) -> Statement:
+    """The path every statement takes once its payments are read: balance rows split
+    off, chain order, the period, the account, what the account already has, the
+    write, pairing. `choose_account` runs under the write lock and may set the
+    statement's bank and number (a spreadsheet takes them from the account the
+    person chose). `on_landed` runs inside the same write, after the rows are in."""
+    transactions, opening_balance, closing_balance = _split_balance_artifacts(parsed.transactions)
+    if not transactions:
+        raise ValueError("No payments were found in this statement.")
+
+    period_start = min(t.txn_date for t in transactions)
+    period_end = max(t.txn_date for t in transactions)
+    printed = _sane_printed_period(parsed.printed, period_start, period_end)
+    statement = Statement(
+        bank_name=parsed.bank_name,
+        parser_version=parsed.parser_version,
+        statement_month=period_start.strftime("%Y-%m"),
+        period_start=period_start,
+        period_end=period_end,
+        file_sha256=file_sha256,
+        opening_balance=opening_balance,
+        closing_balance=closing_balance,
+        account_ref=parsed.account_ref,
+        printed_start=printed[0] if printed else None,
+        printed_end=printed[1] if printed else None,
+    )
+
+    # The balance check is the file's, over every payment it printed: the
+    # ones that were new are not a chain when an earlier file had the rest.
+    statement.rows_in_file = len(transactions)
+    statement.balance_checked, statement.balance_consistent = balance_chain_check(
+        (t.running_balance, t.amount, t.debit_credit) for t in transactions
+    )
+
+    # Choosing the account and writing the statement are one step under the
+    # write lock: two statements arriving together for a new account must
+    # not each start one.
+    try:
+        with write_transaction(conn):
+            # Looked again under the lock: the same file arriving twice at once
+            # passed the look above in both requests, and the loser would
+            # otherwise write against the winner's account.
+            _refuse_duplicate(conn, file_sha256)
+            statement.account_id, statement.account_is_new = choose_account(conn, statement)
+            split = split_new_rows(conn, statement.account_id, transactions)
+            if not split.new:
+                raise _AllAlreadyIn(len(transactions), statement.account_id)
+            if hold_mostly_unmatched and _mostly_unmatched(split):
+                raise _HeldForConfirmation(split, statement.account_id)
+            statement.rows_added = len(split.new)
+            if split.overlaps_without_match:
+                statement.notices.append(
+                    f"This file covers dates already in {account_labels(conn)[statement.account_id]}, "
+                    "but none of its payments match. If it is another account, "
+                    "move it with Move to account."
+                )
+            insert_statement(conn, statement)
+            for txn in split.new:
+                txn.statement_id = statement.id
+                insert_transaction(conn, txn)
+            if on_landed is not None:
+                on_landed(conn, statement)
+    except _AllAlreadyIn as nothing:
+        # The refusal rolled back anything the account lookup did (a number
+        # it took on), so the account is named as it is, not as this file
+        # would have left it.
+        raise NothingNewError(
+            nothing.count, account_labels(conn)[nothing.account_id]
+        ) from None
+    except _HeldForConfirmation as held:
+        raise OverlapNeedsConfirmation(
+            held.split.rows_in_overlap, held.split.unmatched_in_overlap,
+            account_labels(conn)[held.account_id],
+        ) from None
+    # The file landed (a refusal above raised before here, so pairing never runs
+    # for a file that added nothing). Pairing sees the rows just inserted and
+    # runs before the sorting job is queued.
+    statement.transfers_paired = _pair_transfers(conn, statement)
+    return statement
+
+
 def ingest_pdf(
     pdf_path: str,
     password: str | None = None,
@@ -440,76 +574,17 @@ def ingest_pdf(
                 "statement has a running-balance column."
             )
 
-        parsed = parser.parse(pdf_path, password=password)
-        transactions, opening_balance, closing_balance = _split_balance_artifacts(parsed)
-        if not transactions:
-            raise ValueError("No payments were found in this statement.")
-
-        period_start = min(t.txn_date for t in transactions)
-        period_end = max(t.txn_date for t in transactions)
-        printed = _sane_printed_period(
-            parser.extract_period(pdf_path, password=password), period_start, period_end
-        )
-        statement = Statement(
+        parsed = ParsedFile(
+            transactions=parser.parse(pdf_path, password=password),
             bank_name=parser.bank_name,
             parser_version=parser.version,
-            statement_month=period_start.strftime("%Y-%m"),
-            period_start=period_start,
-            period_end=period_end,
-            file_sha256=file_sha256,
-            opening_balance=opening_balance,
-            closing_balance=closing_balance,
             account_ref=parser.extract_account_ref(pdf_path, password=password),
-            printed_start=printed[0] if printed else None,
-            printed_end=printed[1] if printed else None,
+            printed=parser.extract_period(pdf_path, password=password),
         )
-
-        # The balance check is the file's, over every payment it printed: the
-        # ones that were new are not a chain when an earlier file had the rest.
-        statement.rows_in_file = len(transactions)
-        statement.balance_checked, statement.balance_consistent = balance_chain_check(
-            (t.running_balance, t.amount, t.debit_credit) for t in transactions
+        return ingest_parsed(
+            _conn, file_sha256, parsed,
+            lambda c, st: resolve_account(c, st.bank_name, st.account_ref),
         )
-
-        # Choosing the account and writing the statement are one step under the
-        # write lock: two statements arriving together for a new account must
-        # not each start one.
-        try:
-            with write_transaction(_conn):
-                # Looked again under the lock: the same file arriving twice at once
-                # passed the look above in both requests, and the loser would
-                # otherwise write against the winner's account.
-                _refuse_duplicate(_conn, file_sha256)
-                statement.account_id, statement.account_is_new = resolve_account(
-                    _conn, statement.bank_name, statement.account_ref
-                )
-                split = split_new_rows(_conn, statement.account_id, transactions)
-                if not split.new:
-                    raise _AllAlreadyIn(len(transactions), statement.account_id)
-                statement.rows_added = len(split.new)
-                if split.overlaps_without_match:
-                    statement.notices.append(
-                        f"This file covers dates already in {account_labels(_conn)[statement.account_id]}, "
-                        "but none of its payments match. If it is another account, "
-                        "move it with Move to account."
-                    )
-                insert_statement(_conn, statement)
-                for txn in split.new:
-                    txn.statement_id = statement.id
-                    insert_transaction(_conn, txn)
-        except _AllAlreadyIn as nothing:
-            # The refusal rolled back anything the account lookup did (a number
-            # it took on), so the account is named as it is, not as this file
-            # would have left it.
-            raise NothingNewError(
-                nothing.count, account_labels(_conn)[nothing.account_id]
-            ) from None
-        # The file landed (a refusal above raised before here, so pairing never runs
-        # for a file that added nothing). Pairing sees the rows just inserted and
-        # runs before the sorting job is queued.
-        statement.transfers_paired = _pair_transfers(_conn, statement)
     finally:
         if conn is None:
             _conn.close()
-
-    return statement

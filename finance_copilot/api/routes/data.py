@@ -47,6 +47,7 @@ _WIPE_ORDER = (
     "people",
     "transactions",
     "statements",
+    "import_layouts",
     "accounts",
     "app_settings",
 )

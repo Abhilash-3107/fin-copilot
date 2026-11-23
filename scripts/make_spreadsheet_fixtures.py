@@ -41,12 +41,12 @@ HEADER = ["Date", "Narration", "Withdrawal Amt.", "Deposit Amt.", "Balance"]
 
 # The other account, in the layout no header word names.
 EXPORT_OCT = [
-    ("2026-10-02", "UPI/SWIGGY/ORDER/610112233/UPI", -530.00),
-    ("2026-10-03", "NEFT/ORBIT CONSULTING LLP/FEES OCT", 42000.00),
-    ("2026-10-05", "UPI/BMRCL METRO/RECHARGE/610112234", -300.00),
-    ("2026-10-08", "POS/EXAMPLE PHARMACY BANGALORE", -215.50),
-    ("2026-10-10", "UPI/RAHUL MEHTA/610112235/TICKETS", -1200.00),
-    ("2026-10-12", "ACH/SIP/SAMPLE INDEX FUND", -3000.00),
+    ("2026-10-02", "UPI/SWIGGY/ORDER/610112233/UPI", -540.00),
+    ("2026-10-03", "NEFT/ORBIT CONSULTING LLP/FEES OCT", 42500.00),
+    ("2026-10-05", "UPI/BMRCL METRO/RECHARGE/610112234", -310.00),
+    ("2026-10-08", "POS/EXAMPLE PHARMACY BANGALORE", -220.50),
+    ("2026-10-10", "UPI/RAHUL MEHTA/610112235/TICKETS", -1250.00),
+    ("2026-10-12", "ACH/SIP/SAMPLE INDEX FUND", -3100.00),
 ]
 EXPORT_NOV = [
     ("2026-11-02", "UPI/SWIGGY/ORDER/710112233/UPI", -480.00),
@@ -116,11 +116,11 @@ def build_csvs() -> None:
     )
 
     for name, opening, rows in (
-        ("sample_export_oct.csv", 60000.00, EXPORT_OCT),
+        ("sample_export_oct.csv", 52000.00, EXPORT_OCT),
         ("sample_export_nov.csv", None, EXPORT_NOV),
     ):
         if opening is None:
-            opening = round(60000.00 + sum(r[2] for r in EXPORT_OCT), 2)
+            opening = round(52000.00 + sum(r[2] for r in EXPORT_OCT), 2)
         table, balance = [["When", "What", "Moved", "Left"]], opening
         for day, narration, moved in rows:
             balance = round(balance + moved, 2)
