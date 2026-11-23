@@ -74,12 +74,22 @@ def parse_printed_period(page_text: str) -> tuple[date, date] | None:
         return None
 
 
-def period_in_header(header: str) -> tuple[date, date] | None:
-    """The period a statement's header text says, by the rule above. A spreadsheet's
-    rows above its table are its header, so they are read with this too."""
+def period_texts(header: str) -> tuple[str, str] | None:
+    """The two dates a header's printed period is made of, as the header writes them,
+    by the rule above (the dates must read, in order, less than a year apart)."""
     for pattern in (_LABELLED, _BARE):
         for match in pattern.finditer(header):
             start, end = _parse_date(match.group(1)), _parse_date(match.group(2))
             if start and end and start <= end and (end - start).days < MAX_PERIOD_DAYS:
-                return start, end
+                return match.group(1), match.group(2)
     return None
+
+
+def period_in_header(header: str) -> tuple[date, date] | None:
+    """The period a statement's header text says, by the rule above. A spreadsheet's
+    rows above its table are its header, so they are read with this too."""
+    texts = period_texts(header)
+    if texts is None:
+        return None
+    start, end = _parse_date(texts[0]), _parse_date(texts[1])
+    return (start, end) if start and end else None

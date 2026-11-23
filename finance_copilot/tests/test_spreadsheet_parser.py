@@ -648,6 +648,26 @@ class TestDateOrder:
         table = read(dated("05/03/2026", "01/02/2026", "06/07/2026"))
         assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", True)
 
+    def test_a_day_above_twelve_in_the_printed_period_settles_it_day_first(self):
+        rows = dated("01/10/2026", "05/10/2026", "12/10/2026")
+        before = read(rows)
+        assert sheet.date_reading(before, sheet.starting_mapping(before)) == ("dmy", True)
+        with_period = b"Statement period 01/10/2026 to 31/10/2026\n\n" + rows
+        table = read(with_period)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", False)
+        got = sheet.parse_table(table, sheet.starting_mapping(table))
+        assert [t.txn_date.month for t in got.transactions] == [10, 10, 10]
+
+    def test_a_printed_period_with_no_day_above_twelve_settles_nothing(self):
+        rows = b"Statement period 01/10/2026 to 12/10/2026\n\n" + dated("01/10/2026", "05/10/2026", "12/10/2026")
+        table = read(rows)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", True)
+
+    def test_a_period_written_with_month_names_settles_nothing_about_the_column(self):
+        rows = b"Statement period 25 Oct 2026 to 31 Oct 2026\n\n" + dated("01/10/2026", "05/10/2026", "12/10/2026")
+        table = read(rows)
+        assert sheet.date_reading(table, sheet.starting_mapping(table)) == ("dmy", True)
+
     def test_the_person_chooses_and_the_dates_read_that_way(self):
         table = read(dated("01/10/2026", "02/10/2026", "03/10/2026"))
         mapping = sheet.starting_mapping(table)

@@ -33,7 +33,7 @@ from finance_copilot.parsers import generic
 from finance_copilot.parsers.bank_identity import identify_bank
 from finance_copilot.parsers.base import account_ref_in_text
 from finance_copilot.parsers.generic import ColumnMap, header_roles, is_negative
-from finance_copilot.parsers.period import period_in_header
+from finance_copilot.parsers.period import period_in_header, period_texts
 
 # A real statement is a few thousand rows and a dozen columns. These stop a file
 # built to use the machine up: rows and columns are counted while reading, so the
@@ -739,6 +739,13 @@ def date_reading(table: Table, mapping: dict[str, int]) -> tuple[str, bool]:
     if column is None:
         return "dmy", False
     shapes = []
+    # The period the rows above the table print is dated the way the bank prints dates:
+    # a day above 12 in it settles the column as much as one in the column does.
+    printed = [
+        (text, int(found.group(1)), int(found.group(2)))
+        for text in period_texts(table.preamble) or ()
+        if (found := _NUMERIC_DATE_RE.match(text.strip()))
+    ]
     for row in table.data_rows:
         if column < len(row):
             text = generic._TIME_RE.sub("", row[column].strip()).strip()
@@ -747,8 +754,8 @@ def date_reading(table: Table, mapping: dict[str, int]) -> tuple[str, bool]:
                 shapes.append((text, int(found.group(1)), int(found.group(2))))
     if not shapes:
         return "dmy", False
-    first_big = any(a > 12 for _, a, _ in shapes)
-    second_big = any(b > 12 for _, _, b in shapes)
+    first_big = any(a > 12 for _, a, _ in shapes + printed)
+    second_big = any(b > 12 for _, _, b in shapes + printed)
     if first_big or second_big:
         # Both at once is no one order: the rows that do not read the column's
         # usual way are named when it is read.
