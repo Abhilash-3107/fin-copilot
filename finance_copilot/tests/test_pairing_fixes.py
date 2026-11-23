@@ -437,6 +437,8 @@ class TestTheSignsAreStricter:
         "NEFT/XXXXXXXX2222",
         "NEFT/XXXX XXXX 2222",
         "NEFT/TO 000000002222",
+        "NEFT/A/C XX2222",
+        "NEFT/ACCOUNT XXXX2222",
     ])
     def test_the_last_four_after_a_mask_or_an_account_word_or_the_full_number_is_a_sign(self, conn, line):
         conn.execute("UPDATE accounts SET account_ref = '000000002222' WHERE id = ?", (SBI,))
@@ -444,6 +446,19 @@ class TestTheSignsAreStricter:
         _out(conn, description=line)
         _in(conn)
         assert pair_transfers(conn) == [("d", "c")]
+
+    @pytest.mark.parametrize("line", [
+        "TAXX2222 PAYMENT",
+        "NEFT/TAXXX2222",
+        "UPI/MAXX2222/PAY",
+        "NEFT/SAVINGSX2222",
+    ])
+    def test_a_run_of_x_inside_a_word_is_not_a_mask(self, conn, line):
+        conn.execute("UPDATE accounts SET account_ref = '000000002222' WHERE id = ?", (SBI,))
+        conn.commit()
+        _out(conn, description=line)
+        _in(conn)
+        assert pair_transfers(conn) == []
 
     def test_the_full_stored_digits_count_alone(self, conn):
         conn.execute("UPDATE accounts SET account_ref = '123456782222' WHERE id = ?", (SBI,))

@@ -78,9 +78,11 @@ _DIGIT_RUN = re.compile(r"\d{4,}")
 _MIN_NUMBER_DIGITS = 6
 _LAST_DIGITS = 4
 # The last four digits of an account count only right after a mask character or
-# an account word: "XX2222", "A/C 2222", "AC-2222", "ACCOUNT: 2222".
+# an account word: "XX2222", "A/C 2222", "AC-2222", "ACCOUNT: XX2222". A mask is a
+# whole run of X or * that starts a word, so the XX inside "TAXX2222" is not one.
 _MASKED_LAST4_RE = re.compile(
-    r"(?:(?<![a-wyz])[x*]+[\s-]?|(?<![a-z0-9])a/?c(?:count)?[\s.:/#-]*)(\d{4})(?!\d)", re.IGNORECASE
+    r"(?:(?<![a-z0-9])[x*]+[\s-]?|(?<![a-z0-9])a/?c(?:count)?[\s.:/#-]*(?:[x*]+[\s-]?)?)(\d{4})(?!\d)",
+    re.IGNORECASE,
 )
 
 

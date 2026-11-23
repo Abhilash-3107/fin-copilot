@@ -194,7 +194,7 @@ export async function accessibleMoneyLeaks(page) {
  */
 export async function skipToPayment(page, pattern) {
   const wanted = page.getByRole('group', { name: pattern })
-  const anyCard = page.getByRole('group', { name: /^Payment to / })
+  const anyCard = page.getByRole('group', { name: /^Payment (to|from) / })
   await expect(anyCard).toBeVisible()
   for (let i = 0; i < 12; i++) {
     const label = await anyCard.getAttribute('aria-label')
