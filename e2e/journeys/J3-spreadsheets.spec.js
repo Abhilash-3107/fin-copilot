@@ -105,36 +105,71 @@ test.describe('J3 spreadsheets', () => {
     expect(statements.reduce((total, s) => total + s.txn_count, 0)).toBe(19)
   })
 
-  test('a copy of a month printed another way waits for a yes before anything is added', async ({ page, app, tolerate }) => {
+  // October as a bare export: no balance column, narrations cut short. Every day is the 8th or
+  // earlier, so nothing in the file says which way round the dates go. `named` keeps the account
+  // number above the table; without it the file names no account at all.
+  const bareExport = (named) => {
+    const lines = readFileSync(FIXTURE_CSV, 'utf8').trimEnd().split('\r\n')
+    return lines.map((line) => {
+      const cells = line.match(/("[^"]*"|[^,]*)(,|$)/g).map((c) => c.replace(/,$/, ''))
+      if (/^\d\d\//.test(cells[0])) return [cells[0], cells[1].slice(0, 10), cells[2], cells[3]].join(',')
+      return cells[0] === 'Date' ? cells.slice(0, 4).join(',') : line
+    }).filter((line) => named || !/^(Example Bank|Account Number|Statement Period)/.test(line)).join('\r\n')
+  }
+  const dropBare = async (page, named) => {
+    await page.locator('input[type=file]').setInputFiles({ name: 'copy.csv', mimeType: 'text/csv', buffer: Buffer.from(bareExport(named)) })
+    await page.getByRole('button', { name: ADD }).click()
+  }
+
+  test('a copy of a month printed another way asks which way round, then waits for a yes before anything is added', async ({ page, app, tolerate }) => {
     await tolerate(/\/api\/statements\/upload/, 422)
     await drop(page, asFile('oct.pdf', FIXTURE_PDF, 'application/pdf'))
     await expect(fileRow(page, 'oct.pdf')).toContainText('8 payments added')
 
-    // October as a bare export: no balance column, narrations cut short.
-    const lines = readFileSync(FIXTURE_CSV, 'utf8').trimEnd().split('\r\n')
-    const bare = lines.map((line) => {
-      const cells = line.match(/("[^"]*"|[^,]*)(,|$)/g).map((c) => c.replace(/,$/, ''))
-      if (/^\d\d\//.test(cells[0])) return [cells[0], cells[1].slice(0, 10), cells[2], cells[3]].join(',')
-      return cells[0] === 'Date' ? cells.slice(0, 4).join(',') : line
-    }).join('\r\n')
-    await page.locator('input[type=file]').setInputFiles({ name: 'copy.csv', mimeType: 'text/csv', buffer: Buffer.from(bare) })
-    await page.getByRole('button', { name: ADD }).click()
+    await dropBare(page, true)
+    // The file names its account, so only the dates are asked, with the account already chosen.
+    const dates = page.getByRole('group', { name: 'Which way round are the dates?' })
+    await expect(dates.getByRole('radio', { name: /Day first/ })).toBeChecked()
+    await expect(dates.getByLabel('Account', { exact: true })).toHaveValue(/^acc_/)
+    await dates.getByRole('button', { name: 'Add this statement' }).click()
 
     const alert = fileRow(page, 'copy.csv').getByRole('alert')
-    await expect(alert).toContainText('8 of its 8 payments on those days match nothing there')
+    await expect(alert).toContainText('all 8 of its payments on those days match nothing there')
     await expect(alert).toContainText('count those payments twice')
+    // The safe action has focus.
+    await expect(fileRow(page, 'copy.csv').getByRole('button', { name: 'Leave it out' })).toBeFocused()
     expect((await app.api.get('/statements')).length).toBe(1)
 
     await fileRow(page, 'copy.csv').getByRole('button', { name: 'Leave it out' }).click()
     await expect(fileRow(page, 'copy.csv')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /Drop your bank statements here/ })).toBeFocused()
     expect((await app.api.get('/statements')).length).toBe(1)
 
-    // The person can still say yes.
-    await page.locator('input[type=file]').setInputFiles({ name: 'copy.csv', mimeType: 'text/csv', buffer: Buffer.from(bare) })
-    await page.getByRole('button', { name: ADD }).click()
+    // The person can still say yes: the columns and the way round are sent again with it.
+    await dropBare(page, true)
+    await page.getByRole('group', { name: 'Which way round are the dates?' }).getByRole('button', { name: 'Add this statement' }).click()
     await fileRow(page, 'copy.csv').getByRole('button', { name: 'Add it anyway' }).click()
     await expect(fileRow(page, 'copy.csv')).toContainText('8 payments added')
     await expect(fileRow(page, 'copy.csv')).toContainText('No running balance in this file, so it could not be checked')
+  })
+
+  test('a copy that names no account lands after the form and Add it anyway', async ({ page, app, tolerate }) => {
+    await tolerate(/\/api\/statements\/upload/, 422)
+    await drop(page, asFile('oct.pdf', FIXTURE_PDF, 'application/pdf'))
+    await expect(fileRow(page, 'oct.pdf')).toContainText('8 payments added')
+
+    await dropBare(page, false)
+    const ask = page.getByRole('group', { name: 'Which account is this file from?' })
+    await expect(ask.getByRole('radio', { name: /Day first/ })).toBeChecked()
+    await ask.getByLabel('Account', { exact: true }).selectOption({ index: 1 })
+    await ask.getByRole('button', { name: 'Add this statement' }).click()
+    await expect(fileRow(page, 'copy.csv').getByRole('alert')).toContainText('match nothing there')
+
+    // The held notice sends everything the form gave, so nothing is asked a second time.
+    await fileRow(page, 'copy.csv').getByRole('button', { name: 'Add it anyway' }).click()
+    await expect(fileRow(page, 'copy.csv')).toContainText('8 payments added')
+    expect((await app.api.get('/statements')).length).toBe(2)
+    expect(await app.api.get('/accounts')).toHaveLength(1)
   })
 
   test('an XLSX and an XLS of a month read like its PDF', async ({ page, app, tolerate }) => {

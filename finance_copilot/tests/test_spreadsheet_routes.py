@@ -326,10 +326,10 @@ class TestWhatTheFormIsTold:
     def test_the_raw_preview_keeps_the_last_four_of_anything_like_an_account_number(self, api):
         client, _ = api
         text = (
-            "When,What,Moved,Left\n"
-            "2026-10-01,NEFT/50100123456789/RENT,-100.00,900.00\n"
-            "2026-10-02,UPI/4001122/X,1234567890,950.00\n"
-        ).encode()
+            b"When,What,Moved,Left\n"
+            b"2026-10-01,NEFT/50100123456789/RENT,-100.00,900.00\n"
+            b"2026-10-02,UPI/4001122/X,1234567890,950.00\n"
+        )
         body = upload(client, "odd.csv", text).json()
         cells = [c for row in body["preview"] for c in row]
         assert "NEFT/XXXXXXXXXX6789/RENT" in cells
