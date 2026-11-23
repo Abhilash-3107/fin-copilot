@@ -28,6 +28,8 @@ from finance_copilot.db.connection import get_migrated_db
 from finance_copilot.db.queries.accounts import (
     NAME_MAX_LENGTH,
     UNKNOWN_BANK,
+    accounts_ending_like,
+    accounts_with_full_number,
     accounts_with_number,
     create_account,
     list_accounts,
@@ -71,9 +73,21 @@ class NeedsAnswer(ValueError):
 
 
 def _account_with_number(conn: sqlite3.Connection, bank: str | None, ref: str | None) -> str | None:
-    """The one account that number names (the same rule a PDF uses); None when none
-    or several do: which of several is not for us to choose."""
-    found = accounts_with_number(conn, bank or UNKNOWN_BANK, ref)
+    """The one account that number names (the same rule a PDF uses: the bank's own
+    accounts, else another bank's account holding the very same full number); None
+    when none or several do: which of several is not for us to choose."""
+    bank = bank or UNKNOWN_BANK
+    found = accounts_with_number(conn, bank, ref) or accounts_with_full_number(conn, bank, ref)
+    return found[0]["id"] if len(found) == 1 else None
+
+
+def _suggested_account(conn: sqlite3.Connection, bank: str | None, ref: str | None) -> str | None:
+    """For a file that does not name its bank: the one account its (masked) number
+    could be, to start the form on. Four digits are not enough to land the file there,
+    only to suggest it to a person who then looks."""
+    if bank or not ref:
+        return None
+    found = accounts_ending_like(conn, ref)
     return found[0]["id"] if len(found) == 1 else None
 
 
@@ -168,6 +182,7 @@ def ingest_spreadsheet(
                 "description and an amount on each row."
             )
         ref = account_ref_in_text(table.preamble)
+        file_bank = identify_bank(table.preamble) if table.preamble else None
         layout = get_layout(_conn, table.signature)
 
         if mapping is not None:
@@ -196,9 +211,7 @@ def ingest_spreadsheet(
             # A file with no header row has nothing in it that says it is the layout's:
             # two exports with unnamed columns share a signature by width alone.
             remembered = layout["account_id"] if layout and table.header_row is not None else None
-            decided = _decide_account(
-                _conn, identify_bank(table.preamble) if table.preamble else None, ref, remembered
-            )
+            decided = _decide_account(_conn, file_bank, ref, remembered)
 
         if date_order is not None and date_order not in sheet.DATE_ORDERS:
             raise ValueError("The date order has to be day first or month first.")
@@ -213,8 +226,9 @@ def ingest_spreadsheet(
         if ambiguous and asked_order is None:
             needs.append("dates")
         if needs:
+            suggested = decided or _suggested_account(_conn, file_bank, ref)
             raise NeedsAnswer(needs, _needs_body(
-                _conn, table, needs, guess, _ask(needs), ref, decided, asked_order or reading
+                _conn, table, needs, guess, _ask(needs), ref, suggested, asked_order or reading
             ))
 
         parsed = sheet.parse_table(table, chosen, date_order=asked_order)
