@@ -203,6 +203,9 @@ function upgrade(before) {
   m['2026-09'].people = [{ id: 'p1', sent: 200, received: 0, net: -200, count: 1 }]
   m['2026-11'].people = []
   for (const month of Object.values(m)) month.recurring = [{ ...CHAI, name: 'CHAI WALA CORNER' }]
+  // Each payment row says which account it is in, which is its statement's.
+  const accountOfStatement = Object.fromEntries(facts.statements.map((s) => [s.id, s.account_id]))
+  after.copies = { paymentAccounts: Object.fromEntries(facts.transactions.map((t) => [t.id, accountOfStatement[t.statement_id]])) }
   return after
 }
 
@@ -212,6 +215,28 @@ test('the ledger before and the ledger after 0.2.0 agree on every figure the rel
   const before = ledgerBefore()
   assert.deepEqual(compare(before, upgrade(before)), [])
 })
+
+// The recurring row is keyed by its category when it has one and by its name when it has none, and
+// which it has depends on the day the journey runs: the demo data is seeded on that day, and the
+// newest charge of the recurring payee is sorted or not by the time the snapshot is taken.
+// Both days must pass, and a rename of more than the case must still fail on either.
+for (const [day, category] of [['the newest charge is not sorted', null], ['the newest charge is sorted', 'Food & Dining']]) {
+  test(`the recurring row's rename in case passes when ${day}`, () => {
+    const before = ledgerBefore()
+    for (const month of Object.values(before.figures.months)) month.recurring = [{ ...CHAI, category }]
+    const after = upgrade(before)
+    for (const month of Object.values(after.figures.months)) month.recurring = [{ ...CHAI, category, name: 'CHAI WALA CORNER' }]
+    assert.deepEqual(compare(before, after), [])
+  })
+
+  test(`a recurring row that changes more than its case fails when ${day}`, () => {
+    const before = ledgerBefore()
+    for (const month of Object.values(before.figures.months)) month.recurring = [{ ...CHAI, category }]
+    const after = upgrade(before)
+    for (const month of Object.values(after.figures.months)) month.recurring = [{ ...CHAI, category, name: 'CHAI WALA CORNER', amount: 31 }]
+    assert.ok(compare(before, after).some((p) => /months\.2026-09\.recurring\[.*\]|changed more than its name/.test(p)))
+  })
+}
 
 /** A second statement of the ledger, on both sides of the upgrade, in its own account unless the case says otherwise. */
 function addStatement(after, before, id, fields = {}) {
@@ -336,7 +361,15 @@ const regressions = {
   // statement moved to another account must still show.
   'a statement is in another account than it was': [
     (a) => (a.facts.statements[0].account_id = 'acc_demo_s'),
-    /statement s|account acc_s holds no statement|unexpected stored change: statements\[s\]\.account_id/,
+    /payment R1 sits in account acc_s, its statement s is in acc_demo_s/,
+  ],
+  'a payment row says another account than its statement': [
+    (a) => (a.copies.paymentAccounts.R1 = 'acc_demo_s'),
+    /payment R1 sits in account acc_demo_s, its statement s is in acc_s/,
+  ],
+  'a payment row says no account': [
+    (a) => delete a.copies.paymentAccounts.R1,
+    /payment R1 has no account on its row/,
   ],
   'an account holds no statement': [
     (a) => a.facts.accounts.push({ ...a.facts.accounts[0], id: 'acc_empty' }),

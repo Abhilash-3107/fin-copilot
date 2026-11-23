@@ -45,6 +45,23 @@ async function allTransactions(api) {
   }
 }
 
+/**
+ * The account each payment row says it is in ({payment id: account id}), or null for a release whose
+ * rows carry none. Not part of the stored facts (it is the statement's account read through the row,
+ * and J15 compares that once, on the statements), but the upgrade checks the two agree.
+ */
+export async function paymentAccounts(api) {
+  const found = {}
+  let after = ''
+  for (;;) {
+    const page = await api.get(`/transactions?limit=${PAGE}${after}`)
+    if (page.length > 0 && !('account_id' in page[0])) return null
+    for (const row of page) found[row.id] = row.account_id
+    if (page.length < PAGE) return found
+    after = `&after=${page.at(-1).id}`
+  }
+}
+
 const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 
 function without(value, drop) {

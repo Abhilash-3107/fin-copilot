@@ -12,7 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TEMP_PREFIX, installWheel, wheelPath } from '../global-setup.js'
 import { killTree, makeApi, startServer } from '../lib/server.js'
-import { derivedFigures, storedFacts } from '../lib/snapshot.js'
+import { derivedFigures, paymentAccounts, storedFacts } from '../lib/snapshot.js'
 import { uploadFixture, uploadFixtureNov } from '../lib/statement.js'
 import { compareSnapshots } from './compare.js'
 import { plantLegacyRows, storedColumns } from './db.js'
@@ -115,8 +115,9 @@ async function buildLedger(api) {
 }
 
 async function snapshot(api, version) {
-  const [facts, figures] = await Promise.all([storedFacts(api, { version }), derivedFigures(api, { version })])
-  return { facts, figures }
+  const [facts, figures, accounts] = await Promise.all([storedFacts(api, { version }), derivedFigures(api, { version }), paymentAccounts(api)])
+  // Not compared between the releases (it is each statement's account read through the row): checked against the statements.
+  return { facts, figures, copies: { paymentAccounts: accounts } }
 }
 
 export async function main() {

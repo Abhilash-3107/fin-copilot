@@ -369,6 +369,26 @@ function accountsFollowTheOldStatements(before, after) {
 }
 
 /**
+ * A payment row says which account it is in, and that is its statement's: the copy the list
+ * shows must never drift from the statement the payment belongs to (J15 compares the statements'
+ * accounts, and the rows' own copy is left out of the stored facts for that reason).
+ */
+function paymentsAreInTheirStatementsAccount(before, after) {
+  const copy = after.copies?.paymentAccounts
+  if (!copy) return []
+  const accountOf = new Map(after.facts.statements.map((s) => [s.id, s.account_id]))
+  const problems = []
+  for (const t of after.facts.transactions) {
+    if (!(t.id in copy)) {
+      problems.push(`payment ${t.id} has no account on its row`)
+    } else if (copy[t.id] !== accountOf.get(t.statement_id)) {
+      problems.push(`payment ${t.id} sits in account ${copy[t.id]}, its statement ${t.statement_id} is in ${accountOf.get(t.statement_id)}`)
+    }
+  }
+  return problems
+}
+
+/**
  * An account's balance is the closing balance of its statement with the latest
  * period end, as of that day: worked out again here from the statements.
  */
@@ -530,6 +550,7 @@ function labelsSurviveTheRebuildAndNothingIsPaired(before, after) {
 export function checkInvariants(before, after) {
   return [
     ...accountsHoldEveryStatement(before, after),
+    ...paymentsAreInTheirStatementsAccount(before, after),
     ...accountsFollowTheOldStatements(before, after),
     ...accountsTableMatchesTheList(before, after),
     ...accountBalancesAreTheirLatestStatements(before, after),
