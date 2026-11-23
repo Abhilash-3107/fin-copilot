@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
@@ -34,15 +35,18 @@ from finance_copilot.db.queries.transactions import (
 )
 from finance_copilot.db.queries.transfers import release_transfers, unpair_same_account
 from finance_copilot.demo_seed import has_demo_data
+from finance_copilot.parsers import spreadsheet as sheet
 from finance_copilot.pipeline.dedup import payments_account_already_has
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
     NothingNewError,
+    OverlapNeedsConfirmation,
     check_continuity,
     check_description_formats,
     ingest_pdf,
 )
 from finance_copilot.pipeline.pairing import pair_transfers_locked
+from finance_copilot.pipeline.spreadsheet_ingest import NeedsAnswer, ingest_spreadsheet
 
 logger = logging.getLogger(__name__)
 
@@ -61,17 +65,62 @@ def _public(statement: dict) -> dict:
     return shown
 
 
+def _read_upload(file: UploadFile) -> tuple[bytes, str]:
+    """The file's bytes and what kind of statement they are, by content. 413 for a
+    file over the limit, 422 for one that is none of a PDF, CSV, XLSX or XLS."""
+    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+    kind = sheet.sniff_kind(contents)
+    if kind is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{file.filename or 'This file'} isn't a PDF, CSV, XLSX or XLS file. "
+            "Only those can be added.",
+        )
+    return contents, kind
+
+
+def _held_body(held: OverlapNeedsConfirmation) -> dict:
+    first = f"{held.unmatched} of its {held.rows_in_overlap} payments" if held.rows_in_overlap > 1 else "its payment"
+    return {
+        "detail": (
+            f"This file covers days {held.account_label} already has, and {first} on those days "
+            "match nothing there. It may be a statement you already added, printed another way, "
+            "and adding it would count those payments twice. Add it only if it is not."
+        ),
+        "needs": ["overlap"],
+        "overlap": {
+            "rows_in_overlap": held.rows_in_overlap,
+            "unmatched": held.unmatched,
+            "account_label": held.account_label,
+        },
+    }
+
+
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
     # Form body, not query param - query strings end up in server access logs.
     password: Annotated[str | None, Form()] = None,
+    # A spreadsheet's answers to the one question it may ask: which column is which
+    # (JSON {role: column}), and which account (an existing one, or a name for a
+    # new one). The same file is sent again with them; nothing is staged here.
+    mapping: Annotated[str | None, Form()] = None,
+    account_id: Annotated[str | None, Form()] = None,
+    new_account_name: Annotated[str | None, Form()] = None,
+    confirm_overlap: Annotated[bool, Form()] = False,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Upload a PDF, run the parser, persist statement + transactions, return the Statement.
+    """Upload a PDF, CSV, XLSX or XLS, read it, persist statement + transactions, return the Statement.
 
     The statement is sorted without being asked: a job for it is queued here, on
     the server, so an upload by script gets the same treatment as one from the page.
+    A spreadsheet the app cannot place gets a 422 with {"needs": [...]} and what the
+    form shows; it stores nothing.
     """
     # Sample data is never mixed with a real statement: its fake rent and
     # salary would sit in every total.
@@ -81,21 +130,29 @@ def upload_statement(
             detail="Your ledger still has sample data. Remove it first (Settings > Data), "
             "then add your statement so the two don't mix.",
         )
-    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
-        )
+    contents, kind = _read_upload(file)
 
-    # A PDF starts with "%PDF" (some writers put a few bytes of junk before it).
-    # Say so up front rather than let the parser report "no transaction table".
-    if b"%PDF" not in contents[:1024]:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{file.filename or 'This file'} isn't a PDF. Only PDF statements can be added.",
-        )
+    try:
+        if kind == "pdf":
+            statement = _ingest_pdf_bytes(contents, password, conn)
+        else:
+            statement = ingest_spreadsheet(
+                conn, contents, mapping=mapping, account_id=account_id,
+                new_account_name=new_account_name, confirm_overlap=confirm_overlap,
+            )
+    except (DuplicateStatementError, NothingNewError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NeedsAnswer as asked:
+        return JSONResponse(status_code=422, content=asked.body)
+    except OverlapNeedsConfirmation as held:
+        return JSONResponse(status_code=422, content=_held_body(held))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    return _landed(conn, statement)
+
+
+def _ingest_pdf_bytes(contents: bytes, password: str | None, conn: sqlite3.Connection):
     # Stage the statement next to the DB with owner-only perms, not in the shared
     # /tmp: this is the app's most sensitive data, and a crash between write and
     # unlink must not leave a bank statement world-readable in a shared temp dir.
@@ -110,17 +167,32 @@ def upload_statement(
     except BaseException:
         os.unlink(tmp_path)
         raise
-
     try:
-        try:
-            statement = ingest_pdf(tmp_path, password=password, conn=conn)
-        except (DuplicateStatementError, NothingNewError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return ingest_pdf(tmp_path, password=password, conn=conn)
     finally:
         os.unlink(tmp_path)
 
+
+@router.post("/upload/preview")
+def preview_upload(
+    file: UploadFile,
+    mapping: Annotated[str, Form()],
+):
+    """The first payments of a spreadsheet as they would be read with these columns,
+    or why they cannot be: what the mapping form shows beside the column choices.
+    Stores nothing and changes nothing."""
+    contents, kind = _read_upload(file)
+    if kind == "pdf":
+        raise HTTPException(status_code=422, detail="A PDF has no columns to choose.")
+    try:
+        table = sheet.read_table(contents)
+        return sheet.preview(table, sheet.parse_mapping_field(mapping))
+    except sheet.SpreadsheetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _landed(conn: sqlite3.Connection, statement) -> dict:
+    """What the page is told about a statement that landed, and its sort queued."""
     warnings = (
         check_continuity(conn, statement)
         + statement.notices
