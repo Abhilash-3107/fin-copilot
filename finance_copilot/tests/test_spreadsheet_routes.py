@@ -355,3 +355,33 @@ class TestWhatTheFormIsTold:
         assert "all 8 of its payments on those days match nothing there" in body["detail"]
         assert body["account_id"] == pdf["account_id"]
         assert [a["id"] for a in body["accounts"]] == [pdf["account_id"]]
+
+
+class TestMovingCopiesAtTheEdgesOfAFile:
+    """Move uses the moved statement's printed period as the days it covers, as an
+    upload does: its copy of the stored payment of the 10th, printed on the 11th, is
+    that payment when the statement prints a period that includes the 10th."""
+
+    ONE = TestMovingAReversalAtAFileBoundary.ONE
+    COPIES = [
+        "11/10/2026,UPI/GROCER/1 V,500.00,,9500.00",
+        "13/10/2026,UPI/CAFE/2 V,400.00,,9100.00",
+        "15/10/2026,UPI/RAVI/3/SPLIT V,,100.00,9200.00",
+        "16/10/2026,UPI/SHOP/4/FAILED,100.00,,9100.00",
+        "17/10/2026,UPI/SHOP/4/REVERSAL,,100.00,9200.00",
+    ]
+
+    def _already_there(self, api, period):
+        client, _ = api
+        head = "Example Bank\nAccount Number,XXXX9999\n" + period + "\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+        one = upload(client, "one.csv", self.ONE.encode(), new_account_name="Main").json()
+        two = upload(client, "two.csv", (head + "\n".join(self.COPIES)).encode(), new_account_name="Other").json()
+        moved = client.patch(f"/api/statements/{two['id']}", json={"account_id": one["account_id"]})
+        assert moved.status_code == 200, moved.text
+        return moved.json()["rows_already_there"]
+
+    def test_a_printed_period_that_includes_the_stored_day_makes_the_copy_a_duplicate(self, api):
+        assert self._already_there(api, "Period: 01/10/2026 to 31/10/2026") == 3
+
+    def test_without_a_printed_period_the_copy_before_the_first_payment_is_kept(self, api):
+        assert self._already_there(api, "") == 2

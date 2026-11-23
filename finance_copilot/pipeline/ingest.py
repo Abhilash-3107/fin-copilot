@@ -510,7 +510,7 @@ def ingest_parsed(
             # otherwise write against the winner's account.
             _refuse_duplicate(conn, file_sha256)
             statement.account_id, statement.account_is_new = choose_account(conn, statement)
-            split = split_new_rows(conn, statement.account_id, transactions)
+            split = split_new_rows(conn, statement.account_id, transactions, printed)
             if not split.new:
                 raise _AllAlreadyIn(len(transactions), statement.account_id)
             if hold_mostly_unmatched and _mostly_unmatched(split):

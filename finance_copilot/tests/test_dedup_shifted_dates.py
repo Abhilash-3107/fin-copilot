@@ -88,6 +88,32 @@ class TestThirdPass:
     def test_a_stored_payment_with_no_known_span_is_never_shifted_onto(self):
         assert _in_a_wide_file([_p(day=10, span=None)], [_p(day=11)]) == [None]
 
+    def test_the_new_file_covers_the_period_it_prints_not_only_its_payment_days(self):
+        # The new file's first payment is the 11th, its period starts on the 1st: it
+        # covers the stored payment of the 10th, so a copy printed a day later is it.
+        stored, incoming = [_p(day=10, text="A")], [_p(day=11, text="B")]
+        assert match_payments(stored, incoming) == [None]
+        assert match_payments(stored, incoming, incoming_span=("2026-05-01", "2026-05-31")) == [0]
+        # A printed period that does not reach the stored day changes nothing.
+        assert match_payments(stored, incoming, incoming_span=("2026-05-11", "2026-05-31")) == [None]
+
+    def test_a_stored_statements_span_reaches_a_few_days_past_its_ends_unless_it_is_one_day_with_no_printed_period(self):
+        from finance_copilot.pipeline.dedup import _payment_of_row
+
+        def row(printed):
+            return {
+                "txn_date": "2026-05-14", "amount": 100.0, "debit_credit": "debit",
+                "running_balance": 900.0, "raw_description": "X", "span_start": "2026-05-14",
+                "span_end": "2026-05-14", "span_printed": printed,
+            }
+
+        class Row(dict):
+            def keys(self):
+                return list(super().keys())
+
+        assert _payment_of_row(Row(row(0))).span == ("2026-05-14", "2026-05-14")
+        assert _payment_of_row(Row(row(1))).span == ("2026-05-11", "2026-05-17")
+
     def test_shift_days_zero_is_the_first_two_passes_alone(self):
         assert match_payments([_p(day=10)], [_p(day=11)], shift_days=0) == [None]
 
@@ -105,7 +131,7 @@ def _ledger_after(order, shift_days, monkeypatch):
 
     original = dedup.match_payments
     monkeypatch.setattr(
-        dedup, "match_payments", lambda s, i, shift_days=shift_days: original(s, i, shift_days)
+        dedup, "match_payments", lambda s, i, shift_days=shift_days, **kw: original(s, i, shift_days, **kw)
     )
     conn = _conn()
     added = []
@@ -154,6 +180,32 @@ def _ledger_ends_at(conn, opening):
     for r in conn.execute("SELECT debit_credit, amount FROM transactions"):
         balance += r["amount"] if r["debit_credit"] == "credit" else -r["amount"]
     return round(balance, 2)
+
+
+class TestCopiesAtTheEdgesOfAFile:
+    # The first file's payments are on the 10th, 12th and 14th. The second file prints
+    # the same three a day later (value dates), then a failed payment and its reversal.
+    COPIES = [
+        "11/10/2026,UPI/GROCER/1 V,500.00,,9500.00",
+        "13/10/2026,UPI/CAFE/2 V,400.00,,9100.00",
+        "15/10/2026,UPI/RAVI/3/SPLIT V,,100.00,9200.00",
+        "16/10/2026,UPI/SHOP/4/FAILED,100.00,,9100.00",
+        "17/10/2026,UPI/SHOP/4/REVERSAL,,100.00,9200.00",
+    ]
+
+    def _added(self, period):
+        from finance_copilot.pipeline.spreadsheet_ingest import ingest_spreadsheet
+
+        conn = _conn()
+        ingest_spreadsheet(conn, FILE_ONE.encode(), new_account_name="Main")
+        head = HEAD.replace("\n\nDate", f"\n{period}\nDate")
+        return ingest_spreadsheet(conn, (head + "\n".join(self.COPIES)).encode()).rows_added
+
+    def test_a_file_that_prints_its_period_covers_the_days_before_its_first_payment(self):
+        assert self._added("Period: 01/10/2026 to 31/10/2026") == 2  # the failed payment and its reversal
+
+    def test_a_file_with_no_printed_period_covers_its_payment_days_only(self):
+        assert self._added("") == 3  # the copy of the 10th is kept: this file may not cover that day
 
 
 class TestAReversalAtAFileBoundary:
