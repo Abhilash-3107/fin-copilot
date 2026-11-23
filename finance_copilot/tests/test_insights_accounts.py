@@ -234,12 +234,13 @@ class TestIdentitiesHoldForAllAndForEachAccount:
 class TestTheFilterIsOneDefinition:
     def test_an_open_candidate_counts_as_uncategorized_in_the_account_view_too(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
-        out = seed(conn, "st_a", "2026-10-05", 5000, "debit", category="Investments", source="rule")
+        out = seed(conn, "st_a", "2026-10-05", 5000, "debit", category="Transfers", subcategory="Peer Transfer", source="rule")
         arrived = seed(conn, "st_b", "2026-10-06", 5000, "credit", category="Income", subcategory="Salary", source="rule")
         seed(conn, "st_a", "2026-10-01", 100, "debit", category="Food & Dining")
-        for account_id in (a, b, None):
+        for account_id in (a, None):
             s = summarize_insights(conn, "2026-10", account_id=account_id)
-            assert s["verdict"]["invested"] == 0.0, account_id
+            # The Transfers guess is held back: the money is Uncategorized, a row of its own, in the account view and in all.
+            assert next(c for c in s["categories"] if c["category"] == "Uncategorized")["net"] == 5000.0, account_id
         mine = summarize_insights(conn, "2026-10", account_id=a)
         assert mine["unexplained"] == {"count": 1, "total": 5000.0}
         assert mine["verdict"]["money_out"] == 5100.0
