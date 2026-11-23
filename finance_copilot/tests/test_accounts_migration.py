@@ -331,7 +331,7 @@ def test_the_printed_period_starts_empty(ledger_040):
 def test_a_ledger_built_by_uploading_groups_the_statements_as_the_migration_does(ledger_040, shape, monkeypatch):
     """The same statements, once uploaded one by one and once migrated together, end up in
     the same accounts: ingest and the migration are one rule, not two."""
-    from finance_copilot.tests.test_accounts import _FakeParser, _ingest, _make_conn, _rows
+    from test_accounts import _FakeParser, _ingest, _make_conn, _rows
 
     # The fixture holds migrations at 040; the uploading side runs the whole set.
     real = connection.MIGRATIONS_DIR

@@ -9,13 +9,13 @@ import io
 import re
 
 import pytest
+import test_pairing as _unit
+import test_pairing_flows as _flows
+from test_pairing import _in, _out
+from test_pairing_fixes import _neft_pair
 
 from finance_copilot.db.queries.common import unsorted_sql
 from finance_copilot.db.queries.transfers import candidate_pairs_sql, has_open_candidate_sql
-from finance_copilot.tests import test_pairing as _unit
-from finance_copilot.tests import test_pairing_flows as _flows
-from finance_copilot.tests.test_pairing import _in, _out
-from finance_copilot.tests.test_pairing_fixes import _neft_pair
 
 conn = _unit.conn
 api = _flows.api
@@ -31,7 +31,8 @@ def _scans(lines):
 
 
 def _seeks_by_cents(lines, alias):
-    return any(line.startswith(f"SEARCH {alias} USING INDEX idx_txn_cents") for line in lines)
+    # SQLite 3.53 words an EXISTS probe "SEARCH o EXISTS USING INDEX ..."; older ones leave EXISTS out.
+    return any(re.match(rf"SEARCH {alias}( EXISTS)? USING INDEX idx_txn_cents", line) for line in lines)
 
 
 class TestTheCandidateQueriesSeekByIndex:
@@ -183,7 +184,7 @@ class TestARowSaysItIsWaitingAndFacetsFollowTheEffectiveCategory:
 
 class TestUndoOfAnUnpairAfterAMove:
     def _unpaired_then_moved(self, api, *, move):
-        from finance_copilot.tests.test_pairing_flows import _ingest, _Parser, _t
+        from test_pairing_flows import _ingest, _Parser, _t
 
         client, conn = api
         b = _ingest(conn, _Parser("kotak", "XXXX9999", [_t(3, 5000.0, "debit", "IMPS/TO OWN SBI SAVINGS")]), "b")

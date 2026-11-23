@@ -5,12 +5,12 @@ row and the Transactions drill-through show, until the user answers it."""
 from __future__ import annotations
 
 import pytest
+import test_pairing_flows as _flows
+from test_pairing_flows import _ids, _ingest, _Parser, _t
 
 from finance_copilot.db.queries.annotations import list_review_queue
 from finance_copilot.db.queries.insights import summarize_insights
 from finance_copilot.db.queries.transactions import list_transactions, summarize_transactions
-from finance_copilot.tests import test_pairing_flows as _flows
-from finance_copilot.tests.test_pairing_flows import _ids, _ingest, _Parser, _t
 
 api = _flows.api
 

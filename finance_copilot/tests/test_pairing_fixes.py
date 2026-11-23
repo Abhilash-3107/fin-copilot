@@ -8,14 +8,10 @@ import sqlite3
 from datetime import date
 
 import pytest
-
-from finance_copilot.db.queries.annotations import list_review_queue, queue_counts
-from finance_copilot.db.queries.review_undo import UndoCapture
-from finance_copilot.pipeline.pairing import pair_transfers, transfer_candidates
-from finance_copilot.tests import test_pairing as _unit
-from finance_copilot.tests import test_pairing_flows as _flows
-from finance_copilot.tests.test_pairing import HDFC, KOTAK, SBI, _annotation, _in, _links, _out
-from finance_copilot.tests.test_pairing_flows import (
+import test_pairing as _unit
+import test_pairing_flows as _flows
+from test_pairing import HDFC, KOTAK, SBI, _annotation, _in, _links, _out
+from test_pairing_flows import (
     _ids,
     _ingest,
     _kotak,
@@ -24,6 +20,10 @@ from finance_copilot.tests.test_pairing_flows import (
     _state,
     _t,
 )
+
+from finance_copilot.db.queries.annotations import list_review_queue, queue_counts
+from finance_copilot.db.queries.review_undo import UndoCapture
+from finance_copilot.pipeline.pairing import pair_transfers, transfer_candidates
 
 # The fixtures of the two modules these tests build on.
 conn = _unit.conn
