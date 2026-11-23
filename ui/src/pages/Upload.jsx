@@ -10,8 +10,9 @@ import InlineError from '../components/InlineError.jsx'
 import ActionMenu from '../components/ActionMenu.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import { useLedger } from '../contexts/LedgerContext.jsx'
-import Amount from '../components/Amount.jsx'
 import Modal from '../components/Modal.jsx'
+import BooksGrid from '../components/BooksGrid.jsx'
+import NameField, { isFieldEnter } from '../components/NameField.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import { formatStoredTime, statementSpan } from '../lib/dates.js'
 import { annotationSummary, sortedText, summaryDuration } from '../lib/annotationSummary.js'
@@ -97,45 +98,6 @@ function sortLine(entry) {
   if (entry.job.status === 'queued') return 'Waiting to sort'
   const { processed = 0, total = 0 } = entry.job
   return total ? `Sorting ${processed} of ${total}` : 'Sorting'
-}
-
-// An Enter that is this field's alone. Whatever the Enter does moves focus (the
-// dialog hands it back to its opener), and the browser would then press the
-// button that has it: so the default action is always cancelled. A held key
-// and one that only confirms an input method's composition do nothing.
-function isFieldEnter(e) {
-  if (e.key !== 'Enter') return false
-  e.preventDefault()
-  return !e.repeat && !e.nativeEvent.isComposing
-}
-
-// Naming an account, in place: Enter saves, Escape cancels. A blank name goes
-// back to the bank and last digits.
-function NameField({ initial, onSave, onCancel, autoFocus = true }) {
-  const [value, setValue] = useState(initial)
-  return (
-    <div className="flex items-center gap-1.5">
-      <input
-        autoFocus={autoFocus}
-        aria-label="Name this account"
-        placeholder="For example, Kotak savings"
-        value={value}
-        maxLength={60}
-        onChange={e => setValue(e.target.value)}
-        onKeyDown={e => {
-          if (isFieldEnter(e)) onSave(value)
-          if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
-        }}
-        className="bg-[#1e2235] border border-[#6366f1] text-[#e2e8f0] px-2 py-0.5 rounded text-sm focus:outline-none w-52 placeholder:text-[#94a3b8]"
-      />
-      <button type="button" onClick={() => onSave(value)} aria-label="Save name" className="text-[#86efac] hover:opacity-80">
-        <Check size={13} />
-      </button>
-      <button type="button" onClick={onCancel} aria-label="Cancel naming" className="text-[#94a3b8] hover:text-[#e2e8f0]">
-        <X size={13} />
-      </button>
-    </div>
-  )
 }
 
 // "A new account" as a place to move a statement to: for one that ingest put in
@@ -294,6 +256,10 @@ export default function Upload() {
   const { reload: reloadAppStatements } = useLedger()
   const [statements, setStatements] = useState([])
   const [accounts, setAccounts] = useState([])
+  // The books: accounts by months, and the moves between the user's own accounts.
+  const [books, setBooks] = useState({ months: [], accounts: [], transfers: [] })
+  // The cell whose statements the list below is narrowed to: { accountId, month }.
+  const [detail, setDetail] = useState(null)
   // The files of this drop, one entry each, and the ones refused up front.
   const [entries, setEntries] = useState([])
   const [refused, setRefused] = useState([])
@@ -334,14 +300,22 @@ export default function Upload() {
     } catch { /* the statements list carries the error and its Retry */ }
   }, [])
 
+  // Like the accounts, the grid is read quietly: the statements list carries the error.
+  const loadBooks = useCallback(async () => {
+    try {
+      const next = await api.get('/accounts/books')
+      if (Array.isArray(next?.accounts)) setBooks(next)
+    } catch { /* the statements list carries the error and its Retry */ }
+  }, [])
+
   // Everything that depends on which statements exist and what their accounts are called.
   const refresh = useCallback(async () => {
-    const [rows] = await Promise.all([loadStatements(), loadAccounts()])
+    const [rows] = await Promise.all([loadStatements(), loadAccounts(), loadBooks()])
     reloadAppStatements()
     return rows
-  }, [loadStatements, loadAccounts, reloadAppStatements])
+  }, [loadStatements, loadAccounts, loadBooks, reloadAppStatements])
 
-  useEffect(() => { loadStatements(); loadAccounts() }, [loadStatements, loadAccounts])
+  useEffect(() => { loadStatements(); loadAccounts(); loadBooks() }, [loadStatements, loadAccounts, loadBooks])
 
   const patchEntry = useCallback((id, patch) => {
     setEntries(list => list.map(e => (e.id === id ? { ...e, ...patch } : e)))
@@ -557,6 +531,12 @@ export default function Upload() {
 
   const accountLabels = new Map(accounts.map(a => [a.id, a.account_label]))
 
+  // The grid cell the list is narrowed to, and its statements.
+  const detailAccount = detail && books.accounts.find(a => a.id === detail.accountId)
+  const detailIds = detailAccount?.cells[detail.month]?.statement_ids
+  const shownCell = detailIds ? { label: detailAccount.account_label, month: detail.month } : null
+  const shownStatements = detailIds ? statements.filter(s => detailIds.includes(s.id)) : statements
+
   // The account of a drop, once nothing in it is still being read or sorted.
   const sortedEntries = entries.filter(e => e.status === 'sorted')
   const busy = entries.some(e => ['uploading', 'sorting'].includes(e.status))
@@ -573,8 +553,12 @@ export default function Upload() {
     : null
 
   return (
-    <div className="px-6 py-5 space-y-6 max-w-5xl">
+    <div className="px-6 py-5 space-y-6">
       <h1 className="text-base font-semibold text-[#e2e8f0]">Add Statement</h1>
+
+      {/* The drop zone, what happened to each file, and the lines about what works stay a
+          readable width; the books and the statements below use the whole page. */}
+      <div className="space-y-6 max-w-5xl">
 
       {removable && (
         <div className="rounded-xl border border-[#451a03] bg-[#1c1208] px-4 py-3">
@@ -756,35 +740,28 @@ export default function Upload() {
         </div>
       )}
 
-      {accounts.length > 0 && (
-        <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-hidden">
-          <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
-            Your accounts
-          </p>
-          <ul>
-            {accounts.map(a => (
-              <li key={a.id} className="flex items-center gap-4 px-4 py-3 border-b border-[#1a1d27] last:border-b-0 text-sm">
-                <span className="text-[#e2e8f0] min-w-0 flex-1 truncate">{a.account_label}</span>
-                <span className="w-28 text-right text-[#94a3b8] whitespace-nowrap">{count(a.statement_count, 'statement')}</span>
-                <span className="w-56 text-right text-[#94a3b8] whitespace-nowrap">
-                  {a.balance != null && (
-                    <>
-                      <Amount value={a.balance} decimals={0} className="text-[#e2e8f0]" />
-                      {' '}as of {dayjs(a.balance_as_of).format('D MMM YYYY')}
-                    </>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      </div>
+
+      <BooksGrid
+        books={books}
+        selected={detail}
+        onShowStatements={(accountId, month) => {
+          setDetail(d => (d?.accountId === accountId && d?.month === month ? null : { accountId, month }))
+        }}
+        onRename={nameAccount}
+      />
 
       {/* Statement history */}
       <div className="bg-[#13151f] border border-[#2d3148] rounded-xl overflow-x-auto">
         <p className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] px-4 py-3 border-b border-[#2d3148]">
           Your statements
         </p>
+        {shownCell && (
+          <p className="flex items-center gap-3 px-4 py-2 text-xs text-[#94a3b8] border-b border-[#2d3148]">
+            <span>Showing the statements in {shownCell.label}, {dayjs(shownCell.month).format('MMMM YYYY')}</span>
+            <button type="button" onClick={() => setDetail(null)} className="text-[#818cf8] hover:underline">Show all</button>
+          </p>
+        )}
         {listState.error ? (
           <InlineError what="your statements" error={listState.error} onRetry={loadStatements} className="m-3" />
         ) : !listState.loaded ? (
@@ -802,7 +779,7 @@ export default function Upload() {
               </tr>
             </thead>
             <tbody>
-              {statements.map(s => (
+              {shownStatements.map(s => (
                 <tr key={s.id} className="border-b border-[#1a1d27] hover:bg-[#1a1d27] transition-colors">
                   <td className="px-4 py-3 text-[#e2e8f0] min-w-[16rem]">
                     {editingId === s.id ? (

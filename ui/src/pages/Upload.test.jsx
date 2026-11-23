@@ -23,11 +23,14 @@ vi.mock('../contexts/DemoDataContext.jsx', () => ({
 }))
 
 // What GET /statements and GET /accounts answer, so a test sets the ledger and not the URLs.
-const { ledger } = vi.hoisted(() => ({ ledger: { statements: [], accounts: [] } }))
+const { ledger } = vi.hoisted(() => ({ ledger: { statements: [], accounts: [], books: null } }))
 const serve = () => {
   ledger.statements = []
   ledger.accounts = []
-  mockApi.get.mockImplementation(path => Promise.resolve(path === '/accounts' ? ledger.accounts : ledger.statements))
+  ledger.books = { months: [], accounts: [], transfers: [] }
+  mockApi.get.mockImplementation(path => Promise.resolve(
+    path === '/accounts/books' ? ledger.books : path === '/accounts' ? ledger.accounts : ledger.statements,
+  ))
 }
 
 const reloadAppStatements = vi.fn()
@@ -318,19 +321,22 @@ describe('Upload', () => {
       statement_count: 1, first_date: '2026-07-01', last_date: '2026-07-31', balance: null, balance_as_of: null,
     }
 
-    it('lists each account with its statements and its latest balance and date', async () => {
+    // The books of a ledger with these accounts: the account column carries the label and the
+    // latest balance with its date; the cells are tested with the grid itself.
+    const booksOf = (...list) => ({ months: ['2026-07'], accounts: list.map(a => ({ ...a, cells: {} })), transfers: [] })
+
+    it('shows each account in the books with its latest balance and date', async () => {
       ledger.statements = [stmt]
       ledger.accounts = [kotak, hdfc]
+      ledger.books = booksOf(kotak, hdfc)
       renderUpload()
-      const list = (await screen.findByText('Your accounts')).closest('div')
-      expect(within(list).getByText('Kotak savings')).toBeInTheDocument()
-      expect(within(list).getByText('2 statements')).toBeInTheDocument()
-      expect(within(list).getByText('₹1,23,456')).toBeInTheDocument()
-      expect(within(list).getByText(/as of 31 Jul 2026/)).toBeInTheDocument()
+      const grid = (await screen.findByText('Your books')).closest('section')
+      expect(within(grid).getByText('Kotak savings')).toBeInTheDocument()
+      expect(within(grid).getByText('₹1,23,456')).toBeInTheDocument()
+      expect(within(grid).getByText(/as of 31 Jul 2026/)).toBeInTheDocument()
       // An account with no balance on record shows none.
-      expect(within(list).getByText('HDFC ··5678')).toBeInTheDocument()
-      expect(within(list).getByText('1 statement')).toBeInTheDocument()
-      expect(within(list).getAllByText(/as of/)).toHaveLength(1)
+      expect(within(grid).getByText('HDFC ··5678')).toBeInTheDocument()
+      expect(within(grid).getAllByText(/as of/)).toHaveLength(1)
     })
 
     it('hides the balance in privacy mode', async () => {
@@ -338,20 +344,46 @@ describe('Upload', () => {
       try {
         ledger.statements = [stmt]
         ledger.accounts = [kotak]
+        ledger.books = booksOf(kotak)
         renderUpload()
-        const list = (await screen.findByText('Your accounts')).closest('div')
+        const grid = (await screen.findByText('Your books')).closest('section')
         // The figure is masked in place and read out as hidden.
-        expect(list.querySelector('[data-privacy-mask]')).toHaveTextContent('₹1,23,456')
-        expect(within(list).getByText('Amount hidden')).toBeInTheDocument()
+        expect(grid.querySelector('[data-privacy-mask]')).toHaveTextContent('₹1,23,456')
+        expect(within(grid).getByText('Amount hidden')).toBeInTheDocument()
       } finally {
         privacy.hidden = false
       }
     })
 
-    it('shows no accounts list before there is an account', async () => {
+    it('narrows the statements below to those of the cell picked, and Show all brings the rest back', async () => {
+      const other = { ...stmt, id: 's2', statement_month: '2026-06', account_label: 'Kotak savings' }
+      ledger.statements = [stmt, other]
+      ledger.accounts = [kotak, hdfc]
+      ledger.books = {
+        months: ['2026-06', '2026-07'],
+        accounts: [{
+          ...kotak,
+          cells: {
+            '2026-06': { gap: false, payments: 3, statement_ids: ['s2'], covered: [['2026-06-01', '2026-06-30']], full: true, balance_check: { checked: 0, consistent: 0 } },
+            '2026-07': { gap: false, payments: 5, statement_ids: ['s1'], covered: [['2026-07-01', '2026-07-31']], full: true, balance_check: { checked: 0, consistent: 0 } },
+          },
+        }],
+        transfers: [],
+      }
+      renderUpload()
+      const table = (await screen.findByText('Your statements')).closest('div')
+      await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3))
+      fireEvent.click(screen.getByRole('button', { name: 'Statements in Kotak savings, June 2026' }))
+      expect(within(table).getAllByRole('row')).toHaveLength(2)
+      expect(within(table).getByText(/Showing the statements in Kotak savings, June 2026/)).toBeInTheDocument()
+      fireEvent.click(within(table).getByRole('button', { name: 'Show all' }))
+      expect(within(table).getAllByRole('row')).toHaveLength(3)
+    })
+
+    it('shows no books before there is an account', async () => {
       renderUpload()
       await screen.findByText(/No statements yet/)
-      expect(screen.queryByText('Your accounts')).not.toBeInTheDocument()
+      expect(screen.queryByText('Your books')).not.toBeInTheDocument()
     })
 
     it('offers Move to account only when there is another account or something to split out', async () => {
