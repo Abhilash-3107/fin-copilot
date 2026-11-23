@@ -380,6 +380,15 @@ class TestOffsetsLandInTheAccountOfTheDebitTheyPayBack:
         assert self._shopping(summarize_insights(conn, "2026-10", account_id=a))["net"] == 0
         assert self._shopping(summarize_insights(conn, "2026-10", account_id=b)) is None
 
+    def test_a_refund_for_the_newest_matching_payment_that_is_unsorted_is_not_put_on_an_older_one(self, conn):
+        a = add_account(conn, "a")
+        seed(conn, "st_a", "2026-10-02", 800, "debit", category="Shopping")
+        seed(conn, "st_a", "2026-10-09", 800, "debit")  # newer, same amount, not sorted
+        seed(conn, "st_a", "2026-10-20", 800, "credit", category="Income", subcategory="Refund")
+        s = summarize_insights(conn, "2026-10", account_id=a)
+        assert self._shopping(s)["offsets"] == 0
+        assert next(c for c in s["categories"] if c["category"] == "Uncategorized")["net"] == 800
+
     def test_the_uncategorized_row_never_takes_offsets(self, conn):
         a, b = add_account(conn, "a"), add_account(conn, "b", "sbi")
         loose = seed(conn, "st_a", "2026-10-03", 999, "debit")  # not sorted

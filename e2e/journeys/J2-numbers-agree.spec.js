@@ -126,6 +126,8 @@ for (const scope of SCOPES) {
       await open(page, '/insights')
       const { header, monthlyRows } = await recurringPanel(page)
       await open(page, '/dashboard')
+      // The figures arrive after the heading: wait for the headline before judging the card.
+      await expect(page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in|No money came in/).first()).toBeVisible()
       const committed = (await page.getByText('No monthly commitments spotted yet').count()) === 0
       const dashboard = committed ? await figureNear(page, 'Spoken for each month') : 0
 
@@ -419,7 +421,14 @@ for (const [title, side] of WHICH) {
     /** Look at one account (or all) from the first page on, and read what the server says of the month. */
     async function lookAt(page, app, payment) {
       const accountId = side === null ? null : payment.account_id
-      if (accountId) await page.addInitScript((id) => localStorage.setItem('fc_account_id', id), accountId)
+      if (accountId) {
+        await page.addInitScript((id) => localStorage.setItem('fc_account_id', id), accountId)
+        // A page that is already open keeps the filter it has until it is read again.
+        if (page.url() !== 'about:blank') {
+          await page.evaluate((id) => localStorage.setItem('fc_account_id', id), accountId)
+          await page.reload()
+        }
+      }
       return {
         accountId,
         insights: async () => (await app.api.get(`/insights?month=2026-10${accountId ? `&account_id=${accountId}` : ''}`)).verdict,
@@ -479,14 +488,17 @@ for (const [title, side] of WHICH) {
       expect([lone.transfer, arrived.transfer], 'nothing pairs without a sign').toEqual([null, null])
       expect([lone.waiting_on_pair, arrived.waiting_on_pair], 'the guess is held back').toEqual([true, true])
       expect((await app.api.get('/transactions/facets?month=2026-10')).categories, 'a filter offers only what it can return').not.toContain('Transfers')
+      await open(page, '/transactions?month=2026-10&category=Uncategorized')
+      // This link names no account, so it shows every account whichever the filter was: both sides of the pair.
+      const waiting = page.getByRole('row').filter({ hasText: 'Not sorted - maybe a move between your accounts' })
+      await expect(waiting).toHaveCount(2)
+      await expect(waiting.filter({ hasText: 'Guess was Transfers › Peer Transfer' })).toHaveCount(2)
+
+      // That link cleared the account filter: look at the account this run is about from here on,
+      // from a page whose address no longer names a slice (a reload would read the link again).
+      await open(page, '/dashboard')
       const view = await lookAt(page, app, side === 'credit' ? arrived : lone)
       const held = await view.insights()
-      await open(page, '/transactions?month=2026-10&category=Uncategorized')
-      // The page shows one account or all: the pair is two rows across accounts, one row in each account.
-      const waiting = page.getByRole('row').filter({ hasText: 'Not sorted - maybe a move between your accounts' })
-      await expect(waiting).toHaveCount(side === null ? 2 : 1)
-      await expect(waiting.filter({ hasText: 'Guess was Transfers › Peer Transfer' })).toHaveCount(side === null ? 2 : 1)
-
       await answer(page, 25000, /^Payment to .*abhi b/i, held, view)
     })
   })

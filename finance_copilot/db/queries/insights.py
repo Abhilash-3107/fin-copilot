@@ -475,6 +475,10 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
                 """,
                 (row["counterparty_key"], row["txn_date"]),
             ).fetchone()
+            if match and match["category"] == UNCATEGORIZED:
+                # The newest charge from this payee is not sorted: the refund is for it, and
+                # nothing says what it was, so it nets nothing (and is not guessed onto an older one).
+                continue
             if match and _is_spend(match["category"]):
                 category_offsets[(row["credit_date"], match["category"], match["account_id"])] += row["amount"]
                 continue
@@ -486,12 +490,12 @@ def _spend_offsets(conn: sqlite3.Connection) -> tuple[dict, set[str]]:
             LEFT JOIN annotations a ON a.transaction_id = t.id
             WHERE t.debit_credit = 'debit' AND t.amount = ?
               AND t.txn_date <= ? AND t.txn_date >= date(?, '-60 days')
-              AND {effective_category_sql("a")} NOT IN ({placeholders}, '{UNCATEGORIZED}')
+              AND {effective_category_sql("a")} NOT IN ({placeholders})
             ORDER BY t.txn_date DESC LIMIT 1
             """,
             (row["amount"], row["txn_date"], row["txn_date"], *NON_SPEND_CATEGORIES),
         ).fetchone()
-        if amount_match:
+        if amount_match and amount_match["category"] != UNCATEGORIZED:
             take = _consume(amount_match["id"], amount_match["amount"], row["amount"])
             if take > 0:
                 category_offsets[(row["credit_date"], amount_match["category"], amount_match["account_id"])] += take

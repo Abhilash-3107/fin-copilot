@@ -607,9 +607,11 @@ test.describe('J3 the books', () => {
 
   test('a cell says what the account has that month, how much of it is covered and whether the balances check out', async ({ page }) => {
     await open(page, '/upload')
-    const october = page.getByRole('link', { name: /^Kotak savings, October 2026, \d+ payments?, balanced$/ })
-    await expect(october).toContainText('Full month')
-    await expect(october).toContainText(/\d+ of \d+ balances check out/)
+    const october = page.getByRole('link', { name: /^Kotak savings, October 2026, \d+ payments?, Full month, \d+ of \d+ balances? checks? out$/ })
+    // The cell is short, its name is the whole sentence (and its hover title too).
+    await expect(october).toContainText('Full')
+    await expect(october).toContainText(/\d+\/\d+ balanced/)
+    expect(await october.getAttribute('title')).toBe(await october.getAttribute('aria-label'))
     // The month in progress is covered to today (the 15th), whichever account.
     const november = page.getByRole('link', { name: /^SBI savings, November 2026, / })
     await expect(november).toContainText('to 15 Nov')
