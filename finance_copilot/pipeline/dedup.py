@@ -12,6 +12,11 @@ when the date, the amount (to the paisa) and the direction are equal, and
   PDF; or
 - at least one has no running balance, and the descriptions are equal once
   upper-cased with whitespace collapsed.
+- a third pass, for every source, after those two: the amount, the direction and
+  the running balance are equal and the dates are up to SHIFT_DAYS apart. A
+  running balance is the account's own state after that payment, so two files
+  that print it equal are the same payment, and banks that print both a value
+  date and a transaction date put different ones in a CSV and a PDF.
 Counting is a multiset: three identical payments in the file against two in
 the ledger leave one new. A stored payment is never matched twice. Two payments
 with equal text and different balances are two payments, so the balance, when
@@ -22,8 +27,13 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 
 from finance_copilot.models.transaction import Transaction
+
+# How far apart two prints of one payment's date can be (a value date and a
+# transaction date). The third matching pass allows this much.
+SHIFT_DAYS = 3
 
 
 def _paisa(value: float) -> int:
@@ -64,7 +74,9 @@ class Payment:
         return (self.day, self.paisa, self.direction)
 
 
-def match_payments(stored: Sequence[Payment], incoming: Sequence[Payment]) -> list[int | None]:
+def match_payments(
+    stored: Sequence[Payment], incoming: Sequence[Payment], shift_days: int = SHIFT_DAYS
+) -> list[int | None]:
     """For each incoming payment, the index of the stored payment it is, or None
     when it is new. A stored payment answers for at most one incoming payment.
 
@@ -73,6 +85,10 @@ def match_payments(stored: Sequence[Payment], incoming: Sequence[Payment]) -> li
     match fewer stored payments, so they must not lose theirs to one that could
     have matched another). Within those, earlier stored payments are taken first,
     so the answer does not depend on anything but the order of the two lists.
+
+    What is still unmatched then goes through the third pass: equal balance,
+    amount and direction, on a day up to `shift_days` away (the nearest first).
+    `shift_days=0` is the first two passes alone.
     """
     slots: dict[tuple[str, int, str], list[int]] = {}
     for index, payment in enumerate(stored):
@@ -101,6 +117,24 @@ def match_payments(stored: Sequence[Payment], incoming: Sequence[Payment]) -> li
         for i, payment in enumerate(incoming):
             if answer[i] is None and (payment.balance is not None) == with_balance:
                 take(i, same_text)
+
+    if shift_days > 0:
+        by_state: dict[tuple[int, str, int], list[int]] = {}
+        for index, payment in enumerate(stored):
+            if payment.balance is not None:
+                by_state.setdefault((payment.paisa, payment.direction, payment.balance), []).append(index)
+        for i, payment in enumerate(incoming):
+            if answer[i] is not None or payment.balance is None:
+                continue
+            day = date.fromisoformat(payment.day)
+            near = sorted(
+                (abs((date.fromisoformat(stored[j].day) - day).days), j)
+                for j in by_state.get((payment.paisa, payment.direction, payment.balance), ())
+                if j not in taken
+            )
+            if near and near[0][0] <= shift_days:
+                taken.add(near[0][1])
+                answer[i] = near[0][1]
     return answer
 
 
@@ -109,7 +143,7 @@ _STORED_SQL = """
 SELECT t.id, t.txn_date, t.amount, t.debit_credit, t.running_balance, t.raw_description
 FROM transactions t
 JOIN statements s ON s.id = t.statement_id
-WHERE s.account_id = ? AND t.txn_date BETWEEN ? AND ?
+WHERE s.account_id = ? AND t.txn_date BETWEEN date(?, ?) AND date(?, ?)
 ORDER BY t.rowid
 """
 
@@ -123,8 +157,12 @@ def _payment_of_row(row: sqlite3.Row) -> Payment:
 def _stored_in_account(
     conn: sqlite3.Connection, account_id: str, first_day: str, last_day: str
 ) -> tuple[list[Payment], list[str]]:
-    """The account's payments over those days, and their ids in the same order."""
-    rows = conn.execute(_STORED_SQL, (account_id, first_day, last_day)).fetchall()
+    """The account's payments over those days and the SHIFT_DAYS around them (the
+    third pass looks that far), and their ids in the same order."""
+    margin = f"{SHIFT_DAYS} days"
+    rows = conn.execute(
+        _STORED_SQL, (account_id, first_day, f"-{margin}", last_day, f"+{margin}")
+    ).fetchall()
     return [_payment_of_row(r) for r in rows], [r["id"] for r in rows]
 
 
@@ -137,6 +175,11 @@ class RowSplit:
     # The file covers dates the account has statements for, yet none of its
     # payments there matched anything: it is probably another account's.
     overlaps_without_match: bool
+    # Of the file's payments that fall on days an existing statement of the account
+    # covers: how many there are, and how many matched nothing. A file whose
+    # payments mostly match nothing there is probably a copy printed another way.
+    rows_in_overlap: int = 0
+    unmatched_in_overlap: int = 0
 
 
 def split_new_rows(
@@ -159,11 +202,12 @@ def split_new_rows(
         "WHERE account_id = ? AND period_start IS NOT NULL AND period_end IS NOT NULL",
         (account_id,),
     ).fetchall()
-    in_overlap = any(
-        any(c["period_start"] <= t.txn_date.isoformat() <= c["period_end"] for c in covered)
-        for t in rows
-    )
-    return RowSplit(new, already_in, in_overlap and already_in == 0)
+    overlapping = [
+        m for t, m in zip(rows, matches, strict=True)
+        if any(c["period_start"] <= t.txn_date.isoformat() <= c["period_end"] for c in covered)
+    ]
+    unmatched = sum(1 for m in overlapping if m is None)
+    return RowSplit(new, already_in, bool(overlapping) and already_in == 0, len(overlapping), unmatched)
 
 
 def payments_account_already_has(

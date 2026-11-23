@@ -69,13 +69,17 @@ def parse_printed_period(page_text: str) -> tuple[date, date] | None:
     """
     try:
         header = header_above_table(page_text)
-        if header is None:
-            return None
-        for pattern in (_LABELLED, _BARE):
-            for match in pattern.finditer(header):
-                start, end = _parse_date(match.group(1)), _parse_date(match.group(2))
-                if start and end and start <= end and (end - start).days < MAX_PERIOD_DAYS:
-                    return start, end
+        return None if header is None else period_in_header(header)
     except Exception:
         return None
+
+
+def period_in_header(header: str) -> tuple[date, date] | None:
+    """The period a statement's header text says, by the rule above. A spreadsheet's
+    rows above its table are its header, so they are read with this too."""
+    for pattern in (_LABELLED, _BARE):
+        for match in pattern.finditer(header):
+            start, end = _parse_date(match.group(1)), _parse_date(match.group(2))
+            if start and end and start <= end and (end - start).days < MAX_PERIOD_DAYS:
+                return start, end
     return None

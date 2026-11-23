@@ -75,8 +75,10 @@ class TestMatchPayments:
         assert match_payments(stored, [_p(text="UPI/SWIGGY ORDER")]) == [0]
 
     def test_a_different_day_amount_or_direction_never_matches(self):
+        # A day more than the third pass allows (dedup.SHIFT_DAYS); up to that,
+        # an equal balance, amount and direction is a printed date shifted.
         stored = [_p(day=1, amount=100.0, dc="debit", balance=900.0)]
-        assert match_payments(stored, [_p(day=2, amount=100.0, dc="debit", balance=900.0)]) == [None]
+        assert match_payments(stored, [_p(day=5, amount=100.0, dc="debit", balance=900.0)]) == [None]
         assert match_payments(stored, [_p(day=1, amount=100.01, dc="debit", balance=900.0)]) == [None]
         assert match_payments(stored, [_p(day=1, amount=100.0, dc="credit", balance=900.0)]) == [None]
 

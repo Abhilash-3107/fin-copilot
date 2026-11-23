@@ -16,6 +16,13 @@ _ACCOUNT_REF_RE = re.compile(
 )
 
 
+def account_ref_in_text(text: str) -> str | None:
+    """The account number a header says, from its text; None when there is none.
+    PDFs and spreadsheets read their header with this one rule."""
+    match = _ACCOUNT_REF_RE.search(text.lower())
+    return match.group(1).upper() if match else None
+
+
 def _first_page_text(pdf_path: str, password: str | None) -> str:
     """Page one's text; empty when the file cannot be read."""
     try:
@@ -48,8 +55,7 @@ class StatementParser(ABC):
         cross-account warnings. Never raises: an unreadable header degrades to
         None, which the continuity check treats as "unknown account".
         """
-        match = _ACCOUNT_REF_RE.search(_first_page_text(pdf_path, password).lower())
-        return match.group(1).upper() if match else None
+        return account_ref_in_text(_first_page_text(pdf_path, password))
 
     def extract_period(
         self, pdf_path: str, password: str | None = None
