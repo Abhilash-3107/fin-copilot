@@ -43,6 +43,7 @@ const SUMMARY = {
   verdict: {
     money_in: 100646, money_out: 77763, invested: 30000, kept: -7117,
     kept_rate: -0.0707, earned: 57508, other_in: 43138,
+    compared: { money_in: 100646, money_out: 77763, invested: 30000, kept: -7117 },
     prev: {
       money_in: 57583, money_out: 26006, invested: 30000, kept: 1577,
       kept_rate: 0.0274, earned: 57583, other_in: 0,

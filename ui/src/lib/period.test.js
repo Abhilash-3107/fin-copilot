@@ -43,3 +43,24 @@ describe('comparisonLabel', () => {
     expect(comparisonLabel(null)).toBeNull()
   })
 })
+
+describe('accounts that stop on different days', () => {
+  const apart = {
+    ...partial, counted: 2,
+    short: [{ account_id: 'b', account_label: 'SBI savings', covered_through: '2026-11-15' }],
+  }
+  it('gives no day range, only "in progress", while the month is running', () => {
+    expect(coverageLabel(apart, '2026-11-20')).toBe('in progress')
+  })
+  it('says the month is partly covered once it has ended', () => {
+    expect(coverageLabel(apart, '2026-12-02')).toBe('partly covered')
+  })
+  it('still gives the range when every account stops on the same day', () => {
+    const together = { ...apart, counted: 1 }
+    expect(coverageLabel(together, '2026-11-20')).toBe('1-15 Nov, in progress')
+  })
+  it('names the month and says the days are each account\'s own in the comparison', () => {
+    expect(comparisonLabel({ month: '2026-10', start: '2026-10-01', end: '2026-10-31', uniform: false })).toBe('October, same days for each account')
+    expect(comparisonLabel({ month: '2026-10', start: '2026-10-01', end: '2026-10-15', uniform: true })).toBe('1-15 Oct')
+  })
+})

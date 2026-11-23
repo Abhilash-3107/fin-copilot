@@ -21,19 +21,35 @@ export function isInProgress(period, today = dayjs()) {
   return Boolean(period?.partial) && !dayjs(today).isAfter(dayjs(period.end), 'day')
 }
 
-// The coverage note for a partial month: "1-15 Nov, in progress" while the
-// month is running, "1-28 Nov" once it has ended. Null for a fully covered month.
+// Whether every account the month was judged by stops on the same day. `short` lists
+// the accounts covered to less than the whole month, so when it holds all of them and they
+// share one day, the month simply runs to that day; otherwise accounts differ.
+function stopTogether(period) {
+  const short = period.short
+  if (!short || period.counted == null) return true
+  return short.length === period.counted && new Set(short.map(s => s.covered_through)).size === 1
+}
+
+// The coverage note for a partial month: "1-15 Nov, in progress" while the month is
+// running, "1-28 Nov" once it has ended, when every account stops on that day. When
+// the accounts stop on different days there is no one range to give: "in progress" while the
+// month is running, "partly covered" once it has ended (the line below names the accounts).
+// Null for a fully covered month.
 export function coverageLabel(period, today) {
   if (!period?.partial) return null
+  const inProgress = isInProgress(period, today)
+  if (!stopTogether(period)) return inProgress ? 'in progress' : 'partly covered'
   const range = dayRange(period.start, period.covered_through)
-  return isInProgress(period, today) ? `${range}, in progress` : range
+  return inProgress ? `${range}, in progress` : range
 }
 
 // What deltas are measured against: "October" for a whole month, "1-15 Oct"
-// for the same days of it. Null when there is nothing to compare with, which
-// is also the cue to render no delta at all.
+// for the same days of it, "October, same days for each account" when each account is
+// compared over its own days (the accounts are covered to different days). Null when there is
+// nothing to compare with, which is also the cue to render no delta at all.
 export function comparisonLabel(comparison) {
   if (!comparison) return null
+  if (comparison.uniform === false) return `${dayjs(comparison.start).format('MMMM')}, same days for each account`
   const end = dayjs(comparison.end)
   if (end.isSame(end.endOf('month'), 'day') && dayjs(comparison.start).date() === 1) {
     return dayjs(comparison.start).format('MMMM')
@@ -49,7 +65,7 @@ export function shortAccountsLabel(period, { oneAccount = false } = {}) {
   const short = period.short ?? []
   // Every account counted stops on the same day: the month is just in progress, which the
   // coverage badge already says. Naming accounts is for when one is behind the others.
-  if (short.length === period.counted && new Set(short.map(s => s.covered_through)).size === 1) return ''
+  if (stopTogether(period)) return ''
   return short
     .map(item => `${item.account_label} to ${dayjs(item.covered_through).format('D MMM')}`)
     .join(', ')

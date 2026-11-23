@@ -20,7 +20,10 @@ export default function Delta({ delta, label, goodWhenDown = false, className = 
   )
 }
 
-// What a verdict tile moved by, or null with no comparison.
+// What a verdict tile moved by, or null with no comparison. Measured over the accounts and
+// days the comparison covers (`compared`, which is the tile itself when every account is
+// compared over the whole month), so an account that has nothing to compare with never
+// shows as a change.
 export function tileDelta(verdict, key) {
-  return verdict.prev ? verdict[key] - verdict.prev[key] : null
+  return verdict.prev && verdict.compared ? verdict.compared[key] - verdict.prev[key] : null
 }
