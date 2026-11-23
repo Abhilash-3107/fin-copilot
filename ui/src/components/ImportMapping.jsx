@@ -24,6 +24,9 @@ export const ROLES = [
 
 const NEW_ACCOUNT = '__new__'
 
+// The narrowest a column of the table gets before the table scrolls instead.
+const MIN_COLUMN_REM = 7
+
 // A figure the server's amount reader would read out of a piece of text: a bare
 // number or a rupee amount, with its brackets, sign, currency or Dr/Cr marker. A
 // description that holds one ("Rent 5000") is hidden under privacy mode like any
@@ -303,11 +306,13 @@ function MappingForm({ ask, file, onSubmit, onCancel, busy, error }) {
       </p>
 
       <div className="overflow-x-auto">
-        <table className="text-xs">
+        {/* Columns share the width, so the last select is never pushed off the edge;
+            past seven columns the table keeps a readable minimum and scrolls. */}
+        <table className="text-xs w-full table-fixed" style={{ minWidth: `${ask.columns.length * MIN_COLUMN_REM}rem` }}>
           <thead>
             <tr>
               {ask.columns.map((c, i) => (
-                <th key={i} className="font-medium text-left text-[#94a3b8] pr-3 pb-1 align-bottom">{c}</th>
+                <th key={i} title={c} className="font-medium text-left text-[#94a3b8] pr-3 pb-1 align-bottom truncate">{c}</th>
               ))}
             </tr>
             <tr>
@@ -318,7 +323,7 @@ function MappingForm({ ask, file, onSubmit, onCancel, busy, error }) {
                     aria-label={`What column ${c} holds`}
                     value={roles[i]}
                     onChange={e => setRoles(list => list.map((r, j) => (j === i ? e.target.value : r)))}
-                    className="bg-[#1e2235] border border-[#2d3148] focus:border-[#6366f1] text-[#e2e8f0] px-1.5 py-1 rounded text-xs focus:outline-none"
+                    className="w-full min-w-0 text-ellipsis bg-[#1e2235] border border-[#2d3148] focus:border-[#6366f1] text-[#e2e8f0] px-1.5 py-1 rounded text-xs focus:outline-none"
                   >
                     {ROLES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
@@ -330,7 +335,7 @@ function MappingForm({ ask, file, onSubmit, onCancel, busy, error }) {
             {ask.preview.map((row, r) => (
               <tr key={r} className="text-[#94a3b8]">
                 {ask.columns.map((c, i) => (
-                  <td key={i} className="pr-3 py-0.5 max-w-[16rem] truncate whitespace-nowrap">
+                  <td key={i} className="pr-3 py-0.5 truncate whitespace-nowrap">
                     <RawCell text={row[i] ?? ''} role={roles[i]} />
                   </td>
                 ))}

@@ -286,6 +286,29 @@ describe('ImportMapping', () => {
     })
   })
 
+  describe('the column table', () => {
+    it('shares the width between the columns, so the last select is never pushed off the edge', () => {
+      setup({ ask: ask({
+        columns: ['When', 'What', 'Moved', 'Left', 'Note'],
+        preview: [['2026-10-02', 'UPI/X', '-1.00', '9.00', 'rent']],
+        guess: { date: 0, description: 1, amount: 2 },
+      }) })
+      const selects = screen.getAllByRole('combobox').filter(el => el.getAttribute('aria-label')?.startsWith('What column'))
+      expect(selects).toHaveLength(5)
+      selects.forEach(el => expect(el.className).toContain('w-full'))
+      const table = selects[0].closest('table')
+      expect(table.className).toContain('table-fixed')
+    })
+
+    it('keeps a readable width per column and scrolls past that', () => {
+      const columns = Array.from({ length: 12 }, (_, i) => `C${i}`)
+      setup({ ask: ask({ columns, preview: [columns.map(() => 'x')], guess: { date: 0, description: 1 } }) })
+      const table = screen.getAllByRole('combobox')[0].closest('table')
+      expect(table.style.minWidth).toBe('84rem')
+      expect(table.parentElement.className).toContain('overflow-x-auto')
+    })
+  })
+
   describe('privacy mode on the raw preview', () => {
     it.each(['1000.00 Dr', '9000.00 Cr', '₹1,000', 'INR 500', '(250.00)', '100.00-', '12'])(
       'hides %s in any column but the date and the description',
