@@ -35,12 +35,25 @@ from finance_copilot.parsers.base import account_ref_in_text
 from finance_copilot.parsers.generic import ColumnMap, header_roles, is_negative
 from finance_copilot.parsers.period import period_in_header
 
-# A real statement is a few thousand rows; this only stops a file that would
-# not fit in memory as text.
-MAX_ROWS = 200_000
+# A real statement is a few thousand rows and a dozen columns. These stop a file
+# built to use the machine up: rows and columns are counted while reading, so the
+# file is refused when it crosses the line, not after it is all in memory.
+MAX_ROWS = 50_000
+MAX_COLUMNS = 64
+# An HTML page's tags that are not table structure (fonts, spans, divs). A bank's
+# page has a few per cell; a million is a page built to keep the parser busy.
+MAX_MARKUP_TAGS = 1_000_000
+
+# A workbook is a zip: what it unpacks to is added up from the zip's own directory
+# before anything is unpacked. Over the total, or any big member that unpacks to
+# more than 100 times its size, is a zip bomb.
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+_MAX_RATIO = 100
+_RATIO_FROM_BYTES = 1024 * 1024  # a small member cannot hurt, and a small XML part may compress well
 
 # Banks put their title and the account's details above the table; a table
-# further down than this is something else.
+# further down than this is something else. The header, and the first payment of
+# a table with none, are looked for in these rows only.
 _SAMPLE_ROWS = 50
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -90,8 +103,11 @@ def sniff_kind(contents: bytes) -> str | None:
         try:
             with zipfile.ZipFile(io.BytesIO(contents)) as z:
                 return "xlsx" if "xl/workbook.xml" in z.namelist() else None
-        except zipfile.BadZipFile:
-            return None
+        except Exception:
+            # A zip that cannot be opened at all (cut off, a newer zip than this
+            # Python reads, a damaged directory) is most likely a damaged
+            # workbook: the reader says so in words.
+            return "xlsx"
     if contents[:8] == _OLE_MAGIC:
         return "xls"
     sample = contents[:4096]
@@ -134,17 +150,42 @@ def _best_delimiter(text: str) -> str:
     return chosen
 
 
+def _too_many_rows() -> SpreadsheetError:
+    return SpreadsheetError(
+        f"This file has more than {MAX_ROWS:,} rows, which is more than one statement. "
+        "Export a shorter range of dates."
+    )
+
+
+def _too_many_columns() -> SpreadsheetError:
+    return SpreadsheetError(
+        f"This file has more than {MAX_COLUMNS} columns, which is more than a statement needs. "
+        "Check that it is the statement's table."
+    )
+
+
+def _checked_row(cells: list[str]) -> list[str]:
+    """A row without its empty cells at the end, refused when it is still too wide."""
+    while cells and not cells[-1]:
+        cells.pop()
+    if len(cells) > MAX_COLUMNS:
+        raise _too_many_columns()
+    return cells
+
+
 def _csv_rows(contents: bytes) -> list[list[str]]:
     text = _decode(contents)
+    rows: list[list[str]] = []
     try:
-        return [
-            [cell.strip() for cell in row]
-            for row in csv.reader(io.StringIO(text), delimiter=_best_delimiter(text))
-        ]
+        for row in csv.reader(io.StringIO(text), delimiter=_best_delimiter(text)):
+            rows.append(_checked_row([cell.strip() for cell in row]))
+            if len(rows) > MAX_ROWS:
+                raise _too_many_rows()
     except csv.Error as exc:
         raise SpreadsheetError(
             "This file couldn't be read as a table of payments. Export it again as CSV."
         ) from exc
+    return rows
 
 
 def _number_text(value: float) -> str:
@@ -172,9 +213,31 @@ def _cell_text(value: object) -> str:
     return str(value).strip()
 
 
+def _refuse_a_zip_bomb(contents: bytes) -> None:
+    """Add up what the workbook would unpack to, from the zip's directory, before
+    openpyxl unpacks any of it."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as z:
+            members = z.infolist()
+    except Exception as exc:
+        raise SpreadsheetError(
+            "This workbook couldn't be opened. It may be damaged or password-protected."
+        ) from exc
+    too_big = SpreadsheetError(
+        "This workbook is too large to read: it unpacks to far more than a statement needs. "
+        "Export the statement again, as CSV if you can."
+    )
+    if sum(m.file_size for m in members) > MAX_UNCOMPRESSED_BYTES:
+        raise too_big
+    for m in members:
+        if m.file_size >= _RATIO_FROM_BYTES and m.file_size > _MAX_RATIO * max(m.compress_size, 1):
+            raise too_big
+
+
 def _xlsx_sheets(contents: bytes) -> list[list[list[str]]]:
     from openpyxl import load_workbook
 
+    _refuse_a_zip_bomb(contents)
     try:
         book = load_workbook(io.BytesIO(contents), read_only=True, data_only=True)
     except Exception as exc:
@@ -189,9 +252,14 @@ def _xlsx_sheets(contents: bytes) -> list[list[list[str]]]:
             ws.reset_dimensions()
             rows: list[list[str]] = []
             for values in ws.iter_rows(values_only=True):
-                rows.append([_cell_text(v) for v in values])
+                cells = list(values)
+                while cells and cells[-1] in (None, ""):
+                    cells.pop()
+                if len(cells) > MAX_COLUMNS:
+                    raise _too_many_columns()
+                rows.append(_checked_row([_cell_text(v) for v in cells]))
                 if len(rows) > MAX_ROWS:
-                    raise SpreadsheetError("This file has too many rows to read as one statement.")
+                    raise _too_many_rows()
             sheets.append(rows)
     except SpreadsheetError:
         raise
@@ -208,7 +276,9 @@ def _xls_sheets(contents: bytes) -> list[list[list[str]]]:
     import xlrd
 
     try:
-        book = xlrd.open_workbook(file_contents=contents, on_demand=True)
+        # The library writes what it notices about the file (an OLE oddity) to this
+        # stream, which defaults to stdout: it goes nowhere.
+        book = xlrd.open_workbook(file_contents=contents, on_demand=True, logfile=io.StringIO())
     except Exception as exc:
         raise SpreadsheetError(
             "This workbook couldn't be opened. It may be damaged or password-protected."
@@ -218,7 +288,9 @@ def _xls_sheets(contents: bytes) -> list[list[list[str]]]:
         for index in range(book.nsheets):
             sheet = book.sheet_by_index(index)
             if sheet.nrows > MAX_ROWS:
-                raise SpreadsheetError("This file has too many rows to read as one statement.")
+                raise _too_many_rows()
+            if sheet.ncols > MAX_COLUMNS:
+                raise _too_many_columns()
             rows: list[list[str]] = []
             for r in range(sheet.nrows):
                 row = []
@@ -234,7 +306,7 @@ def _xls_sheets(contents: bytes) -> list[list[list[str]]]:
                         row.append("")
                     else:
                         row.append(_cell_text(cell.value))
-                rows.append(row)
+                rows.append(_checked_row(row))
             sheets.append(rows)
     except SpreadsheetError:
         raise
@@ -249,31 +321,75 @@ def _xls_sheets(contents: bytes) -> list[list[list[str]]]:
 
 class _HtmlTables(HTMLParser):
     """The rows of every table in an HTML page, in page order, as lists of cell text.
-    Many netbanking "XLS" downloads are exactly this. Text goes to the innermost
-    open cell; a row or cell left unclosed (sloppy HTML) ends where the next begins."""
+    Many netbanking "XLS" downloads are exactly this.
+
+    Each top-level table is built as a grid: a cell with a colspan takes that many
+    columns (the extra ones empty), and a cell with a rowspan carries its text down
+    into the rows below, so a header written over two rows (a "Date" cell spanning
+    both, and "Amount" over "Withdrawal" and "Deposit") lines up. A table inside a
+    cell is part of that cell: its text joins the cell's and its rows are not rows
+    of the page. Text goes to the innermost open cell; a row or cell left unclosed
+    (sloppy HTML) ends where the next begins. Rows and columns are counted as they
+    come, so a page built to be enormous is refused without being read to the end."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.rows: list[list[str]] = []
+        self._depth = 0  # table nesting; only the outermost is a table of the page
         self._row: list[str] | None = None
+        self._row_in_table = 0
+        self._carried: dict[tuple[int, int], str] = {}  # (row, column) -> text from a rowspan above
         self._cell: list[str] | None = None
-        self._span = 1
+        self._colspan = 1
+        self._rowspan = 1
+        self._markup = 0
+
+    def _carry_into_row(self) -> None:
+        """Cells the rows above reach down into, where the row has reached them."""
+        while self._row is not None and (self._row_in_table, len(self._row)) in self._carried:
+            self._row.append(self._carried.pop((self._row_in_table, len(self._row))))
 
     def _end_cell(self) -> None:
         if self._cell is not None and self._row is not None:
-            self._row.append(re.sub(r"\s+", " ", "".join(self._cell)).strip())
-            self._row.extend([""] * (self._span - 1))
+            self._carry_into_row()
+            text = re.sub(r"\s+", " ", "".join(self._cell)).strip()
+            at = len(self._row)
+            self._row.append(text)
+            self._row.extend([""] * (self._colspan - 1))
+            for below in range(1, self._rowspan):
+                for across in range(self._colspan):
+                    self._carried[(self._row_in_table + below, at + across)] = text if across == 0 else ""
         self._cell = None
-        self._span = 1
+        self._colspan = self._rowspan = 1
 
     def _end_row(self) -> None:
         self._end_cell()
         if self._row is not None:
-            self.rows.append(self._row)
+            self._carry_into_row()
+            self.rows.append(_checked_row(self._row))
+            if len(self.rows) > MAX_ROWS:
+                raise _too_many_rows()
+            self._row_in_table += 1
         self._row = None
 
     def handle_starttag(self, tag, attrs):
-        if tag == "tr":
+        if tag not in ("table", "tr", "td", "th"):
+            self._markup += 1
+            if self._markup > MAX_MARKUP_TAGS:
+                raise SpreadsheetError(
+                    "This page has far more markup than a statement needs. "
+                    "Export the statement again, as CSV if you can."
+                )
+        if tag == "table":
+            if self._depth == 0:
+                self._end_row()
+                self._row_in_table = 0
+                self._carried = {}
+            self._depth += 1
+        elif self._depth != 1:
+            if tag == "br" and self._cell is not None:
+                self._cell.append(" ")  # a table inside a cell is that cell's text
+        elif tag == "tr":
             self._end_row()
             self._row = []
         elif tag in ("td", "th"):
@@ -281,13 +397,20 @@ class _HtmlTables(HTMLParser):
             if self._row is None:
                 self._row = []
             self._cell = []
-            span = dict(attrs).get("colspan") or "1"
-            self._span = min(int(span), 50) if span.isdigit() else 1
+            given = dict(attrs)
+            self._colspan = _span(given.get("colspan"), MAX_COLUMNS + 1)
+            self._rowspan = _span(given.get("rowspan"), 100)
         elif tag == "br" and self._cell is not None:
             self._cell.append(" ")
 
     def handle_endtag(self, tag):
-        if tag in ("td", "th"):
+        if tag == "table":
+            if self._depth == 1:
+                self._end_row()
+            self._depth = max(0, self._depth - 1)
+        elif self._depth != 1:
+            return
+        elif tag in ("td", "th"):
             self._end_cell()
         elif tag == "tr":
             self._end_row()
@@ -299,6 +422,10 @@ class _HtmlTables(HTMLParser):
     def close(self):
         super().close()
         self._end_row()
+
+
+def _span(value: str | None, most: int) -> int:
+    return min(max(int(value), 1), most) if value and value.strip().isdigit() else 1
 
 
 def _html_rows(contents: bytes) -> list[list[str]]:
@@ -367,11 +494,16 @@ def _locate(rows: list[list[str]]) -> tuple[int | None, int, ColumnMap | None]:
     payment row is the first row that looks like one, and the header is the row
     above it when that has text in two or more cells (a header written in words
     nothing recognises); with no payment-like row at all there is no table."""
-    for index, row in enumerate(rows):
+    for index, row in enumerate(rows[:_SAMPLE_ROWS]):
         cmap = generic._map_header(row)
         if cmap is not None:
+            # A header written over two rows (a spanning "Amount" above
+            # "Withdrawal" and "Deposit"): the last of the rows that read as a header
+            # is the one that names the columns.
+            while index + 1 < len(rows) and (below := generic._map_header(rows[index + 1])) is not None:
+                index, cmap = index + 1, below
             return index, index + 1, cmap
-    first = next((i for i, row in enumerate(rows) if _is_data_row(row)), None)
+    first = next((i for i, row in enumerate(rows[:_SAMPLE_ROWS]) if _is_data_row(row)), None)
     if first is None:
         return None, 0, None
     header = next(
@@ -507,7 +639,7 @@ def starting_mapping(table: Table) -> dict[str, int]:
     else a guess from what they hold ({} when there is no table at all)."""
     if table.recognised is not None:
         return mapping_of(table.recognised)
-    if table.header_row is None and table.first_data == 0 and not any(_is_data_row(r) for r in table.rows):
+    if table.header_row is None and table.first_data == 0 and not any(_is_data_row(r) for r in table.rows[:_SAMPLE_ROWS]):
         return {}
     return _guess_mapping(table)
 
@@ -516,7 +648,7 @@ def has_payment_rows(table: Table) -> bool:
     """Whether anything in the file looks like a payment (a date and a number on
     one row). A file with none is not a statement, and asking which column is which
     would be a question with no answer."""
-    return table.recognised is not None or any(_is_data_row(row) for row in table.rows)
+    return table.recognised is not None or any(_is_data_row(row) for row in table.rows[:_SAMPLE_ROWS])
 
 
 def parse_mapping_field(text: str) -> dict[str, int]:

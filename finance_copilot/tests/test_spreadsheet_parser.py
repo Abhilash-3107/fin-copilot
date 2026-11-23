@@ -215,7 +215,7 @@ class TestXlsx:
         assert len(parsed(out.getvalue()).transactions) == 4
 
     def test_a_file_that_is_not_a_workbook_says_so(self):
-        with pytest.raises(SpreadsheetError, match="isn't a statement"):
+        with pytest.raises(SpreadsheetError, match="workbook couldn't be opened"):
             read(b"PK\x03\x04 not really")
 
 
@@ -682,3 +682,45 @@ class TestDateOrder:
     def test_the_preview_of_a_settled_column_has_no_choices(self):
         table = read(dated("05/10/2026", "25/10/2026"))
         assert sheet.preview(table, sheet.starting_mapping(table))["date_choices"] is None
+
+
+# --- HTML tables: merged cells -----------------------------------------------
+
+
+class TestHtmlGrid:
+    def test_a_header_cell_spanning_two_columns_does_not_shift_the_second_header_row(self):
+        html = b"""<html><body><table>
+<tr><td colspan=5>Example Bank Statement Account No: XXXXXX8074</td></tr>
+<tr><th rowspan=2>Date</th><th rowspan=2>Narration</th><th colspan=2>Amount</th><th rowspan=2>Balance</th></tr>
+<tr><th>Withdrawal</th><th>Deposit</th></tr>
+<tr><td>01/10/2026</td><td>A</td><td>100.00</td><td></td><td>900.00</td></tr>
+<tr><td>02/10/2026</td><td>B</td><td></td><td>50.00</td><td>950.00</td></tr>
+<tr><td>13/10/2026</td><td>C</td><td>10.00</td><td></td><td>940.00</td></tr>
+</table></body></html>"""
+        table = read(html)
+        # The second header row sits under the spanning cell, in columns 2 and 3.
+        assert table.rows[1] == ["Date", "Narration", "Amount", "", "Balance"]
+        assert table.rows[2] == ["Date", "Narration", "Withdrawal", "Deposit", "Balance"]
+        got = sheet.parse_table(table, sheet.starting_mapping(table))
+        assert [(t.amount, t.debit_credit) for t in got.transactions] == [
+            (100.0, "debit"), (50.0, "credit"), (10.0, "debit"),
+        ]
+
+    def test_a_table_inside_a_cell_stays_inside_that_cell(self):
+        html = b"""<html><body><table>
+<tr><th>Date</th><th>Narration</th><th>Withdrawal</th><th>Deposit</th><th>Balance</th></tr>
+<tr><td>01/10/2026</td><td>A<table><tr><td>nested</td><td>more</td></tr></table></td><td>100.00</td><td></td><td>900.00</td></tr>
+<tr><td>02/10/2026</td><td>B</td><td></td><td>50.00</td><td>950.00</td></tr>
+<tr><td>13/10/2026</td><td>C</td><td>10.00</td><td></td><td>940.00</td></tr>
+</table></body></html>"""
+        table = read(html)
+        assert len(table.rows) == 4  # the nested table's row is not a row of this one
+        got = sheet.parse_table(table, sheet.starting_mapping(table))
+        assert [t.raw_description for t in got.transactions][0].startswith("A")
+        assert [t.amount for t in got.transactions] == [100.0, 50.0, 10.0]
+
+    def test_a_cell_that_runs_past_a_row_end_is_not_carried_into_the_next_row(self):
+        html = b"""<table><tr><th rowspan=3>Date</th><th>Narration</th><th>Amount</th></tr>
+<tr><td>x</td><td>y</td></tr><tr><td>z</td><td>w</td></tr>
+<tr><td>01/10/2026</td><td>A</td><td>-1.00</td></tr></table>"""
+        assert read(html).rows[-1] == ["01/10/2026", "A", "-1.00"]

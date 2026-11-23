@@ -257,9 +257,9 @@ class TestMovingAReversalAtAFileBoundary:
 
 class TestTheDateQuestionOverTheApi:
     EARLY = (
-        "Example Bank\nAccount Number,XXXX0000\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
-        "01/10/2026,UPI/A/1,100.00,,24900.00\n02/10/2026,UPI/B/2,,50.00,24950.00\n03/10/2026,UPI/C/3,10.00,,24940.00\n"
-    ).encode()
+        b"Example Bank\nAccount Number,XXXX0000\n\nDate,Narration,Withdrawal Amt.,Deposit Amt.,Balance\n"
+        b"01/10/2026,UPI/A/1,100.00,,24900.00\n02/10/2026,UPI/B/2,,50.00,24950.00\n03/10/2026,UPI/C/3,10.00,,24940.00\n"
+    )
 
     def test_an_ambiguous_file_is_a_422_that_says_so_and_carries_both_readings(self, api):
         client, conn = api
@@ -291,3 +291,32 @@ class TestTheDateQuestionOverTheApi:
         assert preview()["rows"][0]["date"] == "2026-10-01"
         assert set(preview()["date_choices"]) == {"dmy", "mdy"}
         assert preview(date_order="mdy")["rows"][0]["date"] == "2026-01-10"
+
+
+class TestHostileFiles:
+    def test_a_zip_this_python_cannot_open_is_a_422_in_words_not_a_500(self, api):
+        client, conn = api
+        data = bytearray((FIXTURES / "sample_statement.xlsx").read_bytes())
+        for signature, at in ((b"PK\x03\x04", 4), (b"PK\x01\x02", 6)):
+            i = data.find(signature)
+            while i != -1:
+                data[i + at] = 128
+                i = data.find(signature, i + 4)
+        got = upload(client, "broken.xlsx", bytes(data))
+        assert got.status_code == 422 and "workbook couldn't be opened" in got.json()["detail"]
+        assert counts(conn)["statements"] == 0
+
+    def test_the_preview_refuses_the_same_files_the_upload_does(self, api):
+        client, _ = api
+        too_wide = (b"Date,Narration,Amount," + b",".join([b"x"] * 70) + b"\n" + b"01/10/2026,a,1.00," + b",".join([b"1"] * 70) + b"\n")
+        got = client.post(
+            "/api/statements/upload/preview",
+            files={"file": ("wide.csv", too_wide, "text/csv")}, data={"mapping": json.dumps({"date": 0, "description": 1, "amount": 2})},
+        )
+        assert got.status_code == 422 and "more than 64 columns" in got.json()["detail"]
+
+    def test_an_xls_does_not_write_to_standard_output(self, capsys):
+        from finance_copilot.parsers import spreadsheet as sheet
+
+        sheet.read_table((FIXTURES / "sample_statement.xls").read_bytes())
+        assert capsys.readouterr().out == ""
