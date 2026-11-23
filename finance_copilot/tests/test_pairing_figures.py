@@ -147,15 +147,11 @@ class TestAnAmbiguousCandidateAlreadyLabelledSelfTransfers:
 
 
 class TestAnOpenCandidateLabelledInvestments:
-    def test_it_counts_as_uncategorized_out_until_answered_then_as_invested(self, api):
+    def test_an_ordinary_label_is_kept_so_it_stays_invested_and_out_of_teach_me(self, api):
+        """A payment of the same amount in another account within three days is a
+        coincidence, not a question: only a Transfers guess waits on a pair."""
         client, conn, debit, credit = _ledger(
             api, debit_label=("rule", "Investments", "Mutual Fund SIP"), credit_label=None)
-        assert debit in {i["transaction_id"] for i in list_review_queue(conn, THRESHOLD)}
-        f = _figures(conn)
-        _agree(f)
-        assert f["invested"] == 0.0 and f["dashboard"] == 25000.0 and f["out"] == 25450.0
-        body = {"transaction_ids": [debit], "label": {"category": "Investments", "subcategory": "Mutual Fund SIP"}}
-        assert client.post("/api/annotations/bulk-label", json=body).status_code == 200
         assert debit not in {i["transaction_id"] for i in list_review_queue(conn, THRESHOLD)}
         f = _figures(conn)
         _agree(f)

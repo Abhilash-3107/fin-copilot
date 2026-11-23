@@ -47,6 +47,8 @@ CREATE TABLE transfer_unpaired (
     CHECK (txn_a < txn_b)
 );
 
--- Pairing and the Teach Me queue ask "is there a payment of this amount nearby?"
--- for every payment, so the amount is indexed.
-CREATE INDEX IF NOT EXISTS idx_txn_amount ON transactions(amount);
+-- Pairing and the Teach Me queue ask "is there a payment of this amount, a few days
+-- either side?" for every payment. The index is on the same expression those queries
+-- write (db/queries/transfers.fits_sql: the amount in paise), then the date, so the
+-- question is one seek that reads only the payments inside the window.
+CREATE INDEX IF NOT EXISTS idx_txn_cents ON transactions(CAST(ROUND(amount * 100) AS INTEGER), txn_date);

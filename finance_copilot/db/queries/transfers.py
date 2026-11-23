@@ -63,18 +63,23 @@ def fits_sql(x: str, y: str, *, respect_unpaired: bool = True) -> str:
 
     pipeline/pairing.py finds its candidates with this, and `has_open_candidate_sql`
     (so "needs you" in common.unsorted_sql) is built from it: the two cannot disagree.
-    The amount test is written as a range first so the index on amount serves it.
+    Both ends of the amount and date tests are written out (the same test from the
+    other payment's side) and against the indexed expression, so a query that starts
+    from either payment finds the other with one seek on idx_txn_cents (migration 044:
+    the amount in paise, then the date) instead of reading every payment.
     """
     unpaired = (
         f" AND NOT EXISTS (SELECT 1 FROM transfer_unpaired u WHERE u.txn_a = MIN({x}.id, {y}.id) "
         f"AND u.txn_b = MAX({x}.id, {y}.id))"
         if respect_unpaired else ""
     )
+    after = WINDOW_DAYS + 1
     return (
-        f"{_account_of(x)} IS NOT NULL AND {_account_of(y)} IS NOT NULL "
+        f"CAST(ROUND({y}.amount * 100) AS INTEGER) = CAST(ROUND({x}.amount * 100) AS INTEGER) "
+        f"AND {y}.txn_date >= date({x}.txn_date, '-{WINDOW_DAYS} days') AND {y}.txn_date < date({x}.txn_date, '+{after} days') "
+        f"AND {x}.txn_date >= date({y}.txn_date, '-{WINDOW_DAYS} days') AND {x}.txn_date < date({y}.txn_date, '+{after} days') "
+        f"AND {_account_of(x)} IS NOT NULL AND {_account_of(y)} IS NOT NULL "
         f"AND {_account_of(x)} != {_account_of(y)} "
-        f"AND {y}.amount BETWEEN {x}.amount - 0.005 AND {x}.amount + 0.005 "
-        f"AND CAST(ROUND({x}.amount * 100) AS INTEGER) = CAST(ROUND({y}.amount * 100) AS INTEGER) "
         f"AND ABS(julianday(date({x}.txn_date)) - julianday(date({y}.txn_date))) <= {WINDOW_DAYS} "
         f"AND {_free(x)} AND {_free(y)}{unpaired}"
     )
@@ -89,32 +94,49 @@ def has_open_candidate_sql(t: str = "t") -> str:
     )
 
 
+def candidate_pairs_sql(
+    *, ids: list[str] | None = None, between: tuple[str, str] | None = None, respect_unpaired: bool = True,
+) -> tuple[str, list]:
+    """The query behind `candidate_pairs`, as (sql, params). Every shape reaches the
+    other payment of a pair through the amount-and-date index:
+      - the whole ledger: every debit, each with one seek for its credits;
+      - `ids`: the pairs of those payments as the debit, joined (UNION) with the pairs
+        of those payments as the credit, each half a primary-key seek then an index
+        seek. One OR across both sides would read every debit against every credit;
+      - `between`: exactly those two payments, both found by primary key."""
+    fits = fits_sql("d", "c", respect_unpaired=respect_unpaired)
+    gap = "CAST(ABS(julianday(date(d.txn_date)) - julianday(date(c.txn_date))) AS INTEGER)"
+    head = f"SELECT d.id AS debit_id, c.id AS credit_id, {gap} AS gap"
+    body = f"JOIN transactions c ON c.debit_credit = 'credit' AND {fits} WHERE d.debit_credit = 'debit'"
+    if ids is not None:
+        marks = ",".join("?" * len(ids))
+        sql = (
+            f"{head} FROM transactions d {body} AND d.id IN ({marks}) "
+            f"UNION {head} FROM transactions c JOIN transactions d ON d.debit_credit = 'debit' AND {fits} "
+            f"WHERE c.debit_credit = 'credit' AND c.id IN ({marks}) "
+            "ORDER BY gap, debit_id, credit_id"
+        )
+        return sql, [*ids, *ids]
+    if between is not None:
+        return f"{head} FROM transactions d {body} AND d.id IN (?, ?) AND c.id IN (?, ?)", [*between, *between]
+    return f"{head} FROM transactions d {body} ORDER BY gap, d.id, c.id", []
+
+
 def candidate_pairs(
     conn: sqlite3.Connection, *, ids: list[str] | None = None, between: tuple[str, str] | None = None,
     respect_unpaired: bool = True,
 ) -> list[tuple[str, str, int]]:
     """Every (debit id, credit id, days apart) that fits_sql, closest first. `ids` keeps
     the pairs that involve one of those payments, `between` the pairs of exactly those two."""
-    where, params = "", []
-    if ids is not None:
-        marks = ",".join("?" * len(ids))
-        where += f" AND (d.id IN ({marks}) OR c.id IN ({marks}))"
-        params += [*ids, *ids]
-    if between is not None:
-        where += " AND ((d.id = ? AND c.id = ?) OR (d.id = ? AND c.id = ?))"
-        params += [between[0], between[1], between[1], between[0]]
-    rows = conn.execute(
-        f"""
-        SELECT d.id AS debit_id, c.id AS credit_id,
-               CAST(ABS(julianday(date(d.txn_date)) - julianday(date(c.txn_date))) AS INTEGER) AS gap
-        FROM transactions d JOIN transactions c ON c.debit_credit = 'credit'
-          AND {fits_sql('d', 'c', respect_unpaired=respect_unpaired)}
-        WHERE d.debit_credit = 'debit'{where}
-        ORDER BY gap, d.id, c.id
-        """,
-        params,
-    ).fetchall()
-    return [(r["debit_id"], r["credit_id"], r["gap"]) for r in rows]
+    if ids is not None and len(ids) > _CHUNK:
+        found = {
+            pair for chunk in _chunks(ids)
+            for pair in candidate_pairs(conn, ids=chunk, respect_unpaired=respect_unpaired)
+        }
+        return sorted(found, key=lambda p: (p[2], p[0], p[1]))
+    sql, params = candidate_pairs_sql(ids=ids, between=between, respect_unpaired=respect_unpaired)
+    return [(r["debit_id"], r["credit_id"], r["gap"]) for r in conn.execute(sql, params).fetchall()]
+
 
 _CHUNK = 400
 

@@ -29,24 +29,31 @@ def dump_string_list(values: list[str] | None) -> str:
 
 
 UNCATEGORIZED = "Uncategorized"
+# The top-level category of payments between people (Peer Transfer and similar).
+TRANSFERS_CATEGORY = "Transfers"
 
 
 def waiting_on_pair_sql(alias: str = "a", txn: str = "t") -> str:
-    """SQL predicate: payment `txn` (annotations `alias`, LEFT JOINed) is held back as
-    unsorted only because it could be one side of a transfer between the user's own
-    accounts that pairing was not sure enough to make (db/queries/transfers.has_open_candidate_sql).
+    """SQL predicate: payment `txn` (annotations `alias`, LEFT JOINed) carries a guess in
+    the Transfers category and could be one side of a transfer between the user's own
+    accounts that pairing was not sure enough to make (db/queries/transfers.has_open_candidate_sql),
+    so the guess is held back and the payment waits for the user.
 
-    Whatever confident machine label it carries, only the user can say it is theirs. A
-    label the user made or wrote (manual, imported, user_rule) is their decision and is
-    never pulled in. A payment already labelled Self Transfers (any source) is out of In
-    and Out already, so pairing it moves no figure and it is not held back either.
+    Only that guess. A payment with no label or Uncategorized is unsorted already, and any
+    other label (Food & Dining, Investments, ...) is kept even when a payment of the same
+    amount sits in another account within three days: ordinary payments are not asked
+    about because of a coincidence. A label the user made or wrote (manual, imported,
+    user_rule) is their decision and never held back. A payment already labelled Self
+    Transfers (any source) is out of In and Out already, so it is not held back either.
+    The cheap label test comes first: only Transfers-labelled payments ever pay for the
+    candidate lookup.
     """
     from finance_copilot.db.queries.transfers import has_open_candidate_sql
     from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
     intent = ",".join(f"'{s}'" for s in sorted(USER_LABEL_SOURCES))
     return (
-        f"({alias}.source NOT IN ({intent}) AND {alias}.category IS NOT 'Self Transfers' "
+        f"({alias}.category = '{TRANSFERS_CATEGORY}' AND {alias}.source NOT IN ({intent}) "
         f"AND {has_open_candidate_sql(txn)})"
     )
 
@@ -76,8 +83,8 @@ def effective_category_sql(alias: str = "a", txn: str = "t") -> str:
     Uncategorized when it is not sorted (unsorted_sql), else its category, so the
     Dashboard's "isn't sorted yet" figure, the Money Map Uncategorized row and the
     Transactions Uncategorized filter are the same rows, and In, Out, Invested and
-    every breakdown add up with it. An open own-account candidate whose machine label
-    was Investments therefore counts as Uncategorized Out until the user answers it.
+    every breakdown add up with it. A Transfers guess with an open own-account candidate
+    therefore counts as Uncategorized until the user answers it.
     """
     return (
         f"(CASE WHEN {waiting_on_pair_sql(alias, txn)} THEN '{UNCATEGORIZED}' "

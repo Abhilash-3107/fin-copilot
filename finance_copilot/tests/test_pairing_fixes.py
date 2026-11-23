@@ -254,10 +254,17 @@ class TestAnOpenCandidateNeedsTheUser:
 
     def test_a_machine_labelled_credit_is_pulled_in_by_a_candidate_the_user_has_not_labelled(self, conn):
         _out(conn, "d", description="NEFT/RAMESH", ann=("manual", "Self Transfers", "Self Transfer"))
-        _in(conn, "c1", account=SBI, ann=("llm", "Income", "Other Income"))
+        _in(conn, "c1", account=SBI, ann=("llm", "Transfers", "Peer Transfer"))
         _in(conn, "c2", account=HDFC)
         assert pair_transfers(conn) == []
         assert {i["transaction_id"] for i in list_review_queue(conn, THRESHOLD)} == {"c1", "c2"}
+
+    def test_a_credit_with_another_confident_label_is_left_alone(self, conn):
+        _out(conn, "d", description="NEFT/RAMESH", ann=("manual", "Self Transfers", "Self Transfer"))
+        _in(conn, "c1", account=SBI, ann=("llm", "Income", "Other Income"))
+        _in(conn, "c2", account=HDFC)
+        assert pair_transfers(conn) == []
+        assert {i["transaction_id"] for i in list_review_queue(conn, THRESHOLD)} == {"c2"}
 
     def test_nothing_changes_for_payments_without_a_candidate(self, conn):
         _out(conn, "d", description="NEFT/RAMESH", ann=("llm", "Shopping", "Online Shopping"))
@@ -322,7 +329,7 @@ class TestTheCandidateDefinitionIsOneThing:
         plan = " ".join(
             str(tuple(r)) for r in conn.execute(
                 f"EXPLAIN QUERY PLAN SELECT t.id FROM transactions t WHERE {has_open_candidate_sql('t')}"))
-        assert "idx_txn_amount" in plan
+        assert "idx_txn_cents" in plan
 
 
 # 5. unpair names what went back to Teach Me ----------------------------------------------------------
