@@ -821,6 +821,16 @@
       "reason": "A payment now says when it is paired with a payment in another of your accounts as a transfer (Moved to ..., Moved from ...). Pairing runs when a statement is added, never on upgrade, so every payment starts unpaired."
     },
     {
+      "id": "stored-payment-not-waiting-on-a-pair",
+      "scope": "stored",
+      "path": "transactions[*].waiting_on_pair",
+      "kinds": [
+        "added"
+      ],
+      "to": false,
+      "reason": "A payment now says when its Transfers guess is held back because it could be a move between your own accounts. It is read off the labels and the other payments, changes nothing stored, and no payment of the journey's ledger is held back."
+    },
+    {
       "id": "stored-transfer-unpaired-table",
       "scope": "stored",
       "path": "schema.tableRows.transfer_unpaired",

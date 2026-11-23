@@ -148,7 +148,7 @@ function upgrade(before) {
   // Release 2: payee labels, the sorted count, and the schema the new migrations add.
   const printed = (t) => t.merchant ?? t.counterparty_key ?? t.raw_description.slice(4)
   for (const t of facts.transactions) {
-    Object.assign(t, { display_name: null, payee_name: null, note: null, user_note: null, note_is_yours: false, transfer: null, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
+    Object.assign(t, { display_name: null, payee_name: null, note: null, user_note: null, note_is_yours: false, transfer: null, waiting_on_pair: false, channel: 'UPI', payee: printed(t), payee_all: t.counterparty_key ? printed(t) : null })
   }
   Object.assign(byId.R7, { payee: 'ACME LABS PVT LTD/SALARY OCT', channel: 'NEFT' })
   Object.assign(byId.R8, { payee: 'EXAMPLE BOOKSTORE BANGALORE', channel: 'Card' })
@@ -604,6 +604,10 @@ const regressions = {
       a.facts.transactions.find((t) => t.id === 'R1').transfer = { transaction_id: 'R2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-08-02', text: 'Moved to SBI savings' }
     },
     /payment R1 is paired as a transfer after the upgrade/,
+  ],
+  'the upgrade holds a payment back as waiting on a pair': [
+    (a) => (a.facts.transactions.find((t) => t.id === 'R1').waiting_on_pair = true),
+    /transactions\[R1\]\.waiting_on_pair/,
   ],
   'the upgrade labels a payment as paired': [
     (a) => (a.facts.transactions.find((t) => t.id === 'R1').source = 'pair'),
