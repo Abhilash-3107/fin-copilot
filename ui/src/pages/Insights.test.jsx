@@ -256,6 +256,28 @@ describe('Insights (Money Map)', () => {
     expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹43,138')
   })
 
+  it('says money in that is not sorted yet, apart from refunds and paybacks', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 0, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderInsights()
+    expect(await screen.findByText(/not sorted yet/)).toHaveTextContent('incl ₹7,000 not sorted yet')
+    expect(screen.queryByText(/refunds and paybacks/)).not.toBeInTheDocument()
+  })
+
+  it('shows both In tile notes when there are paybacks and unsorted money', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 500, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderInsights()
+    expect(await screen.findByText(/in refunds and paybacks/)).toHaveTextContent('incl ₹500 in refunds and paybacks')
+    expect(screen.getByText(/not sorted yet/)).toHaveTextContent('incl ₹7,000 not sorted yet')
+  })
+
   describe('a month in progress', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['Date'] })

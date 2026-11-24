@@ -585,6 +585,20 @@ describe('Dashboard', () => {
     expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹750')
   })
 
+  it('words unsorted money in on the In tile apart from refunds, and hides it in privacy mode', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 0, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderDashboard()
+    const note = await screen.findByText(/not sorted yet/)
+    expect(note).toHaveTextContent('incl ₹7,000Amount hidden not sorted yet')
+    expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹7,000')
+    expect(screen.queryByText(/refunds and paybacks/)).not.toBeInTheDocument()
+  })
+
   // Sum every rupee figure inside the given rows (the Indian grouping has commas only).
   const rupees = el => Number(el.textContent.match(/₹([\d,]+)/)[1].replace(/,/g, ''))
 

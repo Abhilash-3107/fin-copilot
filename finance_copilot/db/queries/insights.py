@@ -584,7 +584,7 @@ def _verdict(conn: sqlite3.Connection, windows: list[tuple[str | None, str, str]
 
     No linking, netting or heuristics feed these numbers, so a missed
     reimbursement can never make the tiles contradict each other - a friend's
-    unmatched payback simply shows up inside In (and other_in).
+    unmatched payback simply shows up inside In (and other_in, or unsorted_in while unsorted).
     """
     excluded = ",".join("?" for _ in OUT_EXCLUDED_CATEGORIES)
     condition, condition_params = windows_condition_sql(windows)
@@ -598,6 +598,8 @@ def _verdict(conn: sqlite3.Connection, windows: list[tuple[str | None, str, str]
           COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' AND cat = 'Income'
               AND COALESCE(sub, '') NOT IN ('Refund', 'Opening Balance')
               THEN t.amount END), 0) AS earned,
+          COALESCE(SUM(CASE WHEN t.debit_credit = 'credit' AND cat = '{UNCATEGORIZED}'
+              THEN t.amount END), 0) AS unsorted_in,
           COALESCE(SUM(CASE WHEN t.debit_credit = 'debit'
               AND cat NOT IN ({excluded})
               THEN t.amount END), 0) AS money_out,
@@ -624,7 +626,10 @@ def _verdict(conn: sqlite3.Connection, windows: list[tuple[str | None, str, str]
         "kept": round(kept, 2),
         "kept_rate": round(kept / money_in, 4) if money_in > 0 else None,
         "earned": round(row["earned"], 2),
-        "other_in": round(money_in - row["earned"], 2),
+        # Credits sorted into something other than earned income (refunds, paybacks),
+        # and credits not sorted at all: In never calls the second kind a refund.
+        "unsorted_in": round(row["unsorted_in"], 2),
+        "other_in": round(money_in - row["earned"] - row["unsorted_in"], 2),
     }
 
 

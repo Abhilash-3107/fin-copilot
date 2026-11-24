@@ -156,4 +156,19 @@ test.describe('J10 several statements in one month', () => {
       expect(near(await figureNear(page, 'Kept'), verdict.kept), `Kept for ${label}`).toBe(true)
     }
   })
+
+  test('money in that is not sorted yet is not called a refund or payback', async ({ page, app }) => {
+    const { verdict } = await app.api.get('/insights?month=2026-10')
+    expect(verdict.unsorted_in).toBe(7000)
+    expect(verdict.other_in).toBe(0)
+    // Without a model nothing else in the files is sorted into a refund either: all of In
+    // is either earned or not sorted yet.
+    expect(verdict.money_in).toBeCloseTo(verdict.earned + verdict.unsorted_in, 2)
+
+    for (const route of ['/dashboard', '/insights']) {
+      await open(page, route)
+      await expect(page.getByText(/incl ₹7,000 not sorted yet/)).toBeVisible()
+      await expect(page.getByText(/refunds and paybacks/), `${route} calls unsorted money a refund`).toHaveCount(0)
+    }
+  })
 })

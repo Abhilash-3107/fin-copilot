@@ -48,16 +48,16 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
 // Row 1: the page's answer to "am I OK this month?". A cash view, so the
 // four tiles always reconcile: In = Out + Invested + Kept by construction.
 // A friend's payback the pipeline never matched simply lands inside In
-// (disclosed via other_in) instead of silently distorting a tile. Deltas are
+// (disclosed via other_in, or unsorted_in while it is not sorted) instead of silently distorting a tile. Deltas are
 // measured against `vs` (the server's like-for-like comparison window) and are
 // absent altogether when there is none.
 function VerdictStrip({ verdict, vs }) {
-  const { money_in, money_out, invested, kept, kept_rate, other_in } = verdict
+  const { money_in, money_out, invested, kept, kept_rate, other_in, unsorted_in } = verdict
   return (
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
       <StatTile
         label="In" value={money_in} delta={tileDelta(verdict, 'money_in')} vs={vs}
-        sub={<OtherInNote amount={other_in} />}
+        sub={<OtherInNote amount={other_in} unsorted={unsorted_in} />}
       />
       <StatTile
         label="Out" value={money_out} delta={tileDelta(verdict, 'money_out')} vs={vs} goodWhenDown

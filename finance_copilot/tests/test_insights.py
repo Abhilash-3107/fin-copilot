@@ -70,6 +70,53 @@ class TestVerdict:
         assert s["verdict"]["earned"] == 50000  # true income only
         assert s["verdict"]["other_in"] == 4500  # refund + friend's payback
 
+    def test_unsorted_credit_is_not_called_a_refund_or_payback(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-12", 7000, "credit")  # no label at all
+        seed_txn(conn, "2026-01-13", 300, "credit", category="Uncategorized")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["money_in"] == 57300
+        assert v["unsorted_in"] == 7300
+        assert v["other_in"] == 0
+
+    def test_sorted_refund_stays_in_other_in_and_not_in_unsorted_in(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-10", 500, "credit", category="Income", subcategory="Refund")
+        seed_txn(conn, "2026-01-12", 4000, "credit", category="Transfers")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["unsorted_in"] == 0
+        assert v["other_in"] == 4500
+
+    def test_refund_and_unsorted_credit_are_told_apart(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-10", 500, "credit", category="Income", subcategory="Refund")
+        seed_txn(conn, "2026-01-12", 7000, "credit")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["money_in"] == 57500
+        assert v["other_in"] == 500
+        assert v["unsorted_in"] == 7000
+        assert v["money_in"] == v["earned"] + v["other_in"] + v["unsorted_in"]
+
+    def test_unsorted_in_follows_the_account_filter_and_the_comparison(self, conn):
+        add_statement(conn, "s2", "other", month="2026-01")
+        seed_txn(conn, "2026-01-12", 7000, "credit")
+        # The second account: a whole December, January and the start of February, so
+        # January is a complete month with a comparison.
+        for n, (day, amount, dc) in enumerate([
+            ("2025-12-01", 400, "credit"), ("2025-12-31", 10, "debit"), ("2026-01-01", 10, "debit"),
+            ("2026-01-20", 900, "credit"), ("2026-01-31", 10, "debit"), ("2026-02-02", 10, "debit"),
+        ]):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's2', ?, ?, ?, 'Y')", (f"x{n}", day, amount, dc),
+            )
+        account_2 = conn.execute("SELECT account_id FROM statements WHERE id = 's2'").fetchone()[0]
+        assert summarize_insights(conn, "2026-01")["verdict"]["unsorted_in"] == 7900
+        v = summarize_insights(conn, "2026-01", account_id=account_2)["verdict"]
+        assert v["unsorted_in"] == 900 and v["other_in"] == 0
+        assert v["prev"] is not None
+        assert v["prev"]["unsorted_in"] == 400 and v["prev"]["other_in"] == 0
+
     def test_out_counts_transfers_but_not_self_or_investments(self, conn):
         seed_txn(conn, "2026-01-05", 1000, "debit", category="Food & Dining")
         seed_txn(conn, "2026-01-06", 30000, "debit", category="Investments")

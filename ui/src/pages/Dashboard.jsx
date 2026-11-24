@@ -681,7 +681,11 @@ export default function Dashboard() {
             <StatTile
               label="In" value={data.verdict.money_in}
               delta={tileDelta(data.verdict, 'money_in')} vs={vs}
-              sub={data.verdict.other_in > 0 ? <OtherInNote amount={data.verdict.other_in} className="" /> : null}
+              sub={
+                data.verdict.other_in > 0 || data.verdict.unsorted_in > 0
+                  ? <OtherInNote amount={data.verdict.other_in} unsorted={data.verdict.unsorted_in} className="" />
+                  : null
+              }
             />
             <StatTile
               label="Out" value={data.verdict.money_out} goodWhenDown
