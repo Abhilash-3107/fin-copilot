@@ -136,6 +136,7 @@ function Cell({ account, month, cell, selected, onShowStatements }) {
 // The widths that fit 3 accounts by 12 months at 1440: below them the grid scrolls inside its box.
 const ACCOUNT_REM = 10
 const MONTH_REM = 6
+const MONTH_MAX_REM = 11
 
 // The books: one row per account, one column per month, newest first. A month an
 // account has no statement for, between its first and its last, is a visible gap.
@@ -182,7 +183,15 @@ export default function BooksGrid({ books, selected, onShowStatements, onRename 
       </div>
       <div className="relative">
       <div ref={scroller} className="overflow-x-auto">
-        <table className="w-full table-fixed border-collapse text-sm" style={{ minWidth: `${ACCOUNT_REM + months.length * MONTH_REM}rem` }}>
+        {/* Fills the width when there are many months, but a month never grows wider than
+            MONTH_MAX_REM, so one or two months still read as cells and not as banners. */}
+        <table
+          className="table-fixed border-collapse text-sm"
+          style={{
+            minWidth: `${ACCOUNT_REM + months.length * MONTH_REM}rem`,
+            width: `min(100%, ${ACCOUNT_REM + months.length * MONTH_MAX_REM}rem)`,
+          }}
+        >
           <colgroup>
             <col style={{ width: `${ACCOUNT_REM}rem` }} />
             {months.map(m => <col key={m} />)}
