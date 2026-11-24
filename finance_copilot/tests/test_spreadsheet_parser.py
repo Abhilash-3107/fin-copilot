@@ -355,7 +355,7 @@ class TestPlainErrors:
         message = str(caught.value)
         assert "row 4" in message  # the header is row 1, the third payment is row 4
         assert "3 Oct" in message
-        assert "109,388.00" in message and "109,000.00" in message
+        assert "₹1,09,388.00" in message and "₹1,09,000.00" in message
 
     def test_the_row_number_counts_the_rows_above_the_table(self):
         bad = [list(r) for r in OCT]
@@ -460,6 +460,18 @@ class TestHeaderAndMapping:
         table = read(as_csv([HEADER, *OCT]))
         with pytest.raises(SpreadsheetError, match="running balance"):
             sheet.parse_table(table, {"date": 0, "description": 1, "debit": 4, "credit": 3, "balance": 2}, date_order="dmy")
+
+
+    def test_the_balance_message_writes_amounts_like_the_interface(self):
+        rows = [
+            ["Date", "Narration", "Debit", "Credit", "Balance"],
+            ["01/10/2026", "UPI/A/1/x", "100.00", "", "1,07,775.00"],
+            ["02/10/2026", "UPI/B/2/x", "100.00", "", "1,07,000.00"],
+        ]
+        table = read(as_csv(rows))
+        with pytest.raises(SpreadsheetError, match="running balance") as caught:
+            sheet.parse_table(table, {"date": 0, "description": 1, "debit": 2, "credit": 3, "balance": 4}, date_order="dmy")
+        assert "should be ₹1,07,675.00, and the file says ₹1,07,000.00" in str(caught.value)
 
 
 class TestSignature:

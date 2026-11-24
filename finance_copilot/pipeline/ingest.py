@@ -23,6 +23,7 @@ from finance_copilot.db.queries.transactions import (
     insert_transaction,
 )
 from finance_copilot.models.transaction import Statement, Transaction
+from finance_copilot.money import rupees
 from finance_copilot.parsers.description import KNOWN_SHAPES
 from finance_copilot.parsers.period import MAX_PERIOD_DAYS
 from finance_copilot.parsers.registry import detect_parser
@@ -189,11 +190,6 @@ def _short_month(statement_month: str) -> str:
         return statement_month
 
 
-def _rupees(amount: float) -> str:
-    """A rupee figure with the sign in front of the rupee sign, like the UI writes it."""
-    return f"{'-' if amount < 0 else ''}₹{abs(amount):,.2f}"
-
-
 def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str]:
     """Cross-statement balance continuity warnings for a newly ingested statement.
 
@@ -230,8 +226,8 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     ).fetchone()
     if prev and _mismatch(prev["closing_balance"], statement.opening_balance):
         warnings.append(
-            f"Opening balance {_rupees(statement.opening_balance)} doesn't match the "
-            f"{statement_span(prev, exact_days=True)} statement's closing balance {_rupees(prev['closing_balance'])} - "
+            f"Opening balance {rupees(statement.opening_balance)} doesn't match the "
+            f"{statement_span(prev, exact_days=True)} statement's closing balance {rupees(prev['closing_balance'])} - "
             "a statement in between may be missing."
         )
 
@@ -244,8 +240,8 @@ def check_continuity(conn: sqlite3.Connection, statement: Statement) -> list[str
     ).fetchone()
     if nxt and _mismatch(nxt["opening_balance"], statement.closing_balance):
         warnings.append(
-            f"Closing balance {_rupees(statement.closing_balance)} doesn't match the "
-            f"{statement_span(nxt, exact_days=True)} statement's opening balance {_rupees(nxt['opening_balance'])} - "
+            f"Closing balance {rupees(statement.closing_balance)} doesn't match the "
+            f"{statement_span(nxt, exact_days=True)} statement's opening balance {rupees(nxt['opening_balance'])} - "
             "a statement in between may be missing."
         )
 

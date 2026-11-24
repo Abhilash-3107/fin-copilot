@@ -269,6 +269,16 @@ class TestContinuityCheck:
         assert "₹-" not in warning
         conn.close()
 
+    def test_a_large_balance_is_grouped_the_way_the_interface_writes_it(self):
+        conn = _make_conn()
+        self._seed_statement(conn, "2026-03", "2026-03-01", "2026-03-31", 50000.0, 107775.0)
+        stmt = _ingest(conn, [
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
+        ], b"%PDF may large balance")
+        (warning,) = check_continuity(conn, stmt)
+        assert "₹1,07,775.00" in warning
+        conn.close()
+
     def test_gap_against_next_statement_warns_on_out_of_order_upload(self):
         conn = _make_conn()
         self._seed_statement(conn, "2026-05", "2026-05-01", "2026-05-31", 90349.69, 90770.41)

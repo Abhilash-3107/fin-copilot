@@ -29,6 +29,7 @@ from decimal import Decimal
 from html.parser import HTMLParser
 
 from finance_copilot.models.transaction import Transaction
+from finance_copilot.money import rupees
 from finance_copilot.parsers import generic
 from finance_copilot.parsers.bank_identity import identify_bank
 from finance_copilot.parsers.base import account_ref_in_text
@@ -712,10 +713,6 @@ class Parsed:
     bank: str | None  # a bank the rows above the table name
 
 
-def _rupees(amount: float) -> str:
-    return f"₹{amount:,.2f}"
-
-
 def _day(value: date) -> str:
     return f"{value.day} {calendar.month_abbr[value.month]} {value.year}"
 
@@ -820,8 +817,8 @@ def parse_table(table: Table, mapping: dict[str, int], date_order: str | None = 
         b = result.breaks[0]
         where = f"row {b.row}" if b.row else "one row"
         raise SpreadsheetError(
-            f"The running balance doesn't add up at {where} ({_day(b.txn_date)}, {_rupees(b.amount)}): "
-            f"after this payment it should be {_rupees(b.expected)}, and the file says {_rupees(b.printed)}. "
+            f"The running balance doesn't add up at {where} ({_day(b.txn_date)}, {rupees(b.amount)}): "
+            f"after this payment it should be {rupees(b.expected)}, and the file says {rupees(b.printed)}. "
             "Check that the Balance column is the right one, or that no rows are missing."
         )
     return Parsed(
