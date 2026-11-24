@@ -93,6 +93,24 @@ function unsortedOnlyGrows(before, after) {
   return problems
 }
 
+/**
+ * Money in that is not sorted yet used to be counted in with refunds and paybacks. Now it has its own
+ * figure, and the refunds and paybacks figure falls by exactly that much, in every month: nothing is
+ * lost from In, and nothing else moves out of it.
+ */
+function unsortedMoneyInLeavesRefundsAndPaybacks(before, after) {
+  const problems = []
+  for (const [month, now] of Object.entries(after.figures.months)) {
+    const was = before.figures.months[month]
+    if (!was) continue
+    if (!(now.unsortedIn >= 0)) problems.push(`${month}: ${now.unsortedIn} of money in is not sorted yet`)
+    else if (cents(was.otherIn - now.otherIn) !== cents(now.unsortedIn)) {
+      problems.push(`${month}: refunds and paybacks went from ${was.otherIn} to ${now.otherIn} but ${now.unsortedIn} is not sorted yet`)
+    }
+  }
+  return problems
+}
+
 /** The headline, the recurring total and the breakdown must agree with the figures beside them. */
 function figuresAgreeWithEachOther(before, after) {
   const problems = []
@@ -611,6 +629,7 @@ export function checkInvariants(before, after) {
     ...upiMetaOnlyLosesSampleNotes(before, after),
     ...peopleFiguresAddUpToTheOldTotals(before, after),
     ...unsortedOnlyGrows(before, after),
+    ...unsortedMoneyInLeavesRefundsAndPaybacks(before, after),
     ...figuresAgreeWithEachOther(before, after),
     ...comparisonsAreHonest(before, after),
     ...queueOnlyGainsUnsortedPayments(before, after),

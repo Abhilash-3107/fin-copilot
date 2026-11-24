@@ -326,6 +326,58 @@
       "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized. The journey checks the figure never shrinks."
     },
     {
+      "id": "figures-unsorted-in-new-figure",
+      "scope": "derived",
+      "path": "months.*.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 0,
+      "reason": "Money that came in and is not sorted yet now has its own figure on the In tile. A month with none of it shows 0."
+    },
+    {
+      "id": "figures-unsorted-in-demo-month",
+      "scope": "derived",
+      "path": "months.{accountMonth}.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 750,
+      "reason": "The sample data has credits of 750 in this month that nobody has sorted, and the In tile now says so (\"incl ₹750 not sorted yet\")."
+    },
+    {
+      "id": "figures-unsorted-in-statement-month",
+      "scope": "derived",
+      "path": "months.{lastMonth}.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 85450,
+      "reason": "The newest statement's credits are not sorted yet (no model is set up), and the In tile now says so."
+    },
+    {
+      "id": "figures-refunds-paybacks-demo-month",
+      "scope": "derived",
+      "path": "months.{accountMonth}.otherIn",
+      "kinds": [
+        "changed"
+      ],
+      "from": 3361,
+      "to": 2611,
+      "reason": "The In tile used to call money that was not sorted yet \"refunds and paybacks\". The 750 of it in this month is now reported as not sorted yet, and the refunds and paybacks that really are sorted stay. The journey checks the figure fell by exactly the unsorted amount."
+    },
+    {
+      "id": "figures-refunds-paybacks-statement-month",
+      "scope": "derived",
+      "path": "months.{lastMonth}.otherIn",
+      "kinds": [
+        "changed"
+      ],
+      "from": 85450,
+      "to": 0,
+      "reason": "All 85,450 that the In tile called refunds and paybacks in this month was money not sorted yet. It is now reported as such, and nothing in the month is a refund or payback."
+    },
+    {
       "id": "stored-statements-sorted-count",
       "scope": "stored",
       "path": "statements[*].sorted_count",

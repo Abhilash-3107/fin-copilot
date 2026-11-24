@@ -163,6 +163,9 @@ const FIGURES_FROM_INSIGHTS = {
     invested: i.verdict.invested,
     kept: i.verdict.kept,
     keptHeadline: i.verdict.invested + i.verdict.kept,
+    // Money in that was not earned income: 0.1.2 counted every credit that was not labelled
+    // salary-like income here, sorted or not; it has no figure for the unsorted part.
+    otherIn: i.verdict.other_in,
     comparison: pickTotals(i.verdict.prev),
     comparisonNote: [],
     whatChanged: i.what_changed,
@@ -182,6 +185,9 @@ const FIGURES_FROM_INSIGHTS = {
     invested: i.verdict.invested,
     kept: i.verdict.kept,
     keptHeadline: i.verdict.kept,
+    // Credits sorted as refunds and paybacks, and credits not sorted yet.
+    otherIn: i.verdict.other_in,
+    unsortedIn: i.verdict.unsorted_in,
     comparison: pickTotals(i.verdict.prev),
     // Why a month shows no comparison, one reason per account that could not be compared.
     comparisonNote: i.comparison_note.map((n) => n.reason),

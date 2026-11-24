@@ -36,7 +36,7 @@ const member = (t) => ({ id: t.id, transaction_id: t.id, upi_meta: t.upi_meta })
 const month = (over) => ({
   in: 1000, out: 600, invested: 100, kept: 300, keptHeadline: 400, comparison: { in: 0, out: 0, invested: 0, kept: 0 }, comparisonNote: [],
   whatChanged: [{ category: 'Housing', delta: 500, current: 500, previous: 0 }], breakdown: [{ category: 'Housing', net: 500 }],
-  breakdownExtras: null, recurringHeader: 80, committedEachMonth: 90, unexplained: { count: 1, total: 100 },
+  breakdownExtras: null, otherIn: 0, recurringHeader: 80, committedEachMonth: 90, unexplained: { count: 1, total: 100 },
   people: [{ id: 'p1', sent: 300, received: 100, net: -200, count: 3 }], recurring: [CHAI],
   topPayees: [{ name: 'BigBasket', total: 100, count: 1 }], ...over,
 })
@@ -102,8 +102,8 @@ function ledgerBefore() {
     months: {
       '2026-08': month(),
       '2026-09': month({ comparison: { in: 900, out: 500, invested: 100, kept: 300 } }),
-      '2026-10': month({ comparison: { in: 900, out: 500, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 50, current: 500, previous: 450 }] }),
-      '2026-11': month({ comparison: { in: 800, out: 400, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 100, current: 500, previous: 400 }] }),
+      '2026-10': month({ otherIn: 3361, comparison: { in: 900, out: 500, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 50, current: 500, previous: 450 }] }),
+      '2026-11': month({ otherIn: 85450, comparison: { in: 800, out: 400, invested: 100, kept: 300 }, whatChanged: [{ category: 'Housing', delta: 100, current: 500, previous: 400 }] }),
     },
     people: [{ id: 'p1', sent: 300 }],
     groups: [],
@@ -195,6 +195,13 @@ function upgrade(before) {
     month.committedEachMonth = month.recurringHeader
     month.breakdownExtras = [{ key: 'transfers', label: 'Transfers and cash', total: 100, count: 1 }]
   }
+  // Money in that is not sorted yet used to be counted as refunds and paybacks: the ledger has 750 of it in
+  // October and 85,450 in November, and every month has the new figure.
+  for (const month of Object.values(m)) month.unsortedIn = 0
+  m['2026-10'].unsortedIn = 750
+  m['2026-10'].otherIn = 2611
+  m['2026-11'].unsortedIn = 85450
+  m['2026-11'].otherIn = 0
   m['2026-08'].comparison = null
   m['2026-08'].whatChanged = []
   // The month the second account first appears in: nothing before it to compare it with, so no comparison, and the reason.
@@ -773,6 +780,25 @@ const regressions = {
   'the pairing migration does not run': [
     (a) => (a.facts.schema.appliedMigrations = a.facts.schema.appliedMigrations.filter((m) => !m.startsWith('044'))),
     /"stored-migration-044" \(stored\) did not happen/,
+  ],
+  'money not sorted yet is still counted as a refund': [
+    (a) => {
+      a.figures.months['2026-11'].otherIn = 85450
+      a.figures.months['2026-11'].unsortedIn = 85450
+    },
+    /2026-11: refunds and paybacks went from 85450 to 85450 but 85450 is not sorted yet/,
+  ],
+  'refunds and paybacks lose more than the unsorted money': [
+    (a) => (a.figures.months['2026-10'].otherIn = 2000),
+    /2026-10: refunds and paybacks went from 3361 to 2000 but 750 is not sorted yet/,
+  ],
+  'refunds and paybacks change in a month with nothing unsorted': [
+    (a) => (a.figures.months['2026-09'].otherIn = 10),
+    /months\.2026-09\.otherIn/,
+  ],
+  'the unsorted money in is less than zero': [
+    (a) => (a.figures.months['2026-08'].unsortedIn = -5),
+    /2026-08: -5 of money in is not sorted yet/,
   ],
   'a sorting job starts with an attempt already counted': [
     (a) => (a.facts.schema.jobAttempts[0].attempts = 1),
