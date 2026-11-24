@@ -67,37 +67,38 @@ describe('coverage and check words', () => {
     expect(checkText({ checked: 1, consistent: 0 })).toBe('0 of 1 balance checks out')
   })
 
-  it('words the check as the statement\'s when its file spans more months than the cell', () => {
-    expect(checkText({ checked: 150, consistent: 150 }, ['2026-08', '2026-10'])).toBe('Aug to Oct statement: 150 of 150 balances check out')
-    expect(checkText({ checked: 150, consistent: 150 }, ['2025-12', '2026-02'])).toBe('Dec 2025 to Feb 2026 statement: 150 of 150 balances check out')
-  })
-
   it('has a short form for the cell: a word for coverage and a few characters for the balances', () => {
     expect(coverageShort(cell(), '2026-10')).toBe('Full')
     expect(coverageShort(cell({ full: false, covered: [['2026-11-01', '2026-11-15']] }), '2026-11')).toBe('to 15 Nov')
     expect(coverageShort(cell({ full: false, covered: [['2026-10-10', '2026-10-31']] }), '2026-10')).toBe('from 10 Oct')
     expect(coverageShort(cell({ full: false, covered: [['2026-10-10', '2026-10-20']] }), '2026-10')).toBe('10-20 Oct')
     expect(coverageShort(cell({ full: false, covered: [['2026-10-01', '2026-10-10'], ['2026-10-20', '2026-10-31']] }), '2026-10')).toBe('Partial')
-    expect(checkShort({ checked: 49, consistent: 49 })).toBe('49/49 balanced')
-    expect(checkShort({ checked: 20, consistent: 19 })).toBe('19/20 balanced')
+    // The short form is a word, never a count: a count of balances is not a count of the payments shown.
+    expect(checkShort({ checked: 49, consistent: 49 })).toBe('Balanced')
+    expect(checkShort({ checked: 20, consistent: 19 })).toBe('Not balanced')
     expect(checkShort({ checked: 0, consistent: 0 })).toBe('No balances')
   })
 
-  it('says only Balanced or Not balanced for a statement spanning several months, never the whole file\'s count', () => {
-    const spanning = [{ checked: 150, consistent: 150, months: ['2026-06', '2026-07'] }]
-    expect(checkShort({ checked: 150, consistent: 150 }, spanning)).toBe('Balanced')
-    expect(checkShort({ checked: 150, consistent: 148 }, [{ ...spanning[0], consistent: 148 }])).toBe('Not balanced')
-    expect(checkShort({ checked: 0, consistent: 0 }, [{ checked: 0, consistent: 0, months: ['2026-06', '2026-07'] }])).toBe('No balances')
-  })
-
-  it('words a cell with several statements one statement at a time', () => {
+  it('words a cell with several statements one statement at a time, never added up', () => {
+    const october = { months: null, covered: ['2026-10-01', '2026-10-31'] }
     const several = cell({ statement_checks: [
-      { checked: 150, consistent: 150, months: ['2026-06', '2026-07'] },
-      { checked: 10, consistent: 10, months: null },
-      { checked: 5, consistent: 4, months: null },
+      { checked: 5, consistent: 5, ...october },
+      { checked: 3, consistent: 3, months: null, covered: ['2026-10-14', '2026-10-31'] },
     ] })
-    expect(cellCheckText(several)).toBe('Jun to Jul statement: 150 of 150 balances check out; 14 of 15 balances check out')
-    expect(cellCheckText(cell({ statement_checks: [{ checked: 41, consistent: 41, months: null }] }))).toBe('41 of 41 balances check out')
+    expect(cellCheckText(several, '2026-10'))
+      .toBe('Oct 2026 statement: 5 of 5 balances check out; 14 to 31 Oct statement: 3 of 3 balances check out')
+    const spanning = cell({ statement_checks: [
+      { checked: 150, consistent: 150, months: ['2026-06', '2026-07'], covered: ['2026-07-01', '2026-07-31'] },
+      { checked: 5, consistent: 4, ...october, covered: ['2026-07-01', '2026-07-31'] },
+    ] })
+    expect(cellCheckText(spanning, '2026-07'))
+      .toBe('Jun to Jul statement: 150 of 150 balances check out; Jul 2026 statement: 4 of 5 balances check out')
+    // A statement over a year end names both years; a lone one-month statement needs no name.
+    expect(cellCheckText(cell({ statement_checks: [{ checked: 150, consistent: 150, months: ['2025-12', '2026-02'], covered: ['2026-01-01', '2026-01-31'] }] }), '2026-01'))
+      .toBe('Dec 2025 to Feb 2026 statement: 150 of 150 balances check out')
+    expect(cellCheckText(cell({ statement_checks: [{ checked: 41, consistent: 41, ...october }] }), '2026-10')).toBe('41 of 41 balances check out')
+    expect(cellCheckText(cell({ statement_checks: [{ checked: 1, consistent: 1, months: null, covered: ['2026-10-14', '2026-10-31'] }] }), '2026-10'))
+      .toBe('1 of 1 balance checks out')
   })
 })
 
@@ -122,12 +123,13 @@ describe('BooksGrid', () => {
     expect(partial).toHaveTextContent('to 15 Nov')
     expect(partial).toHaveTextContent('No balances')
     const balanced = screen.getByRole('link', { name: 'Kotak savings, October 2026, 41 payments, Full month, 41 of 41 balances check out' })
-    expect(balanced).toHaveTextContent('41/41 balanced')
+    expect(balanced).toHaveTextContent('Balanced')
+    expect(balanced).not.toHaveTextContent(/\d+\/\d+/)
     expect(balanced).toHaveTextContent('Full')
     // The full words are on hover too, so the short form never hides them.
     expect(balanced).toHaveAttribute('title', balanced.getAttribute('aria-label'))
     expect(screen.getByRole('link', { name: 'Kotak savings, November 2026, 20 payments, Full month, 19 of 20 balances check out' }))
-      .toHaveTextContent('19/20 balanced')
+      .toHaveTextContent('Not balanced')
   })
 
   it('words a spanning statement\'s check as the statement\'s in the cell\'s name, and keeps Balanced in the cell', () => {
@@ -138,11 +140,11 @@ describe('BooksGrid', () => {
         cells: {
           '2026-10': cell({
             payments: 7, balance_check: { checked: 150, consistent: 150 },
-            statement_checks: [{ checked: 150, consistent: 150, months: ['2026-08', '2026-10'] }],
+            statement_checks: [{ checked: 150, consistent: 150, months: ['2026-08', '2026-10'], covered: ['2026-10-01', '2026-10-31'] }],
           }),
           '2026-09': cell({
             payments: 7, balance_check: { checked: 150, consistent: 147 }, covered: [['2026-09-01', '2026-09-30']],
-            statement_checks: [{ checked: 150, consistent: 147, months: ['2026-08', '2026-10'] }],
+            statement_checks: [{ checked: 150, consistent: 147, months: ['2026-08', '2026-10'], covered: ['2026-09-01', '2026-09-30'] }],
           }),
         },
       }],
@@ -153,6 +155,30 @@ describe('BooksGrid', () => {
     expect(link).not.toHaveTextContent('150')
     const off = screen.getByRole('link', { name: /Kotak savings, September 2026.*Aug to Oct statement: 147 of 150 balances check out/ })
     expect(off).toHaveTextContent('Not balanced')
+  })
+
+  it('words a cell with two statements one at a time and reads one word in the cell', () => {
+    const books = {
+      ...BOOKS,
+      accounts: [{
+        ...BOOKS.accounts[0],
+        cells: {
+          '2026-10': cell({
+            payments: 8, statement_ids: ['s1', 's2'], balance_check: { checked: 8, consistent: 8 },
+            statement_checks: [
+              { checked: 5, consistent: 5, months: null, covered: ['2026-10-01', '2026-10-31'] },
+              { checked: 3, consistent: 3, months: null, covered: ['2026-10-14', '2026-10-31'] },
+            ],
+          }),
+        },
+      }],
+    }
+    render(<MemoryRouter><PrivacyProvider><BooksGrid books={books} selected={null} onShowStatements={vi.fn()} onRename={vi.fn()} /></PrivacyProvider></MemoryRouter>)
+    const link = screen.getByRole('link', {
+      name: 'Kotak savings, October 2026, 8 payments, Full month, 2 statements, Oct 2026 statement: 5 of 5 balances check out; 14 to 31 Oct statement: 3 of 3 balances check out',
+    })
+    expect(link).toHaveTextContent('Balanced')
+    expect(link).not.toHaveTextContent(/\d+\/\d+/)
   })
 
   it('opens Transactions for the account and the month from a cell, by link so the keyboard reaches it', () => {

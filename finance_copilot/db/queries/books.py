@@ -87,7 +87,7 @@ def books(conn: sqlite3.Connection) -> dict:
             ranges = covered_ranges(items, first, last)
             # A statement's balance check is of its whole file, so a file that spans several months
             # repeats in each: each statement's check rides with the months of its file, for the
-            # page to word it as that statement's.
+            # page to word it as that statement's, with the days of this month it covers.
             statement_checks = []
             for s in found:
                 months_of_file = _span_months(s)
@@ -95,6 +95,7 @@ def books(conn: sqlite3.Connection) -> dict:
                     "checked": checks.get(s["id"], {}).get("checked", 0),
                     "consistent": checks.get(s["id"], {}).get("consistent", 0),
                     "months": [months_of_file[0], months_of_file[-1]] if len(months_of_file) > 1 else None,
+                    "covered": [max(s["start"], first), min(s["end"], last)],
                 })
             cells[month] = {
                 "gap": False,

@@ -110,6 +110,10 @@ test.describe('J10 several statements in one month', () => {
     await expect(first).toHaveCount(1)
     await expect(second).toHaveCount(1)
     await expect(first).toHaveAttribute('aria-label', /, 7 payments, /)
+    // The cell reads one word; its name words each statement's check on its own, never added up.
+    await expect(first).toHaveAttribute('aria-label', /, Oct 2026 statement: 5 of 5 balances check out; 14 to 31 Oct statement: 3 of 3 balances check out$/)
+    await expect(first).toContainText('Balanced')
+    await expect(first).not.toContainText(/\d+\/\d+/)
     await expect(second).toHaveAttribute('aria-label', /, 5 payments, /)
     await expect(grid.getByRole('img', { name: /no statement/ })).toHaveCount(0)
     await expect(page.getByText(new RegExp(`Moved ₹12,000 from ${FIRST} to ${SECOND} on 14 Oct, not counted`))).toBeVisible()

@@ -143,8 +143,12 @@ def test_a_statement_spanning_several_months_says_so_in_every_month_it_checks(co
     # the months it spans; a one-month statement names no months.
     for month in ("2026-08", "2026-09", "2026-10"):
         assert cells[month]["balance_check"] == {"checked": 150, "consistent": 150}
-        assert cells[month]["statement_checks"] == [{"checked": 150, "consistent": 150, "months": ["2026-08", "2026-10"]}], month
-    assert cells["2026-11"]["statement_checks"] == [{"checked": 20, "consistent": 20, "months": None}]
+        assert cells[month]["statement_checks"] == [
+            {"checked": 150, "consistent": 150, "months": ["2026-08", "2026-10"], "covered": [f"{month}-01", f"{month}-" + ("30" if month == "2026-09" else "31")]},
+        ], month
+    assert cells["2026-11"]["statement_checks"] == [
+        {"checked": 20, "consistent": 20, "months": None, "covered": ["2026-11-01", "2026-11-30"]},
+    ]
 
 
 def test_a_cell_holding_several_statements_lists_each_ones_check(conn):
@@ -156,8 +160,8 @@ def test_a_cell_holding_several_statements_lists_each_ones_check(conn):
     seed(conn, "j", "2026-07-05", 10, "debit", category="Shopping")
     july = _grid(conn)["accounts"][0]["cells"]["2026-07"]
     assert sorted(july["statement_checks"], key=lambda c: c["checked"]) == [
-        {"checked": 10, "consistent": 10, "months": None},
-        {"checked": 150, "consistent": 148, "months": ["2026-06", "2026-07"]},
+        {"checked": 10, "consistent": 10, "months": None, "covered": ["2026-07-01", "2026-07-31"]},
+        {"checked": 150, "consistent": 148, "months": ["2026-06", "2026-07"], "covered": ["2026-07-01", "2026-07-31"]},
     ]
     assert july["balance_check"] == {"checked": 160, "consistent": 158}
 
