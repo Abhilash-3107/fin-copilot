@@ -5,7 +5,7 @@
 Several statements make one month.
 Your accounts have names you can give, a statement can move between them, and a file that overlaps one you already added brings only the payments that are new.
 A transfer between two of your own accounts is paired and counted as neither spending nor income.
-Every screen shows one month across all your accounts, with an account filter, and Add Statement shows which accounts and months your statements cover, with the gaps.
+The Dashboard, Money Map and Transactions show one month across all your accounts, with an account filter, and Add Statement shows which accounts and months your statements cover, with the gaps.
 CSV, XLSX and XLS statements are read as well as PDFs, and you can write a note on any payment.
 
 ### Trying the release candidate
@@ -26,7 +26,7 @@ On the first start of 0.3.0 it applies migrations 041 to 045:
   Text you typed with the old Rename becomes the account's name;
 - records, for each statement, how many payments its file held, how many of them were new and whether its balances check out;
 - rebuilds the table that holds your labels so a label can come from a paired transfer.
-  Every label keeps its category, source, confidence, note and time;
+  Every label keeps its category, merchant name, tags, source, confidence and time;
 - adds the places that hold your notes on payments, the transfers you take apart, and the spreadsheet layouts the app remembers.
   They start empty and rewrite nothing you have.
 
@@ -43,7 +43,12 @@ What moves is what counts as spending and how months are compared, so the same l
   A paired transfer is sorted as Self Transfers on both sides, so neither the money out of one account nor the money into the other counts.
   A ledger with one account has no pairs, so nothing changes there.
 - A payment that waits on a possible transfer counts as not sorted.
-  When a debit and a credit of the same amount in two of your accounts look like one move, both are offered in Teach Me and are in the unsorted figure until you answer.
+  When a debit and a credit of the same amount in two of your accounts look like one move, both are offered in Teach Me until you answer.
+  The money in shows on the In tile as "not sorted yet", and the Dashboard's unsorted count lists the payments out.
+- Money that came in and is not sorted yet is no longer called a refund or payback.
+  The In tile used to say "incl ₹X in refunds and paybacks" for every credit that was not earned income, sorted or not.
+  It now says that only for credits you or the app sorted as refunds and paybacks, and shows the rest as "incl ₹X not sorted yet".
+  On a ledger with unsorted credits, the refunds and paybacks figure falls by that amount.
 - A refund counts in the account of the purchase it pays back, and Uncategorized never nets a refund.
   A refund in another account no longer turns a category negative there.
 - A comparison with the previous month is shown only when every account in the view can be compared fairly.
@@ -80,7 +85,7 @@ What moves is what counts as spending and how months are compared, so the same l
 
 ### One month across accounts
 
-- The Dashboard, Money Map, Transactions, Teach Me and the palette show one month across all your accounts.
+- Dashboard, Money Map and Transactions show one month across all your accounts; Teach Me and search show which account a payment is in.
   With two or more accounts an Account filter picks one; the choice is remembered and drill-through links name it.
 - The running balance column shows when one account is selected.
 - The month picker lists the months that have payments.
