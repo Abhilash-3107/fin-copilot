@@ -29,6 +29,27 @@ test.describe('J3 spreadsheets', () => {
     await expect(page.locator('input[type=file]')).toHaveAttribute('accept', /\.csv.*\.xlsx.*\.xls/)
   })
 
+  test('a long Add Statement page scrolls inside the app, never the window', async ({ page, tolerate }) => {
+    await tolerate(/\/api\/statements\/upload/, 422)
+    // The books grid (a statement is in the ledger) and the mapping form (a layout nothing names) are
+    // both on the page, which is longer than the window. Hidden text that is positioned must stay
+    // inside the scrolling area, or the document itself grows past the window and the app shell
+    // scrolls out of view.
+    await drop(page, [asFile('october.pdf', FIXTURE_PDF, 'application/pdf')])
+    await expect(fileRow(page, 'october.pdf')).toContainText('Balance checks out')
+    await page.locator('input[type=file]').setInputFiles(asFile('export-oct.csv', FIXTURE_CSV_EXPORT_OCT))
+    await page.getByRole('button', { name: ADD }).click()
+    await expect(mappingForm(page)).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Your books' })).toBeVisible()
+    const sizes = await page.evaluate(() => ({
+      document: document.documentElement.scrollHeight, window: window.innerHeight, scrolled: window.scrollY,
+      inside: document.querySelector('main').scrollHeight, shown: document.querySelector('main').clientHeight,
+    }))
+    expect(sizes.inside, 'the page is longer than its area, so the check means something').toBeGreaterThan(sizes.shown)
+    expect(sizes.document, 'the document grew past the window').toBeLessThanOrEqual(sizes.window)
+    expect(sizes.scrolled).toBe(0)
+  })
+
   test('a layout nothing names is asked about once, then the next file lands by itself', async ({ page, app, tolerate }) => {
     await tolerate(/\/api\/statements\/upload/, 422)
     await drop(page, asFile('export-oct.csv', FIXTURE_CSV_EXPORT_OCT))

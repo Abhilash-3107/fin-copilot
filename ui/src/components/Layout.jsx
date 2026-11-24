@@ -24,7 +24,7 @@ export default function Layout() {
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <DemoBanner />
         <TopBar onMenu={() => setNavOpen(true)} />
-        <main className="flex-1 overflow-y-auto">
+        <main className="relative flex-1 overflow-y-auto">
           {/* Keyed on the route so navigating to another page clears a caught error. */}
           {/* Add Statement shows its own list, with its own Retry. */}
           {ledgerError && pathname !== '/upload' && (
