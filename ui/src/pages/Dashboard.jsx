@@ -13,13 +13,15 @@ import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import { useDemoData } from '../contexts/DemoDataContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import AccountFilter from '../components/AccountFilter.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
 import OtherInNote from '../components/OtherInNote.jsx'
 import Tooltip from '../components/Tooltip.jsx'
 import Delta, { tileDelta } from '../components/Delta.jsx'
-import { coverageLabel, isInProgress, comparisonLabel } from '../lib/period.js'
+import { coverageLabel, isInProgress, comparisonLabel, comparisonNoteLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 import { txnFilterPath } from '../lib/txnLink.js'
 import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import { count } from '../lib/plural.js'
@@ -212,6 +214,7 @@ function AttentionList({ items, countsError, onRetryCounts }) {
 // one. The full multi-month view lives on Money Map.
 function BalanceCard({ balance, month }) {
   const { hidden } = usePrivacy()
+  const { multiple, accountId } = useLedger()
   const { money, tick } = useMoney()
   const start = dayjs(month).startOf('month').format('YYYY-MM-DD')
   const end = dayjs(month).endOf('month').format('YYYY-MM-DD')
@@ -264,13 +267,25 @@ function BalanceCard({ balance, month }) {
   }
   return (
     <Link to="/insights" className={`${card} group flex flex-col p-4 transition-colors hover:border-[#6366f1]`}>
-      <p className={`${cardTitle} mb-3`}>Balance over time</p>
+      <div className="flex items-baseline justify-between mb-3">
+        <p className={cardTitle}>Balance over time</p>
+        {balance.account && (
+          <span className="text-xs text-[#94a3b8]">
+            {/* With every account selected the line is still one account's, never a sum. */}
+            {multiple && !accountId ? `Showing ${balance.account}` : balance.account}
+          </span>
+        )}
+      </div>
       <div className={`h-52 flex-1 ${hidden ? 'blur-[6px] select-none' : ''}`}>
         {points.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-[#94a3b8]">
-            Balance history appears once statements are imported
+          <div className="flex h-full min-h-52 items-center justify-center px-4 text-center text-sm text-[#94a3b8]">
+            {balance.no_balances
+              ? 'These statements have no running balance to chart.'
+              : balance.account
+                ? `${points.length === 1 ? 'Only one balance reading for' : 'No balance for'} ${balance.account} in ${dayjs(month).format('MMMM YYYY')}`
+                : 'Balance history appears once statements are imported'}
           </div>
         )}
       </div>
@@ -356,6 +371,7 @@ function CommittedCard({ recurring, summary }) {
 // to Out (the rest of the categories plus the reconciling rows), then a
 // hand-off to Money Map for the full picture.
 function TopSpendingCard({ categories, breakdown, month }) {
+  const { accountId: account } = useLedger()
   const top = categories.slice(0, 3)
   const rest = [...categories.slice(3).map(c => c.net), ...breakdown.extras.map(e => e.total)]
   const maxNet = Math.max(1, ...top.map(c => c.net))
@@ -371,7 +387,7 @@ function TopSpendingCard({ categories, breakdown, month }) {
           {top.map(c => (
             <li key={c.category}>
               <Link
-                to={txnFilterPath({ category: c.category, month })}
+                to={txnFilterPath({ category: c.category, month, account })}
                 className="group -mx-1 grid grid-cols-[minmax(7rem,1fr)_2fr_5rem] items-center gap-3 rounded-md px-1 py-2 text-sm transition-colors hover:bg-[#1a1d27]"
               >
                 <span className="truncate text-[#e2e8f0] group-hover:text-[#a5b4fc]">{c.category}</span>
@@ -461,7 +477,8 @@ function AccuracyCard({ rows, error, onRetry }) {
 export default function Dashboard() {
   const toast = useToast()
   const { refresh: refreshDemoData } = useDemoData()
-  const { month: periodMonth, ready: periodReady } = usePeriod()
+  const { month: periodMonth, ready } = usePeriod()
+  const { accountId, multiple } = useLedger()
   // Each block loads on its own, so one that fails says so in its own place
   // (with Retry) and never reads as "you have no data".
   // Month-anchored like Money Map: "All time" falls back to the latest month
@@ -469,8 +486,8 @@ export default function Dashboard() {
   // that month rather than a value the figures do not honour.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const summaryLoad = useLoad(useCallback(
-    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
-  ), { enabled: periodReady })
+    () => api.get(insightsPath(requestMonth, accountId)), [requestMonth, accountId],
+  ), { enabled: ready })
   // Counts only: the queue itself can be thousands of rows long. Low-confidence
   // guesses waiting in Teach Me span every month, not just this one.
   const countsLoad = useLoad(useCallback(() => api.get('/annotations/review-queue/counts'), []))
@@ -520,6 +537,8 @@ export default function Dashboard() {
 
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
+  const behind = shortAccountsLabel(data?.period, { oneAccount: Boolean(accountId) })
+  const noComparison = comparisonNoteLabel(data?.comparison_note, data?.prev_month)
   const attention = []
   if (data?.month) {
     // One figure per fact, over one set: this month's unsorted payments and
@@ -564,7 +583,7 @@ export default function Dashboard() {
     if (spike) {
       attention.push({
         key: 'spike', icon: TrendingUp, color: '#fb7185',
-        to: txnFilterPath({ category: spike.category, month: data.month }),
+        to: txnFilterPath({ category: spike.category, month: data.month, account: accountId }),
         text: (
           <>
             {spike.category} ran <Amount value={spike.delta} decimals={0} /> above{' '}
@@ -591,6 +610,7 @@ export default function Dashboard() {
           )}
         </h1>
         <div className="flex items-center gap-3">
+          <AccountFilter />
           <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
           <Link
             to="/upload"
@@ -600,6 +620,11 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {behind && (
+        <p className="-mt-2 text-xs text-[#fbbf24]">Not every account is covered to the end of the month: {behind}.</p>
+      )}
+      {noComparison && <p className="-mt-2 text-xs text-[#94a3b8]">{noComparison}</p>}
 
       {loading ? (
         <p className="text-sm text-[#94a3b8]">Pulling it together…</p>
@@ -631,6 +656,15 @@ export default function Dashboard() {
             anytime from the banner or Settings › Data.
           </p>
         </div>
+      ) : multiple && accountId && data.annotation?.total === 0 ? (
+        <div className={`${card} p-8 text-center`}>
+          <p className="text-lg text-[#e2e8f0]">
+            {data.account?.label ?? 'This account'} has no payments in {dayjs(data.month).format('MMMM YYYY')}.
+          </p>
+          <p className="mt-2 text-sm text-[#94a3b8]">
+            Pick another month, or add its statement for that month on the Add Statement page.
+          </p>
+        </div>
       ) : data.annotation?.total > 0 && data.annotation.annotated === 0 ? (
         <SetupStage
           annotation={data.annotation}
@@ -647,7 +681,11 @@ export default function Dashboard() {
             <StatTile
               label="In" value={data.verdict.money_in}
               delta={tileDelta(data.verdict, 'money_in')} vs={vs}
-              sub={data.verdict.other_in > 0 ? <OtherInNote amount={data.verdict.other_in} className="" /> : null}
+              sub={
+                data.verdict.other_in > 0 || data.verdict.unsorted_in > 0
+                  ? <OtherInNote amount={data.verdict.other_in} unsorted={data.verdict.unsorted_in} className="" />
+                  : null
+              }
             />
             <StatTile
               label="Out" value={data.verdict.money_out} goodWhenDown

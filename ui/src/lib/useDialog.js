@@ -1,5 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 
+const FOCUSABLE =
+  'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]'
+
+function isShown(el) {
+  for (let node = el; node instanceof HTMLElement; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false
+  }
+  return getComputedStyle(el).visibility !== 'hidden'
+}
+
+// What Tab can reach inside the dialog, in order: enabled, not hidden, not taken
+// out of the tab order.
+function tabStops(root) {
+  return [...root.querySelectorAll(FOCUSABLE)].filter(
+    el =>
+      !el.disabled &&
+      el.tabIndex >= 0 &&
+      !el.closest('[hidden], [inert]') &&
+      !(el instanceof HTMLInputElement && el.type === 'hidden') &&
+      isShown(el),
+  )
+}
+
 // The open dialogs, oldest first. Only the last one acts on the keyboard.
 const stack = []
 
@@ -14,6 +37,8 @@ export const isDialogOpen = () => stack.length > 0
 // - While the dialog is the topmost one, Escape cancels it wherever focus is,
 //   and no other key reaches the page behind it (the Ledger's Escape, Teach
 //   Me's letters, the palette's shortcut). A page never acts under a dialog.
+// - Tab and Shift+Tab cycle through the dialog's own controls: focus never
+//   leaves it for the page behind, and comes back in from outside.
 // - Enter confirms, except on a button, link, select or text area, where it
 //   keeps its own meaning. With `danger` Enter never confirms from the dialog:
 //   it only activates the button that has focus (put `data-autofocus` on the
@@ -40,6 +65,21 @@ export function useDialog({ onCancel, onConfirm, danger = false }) {
         e.preventDefault()
         e.stopPropagation()
         cancel?.()
+      } else if (e.key === 'Tab') {
+        const stops = tabStops(el)
+        const first = stops[0]
+        const last = stops[stops.length - 1]
+        const at = document.activeElement
+        let target = null
+        if (!first) target = el
+        else if (!inside || at === el) target = e.shiftKey ? last : first
+        else if (e.shiftKey && at === first) target = last
+        else if (!e.shiftKey && at === last) target = first
+        if (target) {
+          e.preventDefault()
+          target.focus()
+        }
+        e.stopPropagation()
       } else if (e.key === 'Enter') {
         // On a control inside the dialog, Enter is that control's own.
         if (inside && e.target.closest?.('button, a, textarea, select')) return

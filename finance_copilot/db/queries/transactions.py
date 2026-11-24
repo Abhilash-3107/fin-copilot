@@ -2,9 +2,23 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable, Sequence
 
-from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.common import (
+    UNCATEGORIZED,
+    account_condition_sql,
+    effective_category_sql,
+    unsorted_sql,
+    waiting_on_pair_sql,
+)
+from finance_copilot.db.queries.embeddings import delete_embeddings
+from finance_copilot.db.queries.transfers import (
+    move_pair_to_survivor,
+    release_transfers,
+    repoint_unpairings,
+)
 from finance_copilot.models.transaction import Statement, Transaction, TxnRow
+from finance_copilot.pipeline.sources import USER_LABEL_SOURCES
 
 
 def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
@@ -13,72 +27,239 @@ def insert_statement(conn: sqlite3.Connection, statement: Statement) -> None:
         """
         INSERT OR IGNORE INTO statements
             (id, bank_name, parser_version, statement_month, period_start, period_end,
-             file_sha256, opening_balance, closing_balance, account_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             file_sha256, opening_balance, closing_balance, account_ref,
+             account_id, printed_start, printed_end,
+             rows_in_file, rows_added, balance_checked, balance_consistent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (statement.id, statement.bank_name, statement.parser_version,
          statement.statement_month,
          statement.period_start.isoformat() if statement.period_start else None,
          statement.period_end.isoformat() if statement.period_end else None,
          statement.file_sha256, statement.opening_balance, statement.closing_balance,
-         statement.account_ref),
+         statement.account_ref, statement.account_id,
+         statement.printed_start.isoformat() if statement.printed_start else None,
+         statement.printed_end.isoformat() if statement.printed_end else None,
+         statement.rows_in_file, statement.rows_added,
+         statement.balance_checked, statement.balance_consistent),
     )
 
 
-def statement_balance_checks(
-    conn: sqlite3.Connection, tolerance: float = 0.01, statement_id: str | None = None
-) -> dict[str, dict]:
-    """Per-statement running-balance reconciliation, keyed by statement_id.
+# Paise-level rounding noise in parsed amounts and balances.
+_BALANCE_TOLERANCE = 0.01
 
-    For each consecutive pair of balance-carrying rows (in parse order), checks
-    that the balance delta matches the signed amount between them - the same
-    rigor the parser used to pick the layout, recomputed from the stored
-    running_balance so the UI can show "N/N rows balanced" and flag any break.
+
+def balance_chain_check(
+    rows: Iterable[tuple[float | None, float, str | None]], tolerance: float = _BALANCE_TOLERANCE
+) -> tuple[int, int]:
+    """Running-balance reconciliation of one statement's payments, in the order
+    the statement lists them: (running_balance, amount, debit_credit) each.
+
+    For each consecutive pair of balance-carrying payments, checks that the
+    balance delta matches the signed amount of the later one - the rigor the
+    parser used to pick the layout, so the UI can show "N/N rows balanced" and
+    flag any break. A payment with no balance is skipped, not a break in the
+    chain. Returns (checked, consistent). A statement with no chain has
+    checked == 0: nothing to contradict.
+
+    Migration 043 backfilled stored statements with the same rule in SQL, and the
+    balanced result of every stored statement depends on it, so a payment with no
+    balance is skipped here. pipeline/ingest.py's `_chain_consistency`, which only
+    picks the direction of a same-day statement, restarts at such a payment
+    instead; that is deliberate and the two are not merged.
+    """
+    checked = consistent = 0
+    prev: float | None = None
+    for balance, amount, direction in rows:
+        if balance is None:
+            continue
+        if prev is not None and direction is not None:
+            checked += 1
+            expected = amount if direction == "credit" else -amount
+            if abs((balance - prev) - expected) <= tolerance:
+                consistent += 1
+        prev = balance
+    return checked, consistent
+
+
+def statement_balance_checks(
+    conn: sqlite3.Connection, statement_id: str | None = None
+) -> dict[str, dict]:
+    """Per-statement running-balance reconciliation, keyed by statement id.
 
     Returns {statement_id: {"checked": int, "consistent": int, "balanced": bool}}.
     A statement with no balance chain (checked == 0) is reported balanced=True
     (nothing to contradict), so the UI shows a check only when checked > 0.
     With statement_id, only that statement is computed.
+
+    The check is stored with the statement when it is added, over the whole file
+    as parsed (a file that overlapped an earlier one stores only the payments
+    that were new, which are not a chain). A statement written without it (the
+    sample data) is checked from its stored payments.
     """
-    rows = conn.execute(
-        """
-        WITH chain AS (
-            SELECT
-                statement_id,
-                running_balance,
-                amount,
-                debit_credit,
-                LAG(running_balance) OVER (
-                    PARTITION BY statement_id ORDER BY rowid
-                ) AS prev_balance
-            FROM transactions
-            WHERE running_balance IS NOT NULL AND (? IS NULL OR statement_id = ?)
-        )
-        SELECT
-            statement_id,
-            COUNT(*) AS checked,
-            SUM(
-                CASE WHEN ABS(
-                    (running_balance - prev_balance)
-                    - (CASE WHEN debit_credit = 'credit' THEN amount ELSE -amount END)
-                ) <= ? THEN 1 ELSE 0 END
-            ) AS consistent
-        FROM chain
-        WHERE prev_balance IS NOT NULL AND debit_credit IS NOT NULL
-        GROUP BY statement_id
-        """,
-        (statement_id, statement_id, tolerance),
-    ).fetchall()
     out: dict[str, dict] = {}
-    for r in rows:
-        checked = r["checked"] or 0
-        consistent = r["consistent"] or 0
-        out[r["statement_id"]] = {
-            "checked": checked,
-            "consistent": consistent,
-            "balanced": consistent == checked,
-        }
+    unchecked: list[str] = []
+    for r in conn.execute(
+        "SELECT id, balance_checked, balance_consistent FROM statements WHERE (? IS NULL OR id = ?)",
+        (statement_id, statement_id),
+    ):
+        if r["balance_checked"] is None or r["balance_consistent"] is None:
+            unchecked.append(r["id"])
+        else:
+            out[r["id"]] = _check_result(r["balance_checked"], r["balance_consistent"])
+    for stmt_id in unchecked:
+        rows = conn.execute(
+            "SELECT running_balance, amount, debit_credit FROM transactions "
+            "WHERE statement_id = ? ORDER BY rowid",
+            (stmt_id,),
+        )
+        out[stmt_id] = _check_result(*balance_chain_check((r[0], r[1], r[2]) for r in rows))
     return out
+
+
+def _check_result(checked: int, consistent: int) -> dict:
+    return {"checked": checked, "consistent": consistent, "balanced": consistent == checked}
+
+
+def delete_payments(conn: sqlite3.Connection, txn_ids: list[str]) -> None:
+    """Remove payments with everything that hangs off them: their labels, their
+    embeddings and their links. A payment paired with one of them goes back to To
+    sort (it must not stay Self Transfers with nobody on the other end) and the
+    user's recorded unpairings of these payments go too. Call it inside the
+    caller's write transaction; pairing may now be unambiguous elsewhere, so the
+    caller runs it again afterwards."""
+    if not txn_ids:
+        return
+    placeholders = ",".join("?" * len(txn_ids))
+    release_transfers(conn, txn_ids, drop_decisions=True)
+    conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
+    delete_embeddings(conn, txn_ids)
+    # transaction_links references transactions(id) without ON DELETE CASCADE, so
+    # links must go before the transactions or the FK check aborts the delete. A
+    # link can cross a statement boundary, so match on either endpoint.
+    conn.execute(
+        f"DELETE FROM transaction_links WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
+        txn_ids + txn_ids,
+    )
+    conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+
+
+def merge_duplicate_payments(
+    conn: sqlite3.Connection, duplicates: Sequence[tuple[str, str]]
+) -> tuple[int, int]:
+    """Carry what the user did to each duplicate payment onto the payment the
+    account already had (its survivor), so deleting the duplicate loses none of it.
+    Returns (carried, not_carried): how many duplicates had work that now sits on
+    a survivor, and how many had a label, note, name or group role of the user's
+    that differed from the survivor's own and was dropped in its favour, or a transfer
+    pair that could not move (one duplicate can be both).
+
+    The survivor's own work wins; the duplicate's fills what it lacks:
+    - a note and a name, where the survivor has none;
+    - a label the user made (manual, imported, user rule), in place of a machine
+      label or none, kept exactly as it was (source and original source too);
+    - group memberships, unless the survivor is in the group already;
+    - a Teach Me skip, where the survivor was not skipped;
+    - links to other payments, unless that would join a payment to itself or the
+      survivor already has a link to that payment, of any type (two links to one
+      payment would take it off a category twice);
+    - a transfer pair (one link and a `pair` label on each side): see
+      `move_pair_to_survivor`; a payment keeps at most one transfer link;
+    - the user's recorded unpairings, re-pointed at the survivor.
+    Call it inside the caller's write transaction, before the duplicates are deleted."""
+    carried = 0
+    not_carried = 0
+    for dup, survivor in duplicates:
+        moved = 0
+        dropped = 0
+        survivor_label = conn.execute("SELECT source FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
+        survivor_label_is_users = survivor_label is not None and survivor_label["source"] in USER_LABEL_SOURCES
+
+        for column in ("user_note", "display_name"):
+            theirs_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (dup,)).fetchone()[0]
+            own_text = conn.execute(f"SELECT {column} FROM transactions WHERE id = ?", (survivor,)).fetchone()[0]
+            if theirs_text and not own_text:
+                conn.execute(f"UPDATE transactions SET {column} = ? WHERE id = ?", (theirs_text, survivor))
+                moved += 1
+            elif theirs_text and own_text and theirs_text != own_text:
+                dropped += 1
+
+        label_columns = "merchant, category, subcategory, tags, source"
+        theirs = conn.execute(f"SELECT {label_columns} FROM annotations WHERE transaction_id = ?", (dup,)).fetchone()
+        if theirs is not None and theirs["source"] in USER_LABEL_SOURCES:
+            own = conn.execute(f"SELECT {label_columns} FROM annotations WHERE transaction_id = ?", (survivor,)).fetchone()
+            if own is None or own["source"] not in USER_LABEL_SOURCES:
+                conn.execute("DELETE FROM annotations WHERE transaction_id = ?", (survivor,))
+                # The row itself moves, so the label is exactly as the user left it.
+                conn.execute("UPDATE annotations SET transaction_id = ? WHERE transaction_id = ?", (survivor, dup))
+                moved += 1
+            elif tuple(own)[:4] != tuple(theirs)[:4]:
+                dropped += 1
+
+        # A pair moves with its `pair` label or not at all (after the user's own label
+        # is carried, so a hand-made Self Transfers label on the duplicate goes with
+        # its link). Pairing runs again after the move, so a released pair can return.
+        if move_pair_to_survivor(conn, dup, survivor, survivor_label_is_users=survivor_label_is_users):
+            dropped += 1
+        # What the user took apart stays apart on the survivor.
+        moved += repoint_unpairings(conn, dup, survivor)
+
+        # Set aside in Teach Me stays set aside; the survivor's own time wins.
+        moved += conn.execute(
+            "UPDATE transactions SET review_snoozed_at = "
+            "(SELECT review_snoozed_at FROM transactions WHERE id = ?) "
+            "WHERE id = ? AND review_snoozed_at IS NULL "
+            "AND (SELECT review_snoozed_at FROM transactions WHERE id = ?) IS NOT NULL",
+            (dup, survivor, dup),
+        ).rowcount
+
+        for member in conn.execute(
+            "SELECT group_id, role, people, labels, txn_type FROM transaction_group_members WHERE transaction_id = ?",
+            (dup,),
+        ).fetchall():
+            own_member = conn.execute(
+                "SELECT role, people, labels, txn_type FROM transaction_group_members "
+                "WHERE group_id = ? AND transaction_id = ?",
+                (member["group_id"], survivor),
+            ).fetchone()
+            if own_member is None:
+                conn.execute(
+                    "UPDATE transaction_group_members SET transaction_id = ? WHERE group_id = ? AND transaction_id = ?",
+                    (survivor, member["group_id"], dup),
+                )
+                moved += 1
+            elif tuple(own_member) != tuple(member)[1:]:
+                dropped += 1
+        # What could not move (the survivor is in that group already) is not doubled.
+        conn.execute("DELETE FROM transaction_group_members WHERE transaction_id = ?", (dup,))
+
+        for link in conn.execute(
+            "SELECT id, txn_a, txn_b FROM transaction_links WHERE txn_a = ? OR txn_b = ?", (dup, dup)
+        ).fetchall():
+            other = link["txn_b"] if link["txn_a"] == dup else link["txn_a"]
+            low, high = sorted((survivor, other))
+            if other == survivor or conn.execute(
+                "SELECT 1 FROM transaction_links WHERE txn_a = ? AND txn_b = ? AND id != ?",
+                (low, high, link["id"]),
+            ).fetchone():
+                conn.execute("DELETE FROM transaction_links WHERE id = ?", (link["id"],))
+            else:
+                conn.execute("UPDATE transaction_links SET txn_a = ?, txn_b = ? WHERE id = ?", (low, high, link["id"]))
+                moved += 1
+
+        carried += 1 if moved else 0
+        not_carried += 1 if dropped else 0
+    return carried, not_carried
+
+
+def payment_months(conn: sqlite3.Connection) -> list[str]:
+    """Every month ('YYYY-MM') that has at least one payment, oldest first. A
+    statement can span several months, so months come from payments, not statements."""
+    return [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT strftime('%Y-%m', txn_date) FROM transactions ORDER BY 1"
+        )
+    ]
 
 
 def insert_transaction(conn: sqlite3.Connection, txn: Transaction) -> None:
@@ -141,6 +322,7 @@ def _filter_conditions(
     person_token: str | None,
     min_amount: float | None,
     max_amount: float | None,
+    account_id: str | None = None,
 ) -> tuple[list[str], list]:
     """WHERE conditions and params shared by the list and its summary, over
     transactions `t` LEFT JOINed to annotations `a`, so the summary can never
@@ -157,12 +339,13 @@ def _filter_conditions(
             "LOWER(t.raw_description) LIKE ? ESCAPE '\\'",
             "LOWER(a.merchant) LIKE ? ESCAPE '\\'",
             "(json_valid(t.upi_meta) AND LOWER(json_extract(t.upi_meta, '$.note')) LIKE ? ESCAPE '\\')",
-            # The names the user gave: this payment's own, or its payee's.
+            # What the user wrote: the name of this payment or its payee, and its note.
             "LOWER(t.display_name) LIKE ? ESCAPE '\\'",
+            "LOWER(t.user_note) LIKE ? ESCAPE '\\'",
             "t.counterparty_key IN (SELECT counterparty_key FROM payee_names "
             "WHERE LOWER(name) LIKE ? ESCAPE '\\')",
         ]
-        params += [pattern] * 5
+        params += [pattern] * 6
         # A numeric query also matches on amount (exact or, for a whole-rupee
         # query, the rupee part), so "1200" finds the ₹1,200 transaction.
         amount = _parse_amount_query(q)
@@ -177,11 +360,13 @@ def _filter_conditions(
 
     if categories:
         # Uncategorized is "not sorted" (common.unsorted_sql), which includes
-        # rows with no annotation at all, so it matches what Insights counts.
+        # rows with no annotation at all, so it matches what Insights counts. A named
+        # category matches on the effective category too, so a payment waiting on a
+        # pair is in Uncategorized and in no other, the way Insights files it.
         named = [c for c in categories if c != UNCATEGORIZED]
         clauses = []
         if named:
-            clauses.append(f"a.category IN ({','.join('?' * len(named))})")
+            clauses.append(f"{effective_category_sql('a')} IN ({','.join('?' * len(named))})")
             params += named
         if len(named) != len(categories):
             clauses.append(unsorted_sql("a"))
@@ -222,6 +407,11 @@ def _filter_conditions(
         conditions.append("t.statement_id = ?")
         params.append(statement_id)
 
+    account_condition, account_params = account_condition_sql(account_id)
+    if account_condition:
+        conditions.append(account_condition)
+        params += account_params
+
     if month:
         conditions.append("strftime('%Y-%m', t.txn_date) = ?")
         params.append(month)
@@ -250,6 +440,7 @@ def list_transactions(
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
+    account_id: str | None = None,
     sort: str = "date",
     order: str = "desc",
     after: str | None = None,
@@ -258,9 +449,12 @@ def list_transactions(
     """Return transactions as a list of dicts, with optional filters.
 
     include_annotation joins each row's annotation (same shape as the per-id
-    endpoint: annotation_id, category, ...) so list pages need one round-trip.
+    endpoint: annotation_id, category, ...) so list pages need one round-trip. Each
+    such row also says `waiting_on_pair`: its category is a guess held back because
+    the payment could be a move between the user's accounts (common.waiting_on_pair_sql),
+    so the money figures file it under Uncategorized while `category` keeps the guess.
     q is a case-insensitive substring match over the raw description, the
-    annotated merchant, the UPI note and the names the user gave. payee_keys
+    annotated merchant, the UPI note and the names and notes the user wrote. payee_keys
     are the grouping keys insights rows carry (counterparty key, else merchant).
     sources/merchant filter on annotation fields, so they only ever match annotated rows; the category filter does
     too, except that Uncategorized also matches rows with no annotation.
@@ -268,9 +462,10 @@ def list_transactions(
     page in (txn_date, id) order.
     """
     if include_annotation:
-        query = """
+        query = f"""
             SELECT t.*, a.id AS annotation_id, a.merchant, a.category, a.subcategory,
-                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at
+                   a.tags, a.confidence, a.source, a.original_source, a.annotated_at,
+                   {waiting_on_pair_sql('a')} AS waiting_on_pair
             FROM transactions t
             LEFT JOIN annotations a ON a.transaction_id = t.id
         """
@@ -281,6 +476,7 @@ def list_transactions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
         payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        account_id=account_id,
     )
     needs_annotation_join = unannotated or q or categories or sources or merchant or payee_keys
     if needs_annotation_join and not include_annotation:
@@ -310,8 +506,11 @@ def list_transactions(
         query += " LIMIT ?"
         params.append(limit)
 
-    rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    rows = [dict(row) for row in conn.execute(query, params).fetchall()]
+    if include_annotation:
+        for row in rows:
+            row["waiting_on_pair"] = bool(row["waiting_on_pair"])
+    return rows
 
 
 def summarize_transactions(
@@ -327,6 +526,7 @@ def summarize_transactions(
     person_token: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
+    account_id: str | None = None,
 ) -> dict:
     """Count and debit/credit totals of exactly the rows list_transactions
     would return for the same filters (all pages, not just the first)."""
@@ -334,6 +534,7 @@ def summarize_transactions(
         conn, statement_id=statement_id, month=month, unannotated=unannotated, q=q,
         categories=categories, sources=sources, merchant=merchant,
         payee_keys=payee_keys, person_token=person_token, min_amount=min_amount, max_amount=max_amount,
+        account_id=account_id,
     )
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     row = conn.execute(
@@ -357,24 +558,33 @@ def list_transaction_facets(
     conn: sqlite3.Connection,
     statement_id: str | None = None,
     month: str | None = None,
+    account_id: str | None = None,
 ) -> dict[str, list[str]]:
-    """Distinct annotation categories and sources within the statement/month
+    """Distinct annotation categories and sources within the statement/month/account
     scope, for populating filter options. Deliberately ignores the annotation
-    filters themselves so an active filter never hides its sibling options."""
+    filters themselves so an active filter never hides its sibling options.
+    Categories are the effective ones (common.effective_category_sql), the same the
+    category filter matches on, so every option returns rows: a guess held back as
+    waiting on a pair is not offered under its own name."""
     conditions: list[str] = []
     params: list = []
     if statement_id:
         conditions.append("t.statement_id = ?")
         params.append(statement_id)
+    account_condition, account_params = account_condition_sql(account_id)
+    if account_condition:
+        conditions.append(account_condition)
+        params += account_params
     if month:
         conditions.append("strftime('%Y-%m', t.txn_date) = ?")
         params.append(month)
     where = (" AND " + " AND ".join(conditions)) if conditions else ""
 
     def distinct(column: str) -> list[str]:
+        expression = effective_category_sql("a") if column == "category" else f"a.{column}"
         rows = conn.execute(
             f"""
-            SELECT DISTINCT a.{column} AS v
+            SELECT DISTINCT {expression} AS v
             FROM annotations a
             JOIN transactions t ON t.id = a.transaction_id
             WHERE a.{column} IS NOT NULL{where}

@@ -49,7 +49,7 @@ const ARRIVED = {
   '/groups': (page) => page.getByRole('heading', { name: 'Groups', exact: true }),
   '/upload': (page) => page.getByRole('heading', { name: 'Add Statement' }),
   '/settings': (page) => page.getByRole('heading', { name: 'Settings', exact: true }),
-  '/transactions': (page) => page.getByRole('button', { name: 'Sort again' }),
+  '/transactions': (page) => page.getByRole('searchbox'),
   // Teach Me has no fixed text: its empty and finished states are what some journeys judge.
   '/review': null,
 }
@@ -186,4 +186,33 @@ export async function moneyLeaks(page, allow = {}) {
 export async function accessibleMoneyLeaks(page) {
   const tree = await page.locator('body').ariaSnapshot()
   return LEAK_PATTERNS.flatMap((re) => tree.match(re) ?? [])
+}
+
+/**
+ * Teach Me: press Skip until the card for a payment whose accessible name matches `pattern`
+ * is showing, and return it. The other cards are not the journey's business.
+ */
+export async function skipToPayment(page, pattern) {
+  const wanted = page.getByRole('group', { name: pattern })
+  const anyCard = page.getByRole('group', { name: /^Payment (to|from) / })
+  await expect(anyCard).toBeVisible()
+  for (let i = 0; i < 12; i++) {
+    const label = await anyCard.getAttribute('aria-label')
+    if (pattern.test(label)) break
+    await page.keyboard.press('s')
+    await expect(anyCard).not.toHaveAttribute('aria-label', label)
+  }
+  await expect(wanted).toBeVisible()
+  return wanted
+}
+
+/**
+ * Open a row's "More" menu. The menu closes when the page scrolls under it, so a button
+ * that Playwright has to scroll into view is brought into view first and the scroll's own
+ * events are let through before the click.
+ */
+export async function openMenu(menuButton) {
+  await menuButton.scrollIntoViewIfNeeded()
+  await menuButton.page().evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await menuButton.click()
 }

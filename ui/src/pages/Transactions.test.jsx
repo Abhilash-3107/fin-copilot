@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from '../test/router.jsx'
 
-const { mockApi } = vi.hoisted(() => ({
-  mockApi: { get: vi.fn(), put: vi.fn() },
+const { mockApi, toastSpy } = vi.hoisted(() => ({
+  mockApi: { get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn() },
+  toastSpy: vi.fn(),
 }))
 vi.mock('../lib/api.js', () => ({
   api: mockApi,
@@ -13,13 +15,21 @@ vi.mock('../lib/api.js', () => ({
   getActiveAnnotationJob: vi.fn().mockResolvedValue(null),
   ApiError: class ApiError extends Error {},
 }))
-vi.mock('../contexts/ToastContext.jsx', () => {
-  const noop = () => {}
-  return {
-    ToastProvider: ({ children }) => children,
-    useToast: () => noop,
-  }
-})
+vi.mock('../contexts/ToastContext.jsx', () => ({
+  ToastProvider: ({ children }) => children,
+  useToast: () => toastSpy,
+}))
+
+// The real picker caches the taxonomy for the whole module, so a test cannot choose what it holds.
+vi.mock('../components/CategoryPicker.jsx', () => ({
+  default: ({ category, onChange }) => (
+    <select aria-label="Category" value={category} onChange={e => onChange({ category: e.target.value, subcategory: '' })}>
+      <option value="">Select a category</option>
+      <option value="Self Transfers">Self Transfers</option>
+      <option value="Food & Dining">Food & Dining</option>
+    </select>
+  ),
+}))
 
 // A full page is 500 rows, and drawing all of them is what made the "next page
 // fails" test slow. The tables draw at most CAP rows; the page still holds, counts
@@ -35,56 +45,61 @@ vi.mock('../components/TransactionCards.jsx', async () => {
 })
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from '../contexts/AnnotationJobContext.jsx'
 import Transactions from './Transactions.jsx'
 
-const STATEMENTS = [
-  { id: 's2', bank_name: 'kotak', statement_month: '2026-11', uploaded_at: '2026-11-15' },
-  { id: 's1', bank_name: 'kotak', statement_month: '2026-10', uploaded_at: '2026-11-01' },
-]
+const KOTAK = { id: 'acc_k', account_label: 'Kotak savings', statement_count: 2 }
+const SBI = { id: 'acc_s', account_label: 'SBI savings', statement_count: 1 }
+// One account: no filter. Tests that need a choice serve TWO_ACCOUNTS.
+const ONE_ACCOUNT = [KOTAK]
+const TWO_ACCOUNTS = [KOTAK, SBI]
 
 const TXNS = [
-  { id: 't1', statement_id: 's2', txn_date: '2026-11-03', amount: 300, debit_credit: 'debit', raw_description: 'UPI/MYSTERY/501/x', counterparty_key: 'MYSTERY', payee: 'Mystery', payee_all: 'Mystery', note: 'lunch', channel: 'UPI', annotation_id: null },
-  { id: 't2', statement_id: 's2', txn_date: '2026-11-04', amount: 250, debit_credit: 'credit', raw_description: 'UPI/REFUND/502/y', counterparty_key: 'REFUND', payee: 'Refund', payee_all: 'Refund', note: null, channel: 'UPI', annotation_id: null },
+  { id: 't1', statement_id: 's2', account_id: 'acc_k', account_label: 'Kotak savings', running_balance: 1700, txn_date: '2026-11-03', amount: 300, debit_credit: 'debit', raw_description: 'UPI/MYSTERY/501/x', counterparty_key: 'MYSTERY', payee: 'Mystery', payee_all: 'Mystery', note: 'lunch', channel: 'UPI', annotation_id: null },
+  { id: 't2', statement_id: 's2', account_id: 'acc_s', account_label: 'SBI savings', running_balance: 5250, txn_date: '2026-11-04', amount: 250, debit_credit: 'credit', raw_description: 'UPI/REFUND/502/y', counterparty_key: 'REFUND', payee: 'Refund', payee_all: 'Refund', note: null, channel: 'UPI', annotation_id: null },
 ]
 
 function renderPage(initialEntries = ['/transactions']) {
   render(
     <MemoryRouter initialEntries={initialEntries}>
       <PrivacyProvider>
-        <StatementProvider>
+        <LedgerProvider>
           <PeriodProvider>
             <AnnotationJobProvider>
               <Transactions />
             </AnnotationJobProvider>
           </PeriodProvider>
-        </StatementProvider>
+        </LedgerProvider>
       </PrivacyProvider>
     </MemoryRouter>
   )
 }
 
-// The page loads its list once before the statements arrive and again scoped to the
-// newest one, and every fresh result set clears the selection. Waits for that second
-// load to land so a row picked afterwards is not cleared under the test.
+// The page asks for its list once the accounts and the period are settled, and every
+// fresh result set clears the selection. Waits for that load to land so a row picked
+// afterwards is not cleared under the test.
 async function rowsSettled() {
-  await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/statement_id=s2/))
+  await waitFor(() => expect(callsTo('/transactions?')).toHaveLength(1))
   await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
   return screen.findAllByLabelText('Select payment')
 }
 
 const callsTo = prefix => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith(prefix))
 
+let accountsServed
+
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  accountsServed = ONE_ACCOUNT
   mockApi.get.mockImplementation(path => {
-    if (path === '/statements') return Promise.resolve(STATEMENTS)
+    if (path === '/accounts') return Promise.resolve(accountsServed)
     if (path.startsWith('/transactions/summary')) {
       return Promise.resolve({ count: 2, money_out: 300, money_in: 250 })
     }
+    if (path === '/transactions/months') return Promise.resolve({ months: ['2026-10', '2026-11'] })
     if (path.startsWith('/transactions/facets')) return Promise.resolve({ categories: ['Uncategorized'], sources: [] })
     if (/^\/transactions\/t\d/.test(path)) return Promise.resolve(TXNS.find(t => path.endsWith(t.id)))
     if (path.startsWith('/transactions')) return Promise.resolve(TXNS)
@@ -106,7 +121,7 @@ describe('Transactions', () => {
     const list = new URLSearchParams(callsTo('/transactions?').at(-1).split('?')[1])
     const summary = new URLSearchParams(callsTo('/transactions/summary').at(-1).split('?')[1])
     expect(summary.get('category')).toBe('Uncategorized')
-    for (const key of ['category', 'month', 'statement_id', 'q', 'source', 'merchant']) {
+    for (const key of ['category', 'month', 'account_id', 'q', 'source', 'merchant']) {
       expect(summary.get(key)).toBe(list.get(key))
     }
     // Pagination and ordering belong to the list only.
@@ -114,79 +129,144 @@ describe('Transactions', () => {
     expect(summary.has('sort')).toBe(false)
   })
 
-  it('All time clears the statement scope so the list really shows everything', async () => {
-    localStorage.setItem('fc_period_month', 'all')
+  it('has no account filter and no statement picker with a single account', async () => {
     renderPage()
-    const statementSelect = (await screen.findAllByRole('combobox'))[0]
-    // Wait for the statements to arrive (the select gains its two statements) so
-    // the check below runs against the settled page, not the one before they load.
-    await waitFor(() => expect(within(statementSelect).getAllByRole('option')).toHaveLength(1 + STATEMENTS.length))
-    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
-    expect(statementSelect).toHaveValue('')
-    expect(statementSelect).toHaveDisplayValue('All statements')
-    const last = callsTo('/transactions?').at(-1)
-    expect(last).not.toMatch(/statement_id=/)
-    expect(last).not.toMatch(/month=/)
+    await screen.findAllByLabelText('Select payment')
+    expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('combobox')).toHaveLength(1) // the period
+    expect(screen.queryByRole('button', { name: /Sort again/ })).not.toBeInTheDocument()
   })
 
-  // The statements arrive after the page is up. Whatever period the user already
-  // holds (All time, or a month) is theirs: the newest statement the context picks
-  // as a default must not scope a list, a summary or the select, even for a moment.
-  describe('statements that arrive after the period is chosen', () => {
-    function holdStatements() {
+  // The accounts and months arrive after the page is up. Whatever period the user already
+  // holds (All time, or a month) is theirs: the default month the ledger would pick must not
+  // scope a list or a summary, even for a moment, and the list is asked for once.
+  // (Main's version of this check held /statements for the statement picker; R3 removed the
+  // picker, so the same promise is held on /accounts, which the ledger waits for.)
+  describe('accounts that arrive after the period is chosen', () => {
+    function holdAccounts() {
       let release
-      const gate = new Promise(resolve => { release = () => resolve(STATEMENTS) })
+      const gate = new Promise(resolve => { release = () => resolve(ONE_ACCOUNT) })
       const fallback = mockApi.get.getMockImplementation()
-      mockApi.get.mockImplementation(path => (path === '/statements' ? gate : fallback(path)))
+      mockApi.get.mockImplementation(path => (path === '/accounts' ? gate : fallback(path)))
       return release
     }
-    const scopedCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => /statement_id=/.test(p))
 
-    it('All time chosen before they load is never overridden by the newest statement', async () => {
+    it('All time chosen before they load is never overridden by the newest month', async () => {
       localStorage.setItem('fc_period_month', 'all')
-      const release = holdStatements()
+      const release = holdAccounts()
       renderPage()
-      const [statementSelect, periodSelect] = await screen.findAllByRole('combobox')
+      const periodSelect = await screen.findByRole('combobox')
       expect(periodSelect).toHaveValue('all')
-      // The list waits for the statements, so its first request already has its final scope.
+      // The list waits for the ledger, so its first request already has its final scope.
       expect(callsTo('/transactions?')).toEqual([])
 
       await act(async () => { release() })
       await waitFor(() => expect(callsTo('/transactions?').length).toBeGreaterThan(0))
-      await waitFor(() => expect(within(statementSelect).getAllByRole('option')).toHaveLength(1 + STATEMENTS.length))
       await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
 
-      expect(statementSelect).toHaveValue('')
       expect(periodSelect).toHaveValue('all')
-      expect(scopedCalls()).toEqual([])
+      expect(callsTo('/transactions?')).toHaveLength(1)
+      expect(callsTo('/transactions?')[0]).not.toMatch(/month=/)
     })
 
-    it('a month chosen before they load keeps its month and is not also scoped to the newest statement', async () => {
+    it('a month chosen before they load keeps its month and asks once', async () => {
       localStorage.setItem('fc_period_month', '2026-10')
-      const release = holdStatements()
+      const release = holdAccounts()
       renderPage()
-      await screen.findAllByRole('combobox')
+      await screen.findByRole('combobox')
       expect(callsTo('/transactions?')).toEqual([])
 
       await act(async () => { release() })
       await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/month=2026-10/))
-      expect(callsTo('/transactions?')).toHaveLength(1)
       await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
 
-      expect(screen.getAllByRole('combobox')[1]).toHaveValue('2026-10')
-      expect(scopedCalls().filter(p => /statement_id=s2/.test(p))).toEqual([])
+      expect(callsTo('/transactions?')).toHaveLength(1)
+      expect(screen.getByRole('combobox')).toHaveValue('2026-10')
     })
   })
 
-  it('choosing All time after a month clears the statement select too', async () => {
+  it('offers every account and All accounts when there are two, named as the server words them', async () => {
+    accountsServed = TWO_ACCOUNTS
     renderPage()
-    await screen.findByText(/2 payments/)
-    const [statementSelect, periodSelect] = screen.getAllByRole('combobox')
-    await waitFor(() => expect(periodSelect).toHaveValue('2026-11'))
-    expect(statementSelect).toHaveValue('s2')
-    fireEvent.change(periodSelect, { target: { value: 'all' } })
-    await waitFor(() => expect(statementSelect).toHaveValue(''))
-    await waitFor(() => expect(callsTo('/transactions?').at(-1)).not.toMatch(/statement_id=|month=/))
+    const filter = await screen.findByRole('combobox', { name: 'Account' })
+    expect([...filter.options].map(o => o.textContent)).toEqual(['All accounts', 'Kotak savings', 'SBI savings'])
+    expect(filter).toHaveValue('')
+  })
+
+  it('choosing an account asks again for that account, with the summary and the options alike', async () => {
+    accountsServed = TWO_ACCOUNTS
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_s' } })
+    await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/account_id=acc_s/))
+    await waitFor(() => expect(callsTo('/transactions/summary').at(-1)).toMatch(/account_id=acc_s/))
+    await waitFor(() => expect(callsTo('/transactions/facets').at(-1)).toMatch(/account_id=acc_s/))
+    expect(localStorage.getItem('fc_account_id')).toBe('acc_s')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  })
+
+  it('remembers the account across a visit, and asks once with it', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/account_id=acc_k/)
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('acc_k')
+  })
+
+  it('forgets a remembered account that is gone, and shows every account', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_account_id', 'acc_gone')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).not.toMatch(/account_id=/)
+  })
+
+  it('ignores a remembered account when only one account is left', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')[0]).not.toMatch(/account_id=/)
+  })
+
+  it('names the account on each row when several are shown, and hides the balance column', async () => {
+    accountsServed = TWO_ACCOUNTS
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    const headers = screen.getAllByRole('columnheader').map(h => h.textContent)
+    expect(headers).toContain('Account')
+    expect(headers).not.toContain('Balance')
+    expect(screen.getAllByText('SBI savings').length).toBeGreaterThan(1) // the option and a row
+  })
+
+  it('shows the running balance, and no account column, for one selected account', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    const headers = screen.getAllByRole('columnheader').map(h => h.textContent)
+    expect(headers).toContain('Balance')
+    expect(headers).not.toContain('Account')
+    expect(screen.getByText('₹1,700.00')).toBeInTheDocument()
+  })
+
+  it('shows the running balance when the ledger holds a single account', async () => {
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(screen.getAllByRole('columnheader').map(h => h.textContent)).toContain('Balance')
+  })
+
+  it('All time drops the month and keeps the account', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_period_month', 'all')
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    const last = callsTo('/transactions?').at(-1)
+    expect(last).toMatch(/account_id=acc_s/)
+    expect(last).not.toMatch(/month=/)
   })
 
   it('shows each payment by its payee with the note and channel beneath, not the bank line', async () => {
@@ -200,7 +280,7 @@ describe('Transactions', () => {
     const user = userEvent.setup()
     const sameKey = { ...TXNS[0], id: 't3', txn_date: '2026-11-02', raw_description: 'UPI/MYSTERY/503/z', note: null }
     mockApi.get.mockImplementation(path => {
-      if (path === '/statements') return Promise.resolve(STATEMENTS)
+      if (path === '/accounts') return Promise.resolve(accountsServed)
       if (path.startsWith('/transactions/summary')) return Promise.resolve({ count: 3, money_out: 600, money_in: 250 })
       if (path.startsWith('/transactions/facets')) return Promise.resolve({ categories: [], sources: [] })
       if (/^\/transactions\/t\d/.test(path)) return Promise.resolve(TXNS.find(t => path.endsWith(t.id)))
@@ -248,6 +328,29 @@ describe('Transactions', () => {
 
     await waitFor(() => expect(screen.getAllByText('Deposit').length).toBeGreaterThan(0))
     expect(callsTo('/transactions?').some(p => p.includes('payee_key='))).toBe(false)
+  })
+
+  it('writes a note on a payment and the row shows it at once, without a reload', async () => {
+    const user = userEvent.setup()
+    mockApi.put.mockResolvedValue({ ...TXNS[0], note: 'team lunch', note_is_yours: true })
+    renderPage()
+    await user.click((await screen.findAllByText('Mystery'))[0])
+    await screen.findByText('As printed on the statement')
+
+    const lists = () => callsTo('/transactions?').filter(p => p.includes('sort=')).length
+    const before = lists()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    expect(input).toHaveValue('lunch')
+    await user.clear(input)
+    await user.type(input, 'team lunch{Enter}')
+
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/t1/note', { note: 'team lunch' })
+    await waitFor(() => expect(screen.getAllByText('team lunch · UPI').length).toBeGreaterThan(0)) // the row
+    expect(screen.queryByText('lunch · UPI')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument()
+    expect(lists()).toBe(before)
+    expect(screen.getByText('As printed on the statement')).toBeInTheDocument()
   })
 
   it('drills by payee key: the list and the summary both get it, and the chip is named', async () => {
@@ -358,10 +461,64 @@ describe('Transactions when the API fails', () => {
   })
 })
 
+describe('A link that names an account and a month', () => {
+  function Where() {
+    return <output data-testid="where">{useLocation().search}</output>
+  }
+  function renderAt(url) {
+    render(
+      <MemoryRouter initialEntries={[url]}>
+        <PrivacyProvider>
+          <LedgerProvider>
+            <PeriodProvider>
+              <AnnotationJobProvider>
+                <Transactions />
+                <Where />
+              </AnnotationJobProvider>
+            </PeriodProvider>
+          </LedgerProvider>
+        </PrivacyProvider>
+      </MemoryRouter>
+    )
+  }
+
+  it('drops account= and month= from the address once the filters have taken them', async () => {
+    accountsServed = TWO_ACCOUNTS
+    renderAt('/transactions?month=2026-10&account=acc_s')
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(''))
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('acc_s')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    // A later change of the filter is not undone by the old address.
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_k' } })
+    await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/account_id=acc_k/))
+    expect(screen.getByTestId('where').textContent).not.toMatch(/account=/)
+  })
+
+  it('says so when the account is not one of yours, rather than quietly showing every account', async () => {
+    accountsServed = TWO_ACCOUNTS
+    renderAt('/transactions?month=2026-11&account=acc_gone')
+    expect(await screen.findByText("That account isn't in your ledger, so this shows every account.")).toBeInTheDocument()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?').every(path => !/account_id=/.test(path))).toBe(true)
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('')
+    expect(localStorage.getItem('fc_account_id')).toBeNull()
+    expect(screen.getByTestId('where').textContent).not.toMatch(/account=/)
+  })
+
+  it('has no such message for an account it has', async () => {
+    accountsServed = TWO_ACCOUNTS
+    renderAt('/transactions?account=acc_s')
+    await screen.findAllByLabelText('Select payment')
+    expect(screen.queryByText(/isn't in your ledger/)).not.toBeInTheDocument()
+  })
+})
+
 describe('Transactions opened for one payment', () => {
   const OCT = { id: 't9', statement_id: 's1', txn_date: '2026-10-05', amount: 90, debit_credit: 'debit', raw_description: 'UPI/OLDSHOP/509/q', counterparty_key: 'OLDSHOP', payee: 'Old Shop', payee_all: 'Old Shop', note: null, channel: 'UPI', annotation_id: null }
 
-  it('switches to the payment\'s month, clears the statement scope and opens its panel', async () => {
+  it('switches to the payment\'s month and opens its panel', async () => {
     const base = mockApi.get.getMockImplementation()
     mockApi.get.mockImplementation(path => {
       if (path === '/transactions/t9') return Promise.resolve(OCT)
@@ -374,10 +531,43 @@ describe('Transactions opened for one payment', () => {
     await waitFor(() => {
       const last = callsTo('/transactions?').at(-1)
       expect(last).toMatch(/month=2026-10/)
-      expect(last).not.toMatch(/statement_id=/)
     })
     // The month in the list is the payment's, so its row is on the page.
     expect((await screen.findAllByText('Old Shop')).length).toBeGreaterThan(1)
+  })
+
+  it('asks for its list once, already in the payment\'s month and account, not for another month first', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_period_month', '2026-11')
+    localStorage.setItem('fc_account_id', 'acc_s')
+    const hidden = { ...OCT, account_id: 'acc_k', account_label: 'Kotak savings' }
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/t9') return Promise.resolve(hidden)
+      if (path.startsWith('/transactions?') && path.includes('month=2026-10')) return Promise.resolve([hidden])
+      return base(path)
+    })
+    renderPage(['/transactions?txn=t9'])
+    await screen.findByText('UPI/OLDSHOP/509/q')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect((await screen.findAllByText('Old Shop')).length).toBeGreaterThan(1)
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/month=2026-10/)
+    expect(callsTo('/transactions?')[0]).not.toMatch(/account_id=/)
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+  })
+
+  it('still asks once when the payment is not found', async () => {
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (
+      path === '/transactions/missing'
+        ? Promise.reject(Object.assign(new Error('Payment not found'), { status: 404 }))
+        : base(path)
+    ))
+    renderPage(['/transactions?txn=missing'])
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't find that payment.")
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
   })
 
   it('says so when the payment is gone, and still shows the list', async () => {
@@ -428,5 +618,227 @@ describe('Transactions panel keys', () => {
     expect(tags).toHaveValue('trip')
     await user.keyboard('{Escape}')
     expect(screen.queryByText('As printed on the statement')).not.toBeInTheDocument()
+  })
+})
+
+describe('Transactions opened for one payment while one account is selected', () => {
+  const OCT_SBI = { id: 't9', statement_id: 's9', account_id: 'acc_s', account_label: 'SBI savings', txn_date: '2026-10-05', amount: 90, debit_credit: 'debit', raw_description: 'UPI/OLDSHOP/509/q', counterparty_key: 'OLDSHOP', payee: 'Old Shop', payee_all: 'Old Shop', note: null, channel: 'UPI', annotation_id: null }
+
+  beforeEach(() => {
+    accountsServed = TWO_ACCOUNTS
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/t9') return Promise.resolve(OCT_SBI)
+      if (path.startsWith('/transactions?') && path.includes('month=2026-10')) return Promise.resolve([OCT_SBI])
+      return base(path)
+    })
+  })
+
+  it('clears the account filter when it would hide the payment, and opens it in its month', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderPage(['/transactions?txn=t9'])
+    expect(await screen.findByText('UPI/OLDSHOP/509/q')).toBeInTheDocument()
+    await waitFor(() => {
+      const last = callsTo('/transactions?').at(-1)
+      expect(last).toMatch(/month=2026-10/)
+      expect(last).not.toMatch(/account_id=/)
+    })
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  })
+
+  it('keeps the account filter when the payment is in that account', async () => {
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderPage(['/transactions?txn=t9'])
+    expect(await screen.findByText('UPI/OLDSHOP/509/q')).toBeInTheDocument()
+    await waitFor(() => expect(callsTo('/transactions?').at(-1)).toMatch(/account_id=acc_s/))
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('acc_s')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  })
+})
+
+describe('Transactions on open', () => {
+  it('asks for the list once, with the scope it will show', async () => {
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    // Not once with a remembered scope and again when the statements and months arrive.
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/month=2026-11/)
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+  })
+
+  it('asks once with a remembered month too', async () => {
+    localStorage.setItem('fc_period_month', '2026-10')
+    renderPage()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/month=2026-10/)
+  })
+
+  it('asks once for a cold deep link, with the filter already applied', async () => {
+    // A returning user: the period is remembered, so it is decided as soon as the statements arrive.
+    localStorage.setItem('fc_period_month', '2026-11')
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderPage(['/transactions?category=Uncategorized'])
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/category=Uncategorized/)
+    // A link that names no account means every account: the remembered filter it clears is not in the one ask either.
+    expect(callsTo('/transactions?')[0]).not.toMatch(/account_id=/)
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('')
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+  })
+
+  it('asks once for a drill-through that names its account, and the filter becomes that account', async () => {
+    accountsServed = TWO_ACCOUNTS
+    localStorage.setItem('fc_period_month', '2026-11')
+    renderPage(['/transactions?category=Food%20%26%20Dining&month=2026-11&account=acc_s'])
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/account_id=acc_s/)
+    expect(callsTo('/transactions/summary')).toHaveLength(1)
+    expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue('acc_s')
+  })
+
+  it('asks once for a jump from another page to a search link', async () => {
+    let go
+    function Jump() {
+      go = useNavigate()
+      return null
+    }
+    render(
+      <MemoryRouter initialEntries={['/elsewhere']}>
+        <PrivacyProvider>
+          <LedgerProvider>
+            <PeriodProvider>
+              <AnnotationJobProvider>
+                <Jump />
+                <Routes>
+                  <Route path="/elsewhere" element={<p>Elsewhere</p>} />
+                  <Route path="/transactions" element={<Transactions />} />
+                </Routes>
+              </AnnotationJobProvider>
+            </PeriodProvider>
+          </LedgerProvider>
+        </PrivacyProvider>
+      </MemoryRouter>
+    )
+    await screen.findByText('Elsewhere')
+    // The accounts and months are in, as after a visit to another page.
+    await waitFor(() => expect(callsTo('/transactions/months').length).toBeGreaterThan(0))
+    await act(async () => { go('/transactions?q=UPI') })
+    await screen.findAllByLabelText('Select payment')
+    await waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+    expect(callsTo('/transactions?')).toHaveLength(1)
+    expect(callsTo('/transactions?')[0]).toMatch(/q=UPI/)
+  })
+
+  it('shows loading, never "Add a statement to get started", while it waits for the accounts', async () => {
+    let release
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => (path === '/accounts' ? new Promise(r => { release = () => r(ONE_ACCOUNT) }) : base(path)))
+    renderPage()
+    expect(await screen.findByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByText('Add a statement to get started.')).not.toBeInTheDocument()
+    expect(callsTo('/transactions?')).toHaveLength(0)
+    release()
+    await screen.findAllByLabelText('Select payment')
+    expect(callsTo('/transactions?')).toHaveLength(1)
+  })
+})
+
+describe('Transactions unpairing a transfer', () => {
+  const out = (paired) => ({
+    id: 'p1', statement_id: 's2', txn_date: '2026-11-03', amount: 5000, debit_credit: 'debit',
+    raw_description: 'IMPS/P2P/TRANSFER/TO OWN SBI SAVINGS', counterparty_key: 'TO OWN', payee: 'To Own Sbi Savings',
+    payee_all: 'To Own Sbi Savings', note: null, channel: 'IMPS', tags: [],
+    ...(paired
+      ? { annotation_id: 'a1', category: 'Self Transfers', subcategory: 'Self Transfer', merchant: null, confidence: 1, source: 'pair',
+          transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-11-03', text: 'Moved to SBI savings' } }
+      : { annotation_id: null, transfer: null }),
+  })
+  let paired
+  let unpairBody
+
+  beforeEach(() => {
+    paired = true
+    unpairBody = { unpaired: ['p1', 'p2'], to_sort: ['p1', 'p2'], account_labels: { p1: 'Kotak savings', p2: 'SBI savings' }, undo_token: 'tok' }
+    const base = mockApi.get.getMockImplementation()
+    mockApi.get.mockImplementation(path => {
+      if (path === '/transactions/p1') return Promise.resolve(out(paired))
+      if (path === '/transactions/p2') return Promise.resolve({ ...out(paired), id: 'p2', debit_credit: 'credit', payee: 'From Kotak' })
+      if (path.startsWith('/transactions?')) return Promise.resolve([out(paired)])
+      return base(path)
+    })
+    mockApi.post.mockImplementation(async path => {
+      if (path === '/transfers/unpair') { paired = false; return unpairBody }
+      if (path === '/annotations/review-queue/undo') { paired = true; return { restored: ['p1', 'p2'] } }
+      return {}
+    })
+  })
+
+  it('says it is paired on the row and in the panel, and Unpair takes both away', async () => {
+    renderPage(['/transactions?txn=p1'])
+    expect(await screen.findByText(/Paired with the payment on 3 Nov in SBI savings/)).toBeInTheDocument()
+    expect(screen.getAllByText('Moved to SBI savings').length).toBeGreaterThan(1) // the row and the panel line
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(screen.queryByText(/Paired with the payment/)).not.toBeInTheDocument())
+    expect(mockApi.post).toHaveBeenCalledWith('/transfers/unpair', { transaction_id: 'p1' })
+    // The row does not say it is moved any more, and the open panel offers to sort it.
+    expect(screen.queryByText('Moved to SBI savings')).not.toBeInTheDocument()
+    expect(await screen.findByText('Sort this payment')).toBeInTheDocument()
+    const [message, type, options] = toastSpy.mock.calls.at(-1)
+    expect(message).toBe('Unpaired. Both payments are waiting in Teach Me.')
+    expect(type).toBe('success')
+    expect(options.action.label).toBe('Undo')
+  })
+
+  it.each([
+    ['one side the user had labelled keeps its label', ['p2'], 'Unpaired. The SBI savings payment is waiting in Teach Me.'],
+    ['the clicked side is the one waiting', ['p1'], 'Unpaired. The Kotak savings payment is waiting in Teach Me.'],
+    ['neither is waiting', [], 'Unpaired.'],
+  ])('the toast says what is waiting in Teach Me when %s', async (_name, toSort, expected) => {
+    unpairBody = { ...unpairBody, to_sort: toSort }
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(toastSpy.mock.calls.at(-1)[0]).toBe(expected))
+  })
+
+  it('calling the payment something else re-reads the payment it was paired with', async () => {
+    mockApi.patch.mockImplementation(async () => {
+      paired = false
+      return { id: 'a1', category: 'Food & Dining', subcategory: null, merchant: null, tags: [], confidence: 1, source: 'manual' }
+    })
+    const user = userEvent.setup()
+    renderPage(['/transactions?txn=p1'])
+    await screen.findByText(/Paired with the payment on 3 Nov/)
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Category' }), 'Food & Dining')
+    mockApi.get.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Update' }))
+    await waitFor(() => expect(callsTo('/transactions/p2')).toHaveLength(1))
+  })
+
+  it('Undo from the toast pairs them again and the row says so again', async () => {
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await screen.findByText('Sort this payment')
+    const { action } = toastSpy.mock.calls.at(-1)[2]
+    await act(async () => action.onClick())
+    expect(mockApi.post).toHaveBeenLastCalledWith('/annotations/review-queue/undo', { token: 'tok' })
+    expect(await screen.findByText(/Paired with the payment on 3 Nov in SBI savings/)).toBeInTheDocument()
+    expect(toastSpy.mock.calls.at(-1)[0]).toBe('Paired again')
+  })
+
+  it('says so when the unpair fails and leaves the pair as it was', async () => {
+    mockApi.post.mockRejectedValue(Object.assign(new Error('That payment is not paired.'), { status: 409 }))
+    renderPage(['/transactions?txn=p1'])
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Unpair' }))
+    await waitFor(() => expect(toastSpy.mock.calls.at(-1)[1]).toBe('error'))
+    expect(screen.getByText(/Paired with the payment on 3 Nov/)).toBeInTheDocument()
   })
 })

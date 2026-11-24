@@ -10,6 +10,13 @@ import Amount from './Amount.jsx'
 import ReasoningPanel from './ReasoningPanel.jsx'
 import InlineError from './InlineError.jsx'
 import { couldnt } from '../lib/errors.js'
+import { noteLabel } from './PayeeHeading.jsx'
+import { WAITING_WORDS, categoryText } from './CategoryPill.jsx'
+import { capCharacters } from '../lib/text.js'
+
+// Same limits as the API, counted in characters the same way.
+const MAX_NAME = 80
+const MAX_NOTE = 500
 
 // ─── GroupsSection ────────────────────────────────────────────────────────────
 
@@ -204,8 +211,7 @@ function RenameForm({ txn, onRenamed, onCancel }) {
         id="rename-input"
         autoFocus
         value={name}
-        maxLength={80}
-        onChange={e => setName(e.target.value)}
+        onChange={e => setName(capCharacters(e.target.value, MAX_NAME))}
         onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
         className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
       />
@@ -250,6 +256,67 @@ function RenameForm({ txn, onRenamed, onCancel }) {
   )
 }
 
+// ─── NoteForm ─────────────────────────────────────────────────────────────────
+
+// A note of the user's own on this one payment. It starts from the note the row
+// shows (the UPI note when nothing of theirs is there yet), replaces it, and a
+// save with the field emptied clears it so the UPI note shows again. Like a
+// name it is a label: the printed line, category and learned rules are untouched.
+function NoteForm({ txn, onNoted, onCancel }) {
+  const toast = useToast()
+  const [note, setNote] = useState(txn.note ?? '')
+  const [saving, setSaving] = useState(false)
+
+  async function save(value) {
+    const text = value.trim()
+    // Nothing to change: the text is what the row shows already, or there is no
+    // note of the user's to clear.
+    if (text === (txn.note ?? '') || (!text && !txn.note_is_yours)) { onCancel(); return }
+    setSaving(true)
+    try {
+      onNoted(await api.put(`/transactions/${txn.id}/note`, { note: text || null }))
+    } catch (e) {
+      toast(couldnt('save the note', e), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="mt-3 flex flex-col gap-2.5 bg-[#1a1d27] border border-[#2d3148] rounded-md p-3"
+      onSubmit={e => { e.preventDefault(); save(note) }}
+    >
+      <label className="text-xs text-[#94a3b8]" htmlFor="note-input">Your note</label>
+      <input
+        id="note-input"
+        autoFocus
+        value={note}
+        onChange={e => setNote(capCharacters(e.target.value, MAX_NOTE))}
+        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }}
+        className="w-full bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-2 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={saving}
+          className="px-3 py-1.5 rounded-md bg-[#4f46e5] text-white text-xs font-medium hover:opacity-90 disabled:opacity-50"
+        >
+          Save note
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 rounded-md bg-[#1e2235] text-[#94a3b8] text-xs hover:text-[#e2e8f0]">
+          Cancel
+        </button>
+        {txn.note_is_yours && (
+          <button type="button" disabled={saving} onClick={() => save('')} className="ml-auto text-xs text-[#94a3b8] hover:text-[#e2e8f0] underline">
+            Clear note
+          </button>
+        )}
+      </div>
+    </form>
+  )
+}
+
 // ─── Confidence bar ───────────────────────────────────────────────────────────
 
 function ConfidenceBar({ confidence }) {
@@ -270,18 +337,35 @@ function ConfidenceBar({ confidence }) {
 // `loadError` means the payment's own record could not be read, so whether it
 // already has an annotation is unknown: the form is replaced by the error and
 // saving waits for a successful Retry.
-export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onRenamed, loadError = null, onRetryLoad }) {
+export default function AnnotationPanel(props) {
+  // Everything the panel holds belongs to one payment: a half-typed name or note,
+  // the loaded groups, the scroll position. Keying on the id starts it fresh when
+  // another payment opens (the palette can jump to one while a form is open), so
+  // text typed for one payment can never be saved onto another.
+  return <PaymentPanel key={props.txn?.id} {...props} />
+}
+
+function PaymentPanel({ txn, annotation, onClose, onSaved, onRenamed, onNoted, onUnpair, loadError = null, onRetryLoad }) {
   const toast = useToast()
   const [renaming, setRenaming] = useState(false)
+  const [noting, setNoting] = useState(false)
   const renameButton = useRef(null)
-  const wasRenaming = useRef(false)
+  const noteButton = useRef(null)
+  const pairedRef = useRef(null)
+  const [unpairing, setUnpairing] = useState(false)
+  const openForm = renaming ? 'rename' : noting ? 'note' : null
+  const lastForm = useRef(null)
 
-  // The form takes the Rename button's place while open; when it closes, focus
-  // goes back to the button so a keyboard user is not left at the top of the page.
+  // A form takes its button's place while open; when the last one closes, focus
+  // goes back to that form's button so a keyboard user is not left at the top
+  // of the page. Switching straight from one form to the other leaves focus
+  // where the newly opened form put it.
   useEffect(() => {
-    if (wasRenaming.current && !renaming) renameButton.current?.focus()
-    wasRenaming.current = renaming
-  }, [renaming])
+    if (!openForm && lastForm.current) {
+      (lastForm.current === 'rename' ? renameButton : noteButton).current?.focus()
+    }
+    lastForm.current = openForm
+  }, [openForm])
   const [form, setForm] = useState({ category: '', subcategory: '', tags: [] })
   const [saving, setSaving] = useState(false)
 
@@ -337,9 +421,21 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
     }
   }
 
+  async function handleUnpair() {
+    setUnpairing(true)
+    try {
+      await onUnpair(txn)
+    } finally {
+      setUnpairing(false)
+      // The line this button sat on is gone: keep the keyboard in the panel.
+      pairedRef.current?.focus()
+    }
+  }
+
   if (!txn) return null
 
-  const src = annotation?.source
+  // A guess held back is not an answer: no source or confidence of its own beside it.
+  const src = txn?.waiting_on_pair ? 'pending' : annotation?.source
 
   return (
     <>
@@ -369,7 +465,7 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               <button
                 type="button"
                 ref={renameButton}
-                onClick={() => setRenaming(true)}
+                onClick={() => { setNoting(false); setRenaming(true) }}
                 className="shrink-0 inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors"
               >
                 <Pencil size={12} />Rename
@@ -383,10 +479,55 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               onCancel={() => setRenaming(false)}
             />
           )}
-          {txn.note && (
-            <div className="mt-2 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc]">
-              <span className="text-[#94a3b8] mr-1.5">{txn.debit_credit === 'credit' ? 'Note' : 'Your note'}</span>{txn.note}
+          {noting ? (
+            <NoteForm
+              txn={txn}
+              onNoted={updated => { setNoting(false); onNoted?.(updated) }}
+              onCancel={() => setNoting(false)}
+            />
+          ) : (
+            <div className="mt-2 flex items-start gap-3">
+              {txn.note && (
+                <div className="flex-1 min-w-0 px-3 py-1.5 bg-[#1e2440] border-l-2 border-[#6366f1] rounded text-xs text-[#a5b4fc] break-words">
+                  <span className="text-[#94a3b8] mr-1.5 whitespace-nowrap">{noteLabel(txn)}</span>{txn.note}
+                </div>
+              )}
+              <button
+                type="button"
+                ref={noteButton}
+                onClick={() => { setRenaming(false); setNoting(true) }}
+                className={`inline-flex items-center gap-1 text-xs text-[#94a3b8] hover:text-[#e2e8f0] transition-colors ${txn.note ? 'shrink-0 mt-1.5' : ''}`}
+              >
+                <Pencil size={12} />{txn.note ? 'Edit note' : 'Add a note'}
+              </button>
             </div>
+          )}
+          {/* Focus parks here after Unpair, which removes the line above it. */}
+          <div ref={pairedRef} tabIndex={-1} className="outline-none">
+            {txn.transfer && (
+              <div className="mt-3 flex items-start gap-3 rounded-md border border-[#2d3148] bg-[#1a1d27] px-3 py-2">
+                <p className="flex-1 min-w-0 text-xs text-[#cbd5e1] break-words">
+                  <span className="font-medium text-[#a5b4fc]">{txn.transfer.text}.</span>{' '}
+                  Paired with the payment on {dayjs(txn.transfer.txn_date).format('D MMM')} in {txn.transfer.account_label}.
+                  Not counted as spending or income.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleUnpair}
+                  disabled={unpairing || !onUnpair}
+                  className="shrink-0 text-xs text-[#a5b4fc] hover:text-[#e2e8f0] underline disabled:opacity-50"
+                >
+                  Unpair
+                </button>
+              </div>
+            )}
+          </div>
+          {txn.waiting_on_pair && annotation && (
+            <p className="mt-3 rounded-md border border-[#78350f] bg-[#1a1d27] px-3 py-2 text-xs text-[#cbd5e1] break-words">
+              <span className="font-medium text-[#fcd34d]">{WAITING_WORDS}.</span>{' '}
+              The guess was {categoryText(annotation)}. It is in Teach Me, where you can pair it with the other payment,
+              or pick a category here.
+            </p>
           )}
           <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">As printed on the statement</p>
           <p className="mt-1 text-xs text-[#94a3b8] break-words leading-relaxed">{txn.raw_description}</p>
@@ -395,9 +536,9 @@ export default function AnnotationPanel({ txn, annotation, onClose, onSaved, onR
               <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
                 {sourceLabel(src)}
               </span>
-              {/* Manual annotations are human truth; a leftover model
-                  confidence next to "manual" reads as a contradiction. */}
-              {src !== 'manual' && (
+              {/* Manual annotations are human truth, and a pair is a fact: a
+                  confidence next to either reads as a contradiction. */}
+              {src !== 'manual' && src !== 'pair' && !txn.waiting_on_pair && (
                 <div className="flex-1">
                   <ConfidenceBar confidence={annotation.confidence} />
                 </div>

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from finance_copilot.api.deps import get_db
 from finance_copilot.api.live_jobs import JobRunner, live_job_ids, tracks_live_job
 from finance_copilot.config import settings
+from finance_copilot.db.queries.accounts import with_account
 from finance_copilot.db.queries.annotations import (
     get_annotation,
     get_annotation_by_transaction,
@@ -762,7 +763,7 @@ def similar_candidates(
         f"""
         SELECT a.id AS annotation_id, a.category, a.subcategory, a.merchant, a.source,
                a.confidence, t.id AS transaction_id, t.txn_date, t.amount,
-               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.upi_meta
+               t.debit_credit, t.raw_description, t.counterparty_key, t.display_name, t.user_note, t.upi_meta
         FROM annotations a JOIN transactions t ON t.id = a.transaction_id
         WHERE t.id IN ({placeholders})
         """,
@@ -918,6 +919,7 @@ def review_queue(conn: sqlite3.Connection = Depends(get_db)):
         group_review_queue(list_review_queue(conn, get_confidence_threshold(conn))), REVIEW_QUEUE_PAGE
     )
     with_payee(conn, items)
+    with_account(conn, items)
     attach_suggestions(conn, items)
     for item in items:
         item["tags"] = parse_string_list(item.get("tags"))

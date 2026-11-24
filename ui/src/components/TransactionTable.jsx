@@ -2,6 +2,7 @@ import dayjs from 'dayjs'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import Amount from './Amount.jsx'
 import PaymentLabel from './PaymentLabel.jsx'
+import CategoryPill from './CategoryPill.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Sortable header for the Date/Amount columns (4.12). Clicking toggles the
@@ -22,6 +23,7 @@ function SortHeader({ label, col, sort, order, onSort, align = 'left' }) {
 export default function TransactionTable({
   transactions, annotationMap = {}, activeId, onSelect,
   selectable = false, selected, onToggle, onToggleAll, sort, order, onSort,
+  showAccount = false, showBalance = false,
 }) {
   if (!transactions.length) return null
 
@@ -47,9 +49,11 @@ export default function TransactionTable({
             {onSort ? <SortHeader label="Date" col="date" sort={sort} order={order} onSort={onSort} /> : 'Date'}
           </th>
           <th className={`${th} text-left`}>Payee</th>
+          {showAccount && <th className={`${th} text-left`}>Account</th>}
           <th className={`${th} text-right`}>
             {onSort ? <SortHeader label="Amount" col="amount" sort={sort} order={order} onSort={onSort} align="right" /> : 'Amount'}
           </th>
+          {showBalance && <th className={`${th} text-right`}>Balance</th>}
           {['Category', 'Source', 'How sure'].map(h => (
             <th key={h} className={`${th} text-left`}>{h}</th>
           ))}
@@ -58,7 +62,8 @@ export default function TransactionTable({
       <tbody>
         {transactions.map(txn => {
           const ann = annotationMap[txn.id]
-          const src = ann?.source ?? 'pending'
+          // A guess held back is not an answer: the row reads as not sorted, with no source or confidence of its own.
+          const src = txn.waiting_on_pair ? 'pending' : (ann?.source ?? 'pending')
           const isActive = txn.id === activeId
           const isSelected = selectable && selected?.has(txn.id)
           return (
@@ -91,16 +96,20 @@ export default function TransactionTable({
               <td className="px-3 py-2.5 max-w-[480px]">
                 <PaymentLabel txn={txn} className="max-w-[460px]" />
               </td>
+              {showAccount && (
+                <td className="px-3 py-2.5 whitespace-nowrap text-xs text-[#94a3b8]">{txn.account_label}</td>
+              )}
               <td className="px-3 py-2.5 whitespace-nowrap tabular-nums font-medium text-right">
                 <Amount value={txn.amount} debitCredit={txn.debit_credit} />
               </td>
+              {showBalance && (
+                <td className="px-3 py-2.5 whitespace-nowrap tabular-nums text-xs text-right text-[#94a3b8]">
+                  {txn.running_balance != null ? <Amount value={txn.running_balance} /> : '-'}
+                </td>
+              )}
               <td className="px-3 py-2.5">
                 {ann ? (
-                  <span className="inline-flex items-center gap-1">
-                    <span className="bg-[#1e1b4b] text-[#a5b4fc] text-xs px-2 py-0.5 rounded-full whitespace-nowrap">
-                      {ann.subcategory ? `${ann.category} › ${ann.subcategory}` : ann.category}
-                    </span>
-                  </span>
+                  <CategoryPill txn={txn} ann={ann} />
                 ) : (
                   <span className="text-[#94a3b8]">-</span>
                 )}
@@ -115,7 +124,7 @@ export default function TransactionTable({
                     next to a "manual" pill reads as a contradiction, so show
                     nothing. High confidence is the norm - plain muted text -
                     and color is reserved for the rows that need attention. */}
-                {ann?.confidence == null || src === 'manual' ? (
+                {ann?.confidence == null || txn.waiting_on_pair || src === 'manual' || src === 'pair' ? (
                   <span className="text-[#94a3b8]">-</span>
                 ) : ann.confidence >= 0.8 ? (
                   <span className="text-xs tabular-nums text-[#94a3b8]">

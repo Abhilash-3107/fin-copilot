@@ -1,5 +1,5 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "from": "0.1.2",
   "changes": [
     {
@@ -108,7 +108,7 @@
     {
       "id": "stored-category-ids-backfilled",
       "scope": "stored",
-      "path": "annotationCategoryIds[*].category_id",
+      "path": "annotationRows[*].category_id",
       "kinds": [
         "changed"
       ],
@@ -118,12 +118,22 @@
     {
       "id": "stored-subcategory-ids-backfilled",
       "scope": "stored",
-      "path": "annotationCategoryIds[*].subcategory_id",
+      "path": "annotationRows[*].subcategory_id",
       "kinds": [
         "changed"
       ],
       "from": null,
       "reason": "Migration 036, for the subcategory id."
+    },
+    {
+      "id": "stored-bank-line-merchant-cleared-on-label",
+      "scope": "stored",
+      "path": "annotationRows[*].merchant",
+      "kinds": [
+        "changed"
+      ],
+      "to": null,
+      "reason": "Migration 030, as stored: the label's own merchant column, where a machine copied the bank line. The invariant on every label column holds the labels you made by hand to no change at all."
     },
     {
       "id": "stored-policies-readable",
@@ -224,24 +234,50 @@
     {
       "id": "figures-partial-month-comparison",
       "scope": "derived",
-      "path": "months.{month}.comparison.*",
+      "path": "months.{lastMonth}.comparison.*",
       "kinds": [
         "changed"
       ],
-      "optional": true,
-      "reason": "A month still running is compared with the same days of the previous month, not with all of it. Optional because on the last day of a month nothing is partial."
+      "reason": "A month the statements only partly cover (the newest statement stops in the middle of it) is compared with the same days of the previous month, not with all of it, so the figures it is measured against are the previous month's first days."
     },
     {
       "id": "figures-partial-month-what-changed",
       "scope": "derived",
-      "path": "months.{month}.whatChanged**",
+      "path": "months.{lastMonth}.whatChanged**",
       "kinds": [
         "changed",
         "added",
         "removed"
       ],
-      "optional": true,
-      "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears."
+      "reason": "The same like-for-like comparison, for the categories that moved: a category the same days of the previous month did not hold is left out, and one that held money then and none now appears. What changed also never names Uncategorized, which the unsorted figure and its own row already cover."
+    },
+    {
+      "id": "figures-no-comparison-when-an-account-is-new",
+      "scope": "derived",
+      "path": "months.{accountMonth}.comparison",
+      "kinds": [
+        "changed"
+      ],
+      "to": null,
+      "reason": "A month is compared only when every account in it can be compared with the previous month. The journey's own account has its first statement in this month, so it has nothing before it to be compared with, and the month shows no comparison at all (it used to compare the accounts that could be, which read as a change in the whole)."
+    },
+    {
+      "id": "figures-no-changes-when-an-account-is-new",
+      "scope": "derived",
+      "path": "months.{accountMonth}.whatChanged[*]",
+      "kinds": [
+        "removed"
+      ],
+      "reason": "What changed lists nothing for a month that has no comparison."
+    },
+    {
+      "id": "figures-comparison-note-when-an-account-is-new",
+      "scope": "derived",
+      "path": "months.{accountMonth}.comparisonNote[*]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "The month says why it has no comparison, naming the account that was added in it."
     },
     {
       "id": "figures-breakdown-closes-on-out",
@@ -290,6 +326,58 @@
       "reason": "One definition of unsorted everywhere: a payment with no label counts, as well as one labelled Uncategorized. The journey checks the figure never shrinks."
     },
     {
+      "id": "figures-unsorted-in-new-figure",
+      "scope": "derived",
+      "path": "months.*.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 0,
+      "reason": "Money that came in and is not sorted yet now has its own figure on the In tile. A month with none of it shows 0."
+    },
+    {
+      "id": "figures-unsorted-in-demo-month",
+      "scope": "derived",
+      "path": "months.{accountMonth}.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 750,
+      "reason": "The sample data has credits of 750 in this month that nobody has sorted, and the In tile now says so (\"incl ₹750 not sorted yet\")."
+    },
+    {
+      "id": "figures-unsorted-in-statement-month",
+      "scope": "derived",
+      "path": "months.{lastMonth}.unsortedIn",
+      "kinds": [
+        "added"
+      ],
+      "to": 85450,
+      "reason": "The newest statement's credits are not sorted yet (no model is set up), and the In tile now says so."
+    },
+    {
+      "id": "figures-refunds-paybacks-demo-month",
+      "scope": "derived",
+      "path": "months.{accountMonth}.otherIn",
+      "kinds": [
+        "changed"
+      ],
+      "from": 3361,
+      "to": 2611,
+      "reason": "The In tile used to call money that was not sorted yet \"refunds and paybacks\". The 750 of it in this month is now reported as not sorted yet, and the refunds and paybacks that really are sorted stay. The journey checks the figure fell by exactly the unsorted amount."
+    },
+    {
+      "id": "figures-refunds-paybacks-statement-month",
+      "scope": "derived",
+      "path": "months.{lastMonth}.otherIn",
+      "kinds": [
+        "changed"
+      ],
+      "from": 85450,
+      "to": 0,
+      "reason": "All 85,450 that the In tile called refunds and paybacks in this month was money not sorted yet. It is now reported as such, and nothing in the month is a refund or payback."
+    },
+    {
       "id": "stored-statements-sorted-count",
       "scope": "stored",
       "path": "statements[*].sorted_count",
@@ -333,6 +421,32 @@
       ],
       "to": null,
       "reason": "A payment can now carry a name you gave it (display_name), and its payee a name you gave the payee (payee_name). The journey renames nothing, so both are empty, and so is the cleaned-up note, which no sample or fixture payment has."
+    },
+    {
+      "id": "stored-payment-notes-not-set",
+      "scope": "stored",
+      "path": [
+        "transactions[*].user_note",
+        "groups[*].members[*].user_note"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "A payment can now carry a note you wrote on it (user_note). The journey writes none, so every payment starts with none."
+    },
+    {
+      "id": "stored-payment-note-is-not-yours",
+      "scope": "stored",
+      "path": [
+        "transactions[*].note_is_yours",
+        "groups[*].members[*].note_is_yours"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": false,
+      "reason": "Each payment now says whether the note it shows is one you wrote. None is, because you wrote none."
     },
     {
       "id": "stored-payee-label-fields",
@@ -391,6 +505,15 @@
         "added"
       ],
       "reason": "Migration 037 adds the column that holds the name you give to a single payment. Every payment starts with none."
+    },
+    {
+      "id": "stored-column-user-note",
+      "scope": "stored",
+      "path": "schema.addedColumns[transactions_user_note]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 042 adds the column that holds the note you write on a payment. Every payment starts with none."
     },
     {
       "id": "stored-column-job-scope",
@@ -548,6 +671,15 @@
       "reason": "Migration 040 counts how many times a sorting job has been started. It runs once, on the first start of the new release."
     },
     {
+      "id": "stored-migration-042",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[042_payment_notes]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 042 adds notes on payments. It runs once, on the first start of the new release."
+    },
+    {
       "id": "figures-recurring-name-as-printed",
       "scope": "derived",
       "path": "months.*.recurring[Chai Wala Corner]",
@@ -561,7 +693,7 @@
         "cadence": "monthly",
         "active": true
       },
-      "reason": "A recurring charge to a payee with no merchant name is listed under the payee as the bank printed it, instead of the printed name in title case, so Recurring, Money Map and the Ledger call it the same thing."
+      "reason": "A recurring charge to a payee with no merchant name is listed under the payee as the bank printed it, instead of the printed name in title case, so Recurring, Money Map and the Ledger call it the same thing. Only the name moves: the journey checks that its amount, cadence and category are the ones it had."
     },
     {
       "id": "figures-recurring-name-as-printed-new",
@@ -578,6 +710,243 @@
         "active": true
       },
       "reason": "The same row under its new name. Its amount, cadence and category are unchanged, which the journey checks for every recurring row: a name may change in case and nothing else."
+    },
+    {
+      "id": "stored-statements-account",
+      "scope": "stored",
+      "path": [
+        "statements[*].account_id",
+        "statements[*].account_label"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Every statement now belongs to an account, found by the bank and the account number printed on the statement, and carries the account's name as the app words it (the bank and the last four digits until you name it, or the words you typed in the old Rename)."
+    },
+    {
+      "id": "stored-statements-printed-period",
+      "scope": "stored",
+      "path": [
+        "statements[*].printed_start",
+        "statements[*].printed_end"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "The period a statement prints in its header is kept beside the dates of its first and last payment. Statements added before it existed have none, and the upgrade does not guess one: it starts empty."
+    },
+    {
+      "id": "stored-statements-account-number-whole",
+      "scope": "stored",
+      "path": "statements[*].account_ref",
+      "kinds": [
+        "removed"
+      ],
+      "from": "XXXX0000",
+      "reason": "The statement list no longer carries the whole account number, only its last four digits. The number stays in the ledger as the account's key. These are the two uploaded sample statements, which print XXXX0000."
+    },
+    {
+      "id": "stored-statements-account-number-whole-none",
+      "scope": "stored",
+      "path": "statements[*].account_ref",
+      "kinds": [
+        "removed"
+      ],
+      "from": null,
+      "reason": "The same, for the sample statements, which print no number."
+    },
+    {
+      "id": "stored-statements-account-last-four",
+      "scope": "stored",
+      "path": "statements[*].account_ref_last4",
+      "kinds": [
+        "added"
+      ],
+      "to": "0000",
+      "reason": "The last four digits of the account number replace the whole number in the statement list. The journey checks each is the last four of the number it had."
+    },
+    {
+      "id": "stored-statements-account-last-four-none",
+      "scope": "stored",
+      "path": "statements[*].account_ref_last4",
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "The same, for the sample statements, which have no number to shorten."
+    },
+    {
+      "id": "stored-accounts-readable",
+      "scope": "stored",
+      "path": "accounts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "reason": "0.1.2 has no accounts to read. The upgraded ledger has one account for each bank (and each account number a bank printed), made from its existing statements, with no name until you give one."
+    },
+    {
+      "id": "stored-accounts-table",
+      "scope": "stored",
+      "path": "schema.tableRows.accounts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "reason": "Migration 041 adds the table that holds your accounts and fills it from the statements you already have."
+    },
+    {
+      "id": "stored-column-statement-account",
+      "scope": "stored",
+      "path": [
+        "schema.addedColumns[statements_account_id]",
+        "schema.addedColumns[statements_printed_start]",
+        "schema.addedColumns[statements_printed_end]"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 041 gives each statement the account it belongs to and the period it prints."
+    },
+    {
+      "id": "stored-migration-041",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[041_accounts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 041 adds accounts. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-statements-row-counts",
+      "scope": "stored",
+      "path": [
+        "statements[*].rows_in_file",
+        "statements[*].rows_added"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "A statement now records how many payments its file held and how many of them were new, because a statement that overlaps an earlier one adds only the new ones. Every statement you already had brought all the payments of its file, so both are its payment count, which the journey checks."
+    },
+    {
+      "id": "stored-statements-balance-stored",
+      "scope": "stored",
+      "path": [
+        "statements[*].balance_checked",
+        "statements[*].balance_consistent"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The running-balance check of a statement's whole file is now stored with it, so a statement whose overlapping rows were skipped never looks unbalanced. For every statement you already had it is the check the list showed before: the journey checks the stored figures equal that check and that nothing that was balanced is flagged now."
+    },
+    {
+      "id": "stored-statements-payment-span",
+      "scope": "stored",
+      "path": [
+        "statements[*].first_payment",
+        "statements[*].last_payment",
+        "statements[*].payment_months"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "The statement list says on which days and in which months a statement's own payments fall, because a statement can cover days in a month it brought no payment for. They are worked out from the payments, which the journey checks."
+    },
+    {
+      "id": "stored-statements-shared-with-others",
+      "scope": "stored",
+      "path": "statements[*].shared_with_others",
+      "kinds": [
+        "added"
+      ],
+      "to": 0,
+      "reason": "The statement list says how many of a statement's payments another statement of the account also had and did not add again, so deleting it can say they are removed from the ledger for good. No statement you already had skipped payments, so every statement starts at 0."
+    },
+    {
+      "id": "stored-column-statement-row-counts",
+      "scope": "stored",
+      "path": [
+        "schema.addedColumns[statements_rows_in_file]",
+        "schema.addedColumns[statements_rows_added]",
+        "schema.addedColumns[statements_balance_checked]",
+        "schema.addedColumns[statements_balance_consistent]"
+      ],
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 043 gives each statement what its file held, what of it was new, and the balance check of the file."
+    },
+    {
+      "id": "stored-migration-043",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[043_statement_row_counts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 043 records what each statement's file held and whether its balance checked out. It runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-payment-transfer-not-paired",
+      "scope": "stored",
+      "path": "transactions[*].transfer",
+      "kinds": [
+        "added"
+      ],
+      "to": null,
+      "reason": "A payment now says when it is paired with a payment in another of your accounts as a transfer (Moved to ..., Moved from ...). Pairing runs when a statement is added, never on upgrade, so every payment starts unpaired."
+    },
+    {
+      "id": "stored-payment-not-waiting-on-a-pair",
+      "scope": "stored",
+      "path": "transactions[*].waiting_on_pair",
+      "kinds": [
+        "added"
+      ],
+      "to": false,
+      "reason": "A payment now says when its Transfers guess is held back because it could be a move between your own accounts. It is read off the labels and the other payments, changes nothing stored, and no payment of the journey's ledger is held back."
+    },
+    {
+      "id": "stored-transfer-unpaired-table",
+      "scope": "stored",
+      "path": "schema.tableRows.transfer_unpaired",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 044 adds the table that remembers the transfers you took apart, so they are not paired again. It starts empty."
+    },
+    {
+      "id": "stored-migration-044",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[044_transfer_pairing]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 044 lets a label come from a pair of statements and adds the table of unpaired transfers. It rebuilds the table that holds labels with every label, source, confidence and note as it was, and it runs once, on the first start of the new release."
+    },
+    {
+      "id": "stored-import-layouts-table",
+      "scope": "stored",
+      "path": "schema.tableRows.import_layouts",
+      "kinds": [
+        "changed"
+      ],
+      "from": null,
+      "to": 0,
+      "reason": "Migration 045 adds the table that remembers how a spreadsheet's columns were read and which account it went to, so the next file with the same header asks nothing. It starts empty: a layout is learned from a spreadsheet you add."
+    },
+    {
+      "id": "stored-migration-045",
+      "scope": "stored",
+      "path": "schema.appliedMigrations[045_import_layouts]",
+      "kinds": [
+        "added"
+      ],
+      "reason": "Migration 045 adds the table of remembered spreadsheet layouts. It only adds a table, and it runs once, on the first start of the new release."
     }
   ]
 }

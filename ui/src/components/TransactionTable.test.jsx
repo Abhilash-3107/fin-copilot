@@ -66,6 +66,75 @@ describe.each([['TransactionTable', TransactionTable], ['TransactionCards', Tran
   })
 })
 
+describe.each([['TransactionTable', TransactionTable], ['TransactionCards', TransactionCards]])('%s paired rows', (_name, Component) => {
+  const PAIRED = [
+    {
+      ...BASE, id: 'p1', raw_description: 'IMPS/P2P/TRANSFER/TO OWN SBI SAVINGS', payee: 'To Own Sbi Savings',
+      channel: 'IMPS', note: null,
+      transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-01-15', text: 'Moved to SBI savings' },
+    },
+    {
+      ...BASE, id: 'p2', raw_description: 'IMPS/FROM KOTAK', payee: 'From Kotak', debit_credit: 'credit', channel: 'IMPS', note: 'monthly',
+      transfer: { transaction_id: 'p1', direction: 'from', account_label: 'Kotak savings', txn_date: '2026-01-15', text: 'Moved from Kotak savings' },
+    },
+  ]
+
+  it('says where the money went before the note and channel', () => {
+    render(<PrivacyProvider><Component transactions={PAIRED} onSelect={() => {}} /></PrivacyProvider>)
+    expect(screen.getByText('Moved to SBI savings').parentElement).toHaveTextContent('Moved to SBI savings · IMPS')
+    expect(screen.getByText('Moved from Kotak savings').parentElement).toHaveTextContent('Moved from Kotak savings · monthly · IMPS')
+  })
+
+  it('says nothing extra on a payment that is not paired', () => {
+    renderTable({}, Component)
+    expect(screen.queryByText(/Moved/)).not.toBeInTheDocument()
+  })
+
+  it('shows no confidence for a pair, as for a hand label', () => {
+    const annotationMap = { p1: { category: 'Self Transfers', subcategory: 'Self Transfer', source: 'pair', confidence: 1 } }
+    render(<PrivacyProvider><Component transactions={PAIRED} annotationMap={annotationMap} onSelect={() => {}} /></PrivacyProvider>)
+    expect(screen.getByText('paired')).toBeInTheDocument()
+    expect(screen.queryByText('100%')).not.toBeInTheDocument()
+  })
+})
+
+describe.each([['TransactionTable', TransactionTable], ['TransactionCards', TransactionCards]])('%s rows waiting on a pair', (_name, Component) => {
+  const WAITING = [
+    { ...BASE, id: 'w1', raw_description: 'NEFT/N123456789/ABHI B', payee: 'Abhi B', channel: 'NEFT', waiting_on_pair: true },
+    { ...BASE, id: 'w2', raw_description: 'UPI/SWIGGY/1/UPI', payee: 'Swiggy', channel: 'UPI', waiting_on_pair: false },
+  ]
+  const annotationMap = {
+    w1: { category: 'Investments', subcategory: 'Mutual Funds', source: 'llm', confidence: 0.97 },
+    w2: { category: 'Food & Dining', subcategory: 'Restaurants', source: 'llm', confidence: 0.97 },
+  }
+  const renderWaiting = () => render(
+    <PrivacyProvider><Component transactions={WAITING} annotationMap={annotationMap} onSelect={() => {}} /></PrivacyProvider>
+  )
+
+  it('says in plain words that it is not sorted and keeps the guess as small text', () => {
+    renderWaiting()
+    const row = screen.getByText('Abhi B').closest('tr, li')
+    expect(within(row).getByText('Not sorted - maybe a move between your accounts')).toBeInTheDocument()
+    expect(within(row).getByText('Guess was Investments › Mutual Funds')).toBeInTheDocument()
+    expect(within(row).queryByText('Investments › Mutual Funds')).not.toBeInTheDocument()
+  })
+
+  it('shows no source or confidence of its own: the guess is not an answer', () => {
+    renderWaiting()
+    const row = screen.getByText('Abhi B').closest('tr, li')
+    expect(within(row).getByText('not sorted')).toBeInTheDocument()
+    expect(within(row).queryByText('llm')).not.toBeInTheDocument()
+    expect(within(row).queryByText('97%')).not.toBeInTheDocument()
+  })
+
+  it('shows the category of a payment that is not waiting as before', () => {
+    renderWaiting()
+    const row = screen.getByText('Swiggy').closest('tr, li')
+    expect(within(row).getByText('Food & Dining › Restaurants')).toBeInTheDocument()
+    expect(within(row).queryByText(/Not sorted/)).not.toBeInTheDocument()
+  })
+})
+
 describe('TransactionTable header', () => {
   it('names the first column Payee', () => {
     renderTable()

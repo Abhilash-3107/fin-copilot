@@ -45,6 +45,30 @@ test.describe('J1 first run', () => {
     await expect(page.getByText(/demo data|sample data/i).first()).toBeVisible()
   })
 
+  test('the sample has two named accounts, and the monthly move to SBI is a transfer, not spending', async ({ page, app }) => {
+    await app.loadDemo()
+    const accounts = await app.api.get('/accounts')
+    expect(accounts.map((a) => a.account_label).sort()).toEqual(['Kotak savings', 'SBI savings'])
+    for (const account of accounts) expect(account.balance, `${account.account_label} balance`).not.toBeNull()
+
+    const moved = (await app.api.get('/transactions?category=Self%20Transfers&include=annotation&limit=1000'))
+    expect(moved.length, 'payments paired as transfers').toBeGreaterThanOrEqual(6)
+    expect(new Set(moved.map((t) => t.transfer?.text))).toEqual(new Set(['Moved to SBI savings', 'Moved from Kotak savings']))
+    // Out leaves them out: the month's Out is the debits that are not transfers or investments.
+    const month = '2026-10'
+    const all = await app.api.get(`/transactions?month=${month}&include=annotation&limit=1000`)
+    const spent = all.filter((t) => t.debit_credit === 'debit' && !['Self Transfers', 'Investments'].includes(t.category)).reduce((sum, t) => sum + t.amount, 0)
+    expect((await app.api.get(`/insights?month=${month}`)).verdict.money_out).toBeCloseTo(spent, 2)
+
+    await open(page, '/transactions')
+    // The move is on the 28th, which today (the 15th) has not reached: look at every month.
+    await page.getByRole('combobox', { name: 'Period' }).selectOption('all')
+    await expect(page.getByRole('row').filter({ hasText: 'Moved to SBI savings' }).first()).toBeVisible()
+    await open(page, '/upload')
+    await expect(page.getByText('Kotak savings').first()).toBeVisible()
+    await expect(page.getByText('SBI savings').first()).toBeVisible()
+  })
+
   test('removing the demo data leaves what the user added', async ({ page, app }) => {
     await app.loadDemo()
     // Things the user made themselves, which removal must not touch.

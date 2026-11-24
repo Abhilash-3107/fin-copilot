@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const { mockApi, toastSpy } = vi.hoisted(() => ({
@@ -261,5 +261,356 @@ describe('AnnotationPanel naming', () => {
     await user.click(screen.getByRole('button', { name: 'Save name' }))
     expect(toastSpy).toHaveBeenCalledWith("Couldn't rename. Finance Copilot isn't answering.", 'error')
     expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument()
+  })
+})
+
+describe('AnnotationPanel note', () => {
+  const NOTED = { ...TXN, note: 'team dinner', note_is_yours: true }
+  const NO_NOTE = { ...TXN, note: null, channel: 'NEFT' }
+
+  it('offers Add a note when the payment has none, and Edit note when it has one', async () => {
+    const { unmount } = renderPanel({ annotation: null, txn: NO_NOTE })
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Add a note' })).toBeInTheDocument()
+    unmount()
+    renderPanel({ annotation: null })
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument()
+  })
+
+  it('adds a note and hands the updated payment back', async () => {
+    const user = userEvent.setup()
+    const onNoted = vi.fn()
+    mockApi.put = vi.fn().mockResolvedValue(NOTED)
+    renderPanel({ annotation: null, txn: NO_NOTE, onNoted })
+
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    expect(input).toHaveValue('')
+    await user.type(input, '  team dinner ')
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: 'team dinner' })
+    expect(onNoted).toHaveBeenCalledWith(NOTED)
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+  })
+
+  it('saves with Enter', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(NOTED)
+    renderPanel({ annotation: null, txn: NO_NOTE })
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), 'team dinner{Enter}')
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: 'team dinner' })
+  })
+
+  it('starts from the note the row shows, so the UPI note is the first draft', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(NOTED)
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    expect(input).toHaveValue('dinner')
+    await user.clear(input)
+    await user.type(input, 'team dinner')
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: 'team dinner' })
+  })
+
+  it('saving the draft unchanged closes the form and writes nothing', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+  })
+
+  it('Escape cancels the form without saving and without closing the panel', async () => {
+    const user = userEvent.setup()
+    const onClose = vi.fn()
+    mockApi.put = vi.fn()
+    renderPanel({ annotation: null, txn: NOTED, onClose })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), ' more')
+    await user.keyboard('{Escape}')
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+    expect(screen.getByText('team dinner')).toBeInTheDocument()
+  })
+
+  it('emptying the field and saving clears the note', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(TXN)
+    renderPanel({ annotation: null, txn: NOTED })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Your note' }))
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: null })
+  })
+
+  it('emptying a UPI note that is not yours writes nothing, since it would change nothing', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Your note' }))
+    await user.click(screen.getByRole('button', { name: 'Save note' }))
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+  })
+
+  it('counts a note in characters like the API, so emoji fit up to 500', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null, txn: NO_NOTE })
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    const input = screen.getByRole('textbox', { name: 'Your note' })
+    const grin = '\u{1F600}'
+    fireEvent.change(input, { target: { value: grin.repeat(500) } })
+    expect(Array.from(input.value)).toHaveLength(500)
+    fireEvent.change(input, { target: { value: grin.repeat(501) } })
+    expect(Array.from(input.value)).toHaveLength(500)
+  })
+
+  it('counts a name in characters too, so 80 emoji fit and the 81st does not', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    const grin = '\u{1F600}'
+    fireEvent.change(input, { target: { value: grin.repeat(80) } })
+    expect(Array.from(input.value)).toHaveLength(80)
+    fireEvent.change(input, { target: { value: grin.repeat(81) } })
+    expect(Array.from(input.value)).toHaveLength(80)
+  })
+
+  it('keeps a long unbroken note from splitting its label', async () => {
+    renderPanel({ annotation: null, txn: { ...TXN, note: 'x'.repeat(500), note_is_yours: true } })
+    await act(async () => {})
+    expect(screen.getByText('Your note')).toHaveClass('whitespace-nowrap')
+  })
+
+  it('has a Clear note button only for a note the user wrote', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(TXN)
+    const { unmount } = renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.queryByRole('button', { name: 'Clear note' })).not.toBeInTheDocument()
+    unmount()
+
+    renderPanel({ annotation: null, txn: NOTED })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.click(screen.getByRole('button', { name: 'Clear note' }))
+    expect(mockApi.put).toHaveBeenCalledWith('/transactions/100/note', { note: null })
+  })
+
+  it('calls the user\'s note Your note, for money in as well', async () => {
+    renderPanel({ annotation: null, txn: { ...NOTED, debit_credit: 'credit' } })
+    await act(async () => {})
+    expect(screen.getByText('Your note')).toBeInTheDocument()
+  })
+
+  it('puts focus back on the note button when the form closes', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue(NOTED)
+    renderPanel({ annotation: null, txn: NO_NOTE })
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Add a note' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), 'x{Enter}')
+    await waitFor(() => expect(screen.getByRole('button', { name: /note/ })).toHaveFocus())
+  })
+
+  it('opening one form closes the other', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+  })
+
+  it('says so when saving the note fails and keeps what was typed', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockRejectedValue(new Error('boom'))
+    renderPanel({ annotation: null, txn: NO_NOTE })
+    await user.click(screen.getByRole('button', { name: 'Add a note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), 'x{Enter}')
+    expect(toastSpy).toHaveBeenCalledWith("Couldn't save the note. Finance Copilot isn't answering.", 'error')
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveValue('x')
+  })
+})
+
+describe('AnnotationPanel switching payments', () => {
+  const OTHER = { ...TXN, id: 200, payee: 'Zomato', payee_all: 'Zomato', counterparty_key: 'ZOMATO', note: 'pizza night' }
+
+  function renderSwitchable() {
+    const wrap = txn => (
+      <PrivacyProvider>
+        <ToastProvider>
+          <AnnotationPanel txn={txn} annotation={null} onClose={() => {}} onSaved={() => {}} />
+        </ToastProvider>
+      </PrivacyProvider>
+    )
+    const view = render(wrap(TXN))
+    return { switchTo: txn => view.rerender(wrap(txn)) }
+  }
+
+  it('drops a note being typed when the panel moves to another payment', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({})
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), ' MEANT FOR SWIGGY')
+
+    switchTo(OTHER)
+    await act(async () => {})
+
+    expect(screen.queryByRole('textbox', { name: 'Your note' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Zomato' })).toBeInTheDocument()
+    expect(mockApi.put).not.toHaveBeenCalled()
+  })
+
+  it('drops a name being typed when the panel moves to another payment', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({})
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), ' MEANT FOR SWIGGY')
+
+    switchTo(OTHER)
+    await act(async () => {})
+
+    expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument()
+    expect(mockApi.put).not.toHaveBeenCalled()
+  })
+
+  it('a note opened on the new payment starts from that payment, not the last one', async () => {
+    const user = userEvent.setup()
+    const { switchTo } = renderSwitchable()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.type(screen.getByRole('textbox', { name: 'Your note' }), ' extra')
+    switchTo(OTHER)
+    await act(async () => {})
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveValue('pizza night')
+  })
+})
+
+describe('AnnotationPanel focus between forms', () => {
+  it('moves focus into the note field when Edit note replaces an open rename form', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveFocus()
+  })
+
+  it('moves focus into the name field when Rename replaces an open note form', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    expect(screen.getByRole('textbox', { name: 'Your note' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveFocus()
+  })
+
+  it('still returns focus to Rename on cancel and to the note button on cancel', async () => {
+    const user = userEvent.setup()
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.keyboard('{Escape}')
+    expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Edit note' }))
+    await user.click(within(screen.getByRole('textbox', { name: 'Your note' }).closest('form')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Edit note' })).toHaveFocus()
+  })
+
+  it('returns focus to Rename after a rename is saved', async () => {
+    const user = userEvent.setup()
+    mockApi.put = vi.fn().mockResolvedValue({ ...TXN, payee: 'Swiggy Instamart' })
+    renderPanel({ annotation: null })
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), ' Instamart{Enter}')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveFocus())
+  })
+})
+
+describe('AnnotationPanel payment waiting on a pair', () => {
+  const settled = () => waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+  const ANN = { id: 'a1', category: 'Investments', subcategory: 'Mutual Funds', source: 'llm', confidence: 0.97, tags: [] }
+
+  it('says it is not sorted and what the guess was', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: true }, annotation: ANN })
+    await settled()
+    expect(screen.getByText(/Not sorted - maybe a move between your accounts\./)).toBeInTheDocument()
+    expect(screen.getByText(/The guess was Investments › Mutual Funds\./)).toBeInTheDocument()
+  })
+
+  it('shows it as not sorted, with no source or confidence of the guess', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: true }, annotation: ANN })
+    await settled()
+    expect(screen.getByText('not sorted')).toBeInTheDocument()
+    expect(screen.queryByText('llm')).not.toBeInTheDocument()
+    expect(screen.queryByText('97%')).not.toBeInTheDocument()
+  })
+
+  it('says nothing on a payment that is not waiting', async () => {
+    renderPanel({ txn: { ...TXN, waiting_on_pair: false }, annotation: ANN })
+    await settled()
+    expect(screen.queryByText(/Not sorted/)).not.toBeInTheDocument()
+  })
+})
+
+describe('AnnotationPanel paired transfer', () => {
+  const PAIRED = {
+    ...TXN, payee: 'To Own Sbi Savings', note: null,
+    transfer: { transaction_id: 'p2', direction: 'to', account_label: 'SBI savings', txn_date: '2026-10-28', text: 'Moved to SBI savings' },
+  }
+  const PAIR_ANN = { id: 'a1', category: 'Self Transfers', subcategory: 'Self Transfer', source: 'pair', confidence: 1, tags: [] }
+
+  // The panel loads its groups after it opens; let that settle so nothing updates after the test.
+  const settled = () => waitFor(() => expect(screen.queryByText('Loading…')).not.toBeInTheDocument())
+
+  it('says what it is paired with and that it is not counted', async () => {
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair: vi.fn() })
+    await settled()
+    expect(screen.getByText(/Moved to SBI savings\./)).toBeInTheDocument()
+    expect(screen.getByText(/Paired with the payment on 28 Oct in SBI savings\. Not counted as spending or income\./)).toBeInTheDocument()
+    expect(screen.getByText('paired')).toBeInTheDocument()
+  })
+
+  it('shows no line on a payment that is not paired', async () => {
+    renderPanel({ annotation: null })
+    await settled()
+    expect(screen.queryByRole('button', { name: 'Unpair' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Paired with/)).not.toBeInTheDocument()
+  })
+
+  it('Unpair hands the payment to the page and keeps focus inside the panel', async () => {
+    const user = userEvent.setup()
+    const onUnpair = vi.fn().mockResolvedValue(undefined)
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair })
+    await settled()
+    await user.click(screen.getByRole('button', { name: 'Unpair' }))
+    expect(onUnpair).toHaveBeenCalledWith(PAIRED)
+    expect(document.body).not.toHaveFocus()
+  })
+
+  it('is off while the unpair is in flight', async () => {
+    const user = userEvent.setup()
+    let finish
+    const onUnpair = vi.fn(() => new Promise(resolve => { finish = resolve }))
+    renderPanel({ txn: PAIRED, annotation: PAIR_ANN, onUnpair })
+    await settled()
+    await user.click(screen.getByRole('button', { name: 'Unpair' }))
+    expect(screen.getByRole('button', { name: 'Unpair' })).toBeDisabled()
+    await act(async () => finish())
+    expect(screen.getByRole('button', { name: 'Unpair' })).not.toBeDisabled()
   })
 })

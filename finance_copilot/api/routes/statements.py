@@ -10,22 +10,44 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from finance_copilot.api.deps import get_db
 from finance_copilot.api.routes.annotations import enqueue_annotation_job
 from finance_copilot.config import settings
+from finance_copilot.db.queries.accounts import (
+    NAME_MAX_LENGTH,
+    account_labels,
+    create_account,
+    delete_empty_accounts,
+    label_for_statement,
+    list_accounts,
+    ref_last4,
+)
 from finance_copilot.db.queries.annotations import sorted_counts_by_statement
 from finance_copilot.db.queries.app_settings import get_confidence_threshold
 from finance_copilot.db.queries.embeddings import delete_embeddings
-from finance_copilot.db.queries.transactions import list_transactions, statement_balance_checks
+from finance_copilot.db.queries.transactions import (
+    delete_payments,
+    list_transactions,
+    merge_duplicate_payments,
+    statement_balance_checks,
+)
+from finance_copilot.db.queries.transfers import release_transfers, unpair_same_account
 from finance_copilot.demo_seed import has_demo_data
+from finance_copilot.parsers import spreadsheet as sheet
+from finance_copilot.pipeline.dedup import payments_account_already_has
 from finance_copilot.pipeline.ingest import (
     DuplicateStatementError,
+    NothingNewError,
+    OverlapNeedsConfirmation,
     check_continuity,
     check_description_formats,
     ingest_pdf,
 )
+from finance_copilot.pipeline.pairing import pair_transfers_locked
+from finance_copilot.pipeline.spreadsheet_ingest import NeedsAnswer, ingest_spreadsheet
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +58,82 @@ router = APIRouter()
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
+def _public(statement: dict) -> dict:
+    """A statement row as the API shows it: the account number only as its last
+    four digits. The full number is the key to the account; it stays in the ledger."""
+    shown = {k: v for k, v in statement.items() if k != "account_ref"}
+    shown["account_ref_last4"] = ref_last4(statement.get("account_ref"))
+    return shown
+
+
+def _read_upload(file: UploadFile) -> tuple[bytes, str]:
+    """The file's bytes and what kind of statement they are, by content. 413 for a
+    file over the limit, 422 for one that is none of a PDF, CSV, XLSX or XLS."""
+    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+    kind = sheet.sniff_kind(contents)
+    if kind is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{file.filename or 'This file'} isn't a PDF, CSV, XLSX or XLS file. "
+            "Only those can be added.",
+        )
+    return contents, kind
+
+
+def _held_body(held: OverlapNeedsConfirmation, conn: sqlite3.Connection) -> dict:
+    n, total = held.unmatched, held.rows_in_overlap
+    if total == 1:
+        first = "its one payment on those days matches nothing there"
+    elif n == total:
+        first = f"all {total} of its payments on those days match nothing there"
+    else:
+        first = f"{n} of its {total} payments on those days match nothing there"
+    return {
+        "detail": (
+            f"This file covers days {held.account_label} already has, and {first}. "
+            "It may be a statement you already added, printed another way, "
+            "and adding it would count those payments twice. Add it only if it is not, "
+            "or say it is another account."
+        ),
+        "needs": ["overlap"],
+        "overlap": {
+            "rows_in_overlap": total,
+            "unmatched": n,
+            "account_label": held.account_label,
+        },
+        # The account it was held against, and the others it could belong to.
+        "account_id": held.account_id,
+        "accounts": [{"id": a["id"], "account_label": a["account_label"]} for a in list_accounts(conn)],
+    }
+
+
 @router.post("/upload")
 def upload_statement(
     file: UploadFile,
     # Form body, not query param - query strings end up in server access logs.
     password: Annotated[str | None, Form()] = None,
+    # A spreadsheet's answers to the one question it may ask: which column is which
+    # (JSON {role: column}), and which account (an existing one, or a name for a
+    # new one). The same file is sent again with them; nothing is staged here.
+    mapping: Annotated[str | None, Form()] = None,
+    account_id: Annotated[str | None, Form()] = None,
+    new_account_name: Annotated[str | None, Form()] = None,
+    confirm_overlap: Annotated[bool, Form()] = False,
+    # "dmy" or "mdy": which way round a date column that does not say goes.
+    date_order: Annotated[str | None, Form()] = None,
     conn: sqlite3.Connection = Depends(get_db),
 ):
-    """Upload a PDF, run the parser, persist statement + transactions, return the Statement.
+    """Upload a PDF, CSV, XLSX or XLS, read it, persist statement + transactions, return the Statement.
 
     The statement is sorted without being asked: a job for it is queued here, on
     the server, so an upload by script gets the same treatment as one from the page.
+    A spreadsheet the app cannot place gets a 422 with {"needs": [...]} and what the
+    form shows; it stores nothing.
     """
     # Sample data is never mixed with a real statement: its fake rent and
     # salary would sit in every total.
@@ -56,21 +143,30 @@ def upload_statement(
             detail="Your ledger still has sample data. Remove it first (Settings > Data), "
             "then add your statement so the two don't mix.",
         )
-    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Statement exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
-        )
+    contents, kind = _read_upload(file)
 
-    # A PDF starts with "%PDF" (some writers put a few bytes of junk before it).
-    # Say so up front rather than let the parser report "no transaction table".
-    if b"%PDF" not in contents[:1024]:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{file.filename or 'This file'} isn't a PDF. Only PDF statements can be added.",
-        )
+    try:
+        if kind == "pdf":
+            statement = _ingest_pdf_bytes(contents, password, conn)
+        else:
+            statement = ingest_spreadsheet(
+                conn, contents, mapping=mapping, account_id=account_id,
+                new_account_name=new_account_name, confirm_overlap=confirm_overlap,
+                date_order=date_order,
+            )
+    except (DuplicateStatementError, NothingNewError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NeedsAnswer as asked:
+        return JSONResponse(status_code=422, content=asked.body)
+    except OverlapNeedsConfirmation as held:
+        return JSONResponse(status_code=422, content=_held_body(held, conn))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    return _landed(conn, statement)
+
+
+def _ingest_pdf_bytes(contents: bytes, password: str | None, conn: sqlite3.Connection):
     # Stage the statement next to the DB with owner-only perms, not in the shared
     # /tmp: this is the app's most sensitive data, and a crash between write and
     # unlink must not leave a bank statement world-readable in a shared temp dir.
@@ -85,18 +181,38 @@ def upload_statement(
     except BaseException:
         os.unlink(tmp_path)
         raise
-
     try:
-        try:
-            statement = ingest_pdf(tmp_path, password=password, conn=conn)
-        except DuplicateStatementError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return ingest_pdf(tmp_path, password=password, conn=conn)
     finally:
         os.unlink(tmp_path)
 
-    warnings = check_continuity(conn, statement) + check_description_formats(conn, statement)
+
+@router.post("/upload/preview")
+def preview_upload(
+    file: UploadFile,
+    mapping: Annotated[str, Form()],
+    date_order: Annotated[str | None, Form()] = None,
+):
+    """The first payments of a spreadsheet as they would be read with these columns,
+    or why they cannot be: what the mapping form shows beside the column choices.
+    Stores nothing and changes nothing."""
+    contents, kind = _read_upload(file)
+    if kind == "pdf":
+        raise HTTPException(status_code=422, detail="A PDF has no columns to choose.")
+    try:
+        table = sheet.read_table(contents)
+        return sheet.preview(table, sheet.parse_mapping_field(mapping), date_order=date_order)
+    except sheet.SpreadsheetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _landed(conn: sqlite3.Connection, statement) -> dict:
+    """What the page is told about a statement that landed, and its sort queued."""
+    warnings = (
+        check_continuity(conn, statement)
+        + statement.notices
+        + check_description_formats(conn, statement)
+    )
 
     # Sorting starts by itself. Failing to queue it must not fail an upload that
     # already landed: the statement is there and "Sort again" still works.
@@ -115,17 +231,25 @@ def upload_statement(
         statement.id, {"checked": 0, "consistent": 0, "balanced": True}
     )
     return {
-        **statement.model_dump(),
+        **_public(statement.model_dump()),
         "warnings": warnings,
         "transaction_count": transaction_count,
+        # What the file held, what of it was new, and what the account had already.
+        "rows_in_file": statement.rows_in_file,
+        "rows_added": statement.rows_added,
+        "rows_already_in": statement.rows_in_file - statement.rows_added,
         "balance_check": balance_check,
         "sorting_job_id": sorting_job_id,
+        "account_label": label_for_statement(account_labels(conn), statement.model_dump()),
+        "account_is_new": statement.account_is_new,
+        "transfers_paired": statement.transfers_paired,
     }
 
 
 @router.get("")
 def list_statements(conn: sqlite3.Connection = Depends(get_db)):
-    """List statements, each enriched with payment and sorted counts.
+    """List statements, each enriched with payment and sorted counts and the days and
+    months its own payments fall in.
 
     Counts are computed in grouped queries (no N+1) so the UI can show sorting
     progress per statement. sorted_count means what Teach Me
@@ -136,7 +260,10 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
         """
         SELECT
             s.*,
-            COUNT(DISTINCT t.id) AS txn_count
+            COUNT(DISTINCT t.id) AS txn_count,
+            MIN(t.txn_date) AS first_payment,
+            MAX(t.txn_date) AS last_payment,
+            GROUP_CONCAT(DISTINCT strftime('%Y-%m', t.txn_date)) AS payment_months
         FROM statements s
         LEFT JOIN transactions t ON t.statement_id = s.id
         GROUP BY s.id
@@ -147,35 +274,44 @@ def list_statements(conn: sqlite3.Connection = Depends(get_db)):
     # trust indicator (4.20). One extra windowed query, merged in by id.
     checks = statement_balance_checks(conn)
     sorted_counts = sorted_counts_by_statement(conn, get_confidence_threshold(conn))
+    shared = _shared_with_others(conn)
+    labels = account_labels(conn)
     result = []
     for row in rows:
         d = dict(row)
+        d["account_label"] = label_for_statement(labels, d)
+        d = _public(d)
+        # Where this statement's own payments are (it may run across months its
+        # payments do not): the first and last day and the months they fall in.
+        d["payment_months"] = sorted((d["payment_months"] or "").split(",")) if d["payment_months"] else []
         d["sorted_count"] = sorted_counts.get(d["id"], 0)
         d["balance_check"] = checks.get(d["id"], {"checked": 0, "consistent": 0, "balanced": True})
+        d["shared_with_others"] = shared.get(d["id"], 0)
         result.append(d)
     return result
 
 
-class StatementPatch(BaseModel):
-    bank_name: str
-
-
-@router.patch("/{statement_id}")
-def patch_statement(
-    statement_id: str,
-    body: StatementPatch,
-    conn: sqlite3.Connection = Depends(get_db),
-):
-    """Update mutable fields on a statement (currently: bank_name)."""
-    row = conn.execute("SELECT id FROM statements WHERE id = ?", (statement_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    conn.execute(
-        "UPDATE statements SET bank_name = ? WHERE id = ?",
-        (body.bank_name.strip(), statement_id),
-    )
-    conn.commit()
-    return {"id": statement_id, "bank_name": body.bank_name.strip()}
+def _shared_with_others(conn: sqlite3.Connection) -> dict[str, int]:
+    """{statement id: how many of its payments another statement of the account
+    also had}. A statement that skipped payments (rows_added below rows_in_file),
+    when it was added or when it was moved into the account, left the other
+    statement as their only holder, so deleting that one takes them for good.
+    The skipped payments are not stored, so the dates the skipping statement
+    covers stand for them: the bank prints every payment of the days it covers."""
+    return {
+        r["id"]: r["n"]
+        for r in conn.execute(
+            """
+            SELECT s.id AS id, COUNT(DISTINCT t.id) AS n
+            FROM statements s
+            JOIN transactions t ON t.statement_id = s.id
+            JOIN statements o ON o.account_id = s.account_id AND o.id != s.id
+                AND o.rows_in_file > o.rows_added
+                AND t.txn_date BETWEEN o.period_start AND o.period_end
+            GROUP BY s.id
+            """
+        )
+    }
 
 
 @contextlib.contextmanager
@@ -212,6 +348,138 @@ def _refuse_while_sorting(conn: sqlite3.Connection, statement_id: str, action: s
         )
 
 
+def _payments_left_in_old_account(conn: sqlite3.Connection, statement: sqlite3.Row) -> int:
+    """How many payments the statement skipped at ingest (they were in its account
+    already) are still in that account, in its dates. A statement that skipped
+    payments whose owner was deleted since claims none of them: deleting a
+    statement does not restore what a later file skipped."""
+    skipped = (statement["rows_in_file"] or 0) - (statement["rows_added"] or 0)
+    start = statement["printed_start"] or statement["period_start"]
+    end = statement["printed_end"] or statement["period_end"]
+    if skipped <= 0 or not start or not end:
+        return 0
+    still_there = conn.execute(
+        "SELECT COUNT(*) FROM transactions t JOIN statements s ON s.id = t.statement_id "
+        "WHERE s.account_id = ? AND s.id != ? AND t.txn_date BETWEEN ? AND ?",
+        (statement["account_id"], statement["id"], start, end),
+    ).fetchone()[0]
+    return min(skipped, still_there)
+
+
+class StatementPatch(BaseModel):
+    """Where a statement goes: another existing account, or `new_account` to start
+    one for it (bank and number taken from the statement), which needs a name."""
+
+    account_id: str | None = None
+    new_account: bool = False
+    name: str | None = None
+
+
+@router.patch("/{statement_id}")
+def patch_statement(
+    statement_id: str,
+    body: StatementPatch,
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    """Move a statement to another account, or to a new one (when ingest put it in
+    the wrong one, say a statement of a second account that printed no number). An
+    account left with no statements goes away."""
+    if bool(body.account_id) == body.new_account:
+        raise HTTPException(status_code=422, detail="Say which account to move it to, or ask for a new one.")
+    name = (body.name or "").strip()
+    if body.new_account and not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Give the new account a name, so you can tell the two accounts apart.",
+        )
+    if len(name) > NAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422, detail=f"An account name can be at most {NAME_MAX_LENGTH} characters."
+        )
+    with _exclusive(conn):
+        statement = conn.execute(
+            "SELECT * FROM statements WHERE id = ?", (statement_id,)
+        ).fetchone()
+        if not statement:
+            raise HTTPException(status_code=404, detail="Statement not found")
+        if body.new_account:
+            siblings = conn.execute(
+                "SELECT COUNT(*) FROM statements WHERE account_id = ?", (statement["account_id"],)
+            ).fetchone()[0]
+            if siblings <= 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This is the only statement in its account, so it already has an account of its own.",
+                )
+            _refuse_while_sorting(conn, statement_id, "Move it")
+            target = create_account(conn, statement["bank_name"], statement["account_ref"], name)
+        else:
+            target = body.account_id
+            if not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (target,)).fetchone():
+                raise HTTPException(status_code=404, detail="Account not found")
+            if statement["account_id"] != target:
+                _refuse_while_sorting(conn, statement_id, "Move it")
+        already_there = 0
+        carried_over = 0
+        not_carried = 0
+        left_behind = 0
+        old_account = statement["account_id"]
+        deleted = False
+        if statement["account_id"] != target:
+            left_behind = _payments_left_in_old_account(conn, statement)
+            # The target may hold some of these payments already (the file first
+            # landed in the wrong account): the account's own copies stay, the
+            # duplicates go (after their work moves over), and a statement left
+            # with no payments goes too.
+            duplicates = payments_account_already_has(conn, statement_id, target)
+            already_there = len(duplicates)
+            if duplicates:
+                # What the user did to the duplicates goes onto the account's own
+                # copies first; the same step then deletes them.
+                carried_over, not_carried = merge_duplicate_payments(conn, duplicates)
+                delete_payments(conn, [dup for dup, _ in duplicates])
+                conn.execute(
+                    "UPDATE statements SET rows_added = MAX(COALESCE(rows_added, 0) - ?, 0) WHERE id = ?",
+                    (already_there, statement_id),
+                )
+            deleted = conn.execute(
+                "SELECT NOT EXISTS (SELECT 1 FROM transactions WHERE statement_id = ?)", (statement_id,)
+            ).fetchone()[0] == 1
+            if deleted:
+                conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+                conn.execute(
+                    "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
+                    (statement_id,),
+                )
+            else:
+                conn.execute("UPDATE statements SET account_id = ? WHERE id = ?", (target, statement_id))
+            delete_empty_accounts(conn)
+            # Which payments are transfers between accounts depends on which
+            # accounts they sit in: a pair now inside one account is no transfer,
+            # and payments now in different accounts may be one.
+            unpair_same_account(conn)
+            pair_transfers_locked(conn)
+    labels = account_labels(conn)
+    return {
+        "id": statement_id,
+        "account_id": target,
+        "account_label": labels[target],
+        "rows_already_there": already_there,
+        # How many of those had work of the user's (a label, note, name, group,
+        # skip or link) that now sits on the payment the account already had.
+        "work_carried_over": carried_over,
+        # How many had a label, note, name or group role of the user's, or a transfer
+        # pair, that differed from the account's own copy or could not move: the
+        # account's own was kept instead.
+        "work_not_carried": not_carried,
+        # Payments in the moved statement's dates that the statement skipped at
+        # ingest (they were in its old account then) and that stay there.
+        "payments_left_behind": 0 if deleted else left_behind,
+        "left_behind_account_label": labels.get(old_account),
+        "statement_deleted": deleted,
+    }
+
+
 @router.delete("/{statement_id}")
 def delete_statement(
     statement_id: str,
@@ -231,22 +499,12 @@ def delete_statement(
             ).fetchall()
         ]
 
-        if txn_ids:
-            placeholders = ",".join("?" * len(txn_ids))
-            conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
-            delete_embeddings(conn, txn_ids)
-            # transaction_links references transactions(id) without ON DELETE CASCADE,
-            # so links must go before the transactions or the FK check (PRAGMA
-            # foreign_keys=ON) aborts the delete. A link can cross a statement
-            # boundary, so match on either endpoint.
-            conn.execute(
-                f"DELETE FROM transaction_links "
-                f"WHERE txn_a IN ({placeholders}) OR txn_b IN ({placeholders})",
-                txn_ids + txn_ids,
-            )
-            conn.execute(f"DELETE FROM transactions WHERE id IN ({placeholders})", txn_ids)
+        delete_payments(conn, txn_ids)
 
         conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+        delete_empty_accounts(conn)
+        # With these payments gone a pair that was ambiguous can be unambiguous.
+        pair_transfers_locked(conn)
         # Its sort that was still waiting has nothing left to sort.
         conn.execute(
             "DELETE FROM annotation_jobs WHERE statement_id = ? AND status = 'queued' AND kind = 'annotate'",
@@ -277,11 +535,18 @@ def reset_statement_data(
         annotations_deleted = 0
         if txn_ids:
             placeholders = ",".join("?" * len(txn_ids))
-            cur = conn.execute(
-                f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
-            )
-            annotations_deleted = cur.rowcount
+            # A pair with a payment in another statement is taken apart on both
+            # sides (the other statement's payment goes back to To sort), and
+            # pairing runs again once the labels are cleared: what two statements
+            # agree on is a fact, so a signed, unambiguous pair comes back, and
+            # one the user took apart stays apart.
+            annotations_deleted = conn.execute(
+                f"SELECT COUNT(*) FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids
+            ).fetchone()[0]
+            release_transfers(conn, txn_ids, drop_decisions=False)
+            conn.execute(f"DELETE FROM annotations WHERE transaction_id IN ({placeholders})", txn_ids)
             delete_embeddings(conn, txn_ids)
+            pair_transfers_locked(conn)
 
     return {"reset": statement_id, "annotations_deleted": annotations_deleted}
 

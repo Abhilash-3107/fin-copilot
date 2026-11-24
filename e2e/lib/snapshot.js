@@ -22,10 +22,12 @@ export const VOLATILE = [
  * journey. A version not listed here is read through the current shape, so a
  * new release needs no entry until its API changes again.
  *
- * 0.1.2 has no /policies, no /categories/tidy-up and no
+ * 0.1.2 has no /policies, no /categories/tidy-up, no /accounts and no
  * /annotations/review-queue/counts (the set-aside figure is /snoozed-count).
+ * 0.2.0 has all of those but /accounts.
  */
 const LEGACY_0_1_2 = '0.1.2'
+const RELEASE_WITHOUT_ACCOUNTS = '0.2.0'
 
 const PAGE = 1000
 
@@ -34,8 +36,28 @@ async function allTransactions(api) {
   let after = ''
   for (;;) {
     const page = await api.get(`/transactions?include=annotation&limit=${PAGE}${after}`)
-    rows.push(...page)
+    // The account a payment sits in is its statement's, which statements and accounts carry and
+    // J15 compares; the row's own copy (added in 0.3.0 for the account column) is only that
+    // statement's account read through the row.
+    rows.push(...page.map(({ account_id: _id, account_label: _label, ...row }) => row))
     if (page.length < PAGE) return rows
+    after = `&after=${page.at(-1).id}`
+  }
+}
+
+/**
+ * The account each payment row says it is in ({payment id: account id}), or null for a release whose
+ * rows carry none. Not part of the stored facts (it is the statement's account read through the row,
+ * and J15 compares that once, on the statements), but the upgrade checks the two agree.
+ */
+export async function paymentAccounts(api) {
+  const found = {}
+  let after = ''
+  for (;;) {
+    const page = await api.get(`/transactions?limit=${PAGE}${after}`)
+    if (page.length > 0 && !('account_id' in page[0])) return null
+    for (const row of page) found[row.id] = row.account_id
+    if (page.length < PAGE) return found
     after = `&after=${page.at(-1).id}`
   }
 }
@@ -55,14 +77,16 @@ async function releaseSpecificReads(api, version) {
   if (version === LEGACY_0_1_2) {
     const { count } = await api.get('/annotations/review-queue/snoozed-count')
     // What the release cannot report is null, so a later release that can shows as a change.
-    return { policies: null, tidyUp: null, queueCounts: { set_aside: count } }
+    return { policies: null, tidyUp: null, queueCounts: { set_aside: count }, accounts: null }
   }
-  const [policies, tidyUp, queueCounts] = await Promise.all([
+  const [policies, tidyUp, queueCounts, accounts] = await Promise.all([
     api.get('/policies'),
     api.get('/categories/tidy-up'),
     api.get('/annotations/review-queue/counts'),
+    // 0.2.0 has everything above and no accounts.
+    version === RELEASE_WITHOUT_ACCOUNTS ? null : api.get('/accounts'),
   ])
-  return { policies, tidyUp, queueCounts }
+  return { policies, tidyUp, queueCounts, accounts }
 }
 
 /**
@@ -87,11 +111,14 @@ export async function storedFacts(api, { ignore = [], version } = {}) {
       api.get('/annotations/review-queue'),
       releaseSpecificReads(api, version),
     ])
-  const { policies, tidyUp, queueCounts } = specific
+  const { policies, tidyUp, queueCounts, accounts } = specific
   const groups = await Promise.all(groupList.map(({ id }) => api.get(`/groups/${id}`)))
 
   const facts = {
     statements: statements.sort(byId),
+    // Where money sits: what each statement belongs to, and what the user called it.
+    // null where the release has no accounts, so a release that has them shows as a change.
+    accounts: accounts === null ? null : accounts.sort(byId),
     transactions: transactions.sort(byId),
     people: people.sort(byId),
     groups: groups.map((g) => ({ ...g, members: [...g.members].sort((a, b) => (a.transaction_id < b.transaction_id ? -1 : 1)) })).sort(byId),
@@ -136,7 +163,11 @@ const FIGURES_FROM_INSIGHTS = {
     invested: i.verdict.invested,
     kept: i.verdict.kept,
     keptHeadline: i.verdict.invested + i.verdict.kept,
+    // Money in that was not earned income: 0.1.2 counted every credit that was not labelled
+    // salary-like income here, sorted or not; it has no figure for the unsorted part.
+    otherIn: i.verdict.other_in,
     comparison: pickTotals(i.verdict.prev),
+    comparisonNote: [],
     whatChanged: i.what_changed,
     breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
     breakdownExtras: null,
@@ -154,7 +185,12 @@ const FIGURES_FROM_INSIGHTS = {
     invested: i.verdict.invested,
     kept: i.verdict.kept,
     keptHeadline: i.verdict.kept,
+    // Credits sorted as refunds and paybacks, and credits not sorted yet.
+    otherIn: i.verdict.other_in,
+    unsortedIn: i.verdict.unsorted_in,
     comparison: pickTotals(i.verdict.prev),
+    // Why a month shows no comparison, one reason per account that could not be compared.
+    comparisonNote: i.comparison_note.map((n) => n.reason),
     whatChanged: i.what_changed,
     breakdown: i.categories.map((c) => ({ category: c.category, net: c.net })),
     breakdownExtras: i.breakdown.extras,

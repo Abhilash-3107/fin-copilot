@@ -38,7 +38,7 @@ vi.mock('react-chartjs-2', () => ({
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import { AnnotationJobProvider } from '../contexts/AnnotationJobContext.jsx'
 import Dashboard from './Dashboard.jsx'
@@ -118,13 +118,13 @@ function renderDashboard() {
   render(
     <MemoryRouter>
       <PrivacyProvider>
-        <StatementProvider>
+        <LedgerProvider>
           <PeriodProvider>
             <AnnotationJobProvider>
               <Dashboard />
             </AnnotationJobProvider>
           </PeriodProvider>
-        </StatementProvider>
+        </LedgerProvider>
       </PrivacyProvider>
     </MemoryRouter>
   )
@@ -165,6 +165,61 @@ describe('Dashboard', () => {
     expect(screen.queryByText('not part of Out')).not.toBeInTheDocument()
     expect(screen.queryByText(/went into investments/)).not.toBeInTheDocument()
     expect(screen.queryByText(/earlier months/)).not.toBeInTheDocument()
+  })
+
+  it('says which account the balance chart draws', async () => {
+    renderDashboard()
+    expect(await screen.findByText('Balance over time')).toBeInTheDocument()
+    expect(screen.getByText('Kotak', { selector: 'span' })).toBeInTheDocument()
+  })
+
+  it('says which account has no balance in the month, rather than asking for statements', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({
+          ...SUMMARY,
+          balance: { account: 'Salary account', series: [{ date: '2026-04-10', balance: 71000 }, { date: '2026-04-30', balance: 72000 }] },
+        })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('No balance for Salary account in May 2026')).toBeInTheDocument()
+    expect(screen.queryByText(/appears once statements are imported/)).not.toBeInTheDocument()
+  })
+
+  it('says so when the month holds a single balance reading, too few to draw', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: 'Kotak', series: [{ date: '2026-05-10', balance: 80000 }] } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('Only one balance reading for Kotak in May 2026')).toBeInTheDocument()
+  })
+
+  it('says the statements have no running balance rather than that nothing is imported', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: null, series: [], no_balances: true } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('These statements have no running balance to chart.')).toBeInTheDocument()
+    expect(screen.queryByText(/appears once statements/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the import message for a ledger with no balance history at all', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) {
+        return Promise.resolve({ ...SUMMARY, balance: { account: null, series: [] } })
+      }
+      return Promise.resolve([])
+    })
+    renderDashboard()
+    expect(await screen.findByText('Balance history appears once statements are imported')).toBeInTheDocument()
   })
 
   it('shows a month-scoped balance-over-time chart with no headline number', async () => {
@@ -486,6 +541,28 @@ describe('Dashboard', () => {
       expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
     })
 
+    it('says why there is no comparison, naming each account', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            comparison_note: [
+              { account_label: 'SBI savings', reason: 'has no statement for 1-20 Oct' },
+              { account_label: 'HDFC', reason: 'was added in November' },
+            ],
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+          })
+          : Promise.resolve([])
+      ))
+      renderDashboard()
+      expect(await screen.findByText('No comparison with October: SBI savings has no statement for 1-20 Oct; HDFC was added in November.')).toBeInTheDocument()
+      expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
+      // No comparison, no spike alert either.
+      expect(screen.queryByText(/ran .* above/)).not.toBeInTheDocument()
+    })
+
     it('names a complete month by its month', async () => {
       renderDashboard()
       await screen.findByText('Kept')
@@ -506,6 +583,20 @@ describe('Dashboard', () => {
     const note = (await screen.findByText(/in refunds and paybacks/)).closest('p')
     expect(note).toHaveTextContent('incl ₹750Amount hidden in refunds and paybacks')
     expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹750')
+  })
+
+  it('words unsorted money in on the In tile apart from refunds, and hides it in privacy mode', async () => {
+    localStorage.setItem('fc_privacy_hidden', '1')
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 0, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderDashboard()
+    const note = await screen.findByText(/not sorted yet/)
+    expect(note).toHaveTextContent('incl ₹7,000Amount hidden not sorted yet')
+    expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹7,000')
+    expect(screen.queryByText(/refunds and paybacks/)).not.toBeInTheDocument()
   })
 
   // Sum every rupee figure inside the given rows (the Indian grouping has commas only).
@@ -728,5 +819,139 @@ describe('Dashboard when the API fails', () => {
     heal()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('link', { name: /64 guesses to check/ })).toBeInTheDocument()
+  })
+})
+
+describe('Dashboard with two accounts', () => {
+  const ACCOUNTS = [
+    { id: 'acc_k', account_label: 'Kotak savings', statement_count: 4 },
+    { id: 'acc_s', account_label: 'SBI savings', statement_count: 3 },
+  ]
+  const serve = (summary = SUMMARY) => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(summary)
+      if (path === '/annotations/review-queue/counts') return Promise.resolve(COUNTS)
+      if (path === '/accounts') return Promise.resolve(ACCOUNTS)
+      if (path === '/transactions/months') return Promise.resolve({ months: ['2026-04', '2026-05'] })
+      return Promise.resolve([])
+    })
+  }
+  const insightsCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith('/insights'))
+
+  it('offers every account beside the period, and asks once for the remembered account', async () => {
+    serve()
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    const filter = await screen.findByRole('combobox', { name: 'Account' })
+    await screen.findByText('Kept')
+    expect([...filter.options].map(o => o.textContent)).toEqual(['All accounts', 'Kotak savings', 'SBI savings'])
+    expect(filter).toHaveValue('acc_s')
+    expect(insightsCalls()).toEqual(['/insights?month=2026-05&account_id=acc_s'])
+  })
+
+  it('shows no account filter for one account', async () => {
+    mockApi.get.mockImplementation(path => (path.startsWith('/insights') ? Promise.resolve(SUMMARY) : Promise.resolve(path === '/accounts' ? [ACCOUNTS[0]] : [])))
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
+  })
+
+  it('asks again for the account chosen, and remembers it', async () => {
+    serve()
+    renderDashboard()
+    await screen.findByText('Kept')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_k' } })
+    await waitFor(() => expect(insightsCalls().at(-1)).toBe('/insights?month=2026-05&account_id=acc_k'))
+    expect(localStorage.getItem('fc_account_id')).toBe('acc_k')
+    await screen.findByText('Kept')
+  })
+
+  it('drills through into Transactions with the account the figure is for', async () => {
+    serve()
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderDashboard()
+    const link = await screen.findByRole('link', { name: /Food & Dining/ })
+    expect(link.getAttribute('href')).toContain('account=acc_k')
+  })
+
+  it('does not name an account in a drill-through when every account is shown', async () => {
+    serve()
+    renderDashboard()
+    const link = await screen.findByRole('link', { name: /Food & Dining/ })
+    expect(link.getAttribute('href')).not.toContain('account=')
+  })
+
+  it('says which account is behind in a partial month', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
+        short: [{ account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' }],
+      },
+    })
+    renderDashboard()
+    expect(await screen.findByText(/SBI savings to 15 May/)).toBeInTheDocument()
+  })
+
+  it('names no account when every account stops on the same day: the month is just in progress', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
+        short: [
+          { account_id: 'acc_k', account_label: 'Kotak savings', covered_through: '2026-05-15' },
+          { account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' },
+        ],
+      },
+    })
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByText(/Not every account is covered/)).not.toBeInTheDocument()
+  })
+
+  it('names an account that starts late in the month and one whose statement has ended', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true, counted: 2,
+        short: [
+          { account_id: 'acc_k', account_label: 'Kotak savings', covered_from: '2026-05-10', covered_through: '2026-05-31', closed: false },
+          { account_id: 'acc_s', account_label: 'SBI savings', covered_from: null, covered_through: '2026-05-15', closed: true },
+        ],
+      },
+    })
+    renderDashboard()
+    expect(await screen.findByText(/Kotak savings from 10 May, SBI savings \(the statement ends 15 May\)/)).toBeInTheDocument()
+  })
+
+  it('does not name the account behind when one account is selected', async () => {
+    serve({
+      ...SUMMARY,
+      period: {
+        ...SUMMARY.period, covered_through: '2026-05-15', partial: true,
+        short: [{ account_id: 'acc_s', account_label: 'SBI savings', covered_through: '2026-05-15' }],
+      },
+    })
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    await screen.findByText('Kept')
+    expect(screen.queryByText(/SBI savings to 15 May/)).not.toBeInTheDocument()
+  })
+
+  it('says the balance line is one account\'s, not a sum', async () => {
+    serve()
+    renderDashboard()
+    expect(await screen.findByText('Showing Kotak')).toBeInTheDocument()
+  })
+
+  it('says an account has no payments in the month instead of showing zeros', async () => {
+    serve({
+      ...SUMMARY, account: { id: 'acc_s', label: 'SBI savings' }, annotation: { total: 0, annotated: 0 },
+      verdict: { ...SUMMARY.verdict, money_in: 0, money_out: 0, invested: 0, kept: 0, kept_rate: null, prev: null },
+      comparison: null, categories: [], recurring: [], what_changed: [], unexplained: { count: 0, total: 0 },
+    })
+    localStorage.setItem('fc_account_id', 'acc_s')
+    renderDashboard()
+    expect(await screen.findByText(/SBI savings has no payments in May 2026/)).toBeInTheDocument()
   })
 })

@@ -8,6 +8,8 @@
 // each payment's upi_meta already parsed by compare.js) and returns the problems
 // it finds, as sentences.
 
+import { expectedAccounts, lastFour } from './accounts-oracle.js'
+
 const cents = (n) => Math.round(n * 100) / 100
 const sum = (rows, pick) => cents(rows.reduce((total, row) => total + pick(row), 0))
 const isSample = (id) => id.startsWith('demo_')
@@ -17,7 +19,7 @@ function categoryIdsNameTheirLabel(before, after) {
   const problems = []
   const categories = new Map(after.facts.categories.map((c) => [c.id, c]))
   const payments = new Map(after.facts.transactions.map((t) => [t.id, t]))
-  for (const row of after.facts.annotationCategoryIds) {
+  for (const row of after.facts.annotationRows) {
     const payment = payments.get(row.transaction_id)
     if (!payment) {
       problems.push(`an annotation belongs to payment ${row.transaction_id}, which is not in the ledger`)
@@ -91,6 +93,24 @@ function unsortedOnlyGrows(before, after) {
   return problems
 }
 
+/**
+ * Money in that is not sorted yet used to be counted in with refunds and paybacks. Now it has its own
+ * figure, and the refunds and paybacks figure falls by exactly that much, in every month: nothing is
+ * lost from In, and nothing else moves out of it.
+ */
+function unsortedMoneyInLeavesRefundsAndPaybacks(before, after) {
+  const problems = []
+  for (const [month, now] of Object.entries(after.figures.months)) {
+    const was = before.figures.months[month]
+    if (!was) continue
+    if (!(now.unsortedIn >= 0)) problems.push(`${month}: ${now.unsortedIn} of money in is not sorted yet`)
+    else if (cents(was.otherIn - now.otherIn) !== cents(now.unsortedIn)) {
+      problems.push(`${month}: refunds and paybacks went from ${was.otherIn} to ${now.otherIn} but ${now.unsortedIn} is not sorted yet`)
+    }
+  }
+  return problems
+}
+
 /** The headline, the recurring total and the breakdown must agree with the figures beside them. */
 function figuresAgreeWithEachOther(before, after) {
   const problems = []
@@ -101,6 +121,39 @@ function figuresAgreeWithEachOther(before, after) {
     }
     const rows = sum(m.breakdown, (r) => r.net) + sum(m.breakdownExtras ?? [], (r) => r.total)
     if (cents(rows) !== cents(m.out)) problems.push(`${month}: where it went adds up to ${cents(rows)}, Out is ${m.out}`)
+  }
+  return problems
+}
+
+/**
+ * A month either shows a comparison or says why it does not, and what it shows is one set of figures:
+ * every delta is this month's figure minus the previous month's to the paisa, the four tiles are
+ * measured from the same accounts and days (Kept is In minus Out minus Invested on both sides, so a
+ * base that differed from the figure shown on any tile would break it), and a month with no
+ * comparison lists nothing under What changed. Only the first month of a ledger has no comparison
+ * and nothing to say about it.
+ */
+function comparisonsAreHonest(before, after) {
+  const problems = []
+  const months = Object.keys(after.figures.months).sort()
+  for (const [month, m] of Object.entries(after.figures.months)) {
+    const note = m.comparisonNote ?? []
+    if (m.comparison === null) {
+      if (month !== months[0] && note.length === 0) problems.push(`${month}: no comparison and no reason given`)
+      if (m.whatChanged.length > 0) problems.push(`${month}: no comparison, yet What changed lists ${m.whatChanged.length} rows`)
+      continue
+    }
+    if (note.length > 0) problems.push(`${month}: a comparison is shown and also a reason for having none (${note.join('; ')})`)
+    const was = m.comparison
+    if (cents(m.kept - (m.in - m.out - m.invested)) !== 0) problems.push(`${month}: Kept ${m.kept} is not In - Out - Invested`)
+    if (cents(was.kept - (was.in - was.out - was.invested)) !== 0) {
+      problems.push(`${month}: the previous month's Kept ${was.kept} is not its In - Out - Invested (the tiles are not measured from one set of payments)`)
+    }
+    for (const row of m.whatChanged) {
+      if (cents(row.delta) !== cents(row.current - row.previous)) {
+        problems.push(`${month}: ${row.category} moved by ${row.delta}, but ${row.current} less ${row.previous} is ${cents(row.current - row.previous)}`)
+      }
+    }
   }
   return problems
 }
@@ -231,7 +284,7 @@ function groupMembersAgreeWithTheirPayment(before, after) {
     for (const m of g.members) {
       const t = payments.get(m.transaction_id)
       if (!t) continue
-      for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note']) {
+      for (const field of ['counterparty_key', 'merchant', 'payee', 'payee_all', 'channel', 'display_name', 'payee_name', 'note', 'user_note', 'note_is_yours']) {
         if (m[field] !== t[field]) problems.push(`group ${g.id} member ${m.id}: ${field} is ${JSON.stringify(m[field])}, its payment says ${JSON.stringify(t[field])}`)
       }
     }
@@ -291,9 +344,281 @@ function topPayeesAreNamedLikeTheirPayments(before, after) {
   return problems
 }
 
+/**
+ * Migration 041 puts every statement in an account: each statement names an account
+ * that exists, no account is empty, the counts add up, and the label an account is
+ * shown by never carries a full account number (only the last four digits).
+ */
+function accountsHoldEveryStatement(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts) return []
+  const problems = []
+  const byId = new Map(accounts.map((a) => [a.id, a]))
+  const held = new Map()
+  for (const s of after.facts.statements) {
+    const account = byId.get(s.account_id)
+    if (!account) {
+      problems.push(`statement ${s.id} belongs to account ${s.account_id}, which is not in the ledger`)
+      continue
+    }
+    held.set(account.id, (held.get(account.id) ?? 0) + 1)
+    if (s.account_label !== account.account_label) {
+      problems.push(`statement ${s.id} calls its account "${s.account_label}", the account is called "${account.account_label}"`)
+    }
+  }
+  for (const a of accounts) {
+    if ((held.get(a.id) ?? 0) === 0) problems.push(`account ${a.id} holds no statement`)
+    else if (a.statement_count !== held.get(a.id)) problems.push(`account ${a.id} says it has ${a.statement_count} statements, ${held.get(a.id)} belong to it`)
+    if (/\d{5,}/.test(a.account_label) || (a.account_ref_last4 ?? '').length > 4) problems.push(`account ${a.id} shows more than the last four digits of its number`)
+  }
+  return problems
+}
+
+/**
+ * Migration 041 groups the statements the previous release held by the rule the
+ * balance chart used, folding text typed with the old Rename into its bank. The
+ * grouping is worked out again here from the statements before the upgrade
+ * (accounts-oracle.js), and each upgraded account must be exactly one such group:
+ * no split, no merge, the bank and last four digits the group has, a name only
+ * where somebody typed one, and a label that is a name or a display name, never a
+ * raw bank key.
+ */
+function accountsFollowTheOldStatements(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts || !before.facts.statements.every((s) => 'bank_name' in s)) return []
+  const problems = []
+  const expected = expectedAccounts(before.facts.statements)
+  const byId = new Map(accounts.map((a) => [a.id, a]))
+  const afterStatements = new Map(after.facts.statements.map((s) => [s.id, s]))
+  const idOfGroup = new Map()
+  const groupOfId = new Map()
+  for (const [statementId, want] of expected) {
+    const now = afterStatements.get(statementId)
+    if (!now) continue
+    if (idOfGroup.has(want.key) && idOfGroup.get(want.key) !== now.account_id) {
+      problems.push(`statements of one account (${want.label}) were split across ${idOfGroup.get(want.key)} and ${now.account_id}`)
+    }
+    idOfGroup.set(want.key, idOfGroup.get(want.key) ?? now.account_id)
+    if (groupOfId.has(now.account_id) && groupOfId.get(now.account_id) !== want.key) {
+      problems.push(`account ${now.account_id} holds statements of different accounts (${want.label} and another)`)
+    }
+    groupOfId.set(now.account_id, want.key)
+    const account = byId.get(now.account_id)
+    if (!account) continue
+    if (account.bank_name !== want.bank) problems.push(`account ${account.id} is at bank "${account.bank_name}", its statements say "${want.bank}"`)
+    if (account.account_ref_last4 !== lastFour(want.ref)) {
+      problems.push(`account ${account.id} ends in ${account.account_ref_last4}, its statements' number ends in ${lastFour(want.ref)}`)
+    }
+    if (account.name !== want.name) problems.push(`account ${account.id} is named ${JSON.stringify(account.name)}, expected ${JSON.stringify(want.name)}: only text typed with the old Rename may become a name`)
+    if (account.account_label !== want.label) problems.push(`account ${account.id} is labelled "${account.account_label}", expected "${want.label}"`)
+    if (account.name === null && (account.account_label === account.bank_name || /^[a-z]/.test(account.account_label))) {
+      problems.push(`account ${account.id} is labelled by a raw key, "${account.account_label}"`)
+    }
+  }
+  if (accounts.length !== idOfGroup.size) problems.push(`${accounts.length} accounts after the upgrade, the statements before make ${idOfGroup.size}`)
+  return problems
+}
+
+/**
+ * A payment row says which account it is in, and that is its statement's: the copy the list
+ * shows must never drift from the statement the payment belongs to (J15 compares the statements'
+ * accounts, and the rows' own copy is left out of the stored facts for that reason).
+ */
+function paymentsAreInTheirStatementsAccount(before, after) {
+  const copy = after.copies?.paymentAccounts
+  if (!copy) return []
+  const accountOf = new Map(after.facts.statements.map((s) => [s.id, s.account_id]))
+  const problems = []
+  for (const t of after.facts.transactions) {
+    if (!(t.id in copy)) {
+      problems.push(`payment ${t.id} has no account on its row`)
+    } else if (copy[t.id] !== accountOf.get(t.statement_id)) {
+      problems.push(`payment ${t.id} sits in account ${copy[t.id]}, its statement ${t.statement_id} is in ${accountOf.get(t.statement_id)}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * An account's balance is the closing balance of its statement with the latest
+ * period end, as of that day: worked out again here from the statements.
+ */
+function accountBalancesAreTheirLatestStatements(before, after) {
+  const accounts = after.facts.accounts
+  if (!accounts || !after.facts.statements.every((s) => 'closing_balance' in s)) return []
+  const problems = []
+  for (const a of accounts) {
+    const latest = after.facts.statements
+      .filter((s) => s.account_id === a.id && s.closing_balance !== null && s.period_end !== null)
+      .sort((x, y) => `${y.period_end}|${y.uploaded_at}` < `${x.period_end}|${x.uploaded_at}` ? -1 : 1)[0]
+    const [balance, asOf] = latest ? [latest.closing_balance, latest.period_end] : [null, null]
+    if (a.balance !== balance || a.balance_as_of !== asOf) {
+      problems.push(`account ${a.id} shows balance ${a.balance} as of ${a.balance_as_of}, its latest statement closes at ${balance} on ${asOf}`)
+    }
+  }
+  return problems
+}
+
+/** The accounts table holds exactly the accounts the API lists. */
+function accountsTableMatchesTheList(before, after) {
+  const rows = after.facts.schema?.tableRows?.accounts
+  const accounts = after.facts.accounts
+  if (accounts == null || rows == null) return []
+  return rows === accounts.length ? [] : [`the accounts table has ${rows} rows, the API lists ${accounts.length} accounts`]
+}
+
+/**
+ * /statements stops carrying the whole account number and carries its last four
+ * digits instead: each statement's new last four are the last four of the old number.
+ */
+function accountNumbersAreOnlyTheirLastFour(before, after) {
+  const problems = []
+  const now = new Map(after.facts.statements.map((s) => [s.id, s]))
+  for (const s of before.facts.statements) {
+    const kept = now.get(s.id)
+    if (!kept || !('account_ref' in s)) continue
+    if ('account_ref' in kept) problems.push(`statement ${s.id} still carries its whole account number`)
+    if (kept.account_ref_last4 !== lastFour(s.account_ref)) {
+      problems.push(`statement ${s.id} shows last four digits ${JSON.stringify(kept.account_ref_last4)}, its number ends in ${JSON.stringify(lastFour(s.account_ref))}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * Migration 043 records, for each statement the ledger already held, what its file
+ * held and what it added: every payment, both times, since an older statement brought
+ * all of its file. The balance check it stores is the check the list showed before
+ * (checked and consistent steps), and the balanced result of a statement never moves.
+ */
+function statementsKeepTheirPaymentsAndBalance(before, after) {
+  const problems = []
+  const was = new Map(before.facts.statements.map((s) => [s.id, s]))
+  for (const s of after.facts.statements) {
+    if (!was.has(s.id)) continue
+    if (s.rows_in_file !== s.txn_count) problems.push(`statement ${s.id} says its file held ${s.rows_in_file} payments, it has ${s.txn_count}`)
+    if (s.rows_added !== s.txn_count) problems.push(`statement ${s.id} says it added ${s.rows_added} payments, it has ${s.txn_count}`)
+    const shown = s.balance_check
+    if (s.balance_checked !== shown.checked || s.balance_consistent !== shown.consistent) {
+      problems.push(
+        `statement ${s.id} stores a balance check of ${s.balance_consistent} of ${s.balance_checked}, the list shows ${shown.consistent} of ${shown.checked}`,
+      )
+    }
+    const old = was.get(s.id).balance_check
+    if (old && (old.checked !== shown.checked || old.consistent !== shown.consistent || old.balanced !== shown.balanced)) {
+      problems.push(`statement ${s.id} was ${old.consistent} of ${old.checked} (balanced ${old.balanced}) and is now ${shown.consistent} of ${shown.checked} (balanced ${shown.balanced})`)
+    }
+    if (shown.balanced !== (shown.consistent === shown.checked)) problems.push(`statement ${s.id} is called balanced ${shown.balanced} at ${shown.consistent} of ${shown.checked}`)
+  }
+  return problems
+}
+
+/**
+ * The list says where each statement's own payments are: the first and last day and
+ * the months they fall in. They are worked out again here from the payments, so a
+ * statement never offers a month it has nothing in, or hides one it has.
+ */
+function statementsSayWhereTheirPaymentsAre(before, after) {
+  const problems = []
+  for (const s of after.facts.statements) {
+    if (s.first_payment === undefined) continue
+    const days = after.facts.transactions.filter((t) => t.statement_id === s.id).map((t) => t.txn_date).sort()
+    const months = [...new Set(days.map((d) => d.slice(0, 7)))]
+    const first = days[0] ?? null
+    const last = days.at(-1) ?? null
+    if (s.first_payment !== first || s.last_payment !== last) {
+      problems.push(`statement ${s.id} says its payments run ${s.first_payment} to ${s.last_payment}, they run ${first} to ${last}`)
+    }
+    if (JSON.stringify(s.payment_months) !== JSON.stringify(months)) {
+      problems.push(`statement ${s.id} says its payments are in ${JSON.stringify(s.payment_months)}, they are in ${JSON.stringify(months)}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * Every column the table stores, read from the file (db.js), not only the ones the
+ * API shows: id, merchant, annotated_at, reasoning and the category ids as well.
+ * Migration 036 may fill a category id that was empty, and migration 030 may clear a
+ * merchant a machine copied from the bank line (both are declared in
+ * expected-changes.json and checked by their own invariants); nothing else about a
+ * label may differ after the rebuild.
+ */
+function everyColumnOfEveryLabelSurvives(before, after) {
+  const problems = []
+  const now = new Map(after.facts.annotationRows.map((r) => [r.transaction_id, r]))
+  const byHand = new Set(['manual', 'imported', 'user_rule'])
+  for (const was of before.facts.annotationRows) {
+    const kept = now.get(was.transaction_id)
+    if (!kept) continue // the count check says a label is missing
+    for (const [column, value] of Object.entries(was)) {
+      if ((column === 'category_id' || column === 'subcategory_id') && value === null) continue
+      if (column === 'merchant' && !byHand.has(was.source)) continue
+      if (JSON.stringify(kept[column]) !== JSON.stringify(value)) {
+        problems.push(
+          `the label of payment ${was.transaction_id} changed in the upgrade: column ${column} was ${JSON.stringify(value)}, is ${JSON.stringify(kept[column])}`,
+        )
+      }
+    }
+  }
+  return problems
+}
+
+/**
+ * Migration 044 rebuilds the table that holds every label, and pairing runs when a
+ * statement is added, never on an upgrade. So each label the ledger had is whole
+ * after it (same id, category, source, confidence, tags), no label counts fewer,
+ * and nothing is paired or remembered as unpaired.
+ */
+function labelsSurviveTheRebuildAndNothingIsPaired(before, after) {
+  const problems = []
+  const now = new Map(after.facts.transactions.map((t) => [t.id, t]))
+  for (const t of before.facts.transactions) {
+    const kept = now.get(t.id)
+    if (!kept || t.annotation_id === null) continue
+    for (const field of ['annotation_id', 'category', 'subcategory', 'confidence', 'source', 'original_source', 'tags']) {
+      if (JSON.stringify(kept[field]) !== JSON.stringify(t[field])) {
+        problems.push(`payment ${t.id}'s label changed in the upgrade: ${field} was ${JSON.stringify(t[field])}, is ${JSON.stringify(kept[field])}`)
+      }
+    }
+  }
+  if (after.facts.annotationRows.length !== before.facts.annotationRows.length) {
+    problems.push(
+      `${after.facts.annotationRows.length} labels after the upgrade, ${before.facts.annotationRows.length} before`,
+    )
+  }
+  problems.push(...everyColumnOfEveryLabelSurvives(before, after))
+  for (const t of after.facts.transactions) {
+    if (t.transfer) problems.push(`payment ${t.id} is paired as a transfer after the upgrade; pairing never runs on upgrade`)
+    if (t.source === 'pair') problems.push(`payment ${t.id} carries a pair label after the upgrade; pairing never runs on upgrade`)
+  }
+  const unpaired = after.facts.schema?.tableRows?.transfer_unpaired
+  if (unpaired) problems.push(`${unpaired} unpaired transfers are remembered after the upgrade, the user took none apart`)
+  return problems
+}
+
+/**
+ * Migration 045 adds the table of remembered spreadsheet layouts. A layout is only ever
+ * learned from a file the user adds, so an upgrade starts with none.
+ */
+function noSpreadsheetLayoutIsRememberedOnUpgrade(before, after) {
+  const layouts = after.facts.schema?.tableRows?.import_layouts
+  return layouts ? [`${layouts} remembered spreadsheet layouts after the upgrade, the user added no spreadsheet`] : []
+}
+
 /** @returns {string[]} */
 export function checkInvariants(before, after) {
   return [
+    ...accountsHoldEveryStatement(before, after),
+    ...paymentsAreInTheirStatementsAccount(before, after),
+    ...accountsFollowTheOldStatements(before, after),
+    ...accountsTableMatchesTheList(before, after),
+    ...noSpreadsheetLayoutIsRememberedOnUpgrade(before, after),
+    ...accountBalancesAreTheirLatestStatements(before, after),
+    ...accountNumbersAreOnlyTheirLastFour(before, after),
+    ...statementsKeepTheirPaymentsAndBalance(before, after),
+    ...statementsSayWhereTheirPaymentsAre(before, after),
+    ...labelsSurviveTheRebuildAndNothingIsPaired(before, after),
     ...sortedCountsFollowTeachMe(before, after),
     ...payeeLabelsNameTheirKey(before, after),
     ...groupMembersAgreeWithTheirPayment(before, after),
@@ -304,7 +629,9 @@ export function checkInvariants(before, after) {
     ...upiMetaOnlyLosesSampleNotes(before, after),
     ...peopleFiguresAddUpToTheOldTotals(before, after),
     ...unsortedOnlyGrows(before, after),
+    ...unsortedMoneyInLeavesRefundsAndPaybacks(before, after),
     ...figuresAgreeWithEachOther(before, after),
+    ...comparisonsAreHonest(before, after),
     ...queueOnlyGainsUnsortedPayments(before, after),
   ]
 }

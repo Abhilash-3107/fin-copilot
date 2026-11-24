@@ -10,6 +10,7 @@ const { mockApi } = vi.hoisted(() => ({
 vi.mock('../lib/api.js', () => ({ api: mockApi, ApiError: class extends Error {} }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import CommandPalette from './CommandPalette.jsx'
 
 function renderPalette() {
@@ -249,5 +250,52 @@ describe('CommandPalette results', () => {
     expect(screen.getByRole('combobox')).toHaveFocus()
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
     expect(before).toHaveFocus()
+  })
+
+  it('names the account of each payment found when there are two accounts, and only then', async () => {
+    const row = { id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'UPI/SWIGGY/5015/order', merchant: 'Swiggy', payee: 'Swiggy', account_label: 'SBI savings' }
+    const serve = accounts => mockApi.get.mockImplementation(path => {
+      if (path === '/accounts') return Promise.resolve(accounts)
+      if (path === '/transactions/months') return Promise.resolve({ months: ['2026-01'] })
+      if (path.startsWith('/transactions')) return Promise.resolve([row])
+      return Promise.resolve([])
+    })
+    const search = async () => {
+      render(
+        <PrivacyProvider>
+          <LedgerProvider>
+            <MemoryRouter><CommandPalette /></MemoryRouter>
+          </LedgerProvider>
+        </PrivacyProvider>
+      )
+      openPalette()
+      fireEvent.change(screen.getByPlaceholderText(/Search payments/), { target: { value: 'swiggy' } })
+      await screen.findByText('Swiggy')
+    }
+    serve([{ id: 'a1', account_label: 'Kotak savings' }, { id: 'a2', account_label: 'SBI savings' }])
+    await search()
+    await waitFor(() => expect(screen.getByText(/· SBI savings/)).toBeInTheDocument())
+  })
+
+  it('does not name the account with a single account', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path === '/accounts') return Promise.resolve([{ id: 'a1', account_label: 'Kotak savings' }])
+      if (path === '/transactions/months') return Promise.resolve({ months: ['2026-01'] })
+      if (path.startsWith('/transactions')) return Promise.resolve([{ id: 't1', txn_date: '2026-01-05', amount: 1200, debit_credit: 'debit', raw_description: 'x', payee: 'Swiggy', account_label: 'Kotak savings' }])
+      return Promise.resolve([])
+    })
+    render(
+      <PrivacyProvider>
+        <LedgerProvider>
+          <MemoryRouter><CommandPalette /></MemoryRouter>
+        </LedgerProvider>
+      </PrivacyProvider>
+    )
+    openPalette()
+    fireEvent.change(screen.getByPlaceholderText(/Search payments/), { target: { value: 'swiggy' } })
+    await screen.findByText('Swiggy')
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/accounts'))
+    await new Promise(r => setTimeout(r, 30))
+    expect(screen.queryByText(/Kotak savings/)).not.toBeInTheDocument()
   })
 })

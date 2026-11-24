@@ -1,0 +1,278 @@
+"""Which payments of a new file the account already has.
+
+An account's payments belong to the statement that brought them first. A later
+file that covers some of the same days adds only the payments that are new; the
+rest are "already in". This module decides which is which, the same way for a
+PDF, a spreadsheet and a statement moved into an account.
+
+The rule (within one account). A payment of the file matches a stored payment
+when the date, the amount (to the paisa) and the direction are equal, and
+- both carry a running balance and the balances are equal (to the paisa): the
+  descriptions may differ, a CSV export prints the line another way than the
+  PDF; or
+- at least one has no running balance, and the descriptions are equal once
+  upper-cased with whitespace collapsed.
+- a third pass, for every source, after those two: the amount, the direction and
+  the running balance are equal and the dates are up to SHIFT_DAYS apart, and
+  both files plainly cover both days: the stored payment's day lies inside the
+  days the new file covers (the period it prints, else its first..last payment
+  dates), and the new payment's day lies inside the span of the stored payment's
+  statement (which reaches SHIFT_DAYS further, since a copy printed by value date
+  can fall just past the edge of a span printed by transaction date; not for a
+  statement of payments on one day and no printed period, whose span says
+  nothing). Banks that print both a value date
+  and a transaction date put different ones in a CSV and a PDF, and then each
+  file covers both days. Without that rule a reversal at a file's edge (+100,
+  -100, +100 on a balance that returns to the same figure) is taken for the
+  payment of the file before it, and a real payment is dropped.
+Counting is a multiset: three identical payments in the file against two in
+the ledger leave one new. A stored payment is never matched twice. Two payments
+with equal text and different balances are two payments, so the balance, when
+there is one, decides.
+"""
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+
+from finance_copilot.models.transaction import Transaction
+
+# How far apart two prints of one payment's date can be (a value date and a
+# transaction date). The third matching pass allows this much.
+SHIFT_DAYS = 3
+
+
+def _paisa(value: float) -> int:
+    return round(value * 100)
+
+
+def _normalised(text: str) -> str:
+    return " ".join(text.upper().split())
+
+
+@dataclass(frozen=True)
+class Payment:
+    """The parts of a payment that decide whether two are the same one."""
+
+    day: str  # ISO date
+    paisa: int
+    direction: str  # 'debit' | 'credit'
+    balance: int | None  # running balance in paise
+    text: str  # normalised description
+    # For a stored payment: the first and last day its statement covers (ISO).
+    # The third pass needs it; a payment without one is never shifted onto.
+    span: tuple[str, str] | None = field(default=None, compare=False)
+
+    @classmethod
+    def of(
+        cls, day: str, amount: float, direction: str, balance: float | None, description: str,
+        span: tuple[str, str] | None = None,
+    ) -> Payment:
+        return cls(
+            day, _paisa(amount), direction,
+            None if balance is None else _paisa(balance), _normalised(description), span,
+        )
+
+    @classmethod
+    def from_transaction(cls, txn: Transaction) -> Payment:
+        return cls.of(
+            txn.txn_date.isoformat(), txn.amount, txn.debit_credit,
+            txn.running_balance, txn.raw_description,
+        )
+
+    def _slot(self) -> tuple[str, int, str]:
+        return (self.day, self.paisa, self.direction)
+
+
+def match_payments(
+    stored: Sequence[Payment], incoming: Sequence[Payment], shift_days: int = SHIFT_DAYS,
+    incoming_span: tuple[str, str] | None = None,
+) -> list[int | None]:
+    """For each incoming payment, the index of the stored payment it is, or None
+    when it is new. A stored payment answers for at most one incoming payment.
+
+    Matches on equal balances are taken first, then matches on the description,
+    taking payments that carry a balance before those that do not (they can
+    match fewer stored payments, so they must not lose theirs to one that could
+    have matched another). Within those, earlier stored payments are taken first,
+    so the answer does not depend on anything but the order of the two lists.
+
+    What is still unmatched then goes through the third pass: equal balance,
+    amount and direction, on a day up to `shift_days` away (the nearest first),
+    when the stored payment's day lies within the days the incoming file covers
+    (`incoming_span`, the period it prints, else its first..last payment days) and
+    the incoming payment's day lies within the span its stored payment's statement
+    covers. `shift_days=0` is the first two passes alone.
+    """
+    slots: dict[tuple[str, int, str], list[int]] = {}
+    for index, payment in enumerate(stored):
+        slots.setdefault(payment._slot(), []).append(index)
+
+    taken: set[int] = set()
+    answer: list[int | None] = [None] * len(incoming)
+
+    def take(i: int, accepts: Callable[[Payment, Payment], bool]) -> None:
+        for j in slots.get(incoming[i]._slot(), ()):
+            if j not in taken and accepts(stored[j], incoming[i]):
+                taken.add(j)
+                answer[i] = j
+                return
+
+    def same_balance(have: Payment, new: Payment) -> bool:
+        return have.balance is not None and have.balance == new.balance
+
+    def same_text(have: Payment, new: Payment) -> bool:
+        return (have.balance is None or new.balance is None) and have.text == new.text
+
+    for i, payment in enumerate(incoming):
+        if payment.balance is not None:
+            take(i, same_balance)
+    for with_balance in (True, False):
+        for i, payment in enumerate(incoming):
+            if answer[i] is None and (payment.balance is not None) == with_balance:
+                take(i, same_text)
+
+    if shift_days > 0 and incoming:
+        file_first, file_last = incoming_span or (min(p.day for p in incoming), max(p.day for p in incoming))
+        by_state: dict[tuple[int, str, int], list[int]] = {}
+        for index, payment in enumerate(stored):
+            if payment.balance is not None:
+                by_state.setdefault((payment.paisa, payment.direction, payment.balance), []).append(index)
+        for i, payment in enumerate(incoming):
+            if answer[i] is not None or payment.balance is None:
+                continue
+            day = date.fromisoformat(payment.day)
+            near = sorted(
+                (abs((date.fromisoformat(stored[j].day) - day).days), j)
+                for j in by_state.get((payment.paisa, payment.direction, payment.balance), ())
+                if j not in taken and _covers_both(stored[j], payment, file_first, file_last)
+            )
+            if near and near[0][0] <= shift_days:
+                taken.add(near[0][1])
+                answer[i] = near[0][1]
+    return answer
+
+
+def _covers_both(have: Payment, new: Payment, file_first: str, file_last: str) -> bool:
+    """Both files cover both days, so each would have printed the payment."""
+    if have.span is None:
+        return False
+    return file_first <= have.day <= file_last and have.span[0] <= new.day <= have.span[1]
+
+
+# What the account holds, read for the days the incoming payments fall on.
+_STORED_SQL = """
+SELECT t.id, t.txn_date, t.amount, t.debit_credit, t.running_balance, t.raw_description,
+       COALESCE(s.printed_start, s.period_start) AS span_start,
+       COALESCE(s.printed_end, s.period_end) AS span_end,
+       s.printed_start IS NOT NULL AND s.printed_end IS NOT NULL AS span_printed
+FROM transactions t
+JOIN statements s ON s.id = t.statement_id
+WHERE s.account_id = ? AND t.txn_date BETWEEN date(?, ?) AND date(?, ?)
+ORDER BY t.rowid
+"""
+
+
+def _payment_of_row(row: sqlite3.Row) -> Payment:
+    keys = row.keys()
+    span = None
+    if "span_start" in keys and row["span_start"] and row["span_end"]:
+        span = (row["span_start"], row["span_end"])
+        # A statement covers at least its span, and a copy printed by value date can
+        # sit just past either end; except a lone day with no period printed, which
+        # says nothing about what the statement covered.
+        if row["span_printed"] or span[0] != span[1]:
+            reach = timedelta(days=SHIFT_DAYS)
+            span = (
+                (date.fromisoformat(span[0]) - reach).isoformat(),
+                (date.fromisoformat(span[1]) + reach).isoformat(),
+            )
+    return Payment.of(
+        row["txn_date"], row["amount"], row["debit_credit"], row["running_balance"],
+        row["raw_description"], span,
+    )
+
+
+def _stored_in_account(
+    conn: sqlite3.Connection, account_id: str, first_day: str, last_day: str
+) -> tuple[list[Payment], list[str]]:
+    """The account's payments over those days and the SHIFT_DAYS around them (the
+    third pass looks that far), and their ids in the same order."""
+    margin = f"{SHIFT_DAYS} days"
+    rows = conn.execute(
+        _STORED_SQL, (account_id, first_day, f"-{margin}", last_day, f"+{margin}")
+    ).fetchall()
+    return [_payment_of_row(r) for r in rows], [r["id"] for r in rows]
+
+
+@dataclass
+class RowSplit:
+    """A file's payments, sorted into the ones the account lacks and the ones it has."""
+
+    new: list[Transaction]
+    already_in: int
+    # The file covers dates the account has statements for, yet none of its
+    # payments there matched anything: it is probably another account's.
+    overlaps_without_match: bool
+    # Of the file's payments that fall on days an existing statement of the account
+    # covers: how many there are, and how many matched nothing. A file whose
+    # payments mostly match nothing there is probably a copy printed another way.
+    rows_in_overlap: int = 0
+    unmatched_in_overlap: int = 0
+
+
+def split_new_rows(
+    conn: sqlite3.Connection, account_id: str, rows: Sequence[Transaction],
+    printed: tuple[date, date] | None = None,
+) -> RowSplit:
+    """Split a parsed file's payments (in chain order) against what `account_id`
+    already holds. `printed` is the period the file says it covers, when it says.
+    Reads only; the caller inserts `new`. Call it inside the transaction that
+    inserts, so two files arriving together see each other."""
+    if not rows:
+        return RowSplit([], 0, False)
+    first = min(t.txn_date for t in rows).isoformat()
+    last = max(t.txn_date for t in rows).isoformat()
+    stored, _ = _stored_in_account(conn, account_id, first, last)
+    span = (printed[0].isoformat(), printed[1].isoformat()) if printed else None
+    matches = match_payments(stored, [Payment.from_transaction(t) for t in rows], incoming_span=span)
+    new = [t for t, m in zip(rows, matches, strict=True) if m is None]
+    already_in = len(rows) - len(new)
+
+    covered = conn.execute(
+        "SELECT period_start, period_end FROM statements "
+        "WHERE account_id = ? AND period_start IS NOT NULL AND period_end IS NOT NULL",
+        (account_id,),
+    ).fetchall()
+    overlapping = [
+        m for t, m in zip(rows, matches, strict=True)
+        if any(c["period_start"] <= t.txn_date.isoformat() <= c["period_end"] for c in covered)
+    ]
+    unmatched = sum(1 for m in overlapping if m is None)
+    return RowSplit(new, already_in, bool(overlapping) and already_in == 0, len(overlapping), unmatched)
+
+
+def payments_account_already_has(
+    conn: sqlite3.Connection, statement_id: str, account_id: str
+) -> list[tuple[str, str]]:
+    """(duplicate id, survivor id) for each of a statement's payments that
+    `account_id` holds already (in other statements), for a statement moved into
+    that account. The account's own copy, the survivor, stays; the statement's is
+    the duplicate."""
+    mine = conn.execute(
+        "SELECT id, txn_date, amount, debit_credit, running_balance, raw_description "
+        "FROM transactions WHERE statement_id = ? ORDER BY rowid",
+        (statement_id,),
+    ).fetchall()
+    if not mine:
+        return []
+    days = [r["txn_date"] for r in mine]
+    stored, stored_ids = _stored_in_account(conn, account_id, min(days), max(days))
+    own = conn.execute(
+        "SELECT printed_start, printed_end FROM statements WHERE id = ?", (statement_id,)
+    ).fetchone()
+    span = (own["printed_start"], own["printed_end"]) if own and own["printed_start"] and own["printed_end"] else None
+    matches = match_payments(stored, [_payment_of_row(r) for r in mine], incoming_span=span)
+    return [(r["id"], stored_ids[m]) for r, m in zip(mine, matches, strict=True) if m is not None]

@@ -33,3 +33,60 @@ export function formatDateRange(start, end) {
   if (!a.isSame(b, 'month')) return `${a.format('DD MMM')} - ${b.format('DD MMM YYYY')}`
   return `${a.format('DD')} - ${b.format('DD MMM YYYY')}`
 }
+
+// The days a statement covers: the period its header prints when it was read,
+// else the dates of its first and last payment. Null for a statement with
+// neither (the sample data), which is known only by its month.
+function statementDays(statement) {
+  const start = statement.printed_start ?? statement.period_start
+  const end = statement.printed_end ?? statement.period_end
+  return start && end ? { start: dayjs(start), end: dayjs(end), printed: Boolean(statement.printed_start) } : null
+}
+
+// What a statement covers, in words: "Oct 2026" for a whole calendar month (or
+// for payments that all fall in one month with no printed period to say more),
+// otherwise the range, "1 Oct to 15 Nov".
+export function statementSpan(statement) {
+  const days = statementDays(statement)
+  if (!days) return formatMonth(statement.statement_month)
+  const { start, end, printed } = days
+  const sameMonth = start.isSame(end, 'month')
+  if (sameMonth && (!printed || (start.date() === 1 && end.isSame(end.endOf('month'), 'day')))) {
+    return formatMonth(start)
+  }
+  const crossesYears = !start.isSame(end, 'year')
+  const show = d => d.format(crossesYears ? 'D MMM YYYY' : 'D MMM')
+  return `${show(start)} to ${show(end)}`
+}
+
+// Whether the statement has payments of its own in the month ("2026-10"). A
+// statement can cover days in a month it brought no payment for (a file that
+// overlapped what the account had), so the list says which months its own
+// payments are in. A statement without that list (older data) goes by its dates.
+export function statementCoversMonth(statement, month) {
+  if (Array.isArray(statement.payment_months)) return statement.payment_months.includes(month)
+  if (!statement.period_start || !statement.period_end) return statement.statement_month === month
+  return statement.period_start.slice(0, 7) <= month && month <= statement.period_end.slice(0, 7)
+}
+
+// The month to open when a statement is picked: the latest one that has its
+// payments, or its own month when the list says none.
+export function statementLatestMonth(statement) {
+  return statement.payment_months?.at(-1) ?? statement.statement_month
+}
+
+// A time the ledger stored (SQLite's datetime('now'): "2026-11-15 10:00:00", in
+// UTC, with no zone written). Read bare, a browser takes it for local time and
+// shows it hours early or late, so it is read as UTC and shown in local time.
+export function parseStoredTime(value) {
+  if (!value) return null
+  const text = String(value)
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(text)
+  return new Date(hasZone ? text : `${text.replace(' ', 'T')}Z`)
+}
+
+// A stored time as the page writes it: "15 Nov 2026 15:30" in local time.
+export function formatStoredTime(value) {
+  const d = parseStoredTime(value)
+  return d && !Number.isNaN(d.getTime()) ? dayjs(d).format('DD MMM YYYY HH:mm') : ''
+}

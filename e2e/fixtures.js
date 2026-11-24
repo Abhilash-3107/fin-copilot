@@ -5,11 +5,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { test as base, expect } from '@playwright/test'
 import { TEMP_PREFIX } from './global-setup.js'
-import { makeApi, killTree, startServer } from './lib/server.js'
+import { makeApi, killTree, startServer, TODAY } from './lib/server.js'
 import { startStubModel } from './stub-model.js'
 
-/** The day every journey runs on. The server reads it from FC_TODAY. */
-export const TODAY = '2026-11-15'
+export { TODAY }
 
 /** Name of the attachment that carries console and network problems to the reporter. */
 export const HYGIENE_ATTACHMENT = 'hygiene-violations'

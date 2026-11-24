@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import Delta from './Delta.jsx'
+import Delta, { tileDelta } from './Delta.jsx'
 
 function renderDelta(props) {
   return render(
@@ -31,5 +31,14 @@ describe('Delta', () => {
   it('shows the whole-rupee move otherwise', () => {
     renderDelta({ delta: -1250.4 })
     expect(screen.getByText(/▼/)).toHaveTextContent('▼ ₹1,250 vs October')
+  })
+})
+
+describe('tileDelta', () => {
+  it('is the tile minus the previous month over the same accounts and days', () => {
+    expect(tileDelta({ money_out: 1000, prev: { money_out: 900 } }, 'money_out')).toBe(100)
+  })
+  it('is null with no comparison', () => {
+    expect(tileDelta({ money_out: 6000, prev: null }, 'money_out')).toBeNull()
   })
 })

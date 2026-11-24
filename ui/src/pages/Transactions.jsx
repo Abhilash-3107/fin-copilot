@@ -1,23 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { LEDGER_KEYS } from '../lib/shortcuts.js'
 import { useSearchParams, useLocation } from 'react-router-dom'
-import { RefreshCw, Zap, ChevronDown, X } from 'lucide-react'
+import { RefreshCw, ChevronDown, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useStatement } from '../contexts/StatementContext.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import AccountFilter from '../components/AccountFilter.jsx'
 import TransactionTable from '../components/TransactionTable.jsx'
 import TransactionCards from '../components/TransactionCards.jsx'
 import AnnotationPanel from '../components/AnnotationPanel.jsx'
-import { formatMonth } from '../lib/dates.js'
-import { useAnnotationJob } from '../contexts/AnnotationJobContext.jsx'
 import EmptyState from '../components/EmptyState.jsx'
-import Tooltip from '../components/Tooltip.jsx'
 import Amount from '../components/Amount.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { sourceFilterOptions } from '../lib/sources.js'
-import { annotationSummary, summaryDuration } from '../lib/annotationSummary.js'
 import { couldnt } from '../lib/errors.js'
 import { count } from '../lib/plural.js'
 
@@ -89,9 +86,12 @@ function MultiFilter({ label, options, selected, onChange }) {
   )
 }
 
-// What the server resolves for a payment's name; a row is refreshed from the
-// payment's own read after an edit instead of working the name out here.
-const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'channel']
+// What the server resolves for a payment's name, and whether its guess is held back
+// while it waits on a pair; a row is refreshed from the payment's own read after an
+// edit instead of working either out here.
+const NAME_FIELDS = ['payee', 'payee_all', 'payee_name', 'display_name', 'note', 'note_is_yours', 'channel', 'transfer', 'waiting_on_pair']
+// What a row holds of its payment's label, beside the names.
+const LABEL_FIELDS = ['annotation_id', 'category', 'subcategory', 'merchant', 'tags', 'confidence', 'source']
 
 function nameFields(txn) {
   return Object.fromEntries(NAME_FIELDS.map(f => [f, txn[f]]))
@@ -115,25 +115,43 @@ function buildAnnotationMap(txns) {
   return map
 }
 
+// Whether a link names a slice of the ledger: the filters, a month or one payment.
+const DEEP_LINK_KEYS = ['category', 'source', 'merchant', 'payee_key', 'person', 'q', 'month', 'txn', 'account']
+const isDeepLink = params => DEEP_LINK_KEYS.some(key => params.has(key))
+
+// What an unpair did, in words: `to_sort` are the payments that went back to Teach Me.
+function unpairMessage({ to_sort: waiting = [], account_labels: labels = {} }) {
+  if (waiting.length === 0) return 'Unpaired.'
+  if (waiting.length > 1) return 'Unpaired. Both payments are waiting in Teach Me.'
+  const account = labels[waiting[0]]
+  return `Unpaired. ${account ? `The ${account} payment is` : 'One payment is'} waiting in Teach Me.`
+}
+
 export default function Transactions() {
   const toast = useToast()
-  const { statements, activeStatement, setActiveStatement, loading: statementsLoading } = useStatement()
-  const { month: periodMonth, setMonth, months, ready: periodReady } = usePeriod()
+  const { accounts, multiple, accountId, setAccountId, loading: ledgerLoading } = useLedger()
+  const { month: periodMonth, setMonth, ready: periodReady } = usePeriod()
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
   // The shared period drives the month filter; ALL_TIME means "no month filter".
   const month = periodMonth && periodMonth !== ALL_TIME ? periodMonth : ''
-  // The statement scope is whatever the period allows. StatementContext defaults to
-  // the newest statement when /statements arrives, possibly after the user (or a
-  // previous session) already holds All time or another month, so the default is
-  // never read as a scope that contradicts the period: not for a render, a list
-  // request or the select. The effects below then clear the stored selection.
-  const scopedStatement = activeStatement
-    && periodMonth !== ALL_TIME
-    && (!month || activeStatement.statement_month === month)
-    ? activeStatement
-    : null
-  const selectedStmt = scopedStatement?.id ?? ''
+  // A deep link says which slice it means (its own account, or every account) before
+  // the first ask, so the first list is already the one the page will show.
+  const [filtersSeeded, setFiltersSeeded] = useState(false)
+  // A link to one payment (the palette) says nothing of its month or account: they are
+  // the payment's own, known once it has been read. The list waits for that too.
+  const [linkPending, setLinkPending] = useState(false)
+  // The account a link named, until the accounts are in and say whether the ledger has it;
+  // `unknownAccount` is then the plain message that it does not.
+  const requestedAccount = useRef(null)
+  const [unknownAccount, setUnknownAccount] = useState(false)
+  // Nothing is asked until the accounts, the period and the link are settled:
+  // asking early and again when they arrive would replace the first answer, an
+  // error included, and would show the list twice.
+  const ready = periodReady && !ledgerLoading && filtersSeeded && !linkPending
+  // One account's payments carry one running balance; several interleave, which
+  // means nothing, so the balance column is for a single account only.
+  const oneAccount = accounts.length === 1 || Boolean(accountId)
   const [sourceFilter, setSourceFilter] = useState(new Set())
   const [categoryFilter, setCategoryFilter] = useState(new Set())
   const [merchantFilter, setMerchantFilter] = useState('')
@@ -156,9 +174,10 @@ export default function Transactions() {
   // pages), so a drill-through visibly adds up to the figure that was clicked.
   const [summary, setSummary] = useState(null)
   const [annotationMap, setAnnotationMap] = useState({})
-  // True until the first list arrives: the list waits for the statements and the
-  // period (below), and that wait must not read as "No payments".
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  // Loading includes the wait for the accounts and period, so the page never
+  // reads "No payments" before it has asked.
+  const busy = loading || !ready
   // Each fetch that can fail keeps its error, so the block says so (with Retry)
   // instead of reading as "no transactions".
   const [loadError, setLoadError] = useState(null)
@@ -171,9 +190,12 @@ export default function Transactions() {
   const [linkError, setLinkError] = useState(null) // {id, status} of a linked payment that could not open
   const [activeTxn, setActiveTxn] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
-  // Any tracked run holds the single job slot, so Sort again waits for it.
-  const { job, startAnnotation } = useAnnotationJob()
-  const [autoAnnotating, setAutoAnnotating] = useState(false)
+  // The open payment's id, for work that finishes after the panel moved on (an undo from a toast).
+  const activeIdRef = useRef(null)
+  // The account filter as the page has it now, for a link that opens after the page has settled.
+  const accountIdRef = useRef(accountId)
+  accountIdRef.current = accountId
+  activeIdRef.current = activeTxn?.id ?? null
   const loadRef = useRef(0)
   const facetsRef = useRef(0)
 
@@ -190,7 +212,7 @@ export default function Transactions() {
   // always describe the same rows.
   const buildScopeParams = useCallback(() => {
     const params = new URLSearchParams()
-    if (selectedStmt) params.set('statement_id', selectedStmt)
+    if (accountId) params.set('account_id', accountId)
     if (month) params.set('month', month)
     if (debouncedSearch) params.set('q', debouncedSearch)
     if (categoryCsv) params.set('category', categoryCsv)
@@ -201,7 +223,7 @@ export default function Transactions() {
     if (minAmount !== '' && !Number.isNaN(Number(minAmount))) params.set('min_amount', minAmount)
     if (maxAmount !== '' && !Number.isNaN(Number(maxAmount))) params.set('max_amount', maxAmount)
     return params
-  }, [selectedStmt, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, minAmount, maxAmount])
+  }, [accountId, month, debouncedSearch, categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, minAmount, maxAmount])
 
   const buildFilterParams = useCallback(() => {
     const params = buildScopeParams()
@@ -253,11 +275,7 @@ export default function Transactions() {
     }
   }
 
-  // Ask once, for the scope the page will keep: the statement list and the default
-  // month decide it, and asking before they arrive would be answered again, in
-  // place of (and sometimes after) the first answer.
-  const scopeKnown = periodReady && !statementsLoading
-  useEffect(() => { if (scopeKnown) loadTransactions() }, [scopeKnown, loadTransactions])
+  useEffect(() => { if (ready) loadTransactions() }, [ready, loadTransactions])
 
   function toggleSort(col) {
     if (sort === col) setOrder(o => (o === 'asc' ? 'desc' : 'asc'))
@@ -312,7 +330,7 @@ export default function Transactions() {
   const loadFacets = useCallback(async () => {
     const id = ++facetsRef.current
     const params = new URLSearchParams()
-    if (selectedStmt) params.set('statement_id', selectedStmt)
+    if (accountId) params.set('account_id', accountId)
     if (month) params.set('month', month)
     try {
       const next = await api.get(`/transactions/facets?${params}`)
@@ -323,9 +341,9 @@ export default function Transactions() {
       // The dropdowns keep their previous options; the bar says so, with Retry.
       if (id === facetsRef.current) setFacetsError(e)
     }
-  }, [selectedStmt, month])
+  }, [accountId, month])
 
-  useEffect(() => { if (scopeKnown) loadFacets() }, [scopeKnown, loadFacets])
+  useEffect(() => { if (ready) loadFacets() }, [ready, loadFacets])
 
   // Full taxonomy for the bulk set-category picker (facets only list categories
   // already present in data; here the user can assign any of them).
@@ -347,7 +365,7 @@ export default function Transactions() {
   // merchant, source, q, month). Runs on mount and whenever a new deep link
   // lands here; a month param is pushed into the shared period. Our own
   // writeback below also changes searchParams - the ref lets us tell the two
-  // apart so a writeback never re-seeds (or clears the statement scope).
+  // apart so a writeback never re-seeds (or clears the account filter).
   const lastWrittenParams = useRef(null)
   const pendingPayment = useRef(null)
   const scrollTarget = useRef(null)
@@ -372,16 +390,52 @@ export default function Transactions() {
     setSearch(q ?? '')
     setDebouncedSearch(q ?? '') // skip the debounce so the load isn't briefly unfiltered
     if (m && m !== periodMonth) setMonth(m)
-    // A deep link means "this slice of everything": a lingering statement
-    // selection would AND with the link's month and silently empty the list.
-    // A payment link (the palette) names one payment: the effect below opens it once it can.
+    // A deep link means "this slice of everything": a lingering account filter would
+    // AND with the link's filters and silently hide rows. A drill-through from a screen
+    // that is looking at one account names it (`account`); any other link means every
+    // account. A payment link (the palette) names one payment: openLinkedPayment keeps
+    // the filter unless it would hide that payment.
     const linked = searchParams.get('txn')
-    if (linked) pendingPayment.current = linked
-    if (category || source || merchant || payeeKeys.length || person || q || m || linked) clearStatementForDeepLink.current = true
+    if (linked) {
+      pendingPayment.current = linked
+      setLinkPending(true)
+    }
+    const account = searchParams.get('account')
+    setUnknownAccount(false)
+    if (account) {
+      requestedAccount.current = account
+      setAccountId(account)
+    } else if (isDeepLink(searchParams) && !linked) setAccountId('')
+    setFiltersSeeded(true)
+    // The account and the month are in the filters now: leaving them in the address would put
+    // them back on a refresh, or after the user has chosen another account or month.
+    if (account || m) {
+      const rest = new URLSearchParams(searchParams)
+      rest.delete('account')
+      rest.delete('month')
+      lastWrittenParams.current = rest.toString()
+      setSearchParams(rest, { replace: true })
+    }
     // Deliberately only re-seed when the URL changes, not when the period or
     // user-edited filters change, so manual edits aren't clobbered.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
+
+  // A link's account that the ledger does not have shows every account (the filter
+  // reads an unknown one as none): say so, and keep it out of the remembered filter.
+  useEffect(() => {
+    if (ledgerLoading || !requestedAccount.current) return
+    const known = accounts.some(a => a.id === requestedAccount.current)
+    requestedAccount.current = null
+    if (known) return
+    setAccountId('')
+    setUnknownAccount(true)
+    // setAccountId is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledgerLoading, accounts, searchParams])
+
+  // Choosing an account answers the message.
+  useEffect(() => { if (accountId) setUnknownAccount(false) }, [accountId])
 
   // Reflect filter edits back into the URL so any filtered view survives a
   // refresh and can be shared. `replace` keeps keystrokes out of history; the
@@ -410,41 +464,6 @@ export default function Transactions() {
     setSearchParams(next, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoryCsv, sourceCsv, merchantFilter, payeeFilter, personFilter, search])
-
-  // The statement scope may already be set (in-session navigation) or arrive
-  // later (hard load: StatementContext defaults to the latest statement once
-  // /statements resolves), so the clear has to chase it. One-shot: a manual
-  // statement pick after the deep link sticks.
-  const clearStatementForDeepLink = useRef(false)
-  useEffect(() => {
-    if (clearStatementForDeepLink.current && activeStatement) {
-      setActiveStatement(null)
-      clearStatementForDeepLink.current = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeStatement, searchParams])
-
-  // PeriodPicker is shared across pages, so the period may already be set to
-  // a month (eg. carried over from Dashboard) before this page's statement
-  // scope resolves (StatementContext defaults to the latest statement once
-  // /statements loads) or before the user changes the period directly. Either
-  // way, a stale statement_id + month combo would AND into an empty result
-  // with no explanation, so drop the stale scope whenever they disagree.
-  useEffect(() => {
-    if (activeStatement && month && activeStatement.statement_month !== month) {
-      setActiveStatement(null)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, activeStatement])
-
-  // "All time" means every transaction. A lingering statement selection would
-  // keep the list on one month while the period says otherwise, so the two
-  // controls are made to agree: All time clears the statement scope and the
-  // select reads "All statements".
-  useEffect(() => {
-    if (periodMonth === ALL_TIME && activeStatement) setActiveStatement(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [periodMonth, activeStatement])
 
   // Escape closes the open payment. While the user is typing in it, the first
   // Escape only leaves the field, so a half-typed edit is not thrown away.
@@ -495,22 +514,27 @@ export default function Transactions() {
     }
   }
 
-  // A link to one payment (the palette): show the month it is in, drop a statement
-  // scope that would hide it, and open it. Waits for the statements so the month
-  // can be matched against the ones the period picker knows.
+  // A link to one payment (the palette): show the month it is in, drop an account
+  // filter that would hide it, and open it.
   function openLinkedPayment(id) {
     setLinkError(null)
     return api.get(`/transactions/${id}`)
       .then(full => {
         const m = String(full.txn_date).slice(0, 7)
-        setMonth(months.includes(m) ? m : ALL_TIME)
-        setActiveStatement(null)
+        // The payment's own month: a month with a payment in it is always one the ledger has.
+        setMonth(m)
+        // The account filter stays unless it would hide this payment.
+        if (accountIdRef.current && full.account_id !== accountIdRef.current) setAccountId('')
+        setLinkPending(false)
         scrollTarget.current = full.id
         setDetailError(null)
         setActiveTxn(full)
         showRecord(full)
       })
-      .catch(e => setLinkError({ id, status: e?.status }))
+      .catch(e => {
+        setLinkError({ id, status: e?.status })
+        setLinkPending(false)
+      })
       .finally(() => {
         setSearchParams(prev => {
           const next = new URLSearchParams(prev)
@@ -522,13 +546,13 @@ export default function Transactions() {
 
   useEffect(() => {
     const id = pendingPayment.current
-    if (!id || statementsLoading) return
+    if (!id || ledgerLoading) return
     pendingPayment.current = null
     openLinkedPayment(id)
     // showRecord and the setters are stable in effect: only a new link or the
-    // statements finishing their load should run this.
+    // accounts finishing their load should run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, statementsLoading])
+  }, [searchParams, ledgerLoading])
 
   // Bring the linked payment's row into view once its month has loaded.
   useEffect(() => {
@@ -540,26 +564,6 @@ export default function Transactions() {
       scrollTarget.current = null
     }
   }, [transactions, loading])
-
-  async function autoAnnotate() {
-    if (!selectedStmt) {
-      toast('Select a statement first', 'error')
-      return
-    }
-    setAutoAnnotating(true)
-    try {
-      const result = await startAnnotation({ statement_id: selectedStmt })
-      const summary = annotationSummary(result)
-      toast(summary.message, summary.type, summaryDuration(summary))
-      loadTransactions()
-      loadFacets()
-    } catch (e) {
-      toast(couldnt('sort', e), 'error')
-    } finally {
-      setAutoAnnotating(false)
-    }
-  }
-
 
   // Patch a saved annotation into the loaded rows in place. A full reload
   // would reset to page one and lose the scroll position, which punishes the
@@ -580,8 +584,59 @@ export default function Transactions() {
     setTransactions(prev => prev.map(t =>
       t.id === txnId ? { ...t, ...ann, id: t.id, annotation_id: saved.id } : t
     ))
+    // Calling a paired payment something other than Self Transfers takes the pair
+    // apart on the server: the payment on the other side is To sort again, so its
+    // row must say so (and stop saying it moved).
+    const partner = transactions.find(t => t.id === txnId)?.transfer?.transaction_id
+    if (partner && saved.category !== 'Self Transfers') refreshPayments([partner])
     loadFacets() // a manual save can introduce a category new to this scope
     refreshName(txnId) // and a new merchant can change what the row is called
+  }
+
+  // Re-read payments whose labels changed together (a pair, an unpair, an undo of
+  // either) and patch the loaded rows and the open panel where they stand, so the
+  // page keeps its place and its selection.
+  async function refreshPayments(ids) {
+    const found = (await Promise.all(ids.map(id => api.get(`/transactions/${id}`).catch(() => null)))).filter(Boolean)
+    const byId = new Map(found.map(full => [full.id, full]))
+    const fieldsOf = full => Object.fromEntries([...NAME_FIELDS, ...LABEL_FIELDS].map(f => [f, full[f]]))
+    setTransactions(prev => prev.map(t => (byId.has(t.id) ? { ...t, ...fieldsOf(byId.get(t.id)) } : t)))
+    setAnnotationMap(prev => {
+      const next = { ...prev }
+      for (const full of found) {
+        if (full.annotation_id) next[full.id] = buildAnnotationMap([full])[full.id]
+        else delete next[full.id]
+      }
+      return next
+    })
+    const open = byId.get(activeIdRef.current)
+    if (open) showRecord(open)
+    loadFacets()
+  }
+
+  // Take this payment's transfer pair apart; the toast says what is waiting in
+  // Teach Me now (a side the user had labelled keeps its label and is not) and
+  // can bring the pair back.
+  async function unpairPayment(txn) {
+    try {
+      const res = await api.post('/transfers/unpair', { transaction_id: txn.id })
+      await refreshPayments(res.unpaired)
+      toast(unpairMessage(res), 'success', {
+        action: { label: 'Undo', onClick: () => undoUnpair(res) },
+      })
+    } catch (e) {
+      toast(couldnt('unpair', e), 'error')
+    }
+  }
+
+  async function undoUnpair(res) {
+    try {
+      await api.post('/annotations/review-queue/undo', { token: res.undo_token })
+      await refreshPayments(res.unpaired)
+      toast('Paired again', 'info')
+    } catch (e) {
+      toast(e.message, 'error')
+    }
   }
 
   async function refreshName(txnId) {
@@ -624,23 +679,7 @@ export default function Transactions() {
     <div className="flex flex-col h-full">
       {/* Filter bar */}
       <div className="sticky top-0 z-20 bg-[#0f1117] border-b border-[#2d3148] px-5 py-3 flex items-center gap-3 flex-wrap">
-        <select
-          value={selectedStmt}
-          onChange={e => {
-            const stmt = statements.find(s => s.id === e.target.value) ?? null
-            setActiveStatement(stmt)
-            // Picking a statement is picking a month; keep the shared period in
-            // sync so it doesn't silently AND against a different month and
-            // empty the list (or clear it entirely for "All statements").
-            setMonth(stmt ? stmt.statement_month : ALL_TIME)
-          }}
-          className="bg-[#13151f] border border-[#2d3148] text-[#e2e8f0] px-2.5 py-1.5 rounded-md text-sm focus:outline-none focus:border-[#6366f1]"
-        >
-          <option value="">All statements</option>
-          {statements.map(s => (
-            <option key={s.id} value={s.id}>{s.bank_name} - {formatMonth(s.statement_month)}</option>
-          ))}
-        </select>
+        <AccountFilter />
 
         <PeriodPicker />
 
@@ -719,7 +758,7 @@ export default function Transactions() {
         )}
 
         <span className="text-xs text-[#94a3b8] ml-auto">
-          {loading ? 'Loading…' : loadError ? null : summary ? (
+          {busy ? 'Loading…' : loadError ? null : summary ? (
             <>
               {count(summary.count, 'payment')}
               {' · '}<Amount value={summary.money_out} decimals={0} /> out
@@ -732,23 +771,13 @@ export default function Transactions() {
 
         <button
           onClick={loadTransactions}
-          disabled={loading}
+          disabled={busy}
           className="text-[#94a3b8] hover:text-[#e2e8f0] disabled:opacity-50"
           title="Refresh"
         >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          <RefreshCw size={15} className={busy ? 'animate-spin' : ''} />
         </button>
 
-        <Tooltip content="Sort this statement again, for example after connecting a model">
-          <button
-            onClick={autoAnnotate}
-            disabled={autoAnnotating || !selectedStmt || job != null}
-            className="flex items-center gap-1.5 bg-[#4f46e5] text-white px-3 py-1.5 rounded-md text-xs font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
-          >
-            <Zap size={13} />
-            {autoAnnotating ? 'Sorting…' : 'Sort again'}
-          </button>
-        </Tooltip>
       </div>
 
       {/* Bulk action bar (4.12) */}
@@ -788,6 +817,11 @@ export default function Transactions() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto">
+        {unknownAccount && (
+          <p className="m-4 rounded-xl border border-[#78350f] bg-[#2a1d0a] px-4 py-3 text-sm text-[#fcd34d]">
+            That account isn't in your ledger, so this shows every account.
+          </p>
+        )}
         {linkError && (
           <p role="alert" className="m-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[#7f1d1d] bg-[#2a1215] px-4 py-3 text-sm text-[#fecaca]">
             {linkError.status === 404 ? (
@@ -808,7 +842,7 @@ export default function Transactions() {
         )}
         {loadError ? (
           <InlineError what="your payments" error={loadError} onRetry={loadTransactions} retrying={loading} className="m-4" />
-        ) : !loading && transactions.length === 0 ? (
+        ) : !busy && transactions.length === 0 ? (
           <EmptyState
             title="No payments"
             description={filtersActive ? 'No payments match the current filters.' : 'Add a statement to get started.'}
@@ -822,6 +856,8 @@ export default function Transactions() {
                 annotationMap={annotationMap}
                 activeId={activeTxn?.id}
                 onSelect={openAnnotationPanel}
+                showAccount={multiple && !accountId}
+                showBalance={oneAccount}
                 selectable
                 selected={selected}
                 onToggle={toggleSelect}
@@ -837,6 +873,7 @@ export default function Transactions() {
                 annotationMap={annotationMap}
                 activeId={activeTxn?.id}
                 onSelect={openAnnotationPanel}
+                showAccount={multiple && !accountId}
                 selectable
                 selected={selected}
                 onToggle={toggleSelect}
@@ -868,6 +905,8 @@ export default function Transactions() {
           onClose={() => { setActiveTxn(null); setActiveAnnotation(null); setDetailError(null); scrollTarget.current = null }}
           onSaved={applySavedAnnotation}
           onRenamed={applyRename}
+          onNoted={updated => applyRename(updated, 'payment')}
+          onUnpair={unpairPayment}
           loadError={detailError}
           onRetryLoad={() => openAnnotationPanel(activeTxn)}
         />

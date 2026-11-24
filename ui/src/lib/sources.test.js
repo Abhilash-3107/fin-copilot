@@ -7,6 +7,7 @@ describe('source labels', () => {
     expect(sourceLabel('learned_rule')).toBe('remembered payee')
     expect(sourceLabel('rag_direct')).toBe('from history')
     expect(sourceLabel('rag_prompted')).toBe('from history')
+    expect(sourceLabel('pair')).toBe('paired')
     expect(sourceLabel('pending')).toBe('not sorted')
     expect(sourceLabel(null)).toBe('not sorted')
     expect(sourceLabel(undefined)).toBe('not sorted')

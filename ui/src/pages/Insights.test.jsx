@@ -30,7 +30,7 @@ vi.mock('react-chartjs-2', () => ({
 }))
 
 import { PrivacyProvider } from '../contexts/PrivacyContext.jsx'
-import { StatementProvider } from '../contexts/StatementContext.jsx'
+import { LedgerProvider } from '../contexts/LedgerContext.jsx'
 import { PeriodProvider } from '../contexts/PeriodContext.jsx'
 import Insights from './Insights.jsx'
 
@@ -101,11 +101,11 @@ function renderInsights() {
   render(
     <MemoryRouter>
       <PrivacyProvider>
-        <StatementProvider>
+        <LedgerProvider>
           <PeriodProvider>
             <Insights />
           </PeriodProvider>
-        </StatementProvider>
+        </LedgerProvider>
       </PrivacyProvider>
     </MemoryRouter>
   )
@@ -256,6 +256,28 @@ describe('Insights (Money Map)', () => {
     expect(note.querySelector('[data-privacy-mask]')).toHaveTextContent('₹43,138')
   })
 
+  it('says money in that is not sorted yet, apart from refunds and paybacks', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 0, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderInsights()
+    expect(await screen.findByText(/not sorted yet/)).toHaveTextContent('incl ₹7,000 not sorted yet')
+    expect(screen.queryByText(/refunds and paybacks/)).not.toBeInTheDocument()
+  })
+
+  it('shows both In tile notes when there are paybacks and unsorted money', async () => {
+    mockApi.get.mockImplementation(path => (
+      path.startsWith('/insights')
+        ? Promise.resolve({ ...SUMMARY, verdict: { ...SUMMARY.verdict, other_in: 500, unsorted_in: 7000 } })
+        : Promise.resolve([])
+    ))
+    renderInsights()
+    expect(await screen.findByText(/in refunds and paybacks/)).toHaveTextContent('incl ₹500 in refunds and paybacks')
+    expect(screen.getByText(/not sorted yet/)).toHaveTextContent('incl ₹7,000 not sorted yet')
+  })
+
   describe('a month in progress', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['Date'] })
@@ -317,6 +339,25 @@ describe('Insights (Money Map)', () => {
       expect(screen.queryByText(/▲|▼/)).not.toBeInTheDocument()
       expect(screen.getByText('What changed')).toBeInTheDocument()
     })
+
+    it('says why there is no comparison', async () => {
+      mockApi.get.mockImplementation(path => (
+        path.startsWith('/insights')
+          ? Promise.resolve({
+            ...PARTIAL,
+            comparison: null,
+            comparison_note: [{ account_label: 'SBI savings', reason: 'was added in November' }],
+            verdict: { ...PARTIAL.verdict, prev: null },
+            what_changed: [],
+            categories: PARTIAL.categories.map(c => ({ ...c, prev_net: null, delta: null })),
+          })
+          : Promise.resolve([])
+      ))
+      renderInsights()
+      expect(await screen.findByText(/No comparison with .*: SBI savings was added in November\./)).toBeInTheDocument()
+      expect(screen.getByText('This month is not compared, so nothing is listed here.')).toBeInTheDocument()
+      expect(screen.queryByText(/no earlier period/)).not.toBeInTheDocument()
+    })
   })
 
   it('requests the period month from the server', async () => {
@@ -371,14 +412,48 @@ describe('Insights when the API fails', () => {
   })
 })
 
-describe('Insights asks once for the default period', () => {
-  it('waits for the statement list, then asks for the month it will keep, so a failed answer is never replaced', async () => {
+describe('Money Map with two accounts', () => {
+  const ACCOUNTS = [
+    { id: 'acc_k', account_label: 'Kotak savings', statement_count: 4 },
+    { id: 'acc_s', account_label: 'SBI savings', statement_count: 3 },
+  ]
+  beforeEach(() => {
     mockApi.get.mockImplementation(path => {
       if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
-      if (path === '/statements') {
-        return new Promise(resolve => setTimeout(() => resolve([
-          { id: 's1', statement_month: '2026-02', uploaded_at: '2026-03-01T00:00:00' },
-        ]), 20))
+      if (path === '/accounts') return Promise.resolve(ACCOUNTS)
+      if (path === '/transactions/months') return Promise.resolve({ months: SUMMARY.months })
+      return Promise.resolve([])
+    })
+  })
+  const insightsCalls = () => mockApi.get.mock.calls.map(c => c[0]).filter(p => p.startsWith('/insights'))
+
+  it('asks once for the remembered account, and again for another', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderInsights()
+    await screen.findByText('Kept')
+    expect(insightsCalls()).toHaveLength(1)
+    expect(insightsCalls()[0]).toContain('account_id=acc_k')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Account' }), { target: { value: 'acc_s' } })
+    await waitFor(() => expect(insightsCalls().at(-1)).toContain('account_id=acc_s'))
+    await screen.findByText('Kept')
+  })
+
+  it('names the account in every drill-through while one is selected', async () => {
+    localStorage.setItem('fc_account_id', 'acc_k')
+    renderInsights()
+    await screen.findByText('Kept')
+    const hrefs = screen.getAllByRole('link').map(l => l.getAttribute('href')).filter(h => h?.startsWith('#/transactions') || h?.startsWith('/transactions'))
+    expect(hrefs.length).toBeGreaterThan(0)
+    for (const h of hrefs) expect(h).toContain('account=acc_k')
+  })
+})
+
+describe('Insights asks once for the default period', () => {
+  it('waits for the ledger, then asks for the month it will keep, so a failed answer is never replaced', async () => {
+    mockApi.get.mockImplementation(path => {
+      if (path.startsWith('/insights')) return Promise.resolve(SUMMARY)
+      if (path === '/transactions/months') {
+        return new Promise(resolve => setTimeout(() => resolve({ months: ['2026-01', '2026-02'] }), 20))
       }
       return Promise.resolve([])
     })

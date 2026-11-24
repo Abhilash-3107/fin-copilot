@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -474,3 +475,110 @@ class TestRemoveReapsStaleJobs:
         conn.commit()
         assert client.delete("/api/data/demo").status_code == 200
         assert conn.execute("SELECT status FROM annotation_jobs WHERE id = 'zombie'").fetchone()[0] == "failed"
+
+
+class TestDemoAccounts:
+    def test_the_demo_has_two_named_accounts_and_every_statement_in_one(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM statements WHERE account_id IS NULL").fetchone()[0] == 0
+        accounts = {a["account_label"]: a for a in client.get("/api/accounts").json()}
+        assert set(accounts) == {"Kotak savings", "SBI savings"}
+        assert accounts["Kotak savings"]["statement_count"] >= 4
+        assert accounts["SBI savings"]["statement_count"] >= 4
+        assert accounts["Kotak savings"]["account_ref_last4"] == "8074"
+        assert accounts["SBI savings"]["account_ref_last4"] == "3521"
+
+    def test_each_account_shows_a_balance_and_every_statement_a_printed_period(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        for account in client.get("/api/accounts").json():
+            assert account["balance"] is not None and account["balance_as_of"] is not None
+        for row in conn.execute("SELECT * FROM statements").fetchall():
+            assert row["printed_start"] and row["printed_end"] and row["period_start"] and row["period_end"]
+            assert row["printed_start"] <= row["period_start"] and row["period_end"] <= row["printed_end"]
+            assert row["opening_balance"] is not None and row["closing_balance"] is not None
+            assert row["account_ref"]
+
+    def test_a_statements_balances_chain_within_its_account(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        for account_id in [r[0] for r in conn.execute("SELECT id FROM accounts")]:
+            rows = conn.execute(
+                "SELECT opening_balance, closing_balance FROM statements WHERE account_id = ? ORDER BY period_end",
+                (account_id,)).fetchall()
+            for prev, nxt in zip(rows, rows[1:], strict=False):
+                assert prev["closing_balance"] == pytest.approx(nxt["opening_balance"], abs=0.01)
+
+    def test_the_monthly_move_to_sbi_is_paired_on_both_sides(self, client_conn):
+        client, conn = client_conn
+        r = client.post("/api/data/demo").json()
+        pairs = conn.execute("SELECT txn_a, txn_b FROM transaction_links WHERE link_type = 'transfer'").fetchall()
+        assert len(pairs) == r["transfers_paired"] >= 3
+        for pair in pairs:
+            sources = {
+                row["source"] for row in conn.execute(
+                    "SELECT source FROM annotations WHERE transaction_id IN (?, ?)", (pair["txn_a"], pair["txn_b"]))
+            }
+            assert sources == {"manual", "pair"}  # Kotak's was sorted by hand, SBI's came from the pairing
+            rows = conn.execute(
+                "SELECT debit_credit, amount FROM transactions WHERE id IN (?, ?) ORDER BY debit_credit",
+                (pair["txn_a"], pair["txn_b"])).fetchall()
+            assert [tuple(x) for x in rows] == [("credit", 10000.0), ("debit", 10000.0)]
+
+    def test_the_rows_say_where_the_money_went(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        rows = client.get("/api/transactions?category=Self%20Transfers&include=annotation").json()
+        assert {r["transfer"]["text"] for r in rows} == {"Moved to SBI savings", "Moved from Kotak savings"}
+
+    def test_the_second_account_adds_to_the_numbers_but_the_transfer_does_not(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        month = client.get("/api/insights").json()["months"][-2]
+        verdict = client.get(f"/api/insights?month={month}").json()["verdict"]
+        sbi_out = conn.execute(
+            "SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN statements s ON s.id = t.statement_id "
+            "JOIN annotations a ON a.transaction_id = t.id WHERE s.bank_name = 'sbi' AND t.debit_credit = 'debit' "
+            "AND strftime('%Y-%m', t.txn_date) = ? AND a.category != 'Investments'", (month,)).fetchone()[0]
+        assert sbi_out == 3150  # the premium counts as spending, the move does not
+        assert verdict["money_out"] >= sbi_out
+
+    def test_seeding_again_adds_no_account_and_no_second_pair(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        links = conn.execute("SELECT COUNT(*) FROM transaction_links").fetchone()[0]
+        client.post("/api/data/demo")
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM transaction_links").fetchone()[0] == links
+
+    def test_the_kotak_rows_are_what_they_were_before_the_second_account(self, client_conn):
+        """The sample's Kotak ledger is unchanged by the SBI account: same ids, dates, amounts and payee keys."""
+        from finance_copilot.demo_seed import build_ledger
+        from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
+
+        led = build_ledger(date(2026, 11, 15))
+        kotak = [t for t in led.txns if t["account"] == "kotak"]
+        alone = canonical_keys({k for t in kotak if (k := normalize_identity(t["desc"]))})
+        together = canonical_keys({k for t in led.txns if (k := normalize_identity(t["desc"]))})
+        assert all(alone[k] == together[k] for k in alone)
+        assert all(t["id"].startswith("demo_2026") for t in kotak)
+
+    def test_removing_the_sample_data_removes_its_account(self, client_conn):
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        assert client.delete("/api/data/demo").status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+
+    def test_removing_the_sample_data_keeps_the_account_of_a_real_statement(self, client_conn):
+        """A 0.1.2 ledger can hold both. Migration puts a Kotak sample and a real Kotak
+        statement in one account; the real one keeps it."""
+        client, conn = client_conn
+        client.post("/api/data/demo")
+        account_id = conn.execute("SELECT id FROM accounts").fetchone()[0]
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES ('real1', 'kotak', '1', '2026-05', ?)", (account_id,))
+        conn.commit()
+        client.delete("/api/data/demo")
+        assert [a["id"] for a in client.get("/api/accounts").json()] == [account_id]

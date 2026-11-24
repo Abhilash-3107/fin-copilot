@@ -15,6 +15,7 @@ from test_insights import seed_txn
 
 from finance_copilot.db.connection import init_db
 from finance_copilot.db.queries.insights import summarize_insights
+from finance_copilot.db.queries.transactions import list_transactions, summarize_transactions
 
 
 @pytest.fixture
@@ -125,10 +126,48 @@ def random_ledger(conn, seed, offsets=True):
         group(conn, members)
 
 
+AMOUNT_POOL = [250.0, 999.0, 1200.0, 2500.0, 4000.0, 5000.0]
+SOURCES = ["manual", "rule", "llm", "learned_rule", "imported", "user_rule", "pair"]
+
+
+def candidate_ledger(conn, seed):
+    """random_ledger plus two accounts whose payments repeat a handful of amounts a day or
+    two apart, labelled by every source, so many are open own-account candidates (and some
+    sit in a transfer link). Links and groups reach the unsorted ones too."""
+    random_ledger(conn, seed)
+    rng = random.Random(f"candidates-{seed}")
+    for acct, stmt in (("acc_a", "sa"), ("acc_b", "sb")):
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES (?, ?, ?)", (acct, stmt, f"XXXX{stmt}"))
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES (?, ?, '1', '2026-01', ?)", (stmt, stmt, acct))
+    ids = {"debit": [], "credit": []}
+    for _ in range(40):
+        dc = rng.choice(["debit", "credit"])
+        txn_id = str(ulid.ULID())
+        month, day = rng.randint(1, 3), rng.randint(1, 26)
+        conn.execute(
+            "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description, counterparty_key) "
+            "VALUES (?, ?, ?, ?, ?, 'X', ?)",
+            (txn_id, rng.choice(["sa", "sb"]), f"2026-{month:02d}-{day:02d}", rng.choice(AMOUNT_POOL), dc,
+             rng.choice([None, "ALPHA", "BETA"])))
+        category = rng.choice(CATEGORIES)
+        if category:
+            conn.execute(
+                "INSERT INTO annotations (id, transaction_id, category, confidence, source) VALUES (?, ?, ?, 0.9, ?)",
+                (str(ulid.ULID()), txn_id, category, rng.choice(SOURCES)))
+        ids[dc].append(txn_id)
+    for credit, debit in zip(rng.sample(ids["credit"], 3), rng.sample(ids["debit"], 3), strict=True):
+        link(conn, credit, debit, rng.choice(["refund", "split", "transfer"]))
+    group(conn, [(i, "split") for i in rng.sample(ids["debit"], 2)] + [(i, "split") for i in rng.sample(ids["credit"], 2)])
+
+
 def ledgers():
     yield "rich", rich_ledger
     for seed in range(25):
         yield f"random-{seed}", lambda c, s=seed: random_ledger(c, s)
+    for seed in range(25):
+        yield f"candidates-{seed}", lambda c, s=seed: candidate_ledger(c, s)
 
 
 LEDGER_PARAMS = [pytest.param(build, id=name) for name, build in ledgers()]
@@ -180,6 +219,23 @@ class TestIdentities:
                 assert s["unexplained"] == {"count": 0, "total": 0}
             else:
                 assert s["unexplained"] == {"count": row["count"], "total": row["gross"]}
+
+    def test_the_dashboard_figure_the_money_map_row_and_the_drill_through_are_the_same_rows(self, conn, build):
+        for s in self._all_months(conn, build):
+            row = next((c for c in s["categories"] if c["category"] == "Uncategorized"), None)
+            drill = summarize_transactions(conn, month=s["month"], categories=["Uncategorized"])
+            assert drill["money_out"] == s["unexplained"]["total"] == (row["gross"] if row else 0), s["month"]
+            listed = list_transactions(conn, month=s["month"], categories=["Uncategorized"])
+            assert sum(1 for t in listed if t["debit_credit"] == "debit") == s["unexplained"]["count"]
+
+    def test_every_payment_is_in_exactly_one_category_filter(self, conn, build):
+        build(conn)
+        names = {r[0] for r in conn.execute("SELECT DISTINCT category FROM annotations WHERE category IS NOT NULL")}
+        names |= {"Uncategorized"}
+        total = summarize_transactions(conn)
+        parts = [summarize_transactions(conn, categories=[n]) for n in sorted(names)]
+        assert sum(p["count"] for p in parts) == total["count"]
+        assert round(sum(p["money_out"] for p in parts), 2) == total["money_out"]
 
     def test_recurring_header_equals_its_rows(self, conn, build):
         for s in self._all_months(conn, build):
@@ -292,9 +348,9 @@ class TestPeriodWindows:
         s = summarize_insights(conn, "2026-02")
         assert s["period"] == {
             "month": "2026-02", "start": "2026-02-01", "end": "2026-02-28",
-            "covered_through": "2026-02-28", "partial": False,
+            "covered_through": "2026-02-28", "partial": False, "counted": 1, "short": [],
         }
-        assert s["comparison"] == {"month": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}
+        assert s["comparison"] == {"month": "2026-01", "start": "2026-01-01", "end": "2026-01-31", "uniform": True}
         assert s["verdict"]["prev"]["money_out"] == 200
 
     def test_covered_to_the_31st_against_a_30_day_previous_month(self, conn):
@@ -316,9 +372,14 @@ class TestPeriodWindows:
         s = summarize_insights(conn, "2026-11")
         assert s["period"] == {
             "month": "2026-11", "start": "2026-11-01", "end": "2026-11-30",
-            "covered_through": "2026-11-15", "partial": True,
+            "covered_through": "2026-11-15", "partial": True, "counted": 1,
+            # The fixture's statement belongs to no account.
+            "short": [{
+                "account_id": None, "account_label": "Other statements", "covered_from": None,
+                "covered_through": "2026-11-15", "closed": False,
+            }],
         }
-        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15"}
+        assert s["comparison"] == {"month": "2026-10", "start": "2026-10-01", "end": "2026-10-15", "uniform": True}
         assert s["verdict"]["money_out"] == 30
         assert s["verdict"]["prev"]["money_out"] == 300  # 1st, 10th, 15th only
         shopping = next(c for c in s["categories"] if c["category"] == "Shopping")
@@ -350,7 +411,7 @@ class TestPeriodWindows:
         seed_txn(conn, "2026-01-01", 10, "debit", category="Shopping")
         seed_txn(conn, "2026-01-12", 10, "debit", category="Shopping")
         s = summarize_insights(conn, "2026-01")
-        assert s["comparison"] == {"month": "2025-12", "start": "2025-12-01", "end": "2025-12-12"}
+        assert s["comparison"] == {"month": "2025-12", "start": "2025-12-01", "end": "2025-12-12", "uniform": True}
         assert s["verdict"]["prev"]["money_out"] == 100
 
     def test_first_month_of_the_ledger_has_no_comparison(self, conn):
@@ -362,9 +423,9 @@ class TestPeriodWindows:
         assert s["what_changed"] == []
         assert all(c["delta"] is None and c["prev_net"] is None for c in s["categories"])
 
-    def test_no_comparison_when_the_ledger_starts_inside_the_window(self, conn):
-        # Data starts on 15 Oct: "1-15 Oct" cannot be compared with, so a half
-        # November has nothing honest to be scored against.
+    def test_a_first_statement_with_no_printed_period_starts_at_its_first_payment(self, conn):
+        # Data starts on 15 Oct and nothing says what happened on 1 to 14 Oct: November is
+        # not compared with a quiet October that may not have been quiet.
         seed_txn(conn, "2026-10-15", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-10-28", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 10, "debit", category="Shopping")
@@ -373,16 +434,20 @@ class TestPeriodWindows:
         assert s["period"]["partial"] is True
         assert s["comparison"] is None
         assert s["verdict"]["prev"] is None
+        assert s["comparison_note"] == [{"account_label": "Other statements", "reason": "has no statement for 1-12 Oct"}]
 
-    def test_a_gap_month_has_no_comparison(self, conn):
-        # September and November have data, October has none: November must not
+    def test_a_gap_month_has_no_comparison_and_says_which_days_are_missing(self, conn):
+        # September and November have statements, October has none: November must not
         # be scored against an empty October.
         seed_txn(conn, "2026-09-01", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-09-30", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-01", 100, "debit", category="Shopping")
         seed_txn(conn, "2026-11-30", 100, "debit", category="Shopping")
+        conn.execute("INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s2','test','1','2026-11')")
+        conn.execute("UPDATE transactions SET statement_id = 's2' WHERE txn_date >= '2026-11-01'")
         s = summarize_insights(conn, "2026-11")
         assert s["comparison"] is None
+        assert s["comparison_note"] == [{"account_label": "Other statements", "reason": "has no statement for October"}]
         assert s["verdict"]["prev"] is None
         assert s["what_changed"] == []
         assert all(c["delta"] is None for c in s["categories"])

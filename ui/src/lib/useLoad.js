@@ -4,12 +4,10 @@ import { useCallback, useEffect, useState } from 'react'
 //
 // `load` must be stable (wrap it in useCallback): a new function means "this is
 // a different question", so it loads again and an older answer is ignored.
+// `enabled: false` asks nothing yet (the scope the question depends on is still
+// being decided) and reads as loading, so the page asks once, with the final scope.
 // A failed load keeps `error` and never an empty `data`, so the caller can show
 // an inline error with Retry instead of an empty state.
-//
-// `enabled: false` holds the first request (state stays `loading`) until what
-// the question depends on is known, so a page does not ask once with a guess
-// and again with the answer, which would replace its own error block or data.
 export function useLoad(load, { enabled = true } = {}) {
   const [state, setState] = useState({ data: null, error: null, loading: true })
   const [attempt, setAttempt] = useState(0)

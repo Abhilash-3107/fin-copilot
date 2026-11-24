@@ -1,6 +1,6 @@
-// Facts the API does not show but the migrations in a release act on: the
-// category ids on annotations (migration 036 fills the ones the old demo seeder
-// left empty), each skipped payment's snooze time (migration 035 moves it from
+// Facts the API does not show but the migrations in a release act on: every column
+// of every label (migration 036 fills the category ids the old demo seeder left
+// empty; 044 rebuilds the table), each skipped payment's snooze time (migration 035 moves it from
 // the annotation to the payment), and the schema itself: which migrations have
 // run, what the tables and columns they add hold, and the start count of each
 // sorting job (migration 040). They are read straight from the SQLite file, with
@@ -16,9 +16,16 @@ import json, sqlite3, sys
 conn = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
 def columns(table):
     return {row[1] for row in conn.execute("PRAGMA table_info(" + table + ")")}
+# Every column of every label (migration 044 rebuilds the table that holds them, 036
+# fills the category ids), in the order the table has them, as the file stores them.
+LABEL_COLUMNS = (
+    "id", "transaction_id", "merchant", "category", "subcategory", "tags", "confidence", "source",
+    "original_source", "category_id", "subcategory_id", "reasoning", "annotated_at",
+)
+wanted = [c for c in LABEL_COLUMNS if c in columns("annotations")]
 ids = [
-    {"transaction_id": row[0], "category_id": row[1], "subcategory_id": row[2]}
-    for row in conn.execute("SELECT transaction_id, category_id, subcategory_id FROM annotations")
+    dict(zip(wanted, row))
+    for row in conn.execute("SELECT " + ", ".join(wanted) + " FROM annotations ORDER BY transaction_id")
 ]
 # Before migration 035 the snooze lives on the annotation, after it on the payment.
 if "review_snoozed_at" in columns("transactions"):
@@ -31,15 +38,23 @@ snoozed = [{"transaction_id": row[0], "review_snoozed_at": row[1]} for row in co
 # (a column the release does not have yet is simply not listed), and how many times
 # each sorting job has been started (migration 040; None before it exists).
 tables = {}
-for name in ("payee_names", "review_undo"):
+for name in ("payee_names", "review_undo", "accounts", "transfer_unpaired", "import_layouts"):
     exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone()
     tables[name] = conn.execute("SELECT COUNT(*) FROM " + name).fetchone()[0] if exists else None
 added = [
     table + "." + column
     for table, column in (
         ("transactions", "display_name"),
+        ("transactions", "user_note"),
         ("annotation_jobs", "transaction_ids"),
         ("annotation_jobs", "attempts"),
+        ("statements", "account_id"),
+        ("statements", "printed_start"),
+        ("statements", "printed_end"),
+        ("statements", "rows_in_file"),
+        ("statements", "rows_added"),
+        ("statements", "balance_checked"),
+        ("statements", "balance_consistent"),
     )
     if column in columns(table)
 ]
@@ -53,7 +68,7 @@ schema = {
     "addedColumns": added,
     "jobAttempts": attempts,
 }
-print(json.dumps({"annotationCategoryIds": ids, "snoozedAt": snoozed, "schema": schema}, sort_keys=True))
+print(json.dumps({"annotationRows": ids, "snoozedAt": snoozed, "schema": schema}, sort_keys=True))
 `
 
 /** @param {string} dataDir the folder that holds finance.db; the server using it must be stopped */

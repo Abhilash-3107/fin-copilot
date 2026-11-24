@@ -11,6 +11,11 @@ history plus the current partial month, so the demo always looks current:
 - History months are fully annotated with a realistic mix of pipeline sources
   and confidences; the current month carries a small low-confidence review
   backlog plus a batch of unannotated transactions for a live auto-annotate.
+- A second account, an SBI savings account, holds a life insurance premium, a
+  recurring deposit, one month of interest and the credit side of the monthly
+  Rs 10,000 move from Kotak. Its credits are seeded unsorted: the real pairing
+  (pipeline/pairing.py) pairs them with Kotak's debits when the ledger is seeded,
+  so the sample shows a transfer between two named accounts.
 - Story arcs exercise the insights netting machinery: a trip expense group
   whose friends paid their shares back (group split offsets), a linked
   merchant refund (transaction_links offset), an unlinked refund matched by
@@ -41,14 +46,22 @@ from pathlib import Path
 from finance_copilot.clock import today as app_today
 from finance_copilot.config import settings
 from finance_copilot.db.connection import get_migrated_db
+from finance_copilot.db.queries.accounts import (
+    delete_empty_accounts,
+    resolve_account,
+    set_account_name,
+)
 from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import dump_string_list, parse_string_list
+from finance_copilot.db.queries.transfers import release_transfers
 from finance_copilot.parsers.upi import parse_upi_description
 from finance_copilot.pipeline.counterparty import canonical_keys, normalize_identity
+from finance_copilot.pipeline.pairing import pair_transfers_locked
 
 DEFAULT_DB = str(Path(__file__).parent.parent / "data" / "demo.db")
 
 OPENING_BALANCE = 152480.75
+SBI_OPENING_BALANCE = 48200.0
 
 # (id, name, upi, relationship)
 PEOPLE = [
@@ -57,6 +70,14 @@ PEOPLE = [
     ("demo_p03", "Neha Gupta", "neha.gupta@paytm", "friend"),
     ("demo_p04", "Amit Kumar", "amit.landlord@oksbi", "landlord"),
 ]
+
+# The two accounts of the sample ledger: (bank key, fictional masked number, the
+# name the sample gives it, opening balance). Ids and statements follow from the key.
+DEMO_ACCOUNTS = {
+    "kotak": ("kotak", "XXXXXXXX8074", "Kotak savings", OPENING_BALANCE),
+    "sbi": ("sbi", "XXXXXXXX3521", "SBI savings", SBI_OPENING_BALANCE),
+}
+DEMO_BANK = "kotak"
 
 # (pattern, category, subcategory, merchant): matches the BMRCL metro top-up in
 # the unannotated batch.
@@ -93,6 +114,7 @@ class Ledger:
         desc: str,
         note: str = "",
         ann: tuple | None = None,
+        account: str = "kotak",
     ) -> str | None:
         """Add one transaction; returns its id, or None if the date is in the
         future (current-month items that have not happened yet are dropped)."""
@@ -100,11 +122,16 @@ class Ledger:
         if txn_date > self.today.isoformat():
             return None
         ym = f"{year}-{month:02d}"
-        self._seq[ym] = self._seq.get(ym, 0) + 1
-        txn_id = f"demo_{year}{month:02d}_{self._seq[ym]:03d}"
+        # The Kotak ids and statements are what the sample has always had; the
+        # SBI account's carry its name, with a sequence of their own.
+        tag = "" if account == "kotak" else f"{account}_"
+        seq_key = f"{tag}{ym}"
+        self._seq[seq_key] = self._seq.get(seq_key, 0) + 1
+        txn_id = f"demo_{tag}{year}{month:02d}_{self._seq[seq_key]:03d}"
         self.txns.append({
             "id": txn_id,
-            "statement_id": f"demo_stmt_{year}_{month:02d}",
+            "account": account,
+            "statement_id": f"demo_stmt_{tag}{year}_{month:02d}",
             "month": ym,
             "date": txn_date,
             "amount": round(amount, 2),
@@ -404,6 +431,22 @@ def _recent_activity_policy(led: Ledger, today: date, rng: random.Random) -> Non
             t["ann"] = (merchant, category, sub, tags, source, round(rng.uniform(0.86, 0.90), 2))
 
 
+def _savings_account(led: Ledger, months: list[tuple[int, int]]) -> None:
+    """The SBI savings account: a life insurance premium on the 10th, a recurring
+    deposit on the 12th, interest in one month, and the credit side of Kotak's
+    monthly move on the 28th. That credit is left unsorted on purpose: the pairing
+    run at seeding time pairs it with Kotak's debit, which says "TO OWN SBI SAVINGS"."""
+    for i, (year, month) in enumerate(months):
+        led.add(year, month, 10, 3150, "debit", "NACH/SBI LIFE INSURANCE/PREMIUM", "",
+                ("SBI Life", "Finances", "Insurance Premium", "insurance,premium", "rule", 0.95), account="sbi")
+        led.add(year, month, 12, 5000, "debit", "NACH/SBI RECURRING DEPOSIT/INSTALMENT", "",
+                ("SBI Recurring Deposit", "Investments", None, "recurring-deposit,savings", "rule", 0.95), account="sbi")
+        if i == 1:
+            led.add(year, month, 30, 412, "credit", "INT.PD/SAVINGS INTEREST", "",
+                    ("SBI", "Income", "Interest & Dividends", "interest", "rule", 0.95), account="sbi")
+        led.add(year, month, 28, 10000, "credit", "IMPS/P2P/TRANSFER/FROM KOTAK SAVINGS", "", None, account="sbi")
+
+
 def build_ledger(today: date) -> Ledger:
     led = Ledger(today)
     months = [_month_add(today, off) for off in (-3, -2, -1, 0)]
@@ -416,6 +459,7 @@ def build_ledger(today: date) -> Ledger:
     # After the policy on purpose: these carry hand-tuned states.
     _review_backlog(led, today)
     _fresh_unannotated(led, today)
+    _savings_account(led, months)
     return led
 
 
@@ -450,8 +494,14 @@ def wipe(conn) -> int:
     touched_groups = [r[0] for r in conn.execute(
         f"SELECT DISTINCT group_id FROM transaction_group_members "
         f"WHERE transaction_id IN ({DEMO_TRANSACTIONS}) AND group_id NOT GLOB 'demo_grp*'")]
+    # A real payment paired with a sample one must not keep a pair label with nobody on
+    # the other end: free it (and drop the recorded unpairings) before the links go.
+    release_transfers(conn, [r[0] for r in conn.execute(DEMO_TRANSACTIONS)], drop_decisions=True)
     conn.execute(
         f"DELETE FROM transaction_links WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
+        f"OR txn_b IN ({DEMO_TRANSACTIONS})")
+    conn.execute(
+        f"DELETE FROM transfer_unpaired WHERE txn_a IN ({DEMO_TRANSACTIONS}) "
         f"OR txn_b IN ({DEMO_TRANSACTIONS})")
     conn.execute(
         f"DELETE FROM transaction_group_members WHERE transaction_id IN ({DEMO_TRANSACTIONS})")
@@ -471,6 +521,9 @@ def wipe(conn) -> int:
     conn.execute("DELETE FROM annotation_jobs WHERE statement_id GLOB 'demo_stmt*'")
     conn.execute(f"DELETE FROM transactions WHERE statement_id IN ({DEMO_STATEMENTS})")
     conn.execute("DELETE FROM statements WHERE id GLOB 'demo_stmt*'")
+    # The account only the sample used goes with it; one a real statement
+    # shares (a 0.1.2 ledger can hold both) stays.
+    delete_empty_accounts(conn)
     conn.execute("DELETE FROM people WHERE id GLOB 'demo_p[0-9]*'")
     conn.execute("DELETE FROM user_rules WHERE id GLOB 'demo_rule*'")
     # Review feedback and dismissed learned rules are aggregated per category
@@ -505,34 +558,69 @@ def _untag_people(conn, demo_people: set[str]) -> None:
             (dump_string_list(kept) if kept else None, group_id, txn_id))
 
 
+def _insert_statement(conn, today: date, stmt_id: str, stmt: dict, account_id: str) -> None:
+    """One sample statement, as ingest records one: the bank and number, the first
+    and last payment, the balances either side, and the period the header prints
+    (the calendar month, or up to today for the current one)."""
+    bank, ref, _name, _opening = DEMO_ACCOUNTS[stmt["account"]]
+    year, month = int(stmt["month"][:4]), int(stmt["month"][5:])
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    conn.execute(
+        "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month, period_start, "
+        "period_end, opening_balance, closing_balance, account_ref, account_id, printed_start, printed_end) "
+        "VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (stmt_id, bank, stmt["month"], stmt["first"], stmt["last"], round(stmt["opening"], 2),
+         round(stmt["closing"], 2), ref, account_id, date(year, month, 1).isoformat(),
+         min(month_end, today).isoformat()))
+
+
 def seed(conn, today: date) -> dict:
     """Seed the demo ledger into `conn`; idempotent. Returns a summary dict."""
     led = build_ledger(today)
 
-    # Statements, one per month.
-    for stmt_id, ym in sorted({(t["statement_id"], t["month"]) for t in led.txns}):
-        conn.execute(
-            "INSERT OR IGNORE INTO statements (id, bank_name, parser_version, statement_month) VALUES (?, ?, ?, ?)",
-            (stmt_id, "kotak", "1", ym))
+    # Accounts first: each has the bank, the fictional masked number and the
+    # name the sample gives it, as a user who named their accounts would.
+    account_ids: dict[str, str] = {}
+    for key, (bank, ref, name, _opening) in DEMO_ACCOUNTS.items():
+        if not any(t["account"] == key for t in led.txns):
+            continue
+        account_id, created = resolve_account(conn, bank, ref)
+        if created:
+            set_account_name(conn, account_id, name)
+        account_ids[key] = account_id
 
-    # Transactions in chronological order, with running balances computed as
-    # we go. Within a day, insertion order (credits first on the 1st) holds.
-    balance = OPENING_BALANCE
+    # Transactions in chronological order, with a running balance per account
+    # (each account's chain starts from its own opening balance; within a day,
+    # insertion order holds, credits first on the 1st).
+    balances = {key: DEMO_ACCOUNTS[key][3] for key in account_ids}
     canonical = canonical_keys({k for t in led.txns if (k := normalize_identity(t["desc"]))})
     txn_inserted = 0
+    stmt_rows: dict[str, dict] = {}  # statement id -> what ingest would have recorded
     for t in sorted(led.txns, key=lambda t: (t["date"], t["id"])):
-        balance += t["amount"] if t["dc"] == "credit" else -t["amount"]
+        before = balances[t["account"]]
+        balances[t["account"]] += t["amount"] if t["dc"] == "credit" else -t["amount"]
+        stmt = stmt_rows.setdefault(t["statement_id"], {
+            "account": t["account"], "month": t["month"], "first": t["date"], "opening": before,
+        })
+        stmt["last"], stmt["closing"] = t["date"], round(balances[t["account"]], 2)
         if conn.execute("SELECT 1 FROM transactions WHERE id = ?", (t["id"],)).fetchone():
             continue
+        # The statement exists before its first payment does (foreign key).
+        _insert_statement(conn, led.today, t["statement_id"], stmt, account_ids[t["account"]])
         conn.execute(
             """INSERT INTO transactions
                (id, statement_id, txn_date, amount, debit_credit, raw_description,
                 running_balance, upi_meta, counterparty_key)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (t["id"], t["statement_id"], t["date"], t["amount"], t["dc"], t["desc"],
-             round(balance, 2), parse_upi_description(t["desc"], settings.upi_noise_keywords),
+             round(balances[t["account"]], 2), parse_upi_description(t["desc"], settings.upi_noise_keywords),
              canonical[normalize_identity(t["desc"])] if normalize_identity(t["desc"]) else None))
         txn_inserted += 1
+    # A statement's last payment, and the balance after it, are known only now.
+    for stmt_id, stmt in stmt_rows.items():
+        conn.execute(
+            "UPDATE statements SET period_end = ?, closing_balance = ? WHERE id = ?",
+            (stmt["last"], stmt["closing"], stmt_id))
 
     ann_inserted = 0
     for t in led.txns:
@@ -584,6 +672,10 @@ def seed(conn, today: date) -> dict:
             "INSERT OR IGNORE INTO transaction_links (id, txn_a, txn_b, link_type, note) VALUES (?, ?, ?, ?, ?)",
             (f"demo_link_{i:02d}", a, b, link_type, note))
 
+    # The real pairing, over the ledger as it now stands: the SBI credits are
+    # unsorted and Kotak's debits say "TO OWN SBI SAVINGS", so each month's move pairs.
+    paired = pair_transfers_locked(conn)
+
     conn.commit()
 
     unannotated = conn.execute(
@@ -593,7 +685,7 @@ def seed(conn, today: date) -> dict:
     low_conf = conn.execute(
         """SELECT COUNT(*) FROM annotations
            WHERE transaction_id LIKE 'demo_%' AND confidence < 0.85""").fetchone()[0]
-    current_stmt = max(t["statement_id"] for t in led.txns)
+    current_stmt = max(t["statement_id"] for t in led.txns if t["account"] == "kotak")
 
     return {
         "transactions": txn_inserted,
@@ -602,6 +694,7 @@ def seed(conn, today: date) -> dict:
         "people": len(PEOPLE),
         "groups": len(led.groups),
         "links": len(led.links),
+        "transfers_paired": len(paired),
         "review_backlog": low_conf,
         "unannotated": unannotated,
         "current_statement_id": current_stmt,
@@ -630,7 +723,8 @@ def main() -> None:
     conn.close()
     print(f"Seeded {summary['transactions']} transactions across {summary['months']} months")
     print(f"Seeded {summary['annotations']} annotations, {summary['people']} people, "
-          f"{summary['groups']} expense group(s), {summary['links']} transaction link(s)")
+          f"{summary['groups']} expense group(s), {summary['links']} transaction link(s), "
+          f"{summary['transfers_paired']} transfer(s) paired between the two accounts")
     print()
     print(f"  {summary['review_backlog']} annotations below the 0.85 threshold (review queue backlog)")
     print(f"  {summary['unannotated']} recent transactions unannotated (live auto-annotate fodder)")

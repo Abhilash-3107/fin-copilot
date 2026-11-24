@@ -14,6 +14,7 @@ export const SOURCE_PILL = {
   llm:          'bg-[#3b1f5e] text-[#c4b5fd]',
   model:        'bg-[#3b1f5e] text-[#c4b5fd]',
   imported:     'bg-[#292524] text-[#d6d3d1]',
+  pair:         'bg-[#14532d] text-[#86efac]',
   pending:      'bg-[#292524] text-[#a8a29e]',
 }
 
@@ -28,6 +29,7 @@ const SOURCE_LABEL = {
   policy:       'your policy',
   manual:       'you',
   imported:     'imported',
+  pair:         'paired',
   pending:      'not sorted',
 }
 

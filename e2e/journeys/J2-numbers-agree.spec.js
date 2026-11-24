@@ -2,8 +2,9 @@
 // total must equal its parts, and a drill-through must total what was clicked.
 // Expected values come from the screen or the API, never from fixed rupees.
 import { test, expect } from '../fixtures.js'
+import { uploadNeftFixtures, uploadTransferFixtures } from '../lib/statement.js'
 import {
-  PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, visibleSpend, waitForRows,
+  PERIOD_WORDS, figureNear, firstRupees, open, rupeeFigures, sectionOf, skipToPayment, visibleSpend, waitForRows,
 } from '../lib/ui.js'
 
 // A figure that stands alone on its line, as an amount does in a list row.
@@ -41,7 +42,10 @@ async function breakdownRows(page) {
 async function recurringPanel(page) {
   const card = sectionOf(page, /Recurring and subscriptions/)
   await expect(card).toBeVisible()
-  const header = firstRupees(await card.getByText(/\/mo across/).locator('..').innerText())
+  // An account with nothing committed has no header to read: that is a total of nothing.
+  const headerText = card.getByText(/\/mo across/)
+  if ((await headerText.count()) === 0) return { header: 0, monthlyRows: [], all: [] }
+  const header = firstRupees(await headerText.locator('..').innerText())
   const rows = []
   for (const tr of await card.locator('tbody > tr').all()) {
     const cells = await tr.locator('td').allInnerTexts()
@@ -56,89 +60,128 @@ async function recurringPanel(page) {
   return { header, monthlyRows: counted, all: rows.filter((r) => r.heading === undefined) }
 }
 
+// The identities hold for every account of the demo (Kotak and SBI) and for all of them together:
+// choosing an account changes which payments a figure counts, never how it is counted.
+const SCOPES = ['All accounts', 'Kotak savings', 'SBI savings']
+
+for (const scope of SCOPES) {
+  const one = scope !== 'All accounts'
+  // One account has fewer rows than all of them; the identities are the same.
+  const MIN_ROWS = one ? 1 : 3
+
+  test.describe(`J2 numbers agree (${scope})`, () => {
+    test.beforeEach(async ({ app, page }) => {
+      await app.loadDemo()
+      if (one) {
+        const account = (await app.api.get('/accounts')).find((a) => a.account_label === scope)
+        expect(account, `the demo has ${scope}`).toBeDefined()
+        await page.addInitScript((id) => localStorage.setItem('fc_account_id', id), account.id)
+      }
+    })
+
+    test('the screens are looking at the account chosen', async ({ page }) => {
+      await open(page, '/insights')
+      const filter = page.getByRole('combobox', { name: 'Account' })
+      await expect(filter.locator('option:checked')).toHaveText(scope)
+    })
+
+    test('Kept is one figure on the Dashboard headline, the Dashboard tile and Money Map', async ({ page }) => {
+      await open(page, '/dashboard')
+      const sentence = await page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in|No money came in/).first().innerText()
+      // The headline words a shortfall as a positive amount; the tiles show it as a negative.
+      // With nothing in, it says where the money went and states no Kept figure of its own.
+      const headline = /No money came in/.test(sentence) ? null
+        : /went over by|more than came in/.test(sentence) ? -firstRupees(sentence) : firstRupees(sentence)
+      const tile = await figureNear(page, 'Kept')
+      await open(page, '/insights')
+      const moneyMap = await figureNear(page, 'Kept')
+
+      expect({ headline: headline ?? tile, tile, moneyMap }).toEqual({ headline: tile, tile, moneyMap: tile })
+    })
+
+    test('the Money Map category breakdown sums to Out', async ({ page }) => {
+      await open(page, '/insights')
+      const out = await figureNear(page, 'Out')
+
+      const rows = await breakdownRows(page)
+      const total = rows.filter((r) => /^total( out)?$/i.test(r.label))
+      expect(total, 'a closing "Total out" row').toHaveLength(1)
+      const parts = rows.filter((r) => !total.includes(r))
+      expect(parts.length, 'category rows found').toBeGreaterThanOrEqual(MIN_ROWS)
+      expect(parts.filter((r) => r.amount === null), 'rows without an amount').toEqual([])
+
+      expect(sum(parts.map((r) => r.amount))).toBe(out)
+      expect(total[0].amount).toBe(out)
+    })
+
+    test('the recurring header total equals the sum of its rows', async ({ page }) => {
+      await open(page, '/insights')
+      const { header, monthlyRows } = await recurringPanel(page)
+      if (scope !== 'SBI savings') expect(monthlyRows.length, 'monthly recurring rows found').toBeGreaterThanOrEqual(MIN_ROWS)
+
+      expect(sum(monthlyRows.map((r) => r.amount))).toBe(header)
+    })
+
+    test('the recurring header total equals what the Dashboard says is committed each month', async ({ page }) => {
+      await open(page, '/insights')
+      const { header, monthlyRows } = await recurringPanel(page)
+      await open(page, '/dashboard')
+      // The figures arrive after the heading: wait for the headline before judging the card.
+      await expect(page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in|No money came in/).first()).toBeVisible()
+      const committed = (await page.getByText('No monthly commitments spotted yet').count()) === 0
+      const dashboard = committed ? await figureNear(page, 'Spoken for each month') : 0
+
+      // One commitment, three places: the Money Map header, its rows, the Dashboard.
+      expect({ dashboard, header, rows: sum(monthlyRows.map((r) => r.amount)) }).toEqual({ dashboard: header, header, rows: header })
+    })
+
+    test('the Dashboard uncategorised figure equals the Money Map row and the transactions behind it', async ({ page }) => {
+      await open(page, '/dashboard')
+      // Where this link goes is not judged here, only the figure it states.
+      const item = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
+      // The headline arrives with the figures: wait for it before judging the link absent.
+      await expect(page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in|No money came in/).first()).toBeVisible()
+      const dashboard = (await item.count()) > 0 ? firstRupees(await item.innerText()) : 0
+
+      await open(page, '/insights')
+      const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
+      if (dashboard === 0 && !row) return // an account with everything sorted: nothing unsorted anywhere
+      expect(row, 'an Uncategorized row on Money Map').toBeDefined()
+      await row.item.getByRole('button').click()
+      await row.item.getByRole('link', { name: /View payments/ }).click()
+
+      await expect(page).toHaveURL(/#\/transactions/)
+      await waitForRows(page)
+      const listed = await visibleSpend(page)
+      // The Transactions summary line states money out when the page has one.
+      const summary = page.getByText(/payments? · ₹[\d,]+ out/)
+      const summaryOut = (await summary.count()) > 0 ? rupeeFigures(await summary.first().innerText())[0] : listed
+
+      expect({ dashboard, moneyMap: row.amount, summaryOut }).toEqual({ dashboard: listed, moneyMap: listed, summaryOut: listed })
+    })
+
+    test('a category drill-through from Money Map lists rows that sum to the figure clicked', async ({ page }) => {
+      await open(page, '/insights')
+      // Food & Dining is Kotak's; an account of its own takes the first category it has.
+      const row = one && scope !== 'Kotak savings'
+        ? (await breakdownRows(page)).find((r) => r.label && !/^total/i.test(r.label) && r.amount > 0).item.getByRole('button')
+        : page.getByRole('button', { name: /Food & Dining/ })
+      const claimed = firstRupees(await row.locator('..').innerText())
+      await row.click()
+      await page.getByRole('link', { name: /View payments/ }).first().click()
+
+      await expect(page).toHaveURL(/#\/transactions/)
+      await waitForRows(page)
+      expect(await visibleSpend(page)).toBe(claimed)
+    })
+  })
+
+}
+
+// What no account changes: the words around a per-person or group figure.
 test.describe('J2 numbers agree', () => {
   test.beforeEach(async ({ app }) => {
     await app.loadDemo()
-  })
-
-  test('Kept is one figure on the Dashboard headline, the Dashboard tile and Money Map', async ({ page }) => {
-    await open(page, '/dashboard')
-    const sentence = await page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in/).first().innerText()
-    // The headline words a shortfall as a positive amount; the tiles show it as a negative.
-    const headline = /went over by|more than came in/.test(sentence) ? -firstRupees(sentence) : firstRupees(sentence)
-    const tile = await figureNear(page, 'Kept')
-    await open(page, '/insights')
-    const moneyMap = await figureNear(page, 'Kept')
-
-    expect({ headline, tile, moneyMap }).toEqual({ headline: tile, tile, moneyMap: tile })
-  })
-
-  test('the Money Map category breakdown sums to Out', async ({ page }) => {
-    await open(page, '/insights')
-    const out = await figureNear(page, 'Out')
-
-    const rows = await breakdownRows(page)
-    const total = rows.filter((r) => /^total( out)?$/i.test(r.label))
-    expect(total, 'a closing "Total out" row').toHaveLength(1)
-    const parts = rows.filter((r) => !total.includes(r))
-    expect(parts.length, 'category rows found').toBeGreaterThan(3)
-    expect(parts.filter((r) => r.amount === null), 'rows without an amount').toEqual([])
-
-    expect(sum(parts.map((r) => r.amount))).toBe(out)
-    expect(total[0].amount).toBe(out)
-  })
-
-  test('the recurring header total equals the sum of its rows', async ({ page }) => {
-    await open(page, '/insights')
-    const { header, monthlyRows } = await recurringPanel(page)
-    expect(monthlyRows.length, 'monthly recurring rows found').toBeGreaterThan(3)
-
-    expect(sum(monthlyRows.map((r) => r.amount))).toBe(header)
-  })
-
-  test('the recurring header total equals what the Dashboard says is committed each month', async ({ page }) => {
-    await open(page, '/insights')
-    const { header, monthlyRows } = await recurringPanel(page)
-    await open(page, '/dashboard')
-    const dashboard = await figureNear(page, 'Spoken for each month')
-
-    // One commitment, three places: the Money Map header, its rows, the Dashboard.
-    expect({ dashboard, header, rows: sum(monthlyRows.map((r) => r.amount)) }).toEqual({ dashboard: header, header, rows: header })
-  })
-
-  test('the Dashboard uncategorised figure equals the Money Map row and the transactions behind it', async ({ page }) => {
-    await open(page, '/dashboard')
-    // Where this link goes is not judged here, only the figure it states.
-    const item = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
-    await expect(item).toBeVisible()
-    const dashboard = firstRupees(await item.innerText())
-
-    await open(page, '/insights')
-    const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
-    expect(row, 'an Uncategorized row on Money Map').toBeDefined()
-    await row.item.getByRole('button').click()
-    await row.item.getByRole('link', { name: /View payments/ }).click()
-
-    await expect(page).toHaveURL(/#\/transactions/)
-    await waitForRows(page)
-    const listed = await visibleSpend(page)
-    // The Transactions summary line states money out when the page has one.
-    const summary = page.getByText(/payments? · ₹[\d,]+ out/)
-    const summaryOut = (await summary.count()) > 0 ? rupeeFigures(await summary.first().innerText())[0] : listed
-
-    expect({ dashboard, moneyMap: row.amount, summaryOut }).toEqual({ dashboard: listed, moneyMap: listed, summaryOut: listed })
-  })
-
-  test('a category drill-through from Money Map lists rows that sum to the figure clicked', async ({ page }) => {
-    await open(page, '/insights')
-    const row = page.getByRole('button', { name: /Food & Dining/ })
-    const claimed = firstRupees(await row.locator('..').innerText())
-    await row.click()
-    await page.getByRole('link', { name: /View payments/ }).first().click()
-
-    await expect(page).toHaveURL(/#\/transactions/)
-    await waitForRows(page)
-    expect(await visibleSpend(page)).toBe(claimed)
   })
 
   test('Money Map says what each per-person figure counts and over what period', async ({ page }) => {
@@ -285,4 +328,178 @@ test.describe('J2 renaming', () => {
     expect(renamed[0].counterparty_key).toBe(original.counterparty_key)
     expect(renamed[0].raw_description).toBe(original.raw_description)
   })
+
+  // A note is a label too: the person's own words replace the UPI note on the
+  // row, the search finds them, clearing brings the UPI note back, and no
+  // figure and no printed line moves.
+  test('a note on a payment shows on its row, is found by search, and clearing it brings the UPI note back', async ({ page, app }) => {
+    const [swiggy] = (await app.api.get('/transactions?include=annotation')).filter((t) => t.payee === 'Swiggy')
+    const upiNote = swiggy.note
+    expect(upiNote, 'a Swiggy payment with a UPI note').toBeTruthy()
+    const figures = () => app.api.get('/transactions/summary')
+    const before = await figures()
+
+    await startRename(page, /Swiggy/)
+    // Opening the note form closes the rename form, and starts from the note the row shows.
+    await page.getByRole('button', { name: 'Edit note' }).click()
+    await expect(page.getByRole('textbox', { name: 'Name' })).toHaveCount(0)
+    await expect(page.getByRole('textbox', { name: 'Your note' })).toHaveValue(upiNote)
+    await page.getByRole('textbox', { name: 'Your note' }).fill('Zebra crossing party')
+    await page.keyboard.press('Enter')
+    const panel = page.locator('aside').filter({ hasText: 'As printed on the statement' })
+    await expect(panel).toContainText('Your noteZebra crossing party')
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('row', { name: /Swiggy Zebra crossing party\s*·\s*UPI/ })).toHaveCount(1)
+
+    // The line as printed, the key and the figures are as they were.
+    const noted = await app.api.get(`/transactions/${swiggy.id}`)
+    expect(noted.note).toBe('Zebra crossing party')
+    expect(noted.raw_description).toBe(swiggy.raw_description)
+    expect(noted.counterparty_key).toBe(swiggy.counterparty_key)
+    expect(await figures()).toEqual(before)
+
+    // The palette finds the payment by the note, and the Ledger search lists it.
+    await open(page, '/dashboard')
+    await page.keyboard.press('Control+K')
+    await page.getByRole('combobox', { name: 'Search' }).fill('zebra crossing')
+    await page.getByRole('option', { name: /Swiggy/ }).click()
+    await expect(page.getByText('As printed on the statement')).toBeVisible()
+    await expect(panel).toContainText(swiggy.raw_description)
+    await expect(panel).toContainText('Zebra crossing party')
+    await page.keyboard.press('Escape')
+    await open(page, '/transactions?q=zebra')
+    await waitForRows(page)
+    await expect(page.getByRole('row')).toHaveCount(2)
+
+    // Clear it: the UPI note is back on the row, and the search no longer finds it.
+    await page.getByRole('row', { name: /Zebra crossing party/ }).click()
+    await page.getByRole('button', { name: 'Edit note' }).click()
+    await page.getByRole('button', { name: 'Clear note' }).click()
+    await expect(page.getByRole('button', { name: 'Edit note' })).toBeVisible()
+    await expect(panel).toContainText(upiNote)
+    expect((await app.api.get(`/transactions/${swiggy.id}`)).note).toBe(upiNote)
+    expect(await app.api.get('/transactions?q=zebra')).toEqual([])
+  })
 })
+
+// Two accounts with a same-amount pair that nothing says is the user's own money: it waits for an
+// answer in Teach Me, and until then it is not sorted, in every figure and every list. The same
+// holds looking at all accounts and at each account alone: the debit's account loses the amount
+// from its unsorted money and its Out, the credit's account loses it from its In, and the screens
+// agree with each other before and after.
+const WHICH = [['all accounts', null], ['the account that paid', 'debit'], ['the account that received', 'credit']]
+
+for (const [title, side] of WHICH) {
+  test.describe(`J2 numbers agree while a transfer waits for an answer (${title})`, () => {
+    test.use({ modelMode: 'none' })
+
+    /** The unsorted money as the Dashboard, the Money Map row and the Transactions list behind it state it. */
+    async function unsortedEverywhere(page) {
+      await open(page, '/dashboard')
+      // The figures arrive after the heading: wait for the headline before judging a link absent.
+      await expect(page.getByText(/you (kept|went over by)|spent\s+₹[\d,]+\s+more than came in|No money came in/).first()).toBeVisible()
+      const link = page.getByRole('link', { name: /(aren't|isn't) sorted yet/i })
+      const dashboard = (await link.count()) > 0 ? firstRupees(await link.innerText()) : 0
+
+      await open(page, '/insights')
+      const row = (await breakdownRows(page)).find((r) => /^uncategori[sz]ed$/i.test(r.label))
+      let moneyMap = 0
+      let behind = 0
+      if (row) {
+        moneyMap = row.amount
+        await row.item.getByRole('button').click()
+        await row.item.getByRole('link', { name: /View payments/ }).click()
+        await expect(page).toHaveURL(/#\/transactions/)
+        await waitForRows(page)
+        const summary = page.getByText(/payments? · ₹[\d,]+ out/)
+        await expect(summary).toBeVisible()
+        behind = rupeeFigures(await summary.first().innerText())[0]
+      }
+      return { dashboard, moneyMap, behind }
+    }
+
+    /** Look at one account (or all) from the first page on, and read what the server says of the month. */
+    async function lookAt(page, app, payment) {
+      const accountId = side === null ? null : payment.account_id
+      if (accountId) {
+        await page.addInitScript((id) => localStorage.setItem('fc_account_id', id), accountId)
+        // A page that is already open keeps the filter it has until it is read again.
+        if (page.url() !== 'about:blank') {
+          await page.evaluate((id) => localStorage.setItem('fc_account_id', id), accountId)
+          await page.reload()
+        }
+      }
+      return {
+        accountId,
+        insights: async () => (await app.api.get(`/insights?month=2026-10${accountId ? `&account_id=${accountId}` : ''}`)).verdict,
+      }
+    }
+
+    /** What pairing a transfer of `amount` takes out of this view. */
+    function drops(amount) {
+      const holdsDebit = side === null || side === 'debit'
+      const holdsCredit = side === null || side === 'credit'
+      return { unsorted: holdsDebit ? amount : 0, out: holdsDebit ? amount : 0, in: holdsCredit ? amount : 0 }
+    }
+
+    async function answer(page, amount, payee, held, view) {
+      const before = await unsortedEverywhere(page)
+      expect(before, 'the three screens agree before the answer').toEqual({ dashboard: before.dashboard, moneyMap: before.dashboard, behind: before.dashboard })
+      const drop = drops(amount)
+      if (drop.unsorted) expect(before.dashboard, `the ${amount} waits for an answer, so it is unsorted`).toBeGreaterThanOrEqual(amount)
+
+      await open(page, '/review')
+      await skipToPayment(page, payee)
+      await page.keyboard.press('1')
+      await page.keyboard.press('Enter')
+      await expect(page.getByRole('status').filter({ hasText: 'Paired, so neither counts as spending or income.' })).toBeVisible()
+
+      const after = await unsortedEverywhere(page)
+      expect(after, 'the three screens agree after it').toEqual({ dashboard: after.dashboard, moneyMap: after.dashboard, behind: after.dashboard })
+      expect(after.dashboard, 'the pair takes its amount out of the unsorted figure of the account that paid').toBe(before.dashboard - drop.unsorted)
+      // And out of In and Out, which add up to what they did before around it.
+      const verdict = await view.insights()
+      expect(verdict.money_out).toBeCloseTo(held.money_out - drop.out, 2)
+      expect(verdict.money_in).toBeCloseTo(held.money_in - drop.in, 2)
+      expect(verdict.kept).toBeCloseTo(held.kept + drop.out - drop.in, 2)
+    }
+
+    test('the Dashboard, Money Map and the payments behind it agree before and after the pair is made', async ({ page, app }) => {
+      await uploadTransferFixtures(app.api)
+      const all = await app.api.get('/transactions?include=annotation&limit=1000')
+      const lone = all.find((t) => t.debit_credit === 'debit' && t.amount === 7000)
+      const arrived = all.find((t) => t.debit_credit === 'credit' && t.amount === 7000)
+      expect(lone.transfer, 'nothing pairs without a sign').toBeNull()
+      expect(lone.account_id).not.toBe(arrived.account_id)
+
+      const view = await lookAt(page, app, side === 'credit' ? arrived : lone)
+      const held = await view.insights()
+      await answer(page, 7000, /^Payment to .*quartz infra/i, held, view)
+    })
+
+    // The catalog's own label is what the reviewer found disagreeing: a NEFT line is Transfers / Peer
+    // Transfer by rule, and an open own-account candidate must still count as not sorted yet.
+    test('a NEFT pair the merchant catalog has labelled counts as not sorted until it is answered', async ({ page, app }) => {
+      await uploadNeftFixtures(app.api)
+      const all = await app.api.get('/transactions?include=annotation&limit=1000')
+      const lone = all.find((t) => t.debit_credit === 'debit' && t.amount === 25000)
+      const arrived = all.find((t) => t.debit_credit === 'credit' && t.amount === 25000)
+      expect([lone.category, lone.subcategory, arrived.category, arrived.subcategory]).toEqual(['Transfers', 'Peer Transfer', 'Transfers', 'Peer Transfer'])
+      expect([lone.transfer, arrived.transfer], 'nothing pairs without a sign').toEqual([null, null])
+      expect([lone.waiting_on_pair, arrived.waiting_on_pair], 'the guess is held back').toEqual([true, true])
+      expect((await app.api.get('/transactions/facets?month=2026-10')).categories, 'a filter offers only what it can return').not.toContain('Transfers')
+      await open(page, '/transactions?month=2026-10&category=Uncategorized')
+      // This link names no account, so it shows every account whichever the filter was: both sides of the pair.
+      const waiting = page.getByRole('row').filter({ hasText: 'Not sorted - maybe a move between your accounts' })
+      await expect(waiting).toHaveCount(2)
+      await expect(waiting.filter({ hasText: 'Guess was Transfers › Peer Transfer' })).toHaveCount(2)
+
+      // That link cleared the account filter: look at the account this run is about from here on,
+      // from a page whose address no longer names a slice (a reload would read the link again).
+      await open(page, '/dashboard')
+      const view = await lookAt(page, app, side === 'credit' ? arrived : lone)
+      const held = await view.insights()
+      await answer(page, 25000, /^Payment to .*abhi b/i, held, view)
+    })
+  })
+}

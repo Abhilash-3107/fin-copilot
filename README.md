@@ -25,6 +25,7 @@ Add AI when you want it: point Settings › AI & Model at [Ollama](https://ollam
 - **Your own rules** - Settings > Rules: a word or phrase and a category, with a live preview of what it matches before you save
 - **Human-in-the-loop** - Every payment that still needs an answer lands in one fast review queue (Teach Me): guesses the AI was unsure about, payments it left Uncategorized, and payments that were never sorted at all, such as when AI is off
 - **Bank statement parsing** - Dedicated Kotak parser plus a generic parser that handles most banks' tabular statement PDFs, with every row verified against the running balance; UPI metadata extracted automatically
+- **Spreadsheet statements** - CSV, XLSX and XLS exports from any bank go through the same row check and de-duplication; a layout it does not recognise is asked about once and remembered
 - **Vector similarity search** - sqlite-vec powers few-shot retrieval for better categorization over time
 - **React dashboard** - Transaction management, annotation review, expense groups, and insights/charts
 
@@ -71,6 +72,7 @@ See [`docs/annotation-pipeline.md`](https://github.com/Abhilash-3107/fin-copilot
 | LLM | Ollama (qwen3.5:4b), any OpenAI-compatible API, or a built-in local model via llama.cpp (`finance-copilot[local-llm]`) |
 | Embeddings | Ollama (nomic-embed-text) or built-in fastembed (BAAI/bge-small-en-v1.5) |
 | PDF Parsing | pdfplumber |
+| Spreadsheets | csv (standard library), openpyxl (XLSX), xlrd (XLS) |
 | Charts | Chart.js + react-chartjs-2 |
 | CLI | Typer + Rich (`version`) |
 | IDs | ULID (sortable, unique) |

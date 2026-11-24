@@ -195,3 +195,86 @@ class TestRestore:
         backup = client.get("/api/data/backup").content
         monkeypatch.setattr(settings, "demo_mode", True)
         assert _restore(client, backup).status_code == 403
+
+
+class TestAccountsInBackupsAndWipes:
+    def test_restoring_a_ledger_made_before_accounts_gives_every_statement_one(self, file_db, tmp_path, monkeypatch):
+        """A 0.2.0 backup has no accounts table. Restore swaps the file in and
+        migrates it (reconcile_database), so migration 041 assigns the accounts."""
+        import shutil
+        import sqlite3
+
+        from finance_copilot.db import connection
+
+        client, conn, _ = file_db
+        old_migrations = tmp_path / "migrations_040"
+        old_migrations.mkdir()
+        for path in sorted(connection.MIGRATIONS_DIR.glob("*.sql")):
+            if path.name < "041":
+                shutil.copy(path, old_migrations / path.name)
+        pre_r3 = tmp_path / "pre-r3.db"
+        with monkeypatch.context() as patched:
+            patched.setattr(connection, "MIGRATIONS_DIR", old_migrations)
+            old = get_connection(str(pre_r3))
+            init_db(old)
+            old.executemany(
+                "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_ref) "
+                "VALUES (?, ?, '1', ?, ?)",
+                [("s1", "kotak", "2026-01", "3250508074"), ("s2", "kotak", "2026-02", None),
+                 ("s3", "hdfc (auto)", "2026-02", "XXXX5678")],
+            )
+            old.commit()
+            old.close()
+        probe = sqlite3.connect(pre_r3)
+        assert "accounts" not in {r[0] for r in probe.execute("SELECT name FROM sqlite_master")}
+        probe.close()
+
+        r = _restore(client, pre_r3.read_bytes())
+        assert r.status_code == 200, r.text
+        live = get_connection(str(tmp_path / "finance.db"))
+        try:
+            assert live.execute("SELECT COUNT(*) FROM statements WHERE account_id IS NULL").fetchone()[0] == 0
+            assert live.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 2
+        finally:
+            live.close()
+        labels = {a["account_label"] for a in client.get("/api/accounts").json()}
+        assert labels == {"Kotak ··8074", "HDFC ··5678"}
+
+    def test_a_backup_round_trip_keeps_the_accounts_and_their_names(self, file_db):
+        client, conn, _ = file_db
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref, name) VALUES ('a1', 'kotak', '1234', 'Salary')")
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES ('s1', 'kotak', '1', '2026-01', 'a1')"
+        )
+        conn.commit()
+        backup = client.get("/api/data/backup").content
+        conn.execute("UPDATE accounts SET name = 'Changed'")
+        conn.commit()
+        assert _restore(client, backup).status_code == 200
+        assert [a["account_label"] for a in client.get("/api/accounts").json()] == ["Salary"]
+
+    def test_delete_everything_forgets_remembered_spreadsheet_layouts_and_a_backup_keeps_them(self, file_db):
+        client, conn, _ = file_db
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('a1', 'kotak', '1234')")
+        conn.execute(
+            "INSERT INTO import_layouts (signature, mapping, account_id) VALUES ('sig', '{\"date\": 0}', 'a1')"
+        )
+        conn.commit()
+        backup = client.get("/api/data/backup").content
+        assert client.post("/api/data/delete-all").status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM import_layouts").fetchone()[0] == 0
+        assert _restore(client, backup).status_code == 200
+        assert conn.execute("SELECT signature, account_id FROM import_layouts").fetchall()[0][:] == ("sig", "a1")
+
+    def test_delete_everything_removes_the_accounts_too(self, file_db):
+        client, conn, _ = file_db
+        conn.execute("INSERT INTO accounts (id, bank_name, account_ref) VALUES ('a1', 'kotak', '1234')")
+        conn.execute(
+            "INSERT INTO statements (id, bank_name, parser_version, statement_month, account_id) "
+            "VALUES ('s1', 'kotak', '1', '2026-01', 'a1')"
+        )
+        conn.commit()
+        assert client.post("/api/data/delete-all").status_code == 200
+        assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0

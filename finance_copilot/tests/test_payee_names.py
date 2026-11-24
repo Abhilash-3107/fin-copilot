@@ -234,6 +234,18 @@ class TestRenamePayee:
         txn = add_txn(conn, AMIT)
         assert client.put(f"/api/transactions/{txn}/payee-name", json={"name": "x" * 500}).status_code == 422
 
+    @pytest.mark.parametrize("path", ["name", "payee-name"])
+    def test_the_name_cap_counts_the_trimmed_name_in_characters(self, conn, client, path):
+        from finance_copilot.db.queries.payee import MAX_NAME_LENGTH
+
+        txn = add_txn(conn, AMIT)
+        url = f"/api/transactions/{txn}/{path}"
+        assert client.put(url, json={"name": "  " + "x" * MAX_NAME_LENGTH + "  "}).status_code == 200
+        assert client.put(url, json={"name": "  " + "x" * (MAX_NAME_LENGTH + 1)}).status_code == 422
+        # Emoji are one character each, however many UTF-16 units they take.
+        assert client.put(url, json={"name": "\U0001F600" * MAX_NAME_LENGTH}).status_code == 200
+        assert client.put(url, json={"name": "\U0001F600" * (MAX_NAME_LENGTH + 1)}).status_code == 422
+
     def test_the_name_follows_the_payee_when_its_key_is_rekeyed(self, conn):
         from finance_copilot.pipeline.counterparty import rekey_counterparty
 

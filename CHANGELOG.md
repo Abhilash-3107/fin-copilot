@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.3.0rc1 - unreleased
+
+Several statements make one month.
+Your accounts have names you can give, a statement can move between them, and a file that overlaps one you already added brings only the payments that are new.
+A transfer between two of your own accounts is paired and counted as neither spending nor income.
+The Dashboard, Money Map and Transactions show one month across all your accounts, with an account filter, and Add Statement shows which accounts and months your statements cover, with the gaps.
+CSV, XLSX and XLS statements are read as well as PDFs, and you can write a note on any payment.
+
+### Trying the release candidate
+
+0.3.0rc1 is a release candidate.
+Plain `uvx finance-copilot` stays on the last stable release until 0.3.0 itself is out.
+It changes your ledger and some figures (see below), so try it on a copy first:
+copy your data folder, then run `uvx finance-copilot==0.3.0rc1 --data-dir <a copy of your data folder>`.
+Your own folder is untouched until you point the new version at it.
+
+### Before you upgrade
+
+Download a backup first (Settings > Data > Download backup).
+This release rewrites data in your ledger, and the new version cannot be undone by installing the old one on the same folder.
+On the first start of 0.3.0 it applies migrations 041 to 045:
+
+- gives every statement an account, found by its bank and the account number it prints, and makes a table of your accounts.
+  Text you typed with the old Rename becomes the account's name;
+- records, for each statement, how many payments its file held, how many of them were new and whether its balances check out;
+- rebuilds the table that holds your labels so a label can come from a paired transfer.
+  Every label keeps its category, merchant name, tags, source, confidence and time;
+- adds the places that hold your notes on payments, the transfers you take apart, and the spreadsheet layouts the app remembers.
+  They start empty and rewrite nothing you have.
+
+Nothing is paired and no payment is dropped on upgrade.
+Pairing happens when you add a statement, and overlaps are only looked for in files you add after upgrading.
+
+### Figures that change in this release
+
+Your payments, amounts, dates, balances, people, groups and rules are unchanged.
+Categories are unchanged too.
+What moves is what counts as spending and how months are compared, so the same ledger reads differently on these screens:
+
+- Transfers between your own accounts leave In and Out.
+  A paired transfer is sorted as Self Transfers on both sides, so neither the money out of one account nor the money into the other counts.
+  A ledger with one account has no pairs, so nothing changes there.
+- A payment that waits on a possible transfer counts as not sorted.
+  When a debit and a credit of the same amount in two of your accounts look like one move, both are offered in Teach Me until you answer.
+  The money in shows on the In tile as "not sorted yet", and the Dashboard's unsorted count lists the payments out.
+- Money that came in and is not sorted yet is no longer called a refund or payback.
+  The In tile used to say "incl ₹X in refunds and paybacks" for every credit that was not earned income, sorted or not.
+  It now says that only for credits you or the app sorted as refunds and paybacks, and shows the rest as "incl ₹X not sorted yet".
+  On a ledger with unsorted credits, the refunds and paybacks figure falls by that amount.
+- A refund counts in the account of the purchase it pays back, and Uncategorized never nets a refund.
+  A refund in another account no longer turns a category negative there.
+- A comparison with the previous month is shown only when every account in the view can be compared fairly.
+  Otherwise there is no delta and one line says which account and why (an account that started this month, or a month its statements do not cover from the start).
+  A month still running is compared account by account over the same days.
+- Money Map's refund netting was stale in every earlier release: it could stay wrong after a change until the app was restarted.
+  It now follows your changes at once.
+- The Sorted column counts a payment waiting on a pair as not sorted.
+
+### Accounts
+
+- Every statement belongs to an account, found by the bank and the account number it prints.
+  Until you name an account it is called by its bank and the last four digits (Kotak ··8074).
+  The full number is never shown.
+- Name an account from its row on Add Statement, or on the line that says where a file landed.
+- Move a statement to another account, or to a new one, from its menu.
+  A move keeps your labels, notes, names, groups and links on the payments, and the message says what it left out and what stayed behind.
+- A file that prints no account number joins the bank's only account, and a statement from another bank starts its own.
+
+### Overlapping statements
+
+- A file that covers days you already have adds only the payments that are new.
+  The file's row says what it covered, how many payments were new and how many were already in your ledger, and the balance check is the whole file's, so an overlap never makes a statement look unbalanced.
+- A file with nothing new is refused with a plain message.
+- A file whose dates overlap but whose payments match none of yours is held for you to confirm, with the accounts it could belong to.
+- Deleting or moving a statement says what happens to payments another statement also had.
+
+### Transfers between your own accounts
+
+- When a statement lands, a transfer that leaves one of your accounts and arrives in another is paired when it is clear (the lines name your own account, the amounts and days agree).
+  Each side says where the money went or came from ("Moved to Axis ··1234") and is counted in no In or Out figure.
+- Unpair takes both payments back to Teach Me, and Undo puts the pair back.
+- A same-amount pair that nothing says is your own money is offered in Teach Me, with the reason, and a number key pairs it.
+
+### One month across accounts
+
+- Dashboard, Money Map and Transactions show one month across all your accounts; Teach Me and search show which account a payment is in.
+  With two or more accounts an Account filter picks one; the choice is remembered and drill-through links name it.
+- The running balance column shows when one account is selected.
+- The month picker lists the months that have payments.
+  A statement can start in one month and run into the next, so months come from the payments.
+
+### Add Statement shows your books
+
+- A grid of accounts by months shows what each cell holds, how much of the month it covers, whether the balances check out and where a statement is missing.
+  A cell opens Transactions for that account and month.
+- The moves between your accounts are listed, with a note that they are not counted.
+
+### Spreadsheets
+
+- CSV, XLSX and XLS statements go through the same path as PDFs: balance check, overlaps, pairing and sorting.
+- When a file's columns are not recognised, a form asks once what each column is and which account the file belongs to, and remembers the answer for the next file with the same header.
+  Dates that could be read two ways are asked about once per layout.
+- Files that are unreasonably large or malformed are refused quickly.
+
+### Notes
+
+- Write a note on any payment.
+  It is shown wherever the UPI note was and is found by search, and it never changes how a payment is sorted.
+
+### Known limit
+
+Payee names, remembered payees and recurring detection work fully only for the Kotak description layout until 0.4.0.
+A second account at another bank is balanced, deduplicated and paired, and its rows show the bank's own line.
+
+### For contributors
+
+- J10 drops three statements together (two banks and an overlapping export) and checks the accounts, the overlap, the pair, the books and the account filter.
+- The upgrade journey no longer depends on the day it runs.
+  The previous release's demo is seeded on the pinned day with that release's own seeder, the new release opens it on any day (`FC_UPGRADE_TODAY`), and no entry in `e2e/upgrade/expected-changes.json` is optional.
+- `finance_copilot/tests/fixtures/sample_statement_transfer_out_late.pdf` is a second export of one fixture account, made by `scripts/make_smoke_statement.py`.
+
 ## 0.2.0 - unreleased
 
 The app speaks in your words, and the core job, sorting what the machine could not, can be done from the keyboard.
@@ -53,6 +174,7 @@ What moves is how some of them are added up, compared and named, so the same led
   A partial month is compared with the same days of the previous month, not with all of it, and the screen says the month is in progress.
   The first month in your ledger has no month before it, so it shows no comparison and no change, instead of comparing with zero.
   "What changed" for a month still running also leaves out a category the same days of the previous month did not hold, and lists one that held money then and none now.
+  "What changed" never names Uncategorized, which the unsorted figure and its own row already cover, so the next biggest move is named in its place.
 - Where it went.
   The rows now end with the lines that make them add up to Out (Transfers and cash, and refunds and paybacks taken off the rows above), plus a total.
   The category rows themselves are unchanged.

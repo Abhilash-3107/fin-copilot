@@ -9,6 +9,7 @@ import ulid
 from fastapi.testclient import TestClient
 
 from finance_copilot.db.connection import init_db
+from finance_copilot.db.queries.accounts import resolve_account
 from finance_copilot.db.queries.annotations import insert_annotation
 from finance_copilot.db.queries.insights import (
     _merge_merchant_keys,
@@ -18,15 +19,23 @@ from finance_copilot.db.queries.insights import (
 from finance_copilot.models.annotation import Annotation
 
 
+def add_statement(conn, stmt_id, bank, ref=None, month="2026-01"):
+    """A statement in the account ingest would give it."""
+    account_id, _ = resolve_account(conn, bank, ref)
+    conn.execute(
+        "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month, account_id) "
+        "VALUES (?, ?, ?, '1', ?, ?)",
+        (stmt_id, bank, ref, month, account_id),
+    )
+
+
 @pytest.fixture
 def conn():
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     init_db(conn)
-    conn.execute(
-        "INSERT INTO statements (id, bank_name, parser_version, statement_month) VALUES ('s1','test','1','2026-01')"
-    )
+    add_statement(conn, "s1", "test")
     yield conn
     conn.close()
 
@@ -60,6 +69,53 @@ class TestVerdict:
         assert s["verdict"]["money_in"] == 54500
         assert s["verdict"]["earned"] == 50000  # true income only
         assert s["verdict"]["other_in"] == 4500  # refund + friend's payback
+
+    def test_unsorted_credit_is_not_called_a_refund_or_payback(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-12", 7000, "credit")  # no label at all
+        seed_txn(conn, "2026-01-13", 300, "credit", category="Uncategorized")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["money_in"] == 57300
+        assert v["unsorted_in"] == 7300
+        assert v["other_in"] == 0
+
+    def test_sorted_refund_stays_in_other_in_and_not_in_unsorted_in(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-10", 500, "credit", category="Income", subcategory="Refund")
+        seed_txn(conn, "2026-01-12", 4000, "credit", category="Transfers")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["unsorted_in"] == 0
+        assert v["other_in"] == 4500
+
+    def test_refund_and_unsorted_credit_are_told_apart(self, conn):
+        seed_txn(conn, "2026-01-31", 50000, "credit", category="Income", subcategory="Salary")
+        seed_txn(conn, "2026-01-10", 500, "credit", category="Income", subcategory="Refund")
+        seed_txn(conn, "2026-01-12", 7000, "credit")
+        v = summarize_insights(conn, "2026-01")["verdict"]
+        assert v["money_in"] == 57500
+        assert v["other_in"] == 500
+        assert v["unsorted_in"] == 7000
+        assert v["money_in"] == v["earned"] + v["other_in"] + v["unsorted_in"]
+
+    def test_unsorted_in_follows_the_account_filter_and_the_comparison(self, conn):
+        add_statement(conn, "s2", "other", month="2026-01")
+        seed_txn(conn, "2026-01-12", 7000, "credit")
+        # The second account: a whole December, January and the start of February, so
+        # January is a complete month with a comparison.
+        for n, (day, amount, dc) in enumerate([
+            ("2025-12-01", 400, "credit"), ("2025-12-31", 10, "debit"), ("2026-01-01", 10, "debit"),
+            ("2026-01-20", 900, "credit"), ("2026-01-31", 10, "debit"), ("2026-02-02", 10, "debit"),
+        ]):
+            conn.execute(
+                "INSERT INTO transactions (id, statement_id, txn_date, amount, debit_credit, raw_description) "
+                "VALUES (?, 's2', ?, ?, ?, 'Y')", (f"x{n}", day, amount, dc),
+            )
+        account_2 = conn.execute("SELECT account_id FROM statements WHERE id = 's2'").fetchone()[0]
+        assert summarize_insights(conn, "2026-01")["verdict"]["unsorted_in"] == 7900
+        v = summarize_insights(conn, "2026-01", account_id=account_2)["verdict"]
+        assert v["unsorted_in"] == 900 and v["other_in"] == 0
+        assert v["prev"] is not None
+        assert v["prev"]["unsorted_in"] == 400 and v["prev"]["other_in"] == 0
 
     def test_out_counts_transfers_but_not_self_or_investments(self, conn):
         seed_txn(conn, "2026-01-05", 1000, "debit", category="Food & Dining")
@@ -333,7 +389,7 @@ class TestBalanceAndShape:
         seed_txn(conn, "2026-01-05", 50, "debit", category="Shopping", balance=850)
         seed_txn(conn, "2026-01-06", 10, "debit", category="Shopping", balance=840)
         s = summarize_insights(conn, "2026-01")
-        assert s["balance"]["account"] == "test"
+        assert s["balance"]["account"] == "Test"
         assert s["balance"]["series"] == [
             {"date": "2026-01-05", "balance": 850},
             {"date": "2026-01-06", "balance": 840},
@@ -342,10 +398,7 @@ class TestBalanceAndShape:
     def test_balance_series_scopes_to_primary_account(self, conn):
         # Two genuinely distinct identified accounts at different banks: the
         # second account's balances must not interleave into the series.
-        conn.execute(
-            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
-            "VALUES ('s2','other','XX9999','1','2026-01')"
-        )
+        add_statement(conn, "s2", "other", "XX9999")
         seed_txn(conn, "2026-01-05", 100, "debit", category="Shopping", balance=900)
         seed_txn(conn, "2026-01-06", 100, "debit", category="Shopping", balance=800)
         # Interloping second-account row on a day between the primary's points.
@@ -356,7 +409,7 @@ class TestBalanceAndShape:
             (txn_id,),
         )
         s = summarize_insights(conn, "2026-01")
-        assert s["balance"]["account"] == "test"  # primary = more transactions
+        assert s["balance"]["account"] == "Test"  # primary = more transactions
         assert s["balance"]["series"] == [
             {"date": "2026-01-05", "balance": 900},
             {"date": "2026-01-06", "balance": 800},
@@ -368,10 +421,7 @@ class TestBalanceAndShape:
         # statement (or the unknown one) would blank out whole months. The
         # default fixture statement 's1' (bank 'test', NULL account_ref) holds
         # the older months; a later statement carries the account number.
-        conn.execute(
-            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
-            "VALUES ('s2','test','3250508074','1','2026-02')"
-        )
+        add_statement(conn, "s2", "test", "3250508074", "2026-02")
         seed_txn(conn, "2026-01-31", 100, "debit", category="Shopping", balance=900)
         for d, bal in (("2026-02-05", 800), ("2026-02-06", 700)):
             txn_id = str(ulid.ULID())
@@ -382,7 +432,7 @@ class TestBalanceAndShape:
             )
         s = summarize_insights(conn, "2026-02")
         # Series spans both statements and is labelled by the one known number.
-        assert s["balance"]["account"] == "test ····8074"
+        assert s["balance"]["account"] == "Test ··8074"
         assert s["balance"]["series"] == [
             {"date": "2026-01-31", "balance": 900},
             {"date": "2026-02-05", "balance": 800},
@@ -392,10 +442,8 @@ class TestBalanceAndShape:
     def test_balance_series_splits_two_identified_accounts_same_bank(self, conn):
         # Two real accounts at one bank (both with numbers) stay separate; the
         # busiest wins and unknown-ref rows are not attributed to either.
-        conn.execute(
-            "INSERT INTO statements (id, bank_name, account_ref, parser_version, statement_month) "
-            "VALUES ('sa','test','1111','1','2026-01'), ('sb','test','2222','1','2026-01')"
-        )
+        add_statement(conn, "sa", "test", "1111")
+        add_statement(conn, "sb", "test", "2222")
         for sid, d, bal in (("sa", "2026-01-05", 900), ("sa", "2026-01-06", 800),
                             ("sb", "2026-01-05", 50)):
             txn_id = str(ulid.ULID())
@@ -405,7 +453,7 @@ class TestBalanceAndShape:
                 (txn_id, sid, d, bal),
             )
         s = summarize_insights(conn, "2026-01")
-        assert s["balance"]["account"] == "test ····1111"  # account 'sa', more rows
+        assert s["balance"]["account"] == "Test ··1111"  # account 'sa', more rows
         assert s["balance"]["series"] == [
             {"date": "2026-01-05", "balance": 900},
             {"date": "2026-01-06", "balance": 800},

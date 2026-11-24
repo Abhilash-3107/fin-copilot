@@ -20,7 +20,7 @@ USER_RULE_CONFIDENCE = 0.95
 
 # Labels a rule must never overwrite when applied to existing transactions:
 # a human chose them.
-_PROTECTED_SOURCES = ("manual", "imported")
+_PROTECTED_SOURCES = ("manual", "imported", "pair")
 
 _RULE_SELECT = """
     SELECT r.id, r.pattern, r.merchant, r.enabled, r.created_at, r.updated_at,
@@ -156,6 +156,20 @@ def _matching_rows(conn: sqlite3.Connection, pattern: str) -> list[dict]:
     return [dict(r) for r in rows if _pattern_matches(pattern, _haystack(dict(r)))]
 
 
+def _current(conn: sqlite3.Connection, row: dict) -> dict:
+    """The listed row with its annotation as it is stored now."""
+    ann = conn.execute(
+        "SELECT id, category, subcategory, source FROM annotations WHERE transaction_id = ?", (row["id"],)
+    ).fetchone()
+    return {
+        **row,
+        "annotation_id": ann["id"] if ann else None,
+        "category": ann["category"] if ann else None,
+        "subcategory": ann["subcategory"] if ann else None,
+        "source": ann["source"] if ann else None,
+    }
+
+
 def preview_rule(
     conn: sqlite3.Connection,
     pattern: str,
@@ -169,7 +183,8 @@ def preview_rule(
     relabel     auto-labelled with a different category, would change
     unlabeled   not categorized yet, would get this label
     unchanged   already carry this exact label
-    protected   labelled by a human (manual/imported), left alone
+    protected   labelled by a human (manual/imported) or paired as a transfer between
+                the user's own accounts, left alone
     """
     pattern = _clean_pattern(pattern)
     require_category_ids(conn, category, subcategory)
@@ -209,7 +224,10 @@ def apply_rule_to_existing(conn: sqlite3.Connection, rule: dict) -> dict:
 
     touched: list[str] = []
     counts = {"relabeled": 0, "labeled": 0, "protected": 0, "unchanged": 0}
-    for row in _matching_rows(conn, rule["pattern"]):
+    for listed in _matching_rows(conn, rule["pattern"]):
+        # Judge the row by what is stored when the loop gets to it: an earlier
+        # relabel can change a later row (a paired payment's partner, say).
+        row = _current(conn, listed)
         bucket = _bucket(row, rule["category"], rule.get("subcategory"))
         if bucket == "protected":
             counts["protected"] += 1

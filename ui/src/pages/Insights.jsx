@@ -10,6 +10,8 @@ import { api } from '../lib/api.js'
 import { usePeriod, ALL_TIME } from '../contexts/PeriodContext.jsx'
 import { usePrivacy } from '../contexts/PrivacyContext.jsx'
 import PeriodPicker from '../components/PeriodPicker.jsx'
+import AccountFilter from '../components/AccountFilter.jsx'
+import { useLedger } from '../contexts/LedgerContext.jsx'
 import InlineError from '../components/InlineError.jsx'
 import { useLoad } from '../lib/useLoad.js'
 import Amount, { Percent, useMoney } from '../components/Amount.jsx'
@@ -19,7 +21,7 @@ import Delta, { tileDelta } from '../components/Delta.jsx'
 import PersonNet from '../components/PersonNet.jsx'
 import { count } from '../lib/plural.js'
 import { txnFilterPath } from '../lib/txnLink.js'
-import { coverageLabel, comparisonLabel } from '../lib/period.js'
+import { coverageLabel, comparisonLabel, comparisonNoteLabel, insightsPath, shortAccountsLabel } from '../lib/period.js'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
 
@@ -46,16 +48,16 @@ function StatTile({ label, value, delta, vs, goodWhenDown, sub }) {
 // Row 1: the page's answer to "am I OK this month?". A cash view, so the
 // four tiles always reconcile: In = Out + Invested + Kept by construction.
 // A friend's payback the pipeline never matched simply lands inside In
-// (disclosed via other_in) instead of silently distorting a tile. Deltas are
+// (disclosed via other_in, or unsorted_in while it is not sorted) instead of silently distorting a tile. Deltas are
 // measured against `vs` (the server's like-for-like comparison window) and are
 // absent altogether when there is none.
 function VerdictStrip({ verdict, vs }) {
-  const { money_in, money_out, invested, kept, kept_rate, other_in } = verdict
+  const { money_in, money_out, invested, kept, kept_rate, other_in, unsorted_in } = verdict
   return (
     <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
       <StatTile
         label="In" value={money_in} delta={tileDelta(verdict, 'money_in')} vs={vs}
-        sub={<OtherInNote amount={other_in} />}
+        sub={<OtherInNote amount={other_in} unsorted={unsorted_in} />}
       />
       <StatTile
         label="Out" value={money_out} delta={tileDelta(verdict, 'money_out')} vs={vs} goodWhenDown
@@ -77,6 +79,7 @@ function VerdictStrip({ verdict, vs }) {
 function BalanceChart({ balance }) {
   const { hidden } = usePrivacy()
   const { money, tick } = useMoney()
+  const { multiple, accountId } = useLedger()
   const series = balance.series
   const account = balance.account
   const data = {
@@ -133,14 +136,21 @@ function BalanceChart({ balance }) {
     <div className={`${card} p-4`}>
       <div className="flex items-baseline justify-between mb-3">
         <p className={cardTitle}>Balance over time</p>
-        {account && <span className="text-xs text-[#94a3b8]">{account}</span>}
+        {account && (
+          <span className="text-xs text-[#94a3b8]">
+            {/* With every account selected the line is still one account's, never a sum. */}
+            {multiple && !accountId ? `Showing ${account}` : account}
+          </span>
+        )}
       </div>
       <div className={`h-52 ${hidden ? 'blur-[6px] select-none' : ''}`}>
         {series.length > 1 ? (
           <Line data={data} options={options} />
         ) : (
           <div className="flex items-center justify-center h-full text-sm text-[#94a3b8]">
-            Balance history appears once statements are imported
+            {balance.no_balances
+              ? 'These statements have no running balance to chart.'
+              : 'Balance history appears once statements are imported'}
           </div>
         )}
       </div>
@@ -150,13 +160,16 @@ function BalanceChart({ balance }) {
 
 // Row 2b: the top category shifts against the comparison window, as sentences
 // with click-through - the "what changed" a person actually opens the page for.
-function WhatChanged({ changes, month, vs }) {
+function WhatChanged({ changes, month, vs, explained = false }) {
+  const { accountId: account } = useLedger()
   return (
     <div className={`${card} p-4`}>
       <p className={`${cardTitle} mb-3`}>{vs ? `What changed vs ${vs}` : 'What changed'}</p>
       {!vs ? (
         <p className="text-sm text-[#94a3b8]">
-          There is no earlier period to compare with yet.
+          {explained
+            ? 'This month is not compared, so nothing is listed here.'
+            : 'There is no earlier period to compare with yet.'}
         </p>
       ) : changes.length === 0 ? (
         <p className="text-sm text-[#94a3b8]">No meaningful shifts from {vs}.</p>
@@ -165,7 +178,7 @@ function WhatChanged({ changes, month, vs }) {
           {changes.map(c => (
             <li key={c.category}>
               <Link
-                to={txnFilterPath({ category: c.category, month })}
+                to={txnFilterPath({ category: c.category, month, account })}
                 className="group flex items-baseline justify-between gap-3 text-sm"
               >
                 <span className="text-[#e2e8f0] group-hover:text-[#a5b4fc]">
@@ -202,6 +215,7 @@ function DeltaShort({ delta }) {
 // The reconciling rows (Transfers and cash, Refunds and paybacks taken off the rows above, other money out)
 // and the total follow, so the list always closes on Out.
 function CategoryBreakdown({ categories, breakdown, unexplained, month, heading, vs }) {
+  const { accountId: account } = useLedger()
   const [expanded, setExpanded] = useState(null)
   const maxNet = Math.max(1, ...categories.map(c => Math.abs(c.net)))
   const hasDeltas = categories.some(c => c.delta != null)
@@ -257,7 +271,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
                   ))}
                   <li className="px-4 pt-1 pl-10">
                     <Link
-                      to={txnFilterPath({ category: c.category, month })}
+                      to={txnFilterPath({ category: c.category, month, account })}
                       className="text-xs text-[#818cf8] hover:text-[#a5b4fc]"
                     >
                       View payments →
@@ -272,7 +286,7 @@ function CategoryBreakdown({ categories, breakdown, unexplained, month, heading,
               <div className="px-4 py-2.5 grid grid-cols-[minmax(10rem,1fr)_2fr_7rem_7rem] items-center gap-3 text-sm">
                 {e.key === 'transfers' ? (
                   <Link
-                    to={txnFilterPath({ category: 'Transfers', month })}
+                    to={txnFilterPath({ category: 'Transfers', month, account })}
                     className="truncate text-[#94a3b8] hover:text-[#a5b4fc]"
                   >
                     {e.label}
@@ -359,6 +373,7 @@ function PeoplePanel({ people, monthName }) {
 // Row 6: payees with order counts and average ticket, on canonical
 // payee keys so ZOMATO and ZOMATO LIMITED are one payee.
 function MerchantsPanel({ merchants, heading, month }) {
+  const { accountId: account } = useLedger()
   return (
     <div className={`${card} overflow-hidden`}>
       <p className={`${cardTitle} px-4 py-3 border-b border-[#2d3148]`}>
@@ -385,7 +400,7 @@ function MerchantsPanel({ merchants, heading, month }) {
               <tr key={m.keys.join(',')} className="border-b border-[#1a1d27] last:border-0">
                 <td className="px-4 py-2">
                   <Link
-                    to={txnFilterPath({ payeeKeys: m.keys, month })}
+                    to={txnFilterPath({ payeeKeys: m.keys, month, account })}
                     state={{ payeeName: m.name }}
                     className="text-[#e2e8f0] hover:text-[#a5b4fc]"
                   >
@@ -405,23 +420,26 @@ function MerchantsPanel({ merchants, heading, month }) {
 }
 
 export default function Insights() {
-  const { month: periodMonth, ready: periodReady } = usePeriod()
+  const { month: periodMonth, ready } = usePeriod()
+  const { accountId, multiple } = useLedger()
 
   // The page is month-anchored: every number answers "how was this month".
   // "All time" falls back to the latest month with data (the server's default),
   // and the picker (allowAll={false}) shows that month.
   const requestMonth = periodMonth && periodMonth !== ALL_TIME ? periodMonth : null
   const { data, loading, error, reload } = useLoad(useCallback(
-    () => api.get(`/insights${requestMonth ? `?month=${requestMonth}` : ''}`), [requestMonth],
-  ), { enabled: periodReady })
+    () => api.get(insightsPath(requestMonth, accountId)), [requestMonth, accountId],
+  ), { enabled: ready })
 
   const vs = comparisonLabel(data?.comparison)
   const coverage = coverageLabel(data?.period)
+  const behind = shortAccountsLabel(data?.period, { oneAccount: Boolean(accountId) })
+  const noComparison = comparisonNoteLabel(data?.comparison_note, data?.prev_month)
   const heading = data?.month ? dayjs(data.month).format('MMMM YYYY') : ''
 
   return (
     <div className="px-6 py-5 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-base font-semibold text-[#e2e8f0]">
           Money Map
           {data?.month && (
@@ -433,8 +451,16 @@ export default function Insights() {
             </span>
           )}
         </h1>
-        <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
+        <div className="flex items-center gap-3">
+          <AccountFilter />
+          <PeriodPicker allowAll={false} shown={data?.month} months={data?.months} />
+        </div>
       </div>
+      {behind && <p className="-mt-2 text-xs text-[#fbbf24]">Not every account is covered to the end of the month: {behind}.</p>}
+      {noComparison && <p className="-mt-2 text-xs text-[#94a3b8]">{noComparison}</p>}
+      {multiple && accountId && data?.month && data.annotation?.total === 0 && (
+        <p className="text-sm text-[#94a3b8]">{data.account?.label ?? 'This account'} has no payments in {dayjs(data.month).format('MMMM YYYY')}.</p>
+      )}
 
       {loading ? (
         <p className="text-sm text-[#94a3b8]">Crunching your numbers…</p>
@@ -448,7 +474,7 @@ export default function Insights() {
 
           <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-4">
             <BalanceChart balance={data.balance} />
-            <WhatChanged changes={data.what_changed} month={data.month} vs={vs} />
+            <WhatChanged changes={data.what_changed} month={data.month} vs={vs} explained={Boolean(noComparison)} />
           </div>
 
           <CategoryBreakdown

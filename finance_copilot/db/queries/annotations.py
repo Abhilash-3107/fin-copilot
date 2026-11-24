@@ -5,6 +5,7 @@ import sqlite3
 
 from finance_copilot.db.queries.categories import resolve_category_ids
 from finance_copilot.db.queries.common import UNCATEGORIZED, unsorted_sql
+from finance_copilot.db.queries.transfers import unpair_if_relabelled
 from finance_copilot.models.annotation import Annotation
 from finance_copilot.pipeline.sources import REVIEWABLE_SOURCES, VERIFIED_SOURCES
 
@@ -162,6 +163,12 @@ def update_annotation(conn: sqlite3.Connection, annotation_id: str, patch: dict)
         f"UPDATE annotations SET {', '.join(set_clauses)} WHERE id = ?",
         [*values, annotation_id],
     )
+    # A category other than Self Transfers on a payment that is in a transfer says it
+    # is not one: the pair goes, whoever labelled this side before (this side is the
+    # user's now, source manual).
+    target = conn.execute("SELECT transaction_id FROM annotations WHERE id = ?", (annotation_id,)).fetchone()
+    if target is not None:
+        unpair_if_relabelled(conn, target["transaction_id"], patch.get("category"))
     # A correction is engagement; drop any lingering snooze so the flag never
     # outlives the reason it was set.
     conn.execute(
@@ -213,7 +220,7 @@ def list_review_queue(conn: sqlite3.Connection, threshold: float) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT t.id AS transaction_id, t.txn_date, t.amount, t.debit_credit, t.raw_description,
-               t.counterparty_key, t.display_name, t.upi_meta,
+               t.statement_id, t.counterparty_key, t.display_name, t.user_note, t.upi_meta,
                a.id AS annotation_id, a.merchant, a.category, a.subcategory, a.tags,
                COALESCE(a.confidence, 0.0) AS confidence, a.source, a.original_source,
                a.annotated_at, a.reasoning

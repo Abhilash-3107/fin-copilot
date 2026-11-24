@@ -5,6 +5,9 @@ Sources, in order of preference:
   1. what the user chose before for this payee (verified labels, with a count),
   2. the item's own machine guess, with a plain reason from its source,
   3. the label of the most similar verified payment, when embeddings exist.
+A payment that could be one side of a transfer between the user's own accounts
+(pipeline/pairing.py found a candidate it was not sure enough to pair) is offered
+first, once per candidate, as a suggestion that pairs the two payments.
 Uncategorized is never offered. History and neighbour labels are read in a few
 queries for the whole page, never per item, except one vector search per item
 that still has room for a suggestion.
@@ -14,17 +17,22 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections import Counter
+from datetime import date
 
 from finance_copilot.config import settings
 from finance_copilot.db.queries.common import UNCATEGORIZED
 from finance_copilot.db.queries.embeddings import find_similar, stored_embeddings
+from finance_copilot.db.queries.transfers import SELF_CATEGORY, SELF_SUBCATEGORY
 from finance_copilot.parsers.description import parse_description
 from finance_copilot.pipeline.annotate import _is_evidence
+from finance_copilot.pipeline.pairing import transfer_candidates
 from finance_copilot.pipeline.sources import VERIFIED_SOURCES
 
 logger = logging.getLogger(__name__)
 
 MAX_SUGGESTIONS = 3
+# At most this many candidate pairs per card, so the usual suggestions keep a place.
+MAX_TRANSFER_SUGGESTIONS = 2
 _CHUNK = 500
 _VERIFIED = sorted(VERIFIED_SOURCES)
 
@@ -143,6 +151,42 @@ def _similar_labels(conn: sqlite3.Connection, items: list[dict]) -> dict[str, li
     return out
 
 
+def _gap(days: int) -> str:
+    return "the same day" if days == 0 else f"{days} day{'' if days == 1 else 's'} apart"
+
+
+def _transfer_suggestion(found: dict) -> dict:
+    day = date.fromisoformat(found["txn_date"])
+    reason = f"Same amount, {_gap(found['gap_days'])}. Pairing keeps both out of spending."
+    if found["matches"] > 1:
+        reason = f"One of {found['matches']} possible matches. {reason}"
+    return {
+        "category": SELF_CATEGORY,
+        "subcategory": SELF_SUBCATEGORY,
+        "reason": reason,
+        "pair_with": found["transaction_id"],
+        "title": f"Moved {found['direction']} {found['account_label']}, {day.day} {day:%b}",
+    }
+
+
+def _add_transfer_suggestions(conn: sqlite3.Connection, items: list[dict]) -> None:
+    """Put each card's transfer candidates ahead of its usual suggestions, within
+    the cap. The card's own guess keeps a place, as it does without candidates."""
+    found = transfer_candidates(conn, [it["transaction_id"] for it in items])
+    for it in items:
+        candidates = found.get(it["transaction_id"], [])[:MAX_TRANSFER_SUGGESTIONS]
+        if not candidates:
+            continue
+        picks = [_transfer_suggestion(c) for c in candidates]
+        usual = it["suggestions"]
+        merged = (picks + usual)[:MAX_SUGGESTIONS]
+        guess = _label(it["category"], it["subcategory"])
+        own = next((s for s in usual if guess and (s["category"], s["subcategory"]) == guess), None)
+        if own is not None and own not in merged:
+            merged[-1] = own
+        it["suggestions"] = merged
+
+
 def attach_suggestions(conn: sqlite3.Connection, items: list[dict]) -> None:
     """Add `suggestions` ([{category, subcategory, reason}], at most three) to
     every queue item, in place."""
@@ -177,3 +221,4 @@ def attach_suggestions(conn: sqlite3.Connection, items: list[dict]) -> None:
         it["suggestions"] = [
             {"category": label[0], "subcategory": label[1], "reason": reason} for label, reason in top
         ]
+    _add_transfer_suggestions(conn, items)

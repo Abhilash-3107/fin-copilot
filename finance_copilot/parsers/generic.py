@@ -48,9 +48,20 @@ _DATE_FORMATS = [
     "%Y-%m-%d", "%b %d, %Y",
 ]
 
+# Minus in front, or in brackets, or behind the figure ("100.00-"), and the
+# Unicode minus a spreadsheet may write.
+_NEGATIVE_RE = re.compile(r"^\s*(?:[-\u2212]|\(\s*\d)")
+_TRAILING_MINUS_RE = re.compile(r"\d\s*[-\u2212]\s*$")
 _AMOUNT_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
-_DRCR_RE = re.compile(r"\b(cr|dr|credit|debit)\b\.?", re.IGNORECASE)
+# Dr/Cr in words or letters, glued to the figure or apart ("100.00DR", "100.00 Cr.").
+_DRCR_RE = re.compile(r"(?<![A-Za-z])(credit|debit|cr|dr)(?![A-Za-z])\.?", re.IGNORECASE)
 _CURRENCY_RE = re.compile(r"(?:₹|inr|rs\.?)", re.IGNORECASE)
+# A decimal comma: a comma and exactly two digits at the end, and no dot anywhere
+# ("100,00"). Indian grouping always ends in a group of three ("1,00,000"), so a
+# comma two digits from the end is never grouping.
+_DECIMAL_COMMA_RE = re.compile(r"\d,\d{2}$")
+# A time of day after a date ("01/10/2026 10:15:00", "2026-10-01T10:15", "... 10:15 PM").
+_TIME_RE = re.compile(r"[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:[AaPp][Mm])?$")
 
 _VERIFY_TOLERANCE = 0.011  # rupee rounding slack on balance arithmetic
 _MIN_VERIFIED_FRACTION = 0.8
@@ -67,6 +78,10 @@ class ColumnMap:
     drcr: int | None = None
     balance: int | None = None
     width: int = 0
+    # One amount column whose sign says the direction (a spreadsheet's "-412.00"
+    # is money out). Set only where the column has a negative number: a column of
+    # plain numbers says nothing about direction, so it is not read as "all in".
+    signed: bool = False
 
     def usable(self) -> bool:
         has_amount = (self.debit is not None or self.credit is not None or self.amount is not None)
@@ -83,6 +98,18 @@ class _Entry:
     amount: float
     debit_credit: Direction | None  # None = direction unknown, inferred later
     balance: float | None
+    row: int | None = None  # 1-based row of the source table, for messages about it
+
+
+@dataclass
+class ChainBreak:
+    """A row whose balance is not the previous balance plus or minus its amount."""
+
+    row: int | None
+    txn_date: date
+    amount: float
+    expected: float
+    printed: float
 
 
 @dataclass
@@ -91,6 +118,20 @@ class ParseResult:
     verified_fraction: float = 0.0
     checks: int = 0
     has_balances: bool = False
+    # Rows that had an amount and no way to tell money in from money out.
+    skipped_unknown_direction: int = 0
+    # Consecutive balances that do not agree with the amount between them, in the
+    # order the rows were resolved to.
+    breaks: list[ChainBreak] = field(default_factory=list)
+    # (row, text) of rows that carry an amount and a date cell that does not read
+    # as a date: a column of dates in an order we do not read, not a footer.
+    bad_dates: list[tuple[int, str]] = field(default_factory=list)
+    # (row, text) of a dated row whose amount or balance cell has digits and does not
+    # read as money: refused, never read as something else or dropped.
+    bad_amounts: list[tuple[int, str]] = field(default_factory=list)
+    # (row, text, style the column had before) of the first row whose money cell is
+    # written with a decimal comma in a column of decimal points, or the other way round.
+    mixed_decimals: tuple[int, str, str] | None = None
 
     @property
     def is_confident(self) -> bool:
@@ -106,8 +147,10 @@ def _norm_header(cell: str) -> str:
     return re.sub(r"[^a-z/ ]", "", cell.lower().replace("\n", " ")).strip()
 
 
-def _map_header(row: list[str]) -> ColumnMap | None:
-    """Try to interpret a row as the table header. Returns None if it isn't one."""
+def header_roles(row: list[str]) -> dict[str, int]:
+    """The role each header cell names, by the same keywords for every source: {role: column}.
+    A role is claimed by the first column that names it. The row may name too few
+    roles to be a header (_map_header decides that)."""
     roles: dict[str, int] = {}
     for idx, raw in enumerate(row):
         cell = _norm_header(raw or "")
@@ -122,6 +165,12 @@ def _map_header(row: list[str]) -> ColumnMap | None:
                     continue
                 roles[role] = idx
                 break
+    return roles
+
+
+def _map_header(row: list[str]) -> ColumnMap | None:
+    """Try to interpret a row as the table header. Returns None if it isn't one."""
+    roles = header_roles(row)
 
     if not _REQUIRED_ROLES.issubset(roles):
         return None
@@ -139,16 +188,34 @@ def _map_header(row: list[str]) -> ColumnMap | None:
     return cmap if cmap.usable() else None
 
 
-def _parse_date(raw: str) -> date | None:
-    cleaned = (raw or "").replace("\n", " ").strip()
+# The same shapes with the month first, for a file that prints them that way.
+_MONTH_FIRST = {
+    "%d/%m/%Y": "%m/%d/%Y", "%d/%m/%y": "%m/%d/%y", "%d-%m-%Y": "%m-%d-%Y",
+    "%d-%m-%y": "%m-%d-%y", "%d.%m.%Y": "%m.%d.%Y",
+}
+
+
+def _parse_date(raw: str, order: str = "dmy") -> date | None:
+    """A date in any of the shapes banks print. `order` says how a numeric date
+    like 01/10/2026 reads: "dmy" (the day first, the Indian convention) or "mdy".
+    A time of day after the date is ignored."""
+    cleaned = _TIME_RE.sub("", (raw or "").replace("\n", " ").strip()).strip()
     if not cleaned:
         return None
     for fmt in _DATE_FORMATS:
+        if order == "mdy":
+            fmt = _MONTH_FIRST.get(fmt, fmt)
         try:
             return datetime.strptime(cleaned, fmt).date()
         except ValueError:
             continue
     return None
+
+
+def parse_date_either_way(raw: str) -> date | None:
+    """A date in either order, the day first when both read: whether a cell is a
+    date at all, not which date."""
+    return _parse_date(raw, "dmy") or _parse_date(raw, "mdy")
 
 
 def _parse_amount(raw: str) -> tuple[float, Direction | None] | None:
@@ -163,19 +230,55 @@ def _parse_amount(raw: str) -> tuple[float, Direction | None] | None:
         marker = "credit" if m.group(1).lower().startswith("cr") else "debit"
         cleaned = _DRCR_RE.sub("", cleaned)
 
-    cleaned = cleaned.strip()
-    num = _AMOUNT_RE.fullmatch(cleaned.lstrip("+"))
+    cleaned = cleaned.strip().replace("\u2212", "-")
+    # Brackets and a minus behind the figure are signs: the sign is read by
+    # is_negative, so only the number is kept here.
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = cleaned[1:-1].strip()
+    if cleaned.endswith("-"):
+        cleaned = cleaned[:-1].strip()
+    cleaned = cleaned.lstrip("+")
+    if has_decimal_comma(cleaned):
+        # "100,00" or "1,234,56": the last comma is the decimal one.
+        whole, _, cents = cleaned.rpartition(",")
+        figure = whole.replace(",", "") + "." + cents
+        return (abs(float(figure)), marker) if _AMOUNT_RE.fullmatch(figure) else None
+    num = _AMOUNT_RE.fullmatch(cleaned)
     if num is None:
         return None
-    value = float(num.group(0).replace(",", ""))
-    return abs(value), marker
+    return abs(float(num.group(0).replace(",", ""))), marker
+
+
+def has_decimal_comma(cleaned: str) -> bool:
+    """A money cell that ends in a comma and exactly two digits, with no dot in it."""
+    return "." not in cleaned and _DECIMAL_COMMA_RE.search(cleaned.strip()) is not None
+
+
+def decimal_style(raw: str) -> str | None:
+    """'dot' for a figure written with a decimal point, 'comma' for one written with a
+    decimal comma, None for a figure that says nothing about it ("100", "1,000")."""
+    cleaned = _CURRENCY_RE.sub("", raw or "")
+    cleaned = _DRCR_RE.sub("", cleaned).strip().strip("()+-\u2212 ")
+    if re.search(r"\.\d", cleaned):
+        return "dot"
+    if has_decimal_comma(cleaned):
+        return "comma"
+    return None
+
+
+def is_negative(raw: str) -> bool:
+    """True for a money cell written with a minus sign (in front or behind) or in brackets."""
+    text = _CURRENCY_RE.sub("", raw or "")
+    return _NEGATIVE_RE.match(text) is not None or _TRAILING_MINUS_RE.search(
+        _DRCR_RE.sub("", text)
+    ) is not None
 
 
 def _clean_text(raw: str) -> str:
     return re.sub(r"\s+", " ", (raw or "")).strip()
 
 
-def _row_to_entry(row: list[str], cmap: ColumnMap) -> _Entry | str | None:
+def _row_to_entry(row: list[str], cmap: ColumnMap, date_order: str = "dmy") -> _Entry | str | None:
     """Convert a table row to an entry.
 
     Returns an _Entry for a transaction row, a str (description fragment) for a
@@ -184,7 +287,7 @@ def _row_to_entry(row: list[str], cmap: ColumnMap) -> _Entry | str | None:
     if len(row) < cmap.width:
         row = row + [""] * (cmap.width - len(row))
 
-    txn_date = _parse_date(row[cmap.date])
+    txn_date = _parse_date(row[cmap.date], date_order)
     description = _clean_text(row[cmap.description])
 
     debit = _parse_amount(row[cmap.debit]) if cmap.debit is not None else None
@@ -211,6 +314,8 @@ def _row_to_entry(row: list[str], cmap: ColumnMap) -> _Entry | str | None:
                 direction = "credit"
             elif cell.startswith("dr"):
                 direction = "debit"
+        if direction is None and cmap.signed:
+            direction = "debit" if is_negative(row[cmap.amount]) else "credit"
         return _Entry(txn_date, description, amount[0], direction, balance)
 
     return None  # dated row with no amount (e.g. "Opening Balance" line)
@@ -256,7 +361,7 @@ def _swap_directions(entries: list[_Entry]) -> list[_Entry]:
     flipped: dict[Direction, Direction] = {"debit": "credit", "credit": "debit"}
     return [
         _Entry(e.txn_date, e.description, e.amount,
-               flipped.get(e.debit_credit) if e.debit_credit else None, e.balance)
+               flipped.get(e.debit_credit) if e.debit_credit else None, e.balance, e.row)
         for e in entries
     ]
 
@@ -267,7 +372,7 @@ def _resolve(entries: list[_Entry]) -> tuple[list[_Entry], float, int]:
     for ordered in (entries, list(reversed(entries))):
         for candidate in (ordered, _swap_directions(ordered)):
             candidate = [
-                _Entry(e.txn_date, e.description, e.amount, e.debit_credit, e.balance)
+                _Entry(e.txn_date, e.description, e.amount, e.debit_credit, e.balance, e.row)
                 for e in candidate
             ]
             _infer_directions(candidate)
@@ -279,28 +384,26 @@ def _resolve(entries: list[_Entry]) -> tuple[list[_Entry], float, int]:
     return best[2], best[0], best[3]
 
 
-def extract_transactions(tables: list[list[list[str | None]]]) -> ParseResult:
-    """Pure-logic core: tables (lists of rows) → verified transactions."""
-    cmap: ColumnMap | None = None
-    entries: list[_Entry] = []
+def _chain_breaks(entries: list[_Entry]) -> list[ChainBreak]:
+    """Every consecutive balance pair that disagrees with the amount between them
+    (the rule _chain_score counts), with what the balance should have been."""
+    found: list[ChainBreak] = []
+    prev_balance: float | None = None
+    for e in entries:
+        if e.balance is None:
+            prev_balance = None
+            continue
+        if prev_balance is not None and e.debit_credit is not None:
+            expected = prev_balance + (e.amount if e.debit_credit == "credit" else -e.amount)
+            if abs(e.balance - expected) > _VERIFY_TOLERANCE:
+                found.append(ChainBreak(e.row, e.txn_date, e.amount, round(expected, 2), e.balance))
+        prev_balance = e.balance
+    return found
 
-    for table in tables:
-        for raw_row in table:
-            if raw_row is None:
-                continue
-            row = [(cell or "") for cell in raw_row]
-            header = _map_header(row)
-            if header is not None:
-                cmap = header  # first header locks mapping; repeats on later pages are skipped
-                continue
-            if cmap is None:
-                continue
-            result = _row_to_entry(row, cmap)
-            if isinstance(result, _Entry):
-                entries.append(result)
-            elif isinstance(result, str) and entries:
-                entries[-1].description = f"{entries[-1].description} {result}".strip()
 
+def _finish(entries: list[_Entry]) -> ParseResult:
+    """Entries as read -> verified transactions: the order and direction polarity the
+    balance chain agrees with most, then one Transaction each."""
     if not entries:
         return ParseResult()
 
@@ -332,7 +435,94 @@ def extract_transactions(tables: list[list[list[str | None]]]) -> ParseResult:
         verified_fraction=verified_fraction,
         checks=checks,
         has_balances=has_balances,
+        skipped_unknown_direction=skipped_unknown_direction,
+        breaks=_chain_breaks(entries),
     )
+
+
+def extract_transactions(tables: list[list[list[str | None]]]) -> ParseResult:
+    """Pure-logic core: tables (lists of rows) → verified transactions."""
+    cmap: ColumnMap | None = None
+    entries: list[_Entry] = []
+
+    for table in tables:
+        for raw_row in table:
+            if raw_row is None:
+                continue
+            row = [(cell or "") for cell in raw_row]
+            header = _map_header(row)
+            if header is not None:
+                cmap = header  # first header locks mapping; repeats on later pages are skipped
+                continue
+            if cmap is None:
+                continue
+            result = _row_to_entry(row, cmap)
+            if isinstance(result, _Entry):
+                entries.append(result)
+            elif isinstance(result, str) and entries:
+                entries[-1].description = f"{entries[-1].description} {result}".strip()
+
+    return _finish(entries)
+
+
+def extract_with_map(
+    rows: list[list[str]], cmap: ColumnMap, first_row: int = 1, date_order: str = "dmy"
+) -> ParseResult:
+    """The same rows-to-payments step for a table whose columns are already known
+    (a spreadsheet's, read from its header or chosen by the person). `rows` start
+    at table row `first_row`, which the entries keep for messages. A line with
+    text and no date or amount is not part of the previous payment here, as a PDF's
+    wrapped line is: a sheet does not wrap, and a footer must not join a payment.
+    A dated row whose money cell cannot be read, and a money column that writes
+    some figures with a decimal point and some with a decimal comma, are recorded
+    (bad_amounts, mixed_decimals) for the caller to refuse: a figure that is
+    dropped or read 100 times too large is worse than no statement."""
+    entries: list[_Entry] = []
+    bad_dates: list[tuple[int, str]] = []
+    bad_amounts: list[tuple[int, str]] = []
+    mixed: tuple[int, str, str] | None = None
+    columns = [c for c in (cmap.debit, cmap.credit, cmap.amount, cmap.balance) if c is not None]
+    style: dict[int, str] = {}
+    for offset, raw in enumerate(rows):
+        row = [(cell or "") for cell in raw]
+        padded = row + [""] * (cmap.width - len(row))
+        dated = _parse_date(padded[cmap.date], date_order) is not None
+        if dated:
+            unreadable = next(
+                (
+                    padded[c].strip() for c in columns
+                    if any(ch.isdigit() for ch in padded[c]) and _parse_amount(padded[c]) is None
+                ),
+                None,
+            )
+            if unreadable is not None:
+                bad_amounts.append((first_row + offset, unreadable))
+            if mixed is None:
+                for c in columns:
+                    seen = decimal_style(padded[c])
+                    if seen is None:
+                        continue
+                    before = style.setdefault(c, seen)
+                    if seen != before:
+                        mixed = (first_row + offset, padded[c].strip(), before)
+                        break
+        result = _row_to_entry(row, cmap, date_order)
+        if isinstance(result, _Entry):
+            result.row = first_row + offset
+            entries.append(result)
+            continue
+        text = padded[cmap.date].strip()
+        money = [c for c in (cmap.debit, cmap.credit, cmap.amount) if c is not None]
+        if (
+            text and any(ch.isdigit() for ch in text) and not dated
+            and any(_parse_amount(padded[c]) for c in money)
+        ):
+            bad_dates.append((first_row + offset, text))
+    parsed = _finish(entries)
+    parsed.bad_dates = bad_dates
+    parsed.bad_amounts = bad_amounts
+    parsed.mixed_decimals = mixed
+    return parsed
 
 
 class GenericStatementParser(StatementParser):

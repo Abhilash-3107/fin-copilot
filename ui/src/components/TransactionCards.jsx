@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 import Amount from './Amount.jsx'
 import PaymentLabel from './PaymentLabel.jsx'
+import CategoryPill from './CategoryPill.jsx'
 import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 
 // Card-per-row rendering of transactions for narrow screens (4.1). The wide
@@ -8,7 +9,7 @@ import { SOURCE_PILL, sourceLabel } from '../lib/sources.js'
 // Selection checkbox is included so bulk actions work on mobile too.
 export default function TransactionCards({
   transactions, annotationMap = {}, activeId, onSelect,
-  selectable = false, selected, onToggle,
+  selectable = false, selected, onToggle, showAccount = false,
 }) {
   if (!transactions.length) return null
 
@@ -16,7 +17,7 @@ export default function TransactionCards({
     <ul className="divide-y divide-[#1a1d27]">
       {transactions.map(txn => {
         const ann = annotationMap[txn.id]
-        const src = ann?.source ?? 'pending'
+        const src = txn.waiting_on_pair ? 'pending' : (ann?.source ?? 'pending')
         const isActive = txn.id === activeId
         const isSelected = selectable && selected?.has(txn.id)
 
@@ -48,11 +49,8 @@ export default function TransactionCards({
               </div>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 <span className="text-xs text-[#94a3b8]">{dayjs(txn.txn_date).format('DD MMM YY')}</span>
-                {ann && (
-                  <span className="bg-[#1e1b4b] text-[#a5b4fc] text-xs px-2 py-0.5 rounded-full">
-                    {ann.subcategory ? `${ann.category} › ${ann.subcategory}` : ann.category}
-                  </span>
-                )}
+                {showAccount && txn.account_label && <span className="text-xs text-[#94a3b8]">{txn.account_label}</span>}
+                {ann && <CategoryPill txn={txn} ann={ann} />}
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SOURCE_PILL[src] ?? SOURCE_PILL.pending}`}>
                   {sourceLabel(src)}
                 </span>

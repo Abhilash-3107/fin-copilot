@@ -152,7 +152,7 @@ def _members_for_groups(conn: sqlite3.Connection, group_ids: list[str]) -> dict[
     rows = conn.execute(
         f"""
         SELECT m.group_id, m.role, m.txn_type, m.people, m.transaction_id, t.id, t.txn_date, t.amount, t.debit_credit, t.raw_description, t.upi_meta,
-               t.counterparty_key, t.display_name, a.merchant
+               t.counterparty_key, t.display_name, t.user_note, a.merchant
         FROM transaction_group_members m
         JOIN transactions t ON t.id = m.transaction_id
         LEFT JOIN annotations a ON a.transaction_id = t.id

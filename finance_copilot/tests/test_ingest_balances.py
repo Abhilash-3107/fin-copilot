@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from finance_copilot.db.connection import init_db
+from finance_copilot.db.queries.accounts import resolve_account
 from finance_copilot.models.transaction import Transaction
 from finance_copilot.pipeline.ingest import (
     _split_balance_artifacts,
@@ -180,12 +181,15 @@ class TestIngestBalances:
 
 class TestContinuityCheck:
     def _seed_statement(self, conn, month, start, end, opening, closing,
-                        bank="fake", account_ref=None):
+                        bank="fake", account_ref=None, printed=(None, None)):
+        # In the account ingest would put it: the same resolution, not a copy of it.
+        account_id, _ = resolve_account(conn, bank, account_ref)
         conn.execute(
             """INSERT INTO statements (id, bank_name, parser_version, statement_month,
-               period_start, period_end, opening_balance, closing_balance, account_ref)
-               VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?)""",
-            (f"s-{bank}-{month}", bank, month, start, end, opening, closing, account_ref),
+               period_start, period_end, opening_balance, closing_balance, account_ref, account_id,
+               printed_start, printed_end)
+               VALUES (?, ?, '1', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f"s-{bank}-{month}", bank, month, start, end, opening, closing, account_ref, account_id, *printed),
         )
         conn.commit()
 
@@ -206,9 +210,51 @@ class TestContinuityCheck:
         ], b"%PDF may after gap")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-03" in warnings[0]
+        assert "Mar 2026 statement's closing balance" in warnings[0]
+        assert "2026-03" not in warnings[0]
         assert "missing" in warnings[0]
         conn.close()
+
+    def test_a_neighbour_is_named_by_its_dates_the_way_the_statement_list_writes_them(self):
+        conn = _make_conn()
+        self._seed_statement(conn, "2026-03", "2026-03-01", "2026-03-10", 50000.0, 45994.25)
+        stmt = _ingest(conn, [
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
+        ], b"%PDF may after a part month")
+        (warning,) = check_continuity(conn, stmt)
+        assert "the 1 Mar to 10 Mar statement's closing balance" in warning
+
+    def test_a_neighbour_with_a_printed_period_is_named_by_it(self):
+        conn = _make_conn()
+        self._seed_statement(conn, "2026-03", "2026-03-02", "2026-03-09", 50000.0, 45994.25,
+                             printed=("2026-03-01", "2026-03-10"))
+        stmt = _ingest(conn, [
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
+        ], b"%PDF may after a printed part month")
+        (warning,) = check_continuity(conn, stmt)
+        assert "the 1 Mar to 10 Mar statement's closing balance" in warning
+
+    def test_a_printed_period_names_the_neighbour_and_a_whole_month_is_just_the_month(self):
+        from finance_copilot.pipeline.ingest import statement_span
+
+        def row(**kw):
+            base = {"statement_month": "2026-10", "period_start": "2026-10-03", "period_end": "2026-10-28",
+                    "printed_start": None, "printed_end": None}
+            return base | kw
+
+        # Payments inside one month and no printed period: the month.
+        assert statement_span(row()) == "Oct 2026"
+        # A printed whole month: the month; a printed part of one: its days.
+        assert statement_span(row(printed_start="2026-10-01", printed_end="2026-10-31")) == "Oct 2026"
+        assert statement_span(row(printed_start="2026-10-01", printed_end="2026-10-15")) == "1 Oct to 15 Oct"
+        # Across months, and across years (the year is written then).
+        assert statement_span(row(printed_start="2026-10-05", printed_end="2026-11-15")) == "5 Oct to 15 Nov"
+        assert statement_span(row(period_start="2025-12-20", period_end="2026-01-10")) == "20 Dec 2025 to 10 Jan 2026"
+        # A message that must tell statements apart keeps a month name for a whole month only.
+        assert statement_span(row(), exact_days=True) == "3 Oct to 28 Oct"
+        assert statement_span(row(period_start="2026-10-01", period_end="2026-10-31"), exact_days=True) == "Oct 2026"
+        # Neither: the month it is filed under.
+        assert statement_span(row(period_start=None, period_end=None)) == "Oct 2026"
 
     def test_a_negative_balance_puts_the_sign_before_the_rupee_sign(self):
         # An overdrawn account closes below zero. "₹-1,234.00" would slip past
@@ -223,6 +269,16 @@ class TestContinuityCheck:
         assert "₹-" not in warning
         conn.close()
 
+    def test_a_large_balance_is_grouped_the_way_the_interface_writes_it(self):
+        conn = _make_conn()
+        self._seed_statement(conn, "2026-03", "2026-03-01", "2026-03-31", 50000.0, 107775.0)
+        stmt = _ingest(conn, [
+            _txn("UPI/ZOMATO/512345678901/UPI", amount=100.0, dc="debit", balance=90249.69),
+        ], b"%PDF may large balance")
+        (warning,) = check_continuity(conn, stmt)
+        assert "₹1,07,775.00" in warning
+        conn.close()
+
     def test_gap_against_next_statement_warns_on_out_of_order_upload(self):
         conn = _make_conn()
         self._seed_statement(conn, "2026-05", "2026-05-01", "2026-05-31", 90349.69, 90770.41)
@@ -233,7 +289,8 @@ class TestContinuityCheck:
         ], b"%PDF march late")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-05" in warnings[0]
+        assert "May 2026 statement's opening balance" in warnings[0]
+        assert "2026-05" not in warnings[0]
         conn.close()
 
     def test_other_bank_statements_are_not_neighbours(self):
@@ -267,7 +324,7 @@ class TestContinuityCheck:
         ], b"%PDF same account gap", bank="fake", account_ref="1111222233")
         warnings = check_continuity(conn, stmt)
         assert len(warnings) == 1
-        assert "2026-04" in warnings[0]
+        assert "Apr 2026 statement's closing balance" in warnings[0]
         conn.close()
 
     def test_unknown_balances_stay_silent(self):
@@ -317,10 +374,12 @@ class TestUploadRouteWarnings:
         from finance_copilot.main import app
 
         conn = _make_conn()
+        account_id, _ = resolve_account(conn, "fake", None)
         conn.execute(
             """INSERT INTO statements (id, bank_name, parser_version, statement_month,
-               period_start, period_end, opening_balance, closing_balance)
-               VALUES ('s-apr', 'fake', '1', '2026-04', '2026-04-01', '2026-04-30', 46000.0, 12345.0)"""
+               period_start, period_end, opening_balance, closing_balance, account_id)
+               VALUES ('s-apr', 'fake', '1', '2026-04', '2026-04-01', '2026-04-30', 46000.0, 12345.0, ?)""",
+            (account_id,),
         )
         conn.commit()
         app.dependency_overrides[api_get_db] = lambda: conn
@@ -341,7 +400,7 @@ class TestUploadRouteWarnings:
             body = resp.json()
             assert body["opening_balance"] == pytest.approx(90349.69)
             assert len(body["warnings"]) == 1
-            assert "2026-04" in body["warnings"][0]
+            assert "Apr 2026 statement's closing balance" in body["warnings"][0]
         finally:
             app.dependency_overrides.pop(api_get_db, None)
             conn.close()

@@ -57,14 +57,28 @@ test.describe('J9 failure states', () => {
 
   test('Transactions says the list could not load, never "No payments", and recovers', async ({ page, tolerate }) => {
     const api = await breakApi(page, tolerate, /\/api\/transactions(\?|$)/)
+    // The page waits for the accounts and months before it asks for its list, so
+    // it asks once. Hold the accounts back: a page that asked early would have
+    // asked, and failed, before they came, and would ask again after them.
+    await page.route(/\/api\/accounts$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      await route.fallback()
+    })
+    const lists = []
+    page.on('request', (request) => {
+      if (/\/api\/transactions\?/.test(request.url())) lists.push(request.url())
+    })
     await page.goto('/#/transactions')
     await expect(alertWith(page, "Couldn't load your payments.")).toBeVisible()
     await expect(page.getByText('No payments')).toHaveCount(0)
+    // One failed ask, not one before the accounts arrived and another after.
+    expect(lists).toHaveLength(1)
 
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(page.getByRole('row').nth(1)).toBeVisible()
     await expect(failures(page)).toHaveCount(0)
+    expect(lists).toHaveLength(2)
   })
 
   test('Teach Me says the list could not load, never "all done", and recovers', async ({ page, tolerate }) => {
@@ -92,27 +106,27 @@ test.describe('J9 failure states', () => {
   })
 
   // The pages that ask for "the period" used to ask once with no month and again when the
-  // statement list arrived and chose one. The second answer replaced the first, so a
+  // ledger (accounts and months) arrived and chose one. The second answer replaced the first, so a
   // person (or a test) holding the error saw its Retry vanish.
   for (const [name, route, text, pattern] of [
     ['Money Map', '/#/insights', "Couldn't load your Money Map.", /\/api\/insights/],
     ['Dashboard', '/#/dashboard', "Couldn't load your dashboard.", /\/api\/insights/],
     ['Transactions', '/#/transactions', "Couldn't load your payments.", /\/api\/transactions(\?|$)/],
   ]) {
-    test(`${name} asks once, so a slow statement list never replaces its error`, async ({ page, tolerate }) => {
+    test(`${name} asks once, so a slow account list never replaces its error`, async ({ page, tolerate }) => {
       const asked = []
       page.on('request', (request) => { if (pattern.test(request.url())) asked.push(request.url()) })
       const api = await breakApi(page, tolerate, pattern)
-      await page.route(/\/api\/statements(\?|$)/, async (route) => {
+      await page.route(/\/api\/accounts(\?|$)/, async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 1500))
         await route.fallback()
       })
-      const statementList = page.waitForResponse(/\/api\/statements(\?|$)/)
+      const accountList = page.waitForResponse(/\/api\/accounts(\?|$)/)
       await page.goto(route)
       await expect(alertWith(page, text)).toBeVisible()
       api.heal()
-      // The statement list arrives and the app settles; nothing may ask again on its own.
-      await statementList
+      // The account list arrives and the app settles; nothing may ask again on its own.
+      await accountList
       await page.waitForLoadState('networkidle')
       expect(asked).toHaveLength(1)
       await expect(alertWith(page, text)).toBeVisible()
@@ -158,7 +172,8 @@ test.describe('J9 failure states', () => {
     api.heal()
     await failures(page).getByRole('button', { name: 'Retry' }).click()
     await expect(failures(page)).toHaveCount(0)
-    await expect(page.getByRole('table')).toBeVisible()
+    // The statements list, not the books above it.
+    await expect(page.getByRole('table').filter({ has: page.getByRole('columnheader', { name: 'Balanced' }) })).toBeVisible()
   })
 
   test('Settings says a tab could not load its rules, never "No rules yet", and recovers', async ({ page, tolerate, app }) => {
